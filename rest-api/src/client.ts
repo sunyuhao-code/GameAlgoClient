@@ -489,8 +489,8 @@ export class GameAlgoEventTracker {
   trackSessionStart(payload: JsonValue = {}): boolean {
     this.sessionStartMs = this.now();
     const merged = objectPayload(payload);
-    if (this.userCreatedAt && merged.userCreatedAt === undefined) {
-      merged.userCreatedAt = this.userCreatedAt;
+    if (merged.userCreatedAt === undefined) {
+      merged.userCreatedAt = this.userCreatedAt ?? new Date(this.now()).toISOString();
     }
     return this.track("session_start", merged);
   }

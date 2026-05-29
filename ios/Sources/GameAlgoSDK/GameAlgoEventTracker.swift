@@ -161,8 +161,8 @@ public actor GameAlgoEventTracker {
     public func trackSessionStart(payload: JSONValue = .object([:])) -> Bool {
         sessionStartDate = now()
         var merged = payload.objectValue ?? [:]
-        if let userCreatedAt = clean(userCreatedAt), merged["userCreatedAt"] == nil {
-            merged["userCreatedAt"] = .string(userCreatedAt)
+        if merged["userCreatedAt"] == nil {
+            merged["userCreatedAt"] = .string(clean(userCreatedAt) ?? GameAlgoEventBatchUploader.isoTimestamp(now()))
         }
         return track("session_start", payload: .object(merged))
     }

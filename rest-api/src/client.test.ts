@@ -80,8 +80,8 @@ test("fetchConfigFile returns text and etag", async () => {
   const client = new GameAlgoRestClient({
     baseUrl: "https://gamealgo.test",
     gameKey,
-    fetchImpl: async (input) => {
-      const request = new Request(input);
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
       assert.equal(request.url, "https://gamealgo.test/v1/config-files/gameplay.json");
       return new Response("{\"difficulty\":\"normal\"}\n", {
         status: 200,
@@ -163,8 +163,8 @@ function execute(input) {
     baseUrl: "https://gamealgo.test",
     gameKey,
     sdkVersion: "1.0.0",
-    fetchImpl: async (input) => {
-      const request = new Request(input);
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
       if (request.url.includes("/v1/config-files/level-generator.js")) {
         return new Response(script, {
           headers: { "content-type": "text/plain; charset=utf-8" },
@@ -447,6 +447,34 @@ test("tracker queues and flushes events after start identifies user", async () =
   assert.deepEqual((uploadedEvents[2].payload as Record<string, unknown>).experiments, {
     level_generator: "variant-a",
   });
+  client.tracker.close();
+});
+
+test("session_start backfills payload when tracker only has userId", async () => {
+  let uploadedEvents: Array<Record<string, unknown>> = [];
+  const client = new GameAlgoRestClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    now: () => Date.parse("2026-05-28T10:00:00.000Z"),
+    eventFlushIntervalMs: 0,
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      if (request.url.endsWith("/v1/events/batch")) {
+        const body = await request.json() as { events: Array<Record<string, unknown>> };
+        uploadedEvents = body.events;
+        return jsonResponse({ ok: true, accepted: body.events.length });
+      }
+      throw new Error(`Unexpected request: ${request.url}`);
+    },
+  });
+
+  client.tracker.identify("u1");
+  assert.equal(client.tracker.trackSessionStart(), true);
+  await client.tracker.flush();
+
+  assert.equal(uploadedEvents[0].userId, "u1");
+  assert.equal(uploadedEvents[0].eventType, "session_start");
+  assert.equal((uploadedEvents[0].payload as Record<string, unknown>).userCreatedAt, "2026-05-28T10:00:00.000Z");
   client.tracker.close();
 });
 

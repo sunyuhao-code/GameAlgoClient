@@ -20,6 +20,7 @@ public final class GameAlgoClientSmokeTest {
         testStartBackfillsCreatedAtForPersistedLegacyUserId();
         testUploadEventsFillsDefaults();
         testTrackerQueuesAndFlushesEvents();
+        testSessionStartBackfillsPayloadWhenTrackerOnlyHasUserId();
     }
 
     private static void testFetchConfigSendsHeadersAndCaches() throws Exception {
@@ -385,6 +386,36 @@ public final class GameAlgoClientSmokeTest {
         Map<String, Object> thirdPayload = GameAlgoJson.asObject(third.get("payload"), "payload");
         Map<String, Object> experiments = GameAlgoJson.asObject(thirdPayload.get("experiments"), "experiments");
         check("variant-a".equals(experiments.get("level_generator")), "tracker should attach experiment variants");
+        client.tracker().close();
+    }
+
+    private static void testSessionStartBackfillsPayloadWhenTrackerOnlyHasUserId() throws Exception {
+        FakeHttpClient httpClient = new FakeHttpClient();
+        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":1}"));
+        GameAlgoClient client = new GameAlgoClient(
+                "ga_live_test_key_0123456789abcdef",
+                "https://gamealgo.test",
+                "1.0.0",
+                null,
+                "android",
+                httpClient
+        );
+
+        client.tracker().identify("u1");
+        check(client.tracker().trackSessionStart(), "tracker should enqueue session_start with only userId");
+        client.tracker().flush();
+
+        Map<String, Object> body = GameAlgoJson.asObject(
+                GameAlgoJson.parse(new String(httpClient.requests.get(0).getBody(), StandardCharsets.UTF_8)),
+                "body"
+        );
+        List<Object> events = GameAlgoJson.asArray(body.get("events"), "events");
+        Map<String, Object> event = GameAlgoJson.asObject(events.get(0), "events[]");
+        Map<String, Object> payload = GameAlgoJson.asObject(event.get("payload"), "payload");
+
+        check("u1".equals(event.get("userId")), "session_start should use identified user id");
+        check("session_start".equals(event.get("eventType")), "event should be session_start");
+        check(payload.get("userCreatedAt") instanceof String && ((String) payload.get("userCreatedAt")).length() > 0, "session_start should backfill userCreatedAt");
         client.tracker().close();
     }
 

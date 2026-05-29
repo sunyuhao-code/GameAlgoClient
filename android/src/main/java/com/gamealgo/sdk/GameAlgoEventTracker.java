@@ -126,9 +126,7 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         }
         Map<String, Object> payload = new LinkedHashMap<>();
         synchronized (this) {
-            if (!isBlank(userCreatedAt)) {
-                payload.put("userCreatedAt", userCreatedAt);
-            }
+            payload.put("userCreatedAt", isBlank(userCreatedAt) ? GameAlgoClient.isoTimestamp(new java.util.Date()) : userCreatedAt);
         }
         return track("session_start", payload);
     }
