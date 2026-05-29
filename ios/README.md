@@ -4,7 +4,17 @@ Swift Package implementation for Protocol v1.
 
 ## Install
 
-Add this package directory as a Swift Package dependency and import the library product:
+For remote SwiftPM integration, add the client repository and select the `GameAlgoSDK` product:
+
+```text
+https://github.com/dirichlet-ai/GameAlgoClient.git
+```
+
+During pre-release integration, use the `main` branch. After release tags are available, use an `Up to Next Major Version` rule.
+
+If you are developing this package locally, this `ios/` directory can also be opened directly as a Swift package.
+
+Then import the library product:
 
 ```swift
 import GameAlgoSDK

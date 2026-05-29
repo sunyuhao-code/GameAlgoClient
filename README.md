@@ -27,7 +27,27 @@ docs/       Client-facing docs
 
 ### iOS
 
-当前 Swift Package 位于 `ios/` 目录。接入 App 后：
+推荐通过 SwiftPM remote package 接入整个 client 仓库：
+
+```text
+https://github.com/dirichlet-ai/GameAlgoClient.git
+```
+
+在 Xcode 里选择 `File > Add Package Dependencies...`，填入仓库 URL，添加 `GameAlgoSDK` product。正式发版前可以先使用 `main` branch；后续打 `1.x.x` tag 后再切到 `Up to Next Major Version`。
+
+如果 App 自己也使用 `Package.swift` 管理依赖：
+
+```swift
+.package(url: "https://github.com/dirichlet-ai/GameAlgoClient.git", branch: "main")
+```
+
+并在 App target 里依赖：
+
+```swift
+.product(name: "GameAlgoSDK", package: "GameAlgoClient")
+```
+
+接入 App 后：
 
 ```swift
 import GameAlgoSDK
@@ -241,6 +261,7 @@ _tutorial_skip
 
 ```bash
 npm run check
+swift test
 cd ios && swift test
 cd android && javac -d /tmp/gamealgo-android-classes src/main/java/com/gamealgo/sdk/*.java src/test/java/com/gamealgo/sdk/*.java
 cd android && java -cp /tmp/gamealgo-android-classes com.gamealgo.sdk.GameAlgoClientSmokeTest
