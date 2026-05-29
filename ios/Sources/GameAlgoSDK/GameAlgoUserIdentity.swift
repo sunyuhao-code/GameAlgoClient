@@ -30,12 +30,21 @@ public final class GameAlgoUserIdentityStore: @unchecked Sendable {
     }
 
     public func identity(userId explicitUserId: String? = nil, now: Date = Date()) -> GameAlgoUserIdentity {
-        if let explicitUserId = clean(explicitUserId) {
-            return GameAlgoUserIdentity(userId: explicitUserId, userCreatedAt: "")
-        }
-
         lock.lock()
         defer { lock.unlock() }
+
+        if let explicitUserId = clean(explicitUserId) {
+            let existingUserId = clean(userDefaults.string(forKey: userIdKey))
+            let existingCreatedAt = clean(userDefaults.string(forKey: userCreatedAtKey))
+            if existingUserId == explicitUserId, let existingCreatedAt {
+                return GameAlgoUserIdentity(userId: explicitUserId, userCreatedAt: existingCreatedAt)
+            }
+
+            let createdAt = GameAlgoEventBatchUploader.isoTimestamp(now)
+            userDefaults.set(explicitUserId, forKey: userIdKey)
+            userDefaults.set(createdAt, forKey: userCreatedAtKey)
+            return GameAlgoUserIdentity(userId: explicitUserId, userCreatedAt: createdAt)
+        }
 
         if let existing = clean(userDefaults.string(forKey: userIdKey)) {
             return GameAlgoUserIdentity(

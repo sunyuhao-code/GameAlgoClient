@@ -127,7 +127,19 @@ export class GameAlgoRestClient {
 
   async userIdentity(explicitUserId?: string): Promise<GameAlgoUserIdentity> {
     const cleanExplicit = clean(explicitUserId);
-    if (cleanExplicit) return { userId: cleanExplicit, userCreatedAt: "" };
+
+    if (cleanExplicit) {
+      if (this.currentIdentity?.userId === cleanExplicit) return this.currentIdentity;
+      const existing = clean(await this.storage?.getItem(this.userIdKey));
+      const existingCreatedAt = clean(await this.storage?.getItem(this.userCreatedAtKey));
+      this.currentIdentity = {
+        userId: cleanExplicit,
+        userCreatedAt: existing === cleanExplicit && existingCreatedAt ? existingCreatedAt : new Date(this.now()).toISOString(),
+      };
+      await this.storage?.setItem(this.userIdKey, this.currentIdentity.userId);
+      await this.storage?.setItem(this.userCreatedAtKey, this.currentIdentity.userCreatedAt);
+      return this.currentIdentity;
+    }
     if (this.currentIdentity) return this.currentIdentity;
 
     const existing = clean(await this.storage?.getItem(this.userIdKey));

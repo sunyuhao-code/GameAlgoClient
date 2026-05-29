@@ -340,6 +340,11 @@ final class GameAlgoSDKTests: XCTestCase {
     }
 
     func testTrackerQueuesAndFlushesEventsAfterStartIdentifiesUser() async throws {
+        let suiteName = "GameAlgoSDKTests.tracker.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
         let httpClient = MockHTTPClient()
         try await httpClient.enqueueJSON(configResponse(
             version: "v1",
@@ -357,6 +362,7 @@ final class GameAlgoSDKTests: XCTestCase {
             sdkVersion: "1.2.3",
             appVersion: "4.5.6",
             httpClient: httpClient,
+            userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
             isDebug: true,
             eventFlushInterval: 0,
             now: { Date(timeIntervalSince1970: 1_779_962_400) }
@@ -382,6 +388,8 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(events?[1]["userId"] as? String, "u1")
         XCTAssertEqual(events?[1]["sessionId"] as? String, events?.last?["sessionId"] as? String)
         XCTAssertEqual(events?[1]["eventType"] as? String, "session_start")
+        let sessionPayload = events?[1]["payload"] as? [String: Any]
+        XCTAssertEqual(sessionPayload?["userCreatedAt"] as? String, "2026-05-28T10:00:00.000Z")
         XCTAssertEqual(events?.last?["eventType"] as? String, "level_end")
         XCTAssertEqual(events?.last?["platform"] as? String, "ios")
         XCTAssertEqual(events?.last?["sdkVersion"] as? String, "1.2.3")

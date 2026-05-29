@@ -328,6 +328,8 @@ public final class GameAlgoClientSmokeTest {
         check("u1".equals(second.get("userId")), "tracker should use identified user");
         check(second.get("sessionId").equals(third.get("sessionId")), "tracker should keep session id");
         check("session_start".equals(second.get("eventType")), "tracker should upload session_start");
+        Map<String, Object> secondPayload = GameAlgoJson.asObject(second.get("payload"), "payload");
+        check(secondPayload.get("userCreatedAt") instanceof String && ((String) secondPayload.get("userCreatedAt")).length() > 0, "session_start should include userCreatedAt");
         check("level_end".equals(third.get("eventType")), "tracker should upload level_end");
         check("android".equals(third.get("platform")), "tracker event platform should default");
         check("1.2.3".equals(third.get("sdkVersion")), "tracker event sdkVersion should default");

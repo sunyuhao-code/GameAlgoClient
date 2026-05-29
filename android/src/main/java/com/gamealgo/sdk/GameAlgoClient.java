@@ -322,7 +322,27 @@ public final class GameAlgoClient {
 
     private synchronized GameAlgoUserIdentity userIdentity(String explicitUserId) throws GameAlgoException {
         if (!isBlank(explicitUserId)) {
-            return new GameAlgoUserIdentity(explicitUserId, "");
+            if (userIdentity != null && explicitUserId.equals(userIdentity.getUserId())) {
+                return userIdentity;
+            }
+
+            String createdAt = null;
+            if (cacheStorage != null) {
+                String existing = cacheStorage.getItem(USER_ID_KEY);
+                if (explicitUserId.equals(existing)) {
+                    createdAt = cacheStorage.getItem(USER_CREATED_AT_KEY);
+                }
+            }
+            if (isBlank(createdAt)) {
+                createdAt = isoTimestamp(new Date());
+            }
+
+            userIdentity = new GameAlgoUserIdentity(explicitUserId, createdAt);
+            if (cacheStorage != null) {
+                cacheStorage.setItem(USER_ID_KEY, userIdentity.getUserId());
+                cacheStorage.setItem(USER_CREATED_AT_KEY, createdAt);
+            }
+            return userIdentity;
         }
         if (userIdentity != null) {
             return userIdentity;
