@@ -288,6 +288,7 @@ components:
           type: string
         timezone:
           type: string
+          description: SDK helpers default this to the client's local timezone.
         isDebug:
           type: boolean
           default: false

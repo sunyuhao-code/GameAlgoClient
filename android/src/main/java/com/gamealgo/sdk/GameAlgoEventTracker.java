@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TimeZone;
 import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -17,7 +18,7 @@ public final class GameAlgoEventTracker implements AutoCloseable {
 
     private String userId;
     private String sessionId = UUID.randomUUID().toString();
-    private String timezone;
+    private String timezone = TimeZone.getDefault().getID();
     private String userCreatedAt;
     private boolean isDebug;
     private long sessionStartMillis;
@@ -68,7 +69,7 @@ public final class GameAlgoEventTracker implements AutoCloseable {
     }
 
     public synchronized void setTimezone(String timezone) {
-        this.timezone = timezone;
+        this.timezone = isBlank(timezone) ? TimeZone.getDefault().getID() : timezone;
     }
 
     public synchronized void setAssignments(List<GameAlgoExperimentAssignment> assignments) {

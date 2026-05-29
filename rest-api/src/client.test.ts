@@ -326,6 +326,7 @@ test("uploadEvents fills platform, sdkVersion, appVersion, and timestamp default
       assert.equal(body.events[0].platform, "rest");
       assert.equal(body.events[0].sdkVersion, "1.2.3");
       assert.equal(body.events[0].appVersion, "4.5.6");
+      assert.equal(body.events[0].timezone, testTimezone());
       assert.equal(body.events[0].timestamp, "2026-05-28T10:00:00.000Z");
       return jsonResponse({ ok: true, accepted: 1 });
     },
@@ -397,6 +398,7 @@ test("tracker queues and flushes events after start identifies user", async () =
   assert.equal(uploadedEvents[2].platform, "rest");
   assert.equal(uploadedEvents[2].sdkVersion, "1.2.3");
   assert.equal(uploadedEvents[2].appVersion, "4.5.6");
+  assert.equal(uploadedEvents[2].timezone, testTimezone());
   assert.equal(uploadedEvents[2].isDebug, true);
   assert.deepEqual((uploadedEvents[2].payload as Record<string, unknown>).experiments, {
     level_generator: "variant-a",
@@ -431,6 +433,7 @@ test("createEvent fills eventId and timestamp", () => {
   });
 
   assert.equal(typeof event.eventId, "string");
+  assert.equal(event.timezone, testTimezone());
   assert.equal(typeof event.timestamp, "string");
 });
 
@@ -441,6 +444,10 @@ function jsonResponse(payload: unknown, status = 200): Response {
       "content-type": "application/json; charset=utf-8",
     },
   });
+}
+
+function testTimezone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 }
 
 class MapStorage {

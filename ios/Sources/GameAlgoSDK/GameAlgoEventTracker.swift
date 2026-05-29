@@ -19,7 +19,7 @@ public actor GameAlgoEventTracker {
     private var platform: GameAlgoPlatform?
     private var sdkVersion: String?
     private var appVersion: String?
-    private var timezone: String?
+    private var timezone: String
     private var userCreatedAt: String?
     private var isDebug: Bool
     private var queue: [GameAlgoEvent] = []
@@ -43,6 +43,7 @@ public actor GameAlgoEventTracker {
         self.flushInterval = flushInterval
         self.isDebug = isDebug
         self.now = now
+        self.timezone = Self.defaultTimezone()
 
         #if canImport(UIKit)
         let tracker = self
@@ -87,7 +88,7 @@ public actor GameAlgoEventTracker {
         if let appVersion {
             self.appVersion = appVersion
         }
-        if let timezone {
+        if let timezone = clean(timezone) {
             self.timezone = timezone
         }
         if let userCreatedAt {
@@ -108,7 +109,7 @@ public actor GameAlgoEventTracker {
     }
 
     public func setTimezone(_ timezone: String?) {
-        self.timezone = timezone
+        self.timezone = clean(timezone) ?? Self.defaultTimezone()
     }
 
     public func setAssignments(_ assignments: [GameAlgoExperimentAssignment]) {
@@ -319,6 +320,10 @@ public actor GameAlgoEventTracker {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
+
+    private static func defaultTimezone() -> String {
+        TimeZone.current.identifier
+    }
 }
 
 final class GameAlgoEventBatchUploader: GameAlgoEventBatchUploading, @unchecked Sendable {
@@ -372,6 +377,9 @@ final class GameAlgoEventBatchUploader: GameAlgoEventBatchUploading, @unchecked 
             }
             if normalized.appVersion == nil {
                 normalized.appVersion = defaultAppVersion
+            }
+            if normalized.timezone?.isEmpty ?? true {
+                normalized.timezone = TimeZone.current.identifier
             }
             if normalized.isDebug == nil {
                 normalized.isDebug = false

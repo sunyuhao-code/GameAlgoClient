@@ -3,6 +3,7 @@ package com.gamealgo.sdk;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.TimeZone;
 
 public final class GameAlgoEvent {
     private String eventId;
@@ -12,7 +13,7 @@ public final class GameAlgoEvent {
     private String platform;
     private String sdkVersion;
     private String appVersion;
-    private String timezone;
+    private String timezone = TimeZone.getDefault().getID();
     private Boolean isDebug;
     private String timestamp;
     private Map<String, Object> payload;
@@ -119,9 +120,7 @@ public final class GameAlgoEvent {
         if (appVersion != null || defaultAppVersion != null) {
             object.put("appVersion", appVersion == null ? defaultAppVersion : appVersion);
         }
-        if (timezone != null) {
-            object.put("timezone", timezone);
-        }
+        object.put("timezone", isBlank(timezone) ? TimeZone.getDefault().getID() : timezone);
         object.put("isDebug", isDebug == null ? Boolean.FALSE : isDebug);
         object.put("timestamp", isBlank(timestamp) ? defaultTimestamp : timestamp);
         object.put("payload", payload);

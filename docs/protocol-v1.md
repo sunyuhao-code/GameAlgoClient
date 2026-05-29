@@ -224,6 +224,7 @@ Content-Type: application/json
 - `isDebug=true` 数据默认入库，但分析看板默认过滤。
 - 单批事件建议最多 100 条。
 - 重复 `eventId` 后续可用于去重，v1 可先不强制。
+- SDK 默认填充客户端本地 `timezone`。
 
 推荐标准事件：
 

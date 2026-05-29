@@ -35,6 +35,7 @@ export class GameAlgoRestClient {
   private readonly sdkVersion: string;
   private readonly appVersion?: string;
   private readonly platform: Platform;
+  private readonly timezone: string;
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
   private readonly storage?: GameAlgoStorage;
@@ -58,6 +59,7 @@ export class GameAlgoRestClient {
     this.sdkVersion = options.sdkVersion ?? "1.0.0";
     this.appVersion = options.appVersion;
     this.platform = options.platform ?? "rest";
+    this.timezone = clean(options.timezone) ?? defaultTimezone();
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.now = options.now ?? Date.now;
     this.storage = options.storage;
@@ -69,7 +71,7 @@ export class GameAlgoRestClient {
       platform: this.platform,
       sdkVersion: this.sdkVersion,
       appVersion: this.appVersion,
-      timezone: options.timezone,
+      timezone: this.timezone,
       isDebug: options.isDebug ?? false,
       flushIntervalMs: options.eventFlushIntervalMs ?? 30000,
       maxBatchSize: options.eventMaxBatchSize ?? 100,
@@ -213,6 +215,7 @@ export class GameAlgoRestClient {
       platform: event.platform ?? this.platform,
       sdkVersion: event.sdkVersion ?? this.sdkVersion,
       appVersion: event.appVersion ?? this.appVersion,
+      timezone: clean(event.timezone) ?? this.timezone,
       isDebug: Boolean(event.isDebug),
       timestamp: event.timestamp ?? new Date(this.now()).toISOString(),
     }));
@@ -350,7 +353,7 @@ export class GameAlgoEventTracker {
     this.platform = options.platform;
     this.sdkVersion = options.sdkVersion;
     this.appVersion = options.appVersion;
-    this.timezone = options.timezone;
+    this.timezone = clean(options.timezone) ?? defaultTimezone();
     this.isDebug = options.isDebug;
     this.flushIntervalMs = options.flushIntervalMs;
     this.maxBatchSize = Math.max(1, Math.min(options.maxBatchSize, 100));
@@ -374,7 +377,7 @@ export class GameAlgoEventTracker {
   }
 
   setTimezone(timezone?: string): void {
-    this.timezone = timezone;
+    this.timezone = clean(timezone) ?? defaultTimezone();
   }
 
   setAssignments(assignments: ExperimentAssignment[]): void {
@@ -396,7 +399,7 @@ export class GameAlgoEventTracker {
       platform: options.platform ?? this.platform,
       sdkVersion: options.sdkVersion ?? this.sdkVersion,
       appVersion: options.appVersion ?? this.appVersion,
-      timezone: options.timezone ?? this.timezone,
+      timezone: clean(options.timezone) ?? this.timezone,
       isDebug: options.isDebug ?? this.isDebug,
       timestamp: options.timestamp ?? new Date(this.now()).toISOString(),
       payload: this.payloadWithExperiments(eventType, payload),
@@ -702,6 +705,7 @@ export function createEvent(input: Omit<GameEvent, "eventId" | "timestamp"> & { 
   return {
     ...input,
     eventId: input.eventId ?? randomId(),
+    timezone: clean(input.timezone) ?? defaultTimezone(),
     timestamp: input.timestamp ?? new Date().toISOString(),
   };
 }
@@ -731,6 +735,14 @@ function randomId(): string {
 function clean(value: string | undefined | null): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function defaultTimezone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
 }
 
 function objectPayload(value: JsonValue): Record<string, JsonValue> {

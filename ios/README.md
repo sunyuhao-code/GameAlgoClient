@@ -62,7 +62,7 @@ let response = try await sdk.uploadEvents([
 ])
 ```
 
-The SDK sends `X-GameAlgo-Key` on every request, caches `/v1/config` by `ttlSeconds`, and fills default event fields for `platform`, `sdkVersion`, `appVersion`, `timestamp`, and `isDebug`.
+The SDK sends `X-GameAlgo-Key` on every request, caches `/v1/config` by `ttlSeconds`, and fills default event fields for `platform`, `sdkVersion`, `appVersion`, `timezone`, `timestamp`, and `isDebug`.
 
 ## Check
 

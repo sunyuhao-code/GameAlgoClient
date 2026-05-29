@@ -7,6 +7,7 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TimeZone;
 
 public final class GameAlgoClientSmokeTest {
     public static void main(String[] args) throws Exception {
@@ -281,9 +282,11 @@ public final class GameAlgoClientSmokeTest {
         Map<String, Object> event = GameAlgoJson.asObject(events.get(0), "events[]");
 
         check(response.getAccepted() == 1, "accepted should decode");
+        check(TimeZone.getDefault().getID().equals(new GameAlgoEvent("u1", "s1", "session_start").getTimezone()), "event should expose default timezone");
         check("android".equals(event.get("platform")), "platform should default");
         check("1.2.3".equals(event.get("sdkVersion")), "sdkVersion should default");
         check("4.5.6".equals(event.get("appVersion")), "appVersion should default");
+        check(TimeZone.getDefault().getID().equals(event.get("timezone")), "timezone should default");
         check(Boolean.FALSE.equals(event.get("isDebug")), "isDebug should default false");
         check(event.get("timestamp") instanceof String, "timestamp should default");
     }
@@ -329,6 +332,7 @@ public final class GameAlgoClientSmokeTest {
         check("android".equals(third.get("platform")), "tracker event platform should default");
         check("1.2.3".equals(third.get("sdkVersion")), "tracker event sdkVersion should default");
         check("4.5.6".equals(third.get("appVersion")), "tracker event appVersion should default");
+        check(TimeZone.getDefault().getID().equals(third.get("timezone")), "tracker should default timezone");
         check(Boolean.TRUE.equals(third.get("isDebug")), "tracker should preserve debug flag");
         Map<String, Object> thirdPayload = GameAlgoJson.asObject(third.get("payload"), "payload");
         Map<String, Object> experiments = GameAlgoJson.asObject(thirdPayload.get("experiments"), "experiments");

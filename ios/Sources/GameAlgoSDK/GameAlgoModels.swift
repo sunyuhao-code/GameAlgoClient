@@ -123,7 +123,7 @@ public struct GameAlgoEvent: Sendable, Equatable, Codable {
         platform: GameAlgoPlatform? = nil,
         sdkVersion: String? = nil,
         appVersion: String? = nil,
-        timezone: String? = nil,
+        timezone: String? = TimeZone.current.identifier,
         isDebug: Bool? = nil,
         timestamp: String? = nil,
         payload: JSONValue = .object([:])
@@ -135,7 +135,7 @@ public struct GameAlgoEvent: Sendable, Equatable, Codable {
         self.platform = platform
         self.sdkVersion = sdkVersion
         self.appVersion = appVersion
-        self.timezone = timezone
+        self.timezone = timezone ?? TimeZone.current.identifier
         self.isDebug = isDebug
         self.timestamp = timestamp
         self.payload = payload

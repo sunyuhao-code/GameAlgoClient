@@ -334,6 +334,7 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(events?.first?["platform"] as? String, "ios")
         XCTAssertEqual(events?.first?["sdkVersion"] as? String, "1.2.3")
         XCTAssertEqual(events?.first?["appVersion"] as? String, "4.5.6")
+        XCTAssertEqual(events?.first?["timezone"] as? String, TimeZone.current.identifier)
         XCTAssertEqual(events?.first?["timestamp"] as? String, "2026-05-28T10:00:00.000Z")
         XCTAssertEqual(events?.first?["isDebug"] as? Bool, false)
     }
@@ -385,6 +386,7 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(events?.last?["platform"] as? String, "ios")
         XCTAssertEqual(events?.last?["sdkVersion"] as? String, "1.2.3")
         XCTAssertEqual(events?.last?["appVersion"] as? String, "4.5.6")
+        XCTAssertEqual(events?.last?["timezone"] as? String, TimeZone.current.identifier)
         XCTAssertEqual(events?.last?["isDebug"] as? Bool, true)
         let levelPayload = events?.last?["payload"] as? [String: Any]
         let experiments = levelPayload?["experiments"] as? [String: Any]

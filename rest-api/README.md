@@ -38,7 +38,7 @@ If an experiment assignment includes `script`, `executor.execute(state)` runs th
 
 `fetchConfig` remains available for lower-level usage and caches the last successful config in memory until `ttlSeconds` expires. Use `forceRefresh: true` to bypass the cache.
 
-`tracker` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, and keeps the failed batch for the next retry. `uploadEvents` remains available as a lower-level API when the integrating team already owns a queue/retry system.
+`tracker` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, keeps the failed batch for the next retry, and fills the local `timezone` by default. `uploadEvents` remains available as a lower-level API when the integrating team already owns a queue/retry system.
 
 ## 1. Auth
 

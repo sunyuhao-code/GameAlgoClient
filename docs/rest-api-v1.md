@@ -106,6 +106,7 @@ Batch requirements:
 - retry with backoff on network failure
 - do not block gameplay on upload
 - set `isDebug=true` for test devices or QA builds
+- SDK helpers fill the local `timezone` by default
 
 The TypeScript helper exposes `client.tracker` for this behavior. Direct `uploadEvents` is intended for teams that already have their own event queue and retry layer.
 
