@@ -36,6 +36,7 @@ public actor GameAlgoEventTracker {
         queueLimit: Int = 1000,
         flushInterval: TimeInterval = 30,
         isDebug: Bool = false,
+        initialIdentity: GameAlgoUserIdentity? = nil,
         logger: GameAlgoLogHandler? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
@@ -46,6 +47,8 @@ public actor GameAlgoEventTracker {
         self.isDebug = isDebug
         self.now = now
         self.logger = logger
+        self.userId = initialIdentity?.userId
+        self.userCreatedAt = initialIdentity?.userCreatedAt
         self.timezone = Self.defaultTimezone()
 
         #if canImport(UIKit)

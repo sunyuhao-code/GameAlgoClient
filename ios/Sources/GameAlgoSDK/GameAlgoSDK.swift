@@ -46,6 +46,7 @@ public actor GameAlgoSDK {
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         let snapshotStore = GameAlgoSnapshotStore()
+        let initialIdentity = userIdentityStore.identity(now: now())
         let eventUploader = GameAlgoEventBatchUploader(
             gameKey: gameKey,
             baseURL: baseURL,
@@ -76,6 +77,7 @@ public actor GameAlgoSDK {
             queueLimit: eventQueueLimit,
             flushInterval: eventFlushInterval,
             isDebug: isDebug,
+            initialIdentity: initialIdentity,
             logger: logger,
             now: now
         )

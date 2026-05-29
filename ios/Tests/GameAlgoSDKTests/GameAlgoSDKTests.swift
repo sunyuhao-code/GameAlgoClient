@@ -81,6 +81,37 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(sessionPayload?["userCreatedAt"] as? String, "2026-05-28T10:00:00.000Z")
     }
 
+    func testTrackerCanSendSessionStartBeforeStartCompletes() async throws {
+        let suiteName = "GameAlgoSDKTests.initialTrackerIdentity.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defaults.set("u1", forKey: GameAlgoUserIdentityStore.legacyUserIdKey)
+        defaults.set("2026-05-27T12:23:10Z", forKey: GameAlgoUserIdentityStore.legacyUserCreatedAtKey)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let httpClient = MockHTTPClient()
+        try await httpClient.enqueueJSON(["ok": true, "accepted": 1])
+        let sdk = GameAlgoSDK(
+            gameKey: gameKey,
+            baseURL: URL(string: "https://gamealgo.test")!,
+            httpClient: httpClient,
+            userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
+            eventFlushInterval: 0
+        )
+
+        let didTrackSessionStart = await sdk.tracker.trackSessionStart()
+        XCTAssertTrue(didTrackSessionStart)
+        await sdk.tracker.flush()
+
+        let requests = await httpClient.requests
+        let body = try JSONSerialization.jsonObject(with: requests[0].body ?? Data()) as? [String: Any]
+        let events = body?["events"] as? [[String: Any]]
+        let sessionPayload = events?.first?["payload"] as? [String: Any]
+        XCTAssertEqual(events?.first?["userId"] as? String, "u1")
+        XCTAssertEqual(events?.first?["eventType"] as? String, "session_start")
+        XCTAssertEqual(sessionPayload?["userCreatedAt"] as? String, "2026-05-27T12:23:10Z")
+    }
+
     func testFetchConfigSendsProtocolHeadersAndCachesByTTL() async throws {
         let httpClient = MockHTTPClient()
         try await httpClient.enqueueJSON([
