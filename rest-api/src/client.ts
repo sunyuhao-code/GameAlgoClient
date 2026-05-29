@@ -9,6 +9,7 @@ import type {
   GameAlgoScriptRuntime,
   GameAlgoSnapshot,
   GameAlgoStorage,
+  GameAlgoUserIdentity,
   GameEvent,
   JsonValue,
   Platform,
@@ -38,8 +39,11 @@ export class GameAlgoRestClient {
   private readonly storage?: GameAlgoStorage;
   private readonly scriptRuntime: GameAlgoScriptRuntime;
   private readonly snapshotCacheKey: string;
+  private readonly userIdKey = "gamealgo_user_id";
+  private readonly userCreatedAtKey = "gamealgo_user_created_at";
   private cachedConfig: { value: ConfigResponse; expiresAt: number; cacheKey: string } | null = null;
   private snapshot: GameAlgoSnapshot = { configFiles: new Map(), updatedAt: 0 };
+  private currentIdentity: GameAlgoUserIdentity | null = null;
   private readyPromise: Promise<void> | null = null;
   readonly config: GameAlgoConfigReader;
   readonly tracker: GameAlgoEventTracker;
@@ -73,12 +77,13 @@ export class GameAlgoRestClient {
     });
   }
 
-  start(options: StartOptions): Promise<void> {
-    this.tracker.identify(options.userId);
+  start(options: StartOptions = {}): Promise<void> {
     this.readyPromise = (async () => {
+      const identity = await this.userIdentity(options.userId);
+      this.tracker.identify(identity.userId, undefined, identity.userCreatedAt);
       await this.loadPersistedSnapshot();
       try {
-        await this.refresh({ ...options, forceRefresh: true });
+        await this.refresh({ ...options, userId: identity.userId, forceRefresh: true });
       } catch (error) {
         if (!this.snapshot.config) throw error;
       }
@@ -108,13 +113,37 @@ export class GameAlgoRestClient {
     return new GameAlgoExperimentExecutor(key, () => this.snapshot, this.scriptRuntime);
   }
 
-  async fetchConfig(options: FetchConfigOptions): Promise<ConfigResponse> {
-    this.tracker.identify(options.userId);
+  async userIdentity(explicitUserId?: string): Promise<GameAlgoUserIdentity> {
+    const cleanExplicit = clean(explicitUserId);
+    if (cleanExplicit) return { userId: cleanExplicit, userCreatedAt: "" };
+    if (this.currentIdentity) return this.currentIdentity;
+
+    const existing = clean(await this.storage?.getItem(this.userIdKey));
+    if (existing) {
+      this.currentIdentity = {
+        userId: existing,
+        userCreatedAt: (await this.storage?.getItem(this.userCreatedAtKey)) ?? "",
+      };
+      return this.currentIdentity;
+    }
+
+    this.currentIdentity = {
+      userId: randomId(),
+      userCreatedAt: new Date(this.now()).toISOString(),
+    };
+    await this.storage?.setItem(this.userIdKey, this.currentIdentity.userId);
+    await this.storage?.setItem(this.userCreatedAtKey, this.currentIdentity.userCreatedAt);
+    return this.currentIdentity;
+  }
+
+  async fetchConfig(options: FetchConfigOptions = {}): Promise<ConfigResponse> {
+    const identity = await this.userIdentity(options.userId);
+    this.tracker.identify(identity.userId, undefined, identity.userCreatedAt);
     const platform = options.platform ?? this.platform;
     const sdkVersion = options.sdkVersion ?? this.sdkVersion;
     const appVersion = options.appVersion ?? this.appVersion;
     const cacheKey = JSON.stringify({
-      userId: options.userId,
+      userId: identity.userId,
       platform,
       sdkVersion,
       appVersion,
@@ -126,7 +155,7 @@ export class GameAlgoRestClient {
     }
 
     const url = this.url("/v1/config");
-    url.searchParams.set("userId", options.userId);
+    url.searchParams.set("userId", identity.userId);
     url.searchParams.set("platform", platform);
     url.searchParams.set("sdkVersion", sdkVersion);
     if (appVersion) url.searchParams.set("appVersion", appVersion);
@@ -142,7 +171,7 @@ export class GameAlgoRestClient {
       ...this.snapshot,
       config,
       updatedAt: this.now(),
-      userId: options.userId,
+      userId: identity.userId,
     };
     await this.persistSnapshot();
     return config;
@@ -292,6 +321,7 @@ export class GameAlgoEventTracker {
   private userId?: string;
   private sessionId = randomId();
   private timezone?: string;
+  private userCreatedAt?: string;
   private isDebug: boolean;
   private queue: GameEvent[] = [];
   private retryBatch: GameEvent[] = [];
@@ -323,9 +353,10 @@ export class GameAlgoEventTracker {
     this.now = options.now;
   }
 
-  identify(userId: string, sessionId?: string): void {
+  identify(userId: string, sessionId?: string, userCreatedAt?: string): void {
     if (clean(userId)) this.userId = userId;
     if (clean(sessionId)) this.sessionId = sessionId!;
+    if (clean(userCreatedAt)) this.userCreatedAt = userCreatedAt;
   }
 
   newSession(sessionId = randomId()): void {
@@ -367,7 +398,11 @@ export class GameAlgoEventTracker {
 
   trackSessionStart(payload: JsonValue = {}): boolean {
     this.sessionStartMs = this.now();
-    return this.track("session_start", payload);
+    const merged = objectPayload(payload);
+    if (this.userCreatedAt && merged.userCreatedAt === undefined) {
+      merged.userCreatedAt = this.userCreatedAt;
+    }
+    return this.track("session_start", merged);
   }
 
   trackSessionEnd(payload: JsonValue = {}): boolean {
@@ -660,7 +695,7 @@ function randomId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function clean(value: string | undefined): string | undefined {
+function clean(value: string | undefined | null): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
 }

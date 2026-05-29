@@ -61,8 +61,8 @@ let sdk = GameAlgoSDK(
 
 let levelGenerator = sdk.executor("level_generator")
 
-// App 启动后尽早调用。start 会恢复上次成功快照，然后异步刷新远端配置和配置文件。
-_ = await sdk.start(userId: "user-001")
+// App 启动后尽早调用。SDK 会自动生成并持久化匿名 userId。
+sdk.start()
 
 let variant = levelGenerator.variant(default: "control")
 let difficulty = levelGenerator.string("difficulty", default: "normal")
@@ -104,8 +104,8 @@ GameAlgoClient sdk = GameAlgo.init(
 
 GameAlgoExperimentExecutor levelGenerator = sdk.executor("level_generator");
 
-// 后台线程拉取 /v1/config 并预加载配置文件。
-sdk.startAsync("user-001");
+// 后台线程拉取 /v1/config 并预加载配置文件。SDK 会自动生成匿名 userId。
+sdk.startAsync();
 
 String variant = levelGenerator.variant("control");
 String difficulty = levelGenerator.string("difficulty", "normal");
@@ -143,7 +143,7 @@ const client = new GameAlgoRestClient({
 
 const levelGenerator = client.executor("level_generator");
 
-await client.start({ userId: "user-001" });
+await client.start();
 
 const variant = levelGenerator.variant("control");
 const difficulty = levelGenerator.string("difficulty", "normal");
@@ -174,6 +174,7 @@ POST /v1/events/batch
 客户端推荐只读本地快照：
 
 - `start` / `startAsync` 刷新 `/v1/config`，并预加载配置文件。
+- SDK 默认生成匿名 `userId`；iOS 会用老版的 `gamealgo_user_id` 持久化，老用户升级后实验分组保持稳定。Android core / REST helper 传入 `cacheStorage` / `storage` 后也会持久化同一组 key。
 - `executor(key)` 读取实验分组和实验 config。
 - `executor(key).execute(state)` 执行预加载脚本；没有脚本时返回 config-only payload。
 - `config` / `config()` 读取预加载的配置文件，例如 `gameplay.json`。
@@ -231,7 +232,7 @@ _tutorial_skip
 - 批量上传，每批最多 100 条。
 - QA 或测试设备设置 `isDebug=true`。
 - 网络失败时重试，不阻塞游戏。
-- `userId` 要稳定；`sessionId` 每次启动或每局会话生成一个新的。
+- `userId` 默认由 SDK 生成并持久化；有账号体系时也可以显式传自己的稳定匿名 ID。`sessionId` 每次启动或每局会话生成一个新的。
 - `payload` 只放业务字段，不要放密钥、手机号、邮箱等敏感信息。
 
 ## 验收清单

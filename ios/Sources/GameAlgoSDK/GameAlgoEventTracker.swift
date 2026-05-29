@@ -20,6 +20,7 @@ public actor GameAlgoEventTracker {
     private var sdkVersion: String?
     private var appVersion: String?
     private var timezone: String?
+    private var userCreatedAt: String?
     private var isDebug: Bool
     private var queue: [GameAlgoEvent] = []
     private var retryBatch: [GameAlgoEvent] = []
@@ -69,6 +70,7 @@ public actor GameAlgoEventTracker {
         sdkVersion: String? = nil,
         appVersion: String? = nil,
         timezone: String? = nil,
+        userCreatedAt: String? = nil,
         isDebug: Bool? = nil
     ) {
         self.userId = userId
@@ -86,6 +88,9 @@ public actor GameAlgoEventTracker {
         }
         if let timezone {
             self.timezone = timezone
+        }
+        if let userCreatedAt {
+            self.userCreatedAt = userCreatedAt
         }
         if let isDebug {
             self.isDebug = isDebug
@@ -146,7 +151,11 @@ public actor GameAlgoEventTracker {
     @discardableResult
     public func trackSessionStart(payload: JSONValue = .object([:])) -> Bool {
         sessionStartDate = now()
-        return track("session_start", payload: payload)
+        var merged = payload.objectValue ?? [:]
+        if let userCreatedAt = clean(userCreatedAt), merged["userCreatedAt"] == nil {
+            merged["userCreatedAt"] = .string(userCreatedAt)
+        }
+        return track("session_start", payload: .object(merged))
     }
 
     @discardableResult

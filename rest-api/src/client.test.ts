@@ -242,6 +242,60 @@ test("start restores persisted snapshot then still tries to refresh", async () =
   assert.equal(second.config.string("difficulty", "", "gameplay.json"), "cached");
 });
 
+test("start generates and reuses anonymous user id when userId is omitted", async () => {
+  const storage = new MapStorage();
+  const urls: string[] = [];
+  const first = new GameAlgoRestClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    storage,
+    now: () => Date.parse("2026-05-28T10:00:00.000Z"),
+    fetchImpl: async (input) => {
+      const request = new Request(input);
+      urls.push(request.url);
+      return jsonResponse({
+        gameId: "Mahjong",
+        environment: "live",
+        configVersion: "v1",
+        ttlSeconds: 60,
+        serverTime: "2026-05-28T10:00:00.000Z",
+        experiments: [],
+        configFiles: [],
+      });
+    },
+  });
+
+  await first.start();
+  const firstIdentity = await first.userIdentity();
+
+  const second = new GameAlgoRestClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    storage,
+    fetchImpl: async (input) => {
+      const request = new Request(input);
+      urls.push(request.url);
+      return jsonResponse({
+        gameId: "Mahjong",
+        environment: "live",
+        configVersion: "v2",
+        ttlSeconds: 60,
+        serverTime: "2026-05-28T10:00:00.000Z",
+        experiments: [],
+        configFiles: [],
+      });
+    },
+  });
+
+  await second.start();
+  const secondIdentity = await second.userIdentity();
+
+  assert.equal(firstIdentity.userId, secondIdentity.userId);
+  assert.equal(firstIdentity.userCreatedAt, "2026-05-28T10:00:00.000Z");
+  assert.equal(new URL(urls[0]).searchParams.get("userId"), firstIdentity.userId);
+  assert.equal(new URL(urls[1]).searchParams.get("userId"), firstIdentity.userId);
+});
+
 test("uploadEvents fills platform, sdkVersion, appVersion, and timestamp defaults", async () => {
   const client = new GameAlgoRestClient({
     baseUrl: "https://gamealgo.test",

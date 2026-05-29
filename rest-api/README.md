@@ -20,7 +20,7 @@ const client = new GameAlgoRestClient({
 
 const levelGenerator = client.executor("level_generator");
 
-await client.start({ userId: "user-001" });
+await client.start();
 
 const variant = levelGenerator.variant("control");
 const difficulty = levelGenerator.string("difficulty", "normal");
@@ -32,7 +32,7 @@ client.tracker.trackLevelEnd({ level: 3, result: "win" });
 await client.tracker.flush();
 ```
 
-`start` refreshes `/v1/config` and preloads config files. `executor` and `config` read the latest local snapshot, so game logic does not need to call remote APIs when checking variants or tuning values.
+`start` refreshes `/v1/config` and preloads config files. It also creates or reuses the SDK anonymous `userId`; pass `storage` when initializing if the helper should persist that ID across app launches. `executor` and `config` read the latest local snapshot, so game logic does not need to call remote APIs when checking variants or tuning values.
 
 If an experiment assignment includes `script`, `executor.execute(state)` runs the preloaded script. Config-only experiments return their config as the execution payload.
 

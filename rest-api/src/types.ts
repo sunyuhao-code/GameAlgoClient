@@ -30,7 +30,7 @@ export type ConfigResponse = {
 };
 
 export type FetchConfigOptions = {
-  userId: string;
+  userId?: string;
   platform?: Platform;
   sdkVersion?: string;
   appVersion?: string;
@@ -91,6 +91,11 @@ export type GameAlgoSnapshot = {
   configFiles: Map<string, ConfigFileResponse>;
   updatedAt: number;
   userId?: string;
+};
+
+export type GameAlgoUserIdentity = {
+  userId: string;
+  userCreatedAt: string;
 };
 
 export type TrackEventOptions = {

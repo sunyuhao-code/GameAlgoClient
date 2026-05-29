@@ -19,6 +19,8 @@ import java.util.concurrent.CompletionException;
 
 public final class GameAlgoClient {
     public static final String DEFAULT_SDK_VERSION = "1.0.0";
+    private static final String USER_ID_KEY = "gamealgo_user_id";
+    private static final String USER_CREATED_AT_KEY = "gamealgo_user_created_at";
 
     private final String gameKey;
     private final String baseUrl;
@@ -33,6 +35,7 @@ public final class GameAlgoClient {
     private final GameAlgoConfigReader configReader;
     private final GameAlgoEventTracker tracker;
     private CachedConfig cachedConfig;
+    private GameAlgoUserIdentity userIdentity;
 
     public GameAlgoClient(String gameKey, String baseUrl) {
         this(gameKey, baseUrl, DEFAULT_SDK_VERSION, null, "android", new UrlConnectionGameAlgoHttpClient());
@@ -78,17 +81,21 @@ public final class GameAlgoClient {
         this.tracker = new GameAlgoEventTracker(this);
     }
 
+    public CompletableFuture<Void> startAsync() {
+        return startAsync(new GameAlgoFetchConfigRequest(null));
+    }
+
     public CompletableFuture<Void> startAsync(String userId) {
         return startAsync(new GameAlgoFetchConfigRequest(userId));
     }
 
     public CompletableFuture<Void> startAsync(GameAlgoFetchConfigRequest request) {
-        tracker.identify(request.getUserId());
         return CompletableFuture.runAsync(() -> {
             try {
+                GameAlgoFetchConfigRequest resolvedRequest = requestWithResolvedUser(request);
                 loadCachedSnapshot();
                 try {
-                    refresh(request);
+                    refresh(resolvedRequest);
                 } catch (GameAlgoException error) {
                     if (snapshotStore.snapshot().getConfig() == null) {
                         throw error;
@@ -116,17 +123,29 @@ public final class GameAlgoClient {
         return snapshotStore.snapshot();
     }
 
+    public synchronized String userId() throws GameAlgoException {
+        return userIdentity(null).getUserId();
+    }
+
+    public synchronized GameAlgoUserIdentity userIdentity() throws GameAlgoException {
+        return userIdentity(null);
+    }
+
+    public synchronized GameAlgoConfigResponse fetchConfig() throws GameAlgoException {
+        return fetchConfig(new GameAlgoFetchConfigRequest(null));
+    }
+
     public synchronized GameAlgoConfigResponse fetchConfig(String userId) throws GameAlgoException {
         return fetchConfig(new GameAlgoFetchConfigRequest(userId));
     }
 
     public synchronized GameAlgoConfigResponse fetchConfig(GameAlgoFetchConfigRequest request) throws GameAlgoException {
-        tracker.identify(request.getUserId());
+        GameAlgoFetchConfigRequest resolvedRequest = requestWithResolvedUser(request);
         String platform = isBlank(request.getPlatform()) ? defaultPlatform : request.getPlatform();
         String sdkVersion = isBlank(request.getSdkVersion()) ? defaultSDKVersion : request.getSdkVersion();
         String appVersion = request.getAppVersion() == null ? defaultAppVersion : request.getAppVersion();
         ConfigCacheKey cacheKey = new ConfigCacheKey(
-                request.getUserId(),
+                resolvedRequest.getUserId(),
                 platform,
                 sdkVersion,
                 appVersion,
@@ -143,7 +162,7 @@ public final class GameAlgoClient {
 
         try {
             Map<String, String> query = new LinkedHashMap<>();
-            query.put("userId", request.getUserId());
+            query.put("userId", resolvedRequest.getUserId());
             query.put("platform", platform);
             query.put("sdkVersion", sdkVersion);
             if (appVersion != null) {
@@ -161,7 +180,7 @@ public final class GameAlgoClient {
                     response,
                     System.currentTimeMillis() + Math.max(response.getTtlSeconds(), 0) * 1000L
             );
-            snapshotStore.updateConfig(response, System.currentTimeMillis(), request.getUserId());
+            snapshotStore.updateConfig(response, System.currentTimeMillis(), resolvedRequest.getUserId());
             persistSnapshot();
             return response;
         } catch (GameAlgoException error) {
@@ -230,6 +249,44 @@ public final class GameAlgoClient {
                 fetchConfigFile(assignment.getScript().getName());
             }
         }
+    }
+
+    private synchronized GameAlgoFetchConfigRequest requestWithResolvedUser(GameAlgoFetchConfigRequest request) throws GameAlgoException {
+        GameAlgoUserIdentity identity = userIdentity(request.getUserId());
+        tracker.identify(identity.getUserId(), null, identity.getUserCreatedAt());
+        GameAlgoFetchConfigRequest resolved = new GameAlgoFetchConfigRequest(identity.getUserId())
+                .platform(request.getPlatform())
+                .sdkVersion(request.getSdkVersion())
+                .appVersion(request.getAppVersion())
+                .deviceId(request.getDeviceId())
+                .forceRefresh(request.isForceRefresh());
+        return resolved;
+    }
+
+    private synchronized GameAlgoUserIdentity userIdentity(String explicitUserId) throws GameAlgoException {
+        if (!isBlank(explicitUserId)) {
+            return new GameAlgoUserIdentity(explicitUserId, "");
+        }
+        if (userIdentity != null) {
+            return userIdentity;
+        }
+
+        if (cacheStorage != null) {
+            String existing = cacheStorage.getItem(USER_ID_KEY);
+            if (!isBlank(existing)) {
+                String createdAt = cacheStorage.getItem(USER_CREATED_AT_KEY);
+                userIdentity = new GameAlgoUserIdentity(existing, createdAt);
+                return userIdentity;
+            }
+        }
+
+        String createdAt = isoTimestamp(new Date());
+        userIdentity = new GameAlgoUserIdentity(java.util.UUID.randomUUID().toString(), createdAt);
+        if (cacheStorage != null) {
+            cacheStorage.setItem(USER_ID_KEY, userIdentity.getUserId());
+            cacheStorage.setItem(USER_CREATED_AT_KEY, createdAt);
+        }
+        return userIdentity;
     }
 
     private void loadCachedSnapshot() throws GameAlgoException {

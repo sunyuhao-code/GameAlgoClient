@@ -20,6 +20,7 @@ export type {
   GameAlgoScriptRuntime,
   GameAlgoSnapshot,
   GameAlgoStorage,
+  GameAlgoUserIdentity,
   GameEnvironment,
   GameEvent,
   JsonValue,

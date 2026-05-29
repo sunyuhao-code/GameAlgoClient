@@ -4,6 +4,46 @@ import XCTest
 final class GameAlgoSDKTests: XCTestCase {
     private let gameKey = "ga_live_test_key_0123456789abcdef"
 
+    func testStartUsesPersistedAnonymousUserIdByDefault() async throws {
+        let suiteName = "GameAlgoSDKTests.identity.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let firstHTTPClient = MockHTTPClient()
+        try await firstHTTPClient.enqueueJSON(configResponse(version: "v1"))
+        let first = GameAlgoSDK(
+            gameKey: gameKey,
+            baseURL: URL(string: "https://gamealgo.test")!,
+            httpClient: firstHTTPClient,
+            userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
+            now: { Date(timeIntervalSince1970: 1_779_962_400) }
+        )
+
+        let firstTask = first.start()
+        try await firstTask.value
+        let persistedUserId = first.userId
+        let firstRequests = await firstHTTPClient.requests
+
+        let secondHTTPClient = MockHTTPClient()
+        try await secondHTTPClient.enqueueJSON(configResponse(version: "v2"))
+        let second = GameAlgoSDK(
+            gameKey: gameKey,
+            baseURL: URL(string: "https://gamealgo.test")!,
+            httpClient: secondHTTPClient,
+            userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults)
+        )
+
+        let secondTask = second.start()
+        try await secondTask.value
+        let secondRequests = await secondHTTPClient.requests
+
+        XCTAssertFalse(persistedUserId.isEmpty)
+        XCTAssertEqual(second.userId, persistedUserId)
+        XCTAssertEqual(URLComponents(url: firstRequests[0].url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "userId" }?.value, persistedUserId)
+        XCTAssertEqual(URLComponents(url: secondRequests[0].url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "userId" }?.value, persistedUserId)
+    }
+
     func testFetchConfigSendsProtocolHeadersAndCachesByTTL() async throws {
         let httpClient = MockHTTPClient()
         try await httpClient.enqueueJSON([
@@ -142,7 +182,7 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertFalse(executor.isReady)
         XCTAssertEqual(executor.variant(default: "control"), "control")
 
-        let task = await sdk.start(userId: "u1")
+        let task = sdk.start(userId: "u1")
         try await task.value
 
         XCTAssertTrue(executor.isReady)
@@ -198,7 +238,7 @@ final class GameAlgoSDKTests: XCTestCase {
             cacheStorage: nil
         )
 
-        let task = await sdk.start(userId: "u1")
+        let task = sdk.start(userId: "u1")
         try await task.value
         let result = sdk.executor("level_generator").execute(.object(["turn": .number(7)]))
 
@@ -241,7 +281,7 @@ final class GameAlgoSDKTests: XCTestCase {
             cacheStorage: cache,
             cacheKey: "test-cache"
         )
-        let firstTask = await first.start(userId: "u1")
+        let firstTask = first.start(userId: "u1")
         try await firstTask.value
 
         let secondHTTPClient = MockHTTPClient()
@@ -253,7 +293,7 @@ final class GameAlgoSDKTests: XCTestCase {
             cacheStorage: cache,
             cacheKey: "test-cache"
         )
-        let secondTask = await second.start(userId: "u1")
+        let secondTask = second.start(userId: "u1")
         try await secondTask.value
 
         XCTAssertEqual(sdkVariant(second, key: "level_generator"), "variant-a")
@@ -313,7 +353,7 @@ final class GameAlgoSDKTests: XCTestCase {
             now: { Date(timeIntervalSince1970: 1_779_962_400) }
         )
 
-        let task = await sdk.start(userId: "u1")
+        let task = sdk.start(userId: "u1")
         try await task.value
         let didTrackSessionStart = await sdk.tracker.trackSessionStart()
         let didTrackLevelEnd = await sdk.tracker.trackLevelEnd(payload: .object(["level": .number(3)]))

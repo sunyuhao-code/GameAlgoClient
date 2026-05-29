@@ -18,6 +18,7 @@ public final class GameAlgoEventTracker implements AutoCloseable {
     private String userId;
     private String sessionId = UUID.randomUUID().toString();
     private String timezone;
+    private String userCreatedAt;
     private boolean isDebug;
     private long sessionStartMillis;
     private final List<GameAlgoEvent> queue = new ArrayList<>();
@@ -43,9 +44,16 @@ public final class GameAlgoEventTracker implements AutoCloseable {
     }
 
     public synchronized void identify(String userId, String sessionId) {
+        identify(userId, sessionId, null);
+    }
+
+    public synchronized void identify(String userId, String sessionId, String userCreatedAt) {
         identify(userId);
         if (!isBlank(sessionId)) {
             this.sessionId = sessionId;
+        }
+        if (!isBlank(userCreatedAt)) {
+            this.userCreatedAt = userCreatedAt;
         }
     }
 
@@ -104,7 +112,13 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         synchronized (this) {
             sessionStartMillis = System.currentTimeMillis();
         }
-        return track("session_start");
+        Map<String, Object> payload = new LinkedHashMap<>();
+        synchronized (this) {
+            if (!isBlank(userCreatedAt)) {
+                payload.put("userCreatedAt", userCreatedAt);
+            }
+        }
+        return track("session_start", payload);
     }
 
     public boolean trackSessionEnd() {

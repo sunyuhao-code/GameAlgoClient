@@ -11,10 +11,12 @@ public actor GameAlgoSDK {
     private let httpClient: any GameAlgoHTTPClient
     private let scriptRuntime: any GameAlgoScriptRuntime
     private let cacheStorage: (any GameAlgoCacheStorage)?
+    private let userIdentityStore: GameAlgoUserIdentityStore
     private let snapshotCacheKey: String
     private let now: @Sendable () -> Date
     private let snapshotStore: GameAlgoSnapshotStore
     private let eventUploader: any GameAlgoEventBatchUploading
+    private let readyTaskStore = GameAlgoReadyTaskStore()
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
@@ -22,7 +24,6 @@ public actor GameAlgoSDK {
     public nonisolated let tracker: GameAlgoEventTracker
 
     private var cachedConfig: CachedConfig?
-    private var readyTask: Task<Void, Error>?
 
     public init(
         gameKey: String,
@@ -33,6 +34,7 @@ public actor GameAlgoSDK {
         httpClient: any GameAlgoHTTPClient = URLSessionGameAlgoHTTPClient(),
         scriptRuntime: any GameAlgoScriptRuntime = JavaScriptCoreGameAlgoScriptRuntime(),
         cacheStorage: (any GameAlgoCacheStorage)? = GameAlgoUserDefaultsCacheStorage(),
+        userIdentityStore: GameAlgoUserIdentityStore = GameAlgoUserIdentityStore(),
         cacheKey: String? = nil,
         isDebug: Bool = false,
         eventFlushInterval: TimeInterval = 30,
@@ -58,6 +60,7 @@ public actor GameAlgoSDK {
         self.httpClient = httpClient
         self.scriptRuntime = scriptRuntime
         self.cacheStorage = cacheStorage
+        self.userIdentityStore = userIdentityStore
         self.snapshotCacheKey = cacheKey ?? "gamealgo:v1:snapshot:\(baseURL.absoluteString):\(gameKey.prefix(16))"
         self.now = now
         self.snapshotStore = snapshotStore
@@ -73,6 +76,14 @@ public actor GameAlgoSDK {
         )
     }
 
+    public nonisolated var userIdentity: GameAlgoUserIdentity {
+        userIdentityStore.identity(now: now())
+    }
+
+    public nonisolated var userId: String {
+        userIdentity.userId
+    }
+
     public nonisolated func executor(_ key: String) -> GameAlgoExperimentExecutor {
         GameAlgoExperimentExecutor(key: key, store: snapshotStore, scriptRuntime: scriptRuntime)
     }
@@ -82,25 +93,27 @@ public actor GameAlgoSDK {
     }
 
     @discardableResult
-    public func start(
-        userId: String,
+    public nonisolated func start(
+        userId: String? = nil,
         platform: GameAlgoPlatform? = nil,
         sdkVersion: String? = nil,
         appVersion: String? = nil,
         deviceId: String? = nil,
         preloadConfigFiles: GameAlgoConfigFilePreload = .all
     ) -> Task<Void, Error> {
+        let identity = userIdentityStore.identity(userId: userId, now: now())
         let task = Task {
             await self.tracker.identify(
-                userId: userId,
+                userId: identity.userId,
                 platform: platform ?? self.defaultPlatform,
                 sdkVersion: sdkVersion ?? self.defaultSDKVersion,
-                appVersion: appVersion ?? self.defaultAppVersion
+                appVersion: appVersion ?? self.defaultAppVersion,
+                userCreatedAt: identity.userCreatedAt
             )
-            self.loadCachedSnapshot()
+            await self.loadCachedSnapshot()
             do {
                 try await self.refresh(
-                    userId: userId,
+                    userId: identity.userId,
                     platform: platform,
                     sdkVersion: sdkVersion,
                     appVersion: appVersion,
@@ -108,17 +121,17 @@ public actor GameAlgoSDK {
                     preloadConfigFiles: preloadConfigFiles
                 )
             } catch {
-                if self.snapshotStore.snapshot().config == nil {
+                if self.snapshotValue().config == nil {
                     throw error
                 }
             }
         }
-        readyTask = task
+        readyTaskStore.set(task)
         return task
     }
 
-    public func waitForReady(timeout: TimeInterval = 5.0) async -> Bool {
-        guard let readyTask else {
+    public nonisolated func waitForReady(timeout: TimeInterval = 5.0) async -> Bool {
+        guard let readyTask = readyTaskStore.get() else {
             return snapshotStore.snapshot().config != nil
         }
 
@@ -144,18 +157,26 @@ public actor GameAlgoSDK {
     }
 
     public func fetchConfig(
-        userId: String,
+        userId: String? = nil,
         platform: GameAlgoPlatform? = nil,
         sdkVersion: String? = nil,
         appVersion: String? = nil,
         deviceId: String? = nil,
         forceRefresh: Bool = false
     ) async throws -> GameAlgoConfigResponse {
+        let identity = userIdentityStore.identity(userId: userId, now: now())
         let resolvedPlatform = platform ?? defaultPlatform
         let resolvedSDKVersion = sdkVersion ?? defaultSDKVersion
         let resolvedAppVersion = appVersion ?? defaultAppVersion
+        await tracker.identify(
+            userId: identity.userId,
+            platform: resolvedPlatform,
+            sdkVersion: resolvedSDKVersion,
+            appVersion: resolvedAppVersion,
+            userCreatedAt: identity.userCreatedAt
+        )
         let cacheKey = ConfigCacheKey(
-            userId: userId,
+            userId: identity.userId,
             platform: resolvedPlatform,
             sdkVersion: resolvedSDKVersion,
             appVersion: resolvedAppVersion,
@@ -175,7 +196,7 @@ public actor GameAlgoSDK {
                 resolvingAgainstBaseURL: false
             )
             components?.queryItems = [
-                URLQueryItem(name: "userId", value: userId),
+                URLQueryItem(name: "userId", value: identity.userId),
                 URLQueryItem(name: "platform", value: resolvedPlatform.rawValue),
                 URLQueryItem(name: "sdkVersion", value: resolvedSDKVersion),
             ]
@@ -197,7 +218,7 @@ public actor GameAlgoSDK {
                 value: response,
                 expiresAt: now().addingTimeInterval(TimeInterval(max(response.ttlSeconds, 0)))
             )
-            snapshotStore.updateConfig(response, updatedAt: now(), userId: userId)
+            snapshotStore.updateConfig(response, updatedAt: now(), userId: identity.userId)
             persistSnapshot()
             return response
         } catch {
@@ -368,6 +389,23 @@ private struct CachedConfig: Sendable {
     let key: ConfigCacheKey
     let value: GameAlgoConfigResponse
     let expiresAt: Date
+}
+
+private final class GameAlgoReadyTaskStore: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: Task<Void, Error>?
+
+    func set(_ task: Task<Void, Error>) {
+        lock.lock()
+        self.task = task
+        lock.unlock()
+    }
+
+    func get() -> Task<Void, Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return task
+    }
 }
 
 private struct APIErrorPayload: Decodable {

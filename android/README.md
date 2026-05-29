@@ -15,7 +15,7 @@ val sdk = GameAlgo.init("ga_live_xxx", "https://gamealgo.example.com")
 ```kotlin
 val levelGenerator = sdk.executor("level_generator")
 
-sdk.startAsync("user-001")
+sdk.startAsync()
 
 val variant = levelGenerator.variant("control")
 val difficulty = levelGenerator.string("difficulty", "normal")
@@ -27,14 +27,14 @@ sdk.tracker().trackLevelEnd(mapOf("level" to 3, "result" to "win"))
 sdk.tracker().flushAsync()
 ```
 
-`startAsync` refreshes `/v1/config` and preloads config files on a background executor. `executor` and `config()` read the latest local snapshot, so gameplay code does not need to call remote APIs when checking variants or tuning values.
+`startAsync` refreshes `/v1/config` and preloads config files on a background executor. It also creates or reuses the SDK anonymous `userId`; pass a `GameAlgoCacheStorage` when initializing if the app wants the dependency-free core to persist that ID. `executor` and `config()` read the latest local snapshot, so gameplay code does not need to call remote APIs when checking variants or tuning values.
 
 If an experiment assignment includes `script`, `executor.execute(state)` runs the preloaded script through the configured `GameAlgoScriptRuntime`. The dependency-free core includes a JSR-223 runtime for Java environments; Android app packages should inject a QuickJS/WebView runtime.
 
 Lower-level blocking methods are still available when needed:
 
 ```kotlin
-val config = sdk.fetchConfig("user-001")
+val config = sdk.fetchConfig()
 val gameplay = sdk.fetchConfigFile("gameplay.json")
 ```
 

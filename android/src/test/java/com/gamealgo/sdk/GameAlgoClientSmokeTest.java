@@ -15,6 +15,7 @@ public final class GameAlgoClientSmokeTest {
         testStartAsyncPreloadsConfigFilesAndExposesLocalExecutorAndConfigReaders();
         testExecutorExecutesPreloadedScriptAgainstLocalSnapshot();
         testStartRestoresPersistedSnapshotThenStillRefreshes();
+        testStartGeneratesAndReusesAnonymousUserId();
         testUploadEventsFillsDefaults();
         testTrackerQueuesAndFlushesEvents();
     }
@@ -215,6 +216,46 @@ public final class GameAlgoClientSmokeTest {
         check("variant-a".equals(second.executor("level_generator").variant("control")), "cached variant should restore");
         check("cached".equals(second.config().string("difficulty", "", "gameplay.json")), "cached file should restore");
         check(secondHttpClient.requests.size() == 1, "start should still try to refresh");
+    }
+
+    private static void testStartGeneratesAndReusesAnonymousUserId() throws Exception {
+        MemoryCacheStorage cache = new MemoryCacheStorage();
+        FakeHttpClient firstHttpClient = new FakeHttpClient();
+        firstHttpClient.enqueue(jsonResponse(configJson("v1")));
+        GameAlgoClient first = new GameAlgoClient(
+                "ga_live_test_key_0123456789abcdef",
+                "https://gamealgo.test",
+                "1.0.0",
+                null,
+                "android",
+                firstHttpClient,
+                new FakeScriptRuntime(),
+                cache,
+                "test-cache"
+        );
+
+        first.startAsync().get();
+        String firstUserId = first.userId();
+
+        FakeHttpClient secondHttpClient = new FakeHttpClient();
+        secondHttpClient.enqueue(jsonResponse(configJson("v2")));
+        GameAlgoClient second = new GameAlgoClient(
+                "ga_live_test_key_0123456789abcdef",
+                "https://gamealgo.test",
+                "1.0.0",
+                null,
+                "android",
+                secondHttpClient,
+                new FakeScriptRuntime(),
+                cache,
+                "test-cache"
+        );
+        second.startAsync().get();
+
+        check(firstUserId.length() > 0, "anonymous user id should be generated");
+        check(firstUserId.equals(second.userId()), "anonymous user id should be persisted");
+        check(firstHttpClient.requests.get(0).getUrl().toString().contains("userId=" + firstUserId), "first config request should use generated user id");
+        check(secondHttpClient.requests.get(0).getUrl().toString().contains("userId=" + firstUserId), "second config request should reuse generated user id");
     }
 
     private static void testUploadEventsFillsDefaults() throws Exception {

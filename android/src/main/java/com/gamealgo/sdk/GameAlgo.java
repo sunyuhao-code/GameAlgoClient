@@ -15,13 +15,25 @@ public final class GameAlgo {
             String baseUrl,
             String sdkVersion,
             String appVersion) {
+        return init(gameKey, baseUrl, sdkVersion, appVersion, null);
+    }
+
+    public static synchronized GameAlgoClient init(
+            String gameKey,
+            String baseUrl,
+            String sdkVersion,
+            String appVersion,
+            GameAlgoCacheStorage cacheStorage) {
         client = new GameAlgoClient(
                 gameKey,
                 baseUrl,
                 sdkVersion,
                 appVersion,
                 "android",
-                new UrlConnectionGameAlgoHttpClient()
+                new UrlConnectionGameAlgoHttpClient(),
+                new JavaxScriptGameAlgoRuntime(),
+                cacheStorage,
+                null
         );
         return client;
     }
