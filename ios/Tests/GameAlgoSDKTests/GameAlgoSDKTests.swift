@@ -477,33 +477,6 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(sessionEndPayload?["sessionDurationMs"] as? Double, 0)
     }
 
-    func testSessionStartBackfillsPayloadWhenTrackerOnlyHasUserId() async throws {
-        let httpClient = MockHTTPClient()
-        try await httpClient.enqueueJSON(["ok": true, "accepted": 1])
-        let sdk = GameAlgoSDK(
-            gameKey: gameKey,
-            baseURL: URL(string: "https://gamealgo.test")!,
-            httpClient: httpClient,
-            eventFlushInterval: 0,
-            now: { Date(timeIntervalSince1970: 1_779_962_400) }
-        )
-
-        await sdk.tracker.identify(userId: "u1")
-        let didTrackSessionStart = await sdk.tracker.trackSessionStart()
-        XCTAssertTrue(didTrackSessionStart)
-        await sdk.tracker.flush()
-
-        let requests = await httpClient.requests
-        let body = try JSONSerialization.jsonObject(with: requests[0].body ?? Data()) as? [String: Any]
-        let events = body?["events"] as? [[String: Any]]
-        let sessionPayload = events?.first?["payload"] as? [String: Any]
-
-        XCTAssertEqual(requests.count, 1)
-        XCTAssertEqual(events?.first?["userId"] as? String, "u1")
-        XCTAssertEqual(events?.first?["eventType"] as? String, "session_start")
-        XCTAssertEqual(sessionPayload?["userCreatedAt"] as? String, "2026-05-28T10:00:00.000Z")
-    }
-
     func testThrowsStructuredAPIErrors() async throws {
         let httpClient = MockHTTPClient()
         try await httpClient.enqueueJSON(

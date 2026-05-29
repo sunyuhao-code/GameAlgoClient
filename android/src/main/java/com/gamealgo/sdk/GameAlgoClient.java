@@ -642,7 +642,7 @@ public final class GameAlgoClient {
         }
     }
 
-    static String isoTimestamp(Date date) {
+    private static String isoTimestamp(Date date) {
         SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
         formatter.setTimeZone(TimeZone.getTimeZone("UTC"));
         return formatter.format(date);
