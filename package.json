@@ -1,0 +1,11 @@
+{
+  "name": "gamealgo-client",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --test rest-api/src/*.test.ts"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

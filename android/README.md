@@ -1,0 +1,51 @@
+# GameAlgo Android SDK
+
+Android-compatible SDK core for Protocol v1.
+
+This implementation is dependency-free Java so it can be wrapped by an Android AAR or Kotlin facade later without changing the client/server protocol.
+
+## Minimum API
+
+```kotlin
+val sdk = GameAlgo.init("ga_live_xxx", "https://gamealgo.example.com")
+```
+
+## Usage
+
+```kotlin
+val levelGenerator = sdk.executor("level_generator")
+
+sdk.startAsync("user-001")
+
+val variant = levelGenerator.variant("control")
+val difficulty = levelGenerator.string("difficulty", "normal")
+val result = levelGenerator.execute(mapOf("turn" to 7))
+val adsEnabled = sdk.config().bool("ads.rewarded.enabled", true, "gameplay.json")
+
+val result = sdk.uploadEvents(
+    listOf(GameAlgoEvent("user-001", "session-001", "session_start"))
+)
+```
+
+`startAsync` refreshes `/v1/config` and preloads config files on a background executor. `executor` and `config()` read the latest local snapshot, so gameplay code does not need to call remote APIs when checking variants or tuning values.
+
+If an experiment assignment includes `script`, `executor.execute(state)` runs the preloaded script through the configured `GameAlgoScriptRuntime`. The dependency-free core includes a JSR-223 runtime for Java environments; Android app packages should inject a QuickJS/WebView runtime.
+
+Lower-level blocking methods are still available when needed:
+
+```kotlin
+val config = sdk.fetchConfig("user-001")
+val gameplay = sdk.fetchConfigFile("gameplay.json")
+```
+
+The SDK sends `X-GameAlgo-Key` on every request, caches `/v1/config` by `ttlSeconds`, and fills default event fields for `platform`, `sdkVersion`, `appVersion`, `timestamp`, and `isDebug`.
+
+`fetchConfig`, `fetchConfigFile`, and `uploadEvents` are blocking in this core package. Android apps should call them from their own background executor/coroutine layer, or use `startAsync` for initial config preload.
+
+## Check
+
+```bash
+mkdir -p /tmp/gamealgo-android-classes
+javac -d /tmp/gamealgo-android-classes src/main/java/com/gamealgo/sdk/*.java src/test/java/com/gamealgo/sdk/*.java
+java -cp /tmp/gamealgo-android-classes com.gamealgo.sdk.GameAlgoClientSmokeTest
+```

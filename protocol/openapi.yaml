@@ -1,0 +1,318 @@
+openapi: 3.1.0
+info:
+  title: GameAlgo Protocol API
+  version: 1.0.0
+  description: Minimal Protocol v1 contract for GameAlgo clients and servers.
+servers:
+  - url: https://gamealgo.example.com
+security:
+  - gameKey: []
+paths:
+  /v1/config:
+    get:
+      summary: Fetch game config, experiment assignments, and config file metadata.
+      operationId: fetchConfig
+      parameters:
+        - name: userId
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: platform
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [ios, android, rest]
+        - name: sdkVersion
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: appVersion
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: deviceId
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Config response.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigResponse"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/MissingGameKey"
+        "403":
+          $ref: "#/components/responses/InvalidGameKey"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /v1/config-files/{fileName}:
+    get:
+      summary: Fetch one config file for the game resolved from X-GameAlgo-Key.
+      operationId: fetchConfigFile
+      parameters:
+        - name: fileName
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+      responses:
+        "200":
+          description: Config file content.
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema: {}
+            text/plain:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/MissingGameKey"
+        "403":
+          $ref: "#/components/responses/InvalidGameKey"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /v1/events/batch:
+    post:
+      summary: Upload game events in batches.
+      operationId: uploadEvents
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EventBatchRequest"
+      responses:
+        "200":
+          description: Accepted event count.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventBatchResponse"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/MissingGameKey"
+        "403":
+          $ref: "#/components/responses/InvalidGameKey"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+components:
+  securitySchemes:
+    gameKey:
+      type: apiKey
+      in: header
+      name: X-GameAlgo-Key
+
+  responses:
+    InvalidRequest:
+      description: Invalid request.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    MissingGameKey:
+      description: Missing X-GameAlgo-Key.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InvalidGameKey:
+      description: Unknown or revoked game key.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    RateLimited:
+      description: Too many requests.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ServerError:
+      description: Server error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    ConfigResponse:
+      type: object
+      required:
+        - gameId
+        - environment
+        - configVersion
+        - ttlSeconds
+        - serverTime
+        - experiments
+        - configFiles
+      properties:
+        gameId:
+          type: string
+        environment:
+          type: string
+          enum: [test, live]
+        configVersion:
+          type: string
+        ttlSeconds:
+          type: integer
+          minimum: 0
+        serverTime:
+          type: string
+          format: date-time
+        experiments:
+          type: array
+          items:
+            $ref: "#/components/schemas/ExperimentAssignment"
+        configFiles:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConfigFileRef"
+
+    ExperimentAssignment:
+      type: object
+      required:
+        - key
+        - experimentId
+        - variant
+        - config
+      properties:
+        key:
+          type: string
+        experimentId:
+          type: string
+        variant:
+          type: string
+        config:
+          $ref: "#/components/schemas/JsonValue"
+        script:
+          $ref: "#/components/schemas/ConfigFileRef"
+
+    ConfigFileRef:
+      type: object
+      required:
+        - name
+        - url
+        - hash
+      properties:
+        name:
+          type: string
+        url:
+          type: string
+          format: uri
+        hash:
+          type: string
+        contentType:
+          type: string
+        updatedAt:
+          type: string
+
+    EventBatchRequest:
+      type: object
+      required:
+        - events
+      properties:
+        events:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/GameEvent"
+
+    EventBatchResponse:
+      type: object
+      required:
+        - ok
+        - accepted
+      properties:
+        ok:
+          type: boolean
+        accepted:
+          type: integer
+          minimum: 0
+
+    GameEvent:
+      type: object
+      required:
+        - eventId
+        - userId
+        - sessionId
+        - eventType
+        - platform
+        - sdkVersion
+        - timestamp
+        - payload
+      properties:
+        eventId:
+          type: string
+        userId:
+          type: string
+        sessionId:
+          type: string
+        eventType:
+          type: string
+        platform:
+          type: string
+          enum: [ios, android, rest]
+        sdkVersion:
+          type: string
+        appVersion:
+          type: string
+        timezone:
+          type: string
+        isDebug:
+          type: boolean
+          default: false
+        timestamp:
+          type: string
+          format: date-time
+        payload:
+          $ref: "#/components/schemas/JsonValue"
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          enum:
+            - invalid_request
+            - missing_game_key
+            - invalid_game_key
+            - not_found
+            - rate_limited
+            - server_error
+        message:
+          type: string
+
+    JsonValue:
+      description: Any valid JSON value.
