@@ -5,6 +5,7 @@ import type {
   ExperimentAssignment,
   FetchConfigOptions,
   GameAlgoExecutionResult,
+  GameAlgoLogger,
   GameAlgoRestClientOptions,
   GameAlgoScriptInput,
   GameAlgoScriptRuntime,
@@ -40,6 +41,7 @@ export class GameAlgoRestClient {
   private readonly now: () => number;
   private readonly storage?: GameAlgoStorage;
   private readonly scriptRuntime: GameAlgoScriptRuntime;
+  private readonly logger?: (message: string) => void;
   private readonly snapshotCacheKey: string;
   private readonly userIdKey = "gamealgo_user_id";
   private readonly userCreatedAtKey = "gamealgo_user_created_at";
@@ -47,6 +49,7 @@ export class GameAlgoRestClient {
   private snapshot: GameAlgoSnapshot = { configFiles: new Map(), updatedAt: 0 };
   private currentIdentity: GameAlgoUserIdentity | null = null;
   private readyPromise: Promise<void> | null = null;
+  private didLogUserId = false;
   readonly config: GameAlgoConfigReader;
   readonly tracker: GameAlgoEventTracker;
 
@@ -64,6 +67,7 @@ export class GameAlgoRestClient {
     this.now = options.now ?? Date.now;
     this.storage = options.storage;
     this.scriptRuntime = options.scriptRuntime ?? new FunctionScriptRuntime();
+    this.logger = resolveLogger(options.logger);
     this.snapshotCacheKey = options.cacheKey ?? `gamealgo:v1:snapshot:${this.baseUrl.origin}:${this.gameKey.slice(0, 16)}`;
     this.config = new GameAlgoConfigReader(() => this.snapshot);
     this.tracker = new GameAlgoEventTracker({
@@ -83,12 +87,17 @@ export class GameAlgoRestClient {
   start(options: StartOptions = {}): Promise<void> {
     this.readyPromise = (async () => {
       const identity = await this.userIdentity(options.userId);
+      this.logUserId(identity.userId);
       this.tracker.identify(identity.userId, undefined, identity.userCreatedAt);
       await this.loadPersistedSnapshot();
       try {
         await this.refresh({ ...options, userId: identity.userId, forceRefresh: true });
       } catch (error) {
-        if (!this.snapshot.config) throw error;
+        if (!this.snapshot.config) {
+          this.log(`config fetch failed: ${errorMessage(error)}`);
+          throw error;
+        }
+        this.log(`config fetch failed, using cached snapshot: ${errorMessage(error)}`);
       }
     })();
     return this.readyPromise;
@@ -113,7 +122,7 @@ export class GameAlgoRestClient {
   }
 
   executor(key: string): GameAlgoExperimentExecutor {
-    return new GameAlgoExperimentExecutor(key, () => this.snapshot, this.scriptRuntime);
+    return new GameAlgoExperimentExecutor(key, () => this.snapshot, this.scriptRuntime, this.logger);
   }
 
   async userIdentity(explicitUserId?: string): Promise<GameAlgoUserIdentity> {
@@ -141,6 +150,7 @@ export class GameAlgoRestClient {
 
   async fetchConfig(options: FetchConfigOptions = {}): Promise<ConfigResponse> {
     const identity = await this.userIdentity(options.userId);
+    this.logUserId(identity.userId);
     this.tracker.identify(identity.userId, undefined, identity.userCreatedAt);
     const platform = options.platform ?? this.platform;
     const sdkVersion = options.sdkVersion ?? this.sdkVersion;
@@ -154,9 +164,11 @@ export class GameAlgoRestClient {
     });
 
     if (!options.forceRefresh && this.cachedConfig && this.cachedConfig.cacheKey === cacheKey && this.cachedConfig.expiresAt > this.now()) {
+      this.log(`config cache hit: ${this.cachedConfig.value.configVersion}`);
       return this.cachedConfig.value;
     }
 
+    this.log(`fetching config: userId=${identity.userId}, platform=${platform}`);
     const url = this.url("/v1/config");
     url.searchParams.set("userId", identity.userId);
     url.searchParams.set("platform", platform);
@@ -164,21 +176,32 @@ export class GameAlgoRestClient {
     if (appVersion) url.searchParams.set("appVersion", appVersion);
     if (options.deviceId) url.searchParams.set("deviceId", options.deviceId);
 
-    const config = await this.requestJson<ConfigResponse>(url, { method: "GET" });
-    this.cachedConfig = {
-      value: config,
-      cacheKey,
-      expiresAt: this.now() + Math.max(Number(config.ttlSeconds) || 0, 0) * 1000,
-    };
-    this.tracker.setAssignments(config.experiments);
-    this.snapshot = {
-      ...this.snapshot,
-      config,
-      updatedAt: this.now(),
-      userId: identity.userId,
-    };
-    await this.persistSnapshot();
-    return config;
+    try {
+      const config = await this.requestJson<ConfigResponse>(url, { method: "GET" });
+      this.cachedConfig = {
+        value: config,
+        cacheKey,
+        expiresAt: this.now() + Math.max(Number(config.ttlSeconds) || 0, 0) * 1000,
+      };
+      this.tracker.setAssignments(config.experiments);
+      this.snapshot = {
+        ...this.snapshot,
+        config,
+        updatedAt: this.now(),
+        userId: identity.userId,
+      };
+      await this.persistSnapshot();
+      this.log(`config fetched: version=${config.configVersion}, experiments=${config.experiments.length}, configFiles=${config.configFiles.length}, ttl=${config.ttlSeconds}s`);
+      this.logAssignments(config.experiments, "config ready");
+      return config;
+    } catch (error) {
+      if (this.cachedConfig?.cacheKey === cacheKey) {
+        this.log(`config fetch failed, using cached config: ${errorMessage(error)}`);
+        return this.cachedConfig.value;
+      }
+      this.log(`config fetch failed: ${errorMessage(error)}`);
+      throw error;
+    }
   }
 
   async fetchConfigFile(name: string): Promise<ConfigFileResponse> {
@@ -198,6 +221,7 @@ export class GameAlgoRestClient {
       updatedAt: this.now(),
     };
     await this.persistSnapshot();
+    this.log(`config file loaded: ${file.name} (${file.contentType})`);
     return file;
   }
 
@@ -244,7 +268,10 @@ export class GameAlgoRestClient {
   private async refresh(options: StartOptions): Promise<void> {
     const config = await this.fetchConfig(options);
     const preload = options.preloadConfigFiles ?? true;
-    if (!preload) return;
+    if (!preload) {
+      this.log("config file preload skipped");
+      return;
+    }
 
     const names = Array.isArray(preload)
       ? preload
@@ -252,9 +279,26 @@ export class GameAlgoRestClient {
           ...config.configFiles.map((file) => file.name),
           ...config.experiments.flatMap((experiment) => experiment.script?.name ? [experiment.script.name] : []),
         ];
-    await Promise.all([...new Set(names)].map((name) => this.fetchConfigFile(name)));
+    const preloadNames = [...new Set(names)];
+    if (preloadNames.length === 0) {
+      this.log("no config files to preload");
+    } else {
+      this.log(`preloading config files: ${preloadNames.sort().join(", ")}`);
+    }
+    await Promise.all(preloadNames.map((name) => this.fetchConfigFile(name)));
+    for (const experiment of config.experiments) {
+      const scriptName = experiment.script?.name;
+      if (scriptName && this.snapshot.configFiles.has(scriptName)) {
+        this.log(`script loaded: ${experiment.key} -> ${scriptName}`);
+      }
+    }
+    if (preloadNames.length > 0) {
+      this.log("all config files loaded");
+    }
     this.tracker.setAssignments(config.experiments);
+    this.logAssignments(config.experiments, "experiment");
     this.tracker.trackConfigLoaded();
+    this.log("config_loaded queued");
   }
 
   private async loadPersistedSnapshot(): Promise<void> {
@@ -274,6 +318,7 @@ export class GameAlgoRestClient {
         updatedAt: Number(parsed.updatedAt || 0),
         userId: parsed.userId,
       };
+      this.log("cached snapshot loaded");
     } catch {
       await this.storage.removeItem?.(this.snapshotCacheKey);
     }
@@ -312,6 +357,22 @@ export class GameAlgoRestClient {
     }
 
     return response;
+  }
+
+  private logUserId(userId: string): void {
+    if (this.didLogUserId) return;
+    this.didLogUserId = true;
+    this.log(`userId: ${userId}`);
+  }
+
+  private logAssignments(assignments: ExperimentAssignment[], prefix: string): void {
+    for (const assignment of assignments) {
+      this.log(`${prefix}: ${assignment.key} -> ${assignment.variant}`);
+    }
+  }
+
+  private log(message: string): void {
+    this.logger?.(`[GameAlgoSDK] ${message}`);
   }
 }
 
@@ -548,11 +609,18 @@ export class GameAlgoExperimentExecutor {
   private readonly key: string;
   private readonly snapshotProvider: () => GameAlgoSnapshot;
   private readonly scriptRuntime: GameAlgoScriptRuntime;
+  private readonly logger?: (message: string) => void;
 
-  constructor(key: string, snapshotProvider: () => GameAlgoSnapshot, scriptRuntime: GameAlgoScriptRuntime) {
+  constructor(
+    key: string,
+    snapshotProvider: () => GameAlgoSnapshot,
+    scriptRuntime: GameAlgoScriptRuntime,
+    logger?: (message: string) => void,
+  ) {
     this.key = key;
     this.snapshotProvider = snapshotProvider;
     this.scriptRuntime = scriptRuntime;
+    this.logger = logger;
   }
 
   get isReady(): boolean {
@@ -595,7 +663,10 @@ export class GameAlgoExperimentExecutor {
   async execute(state: JsonValue): Promise<GameAlgoExecutionResult | undefined> {
     const snapshot = this.snapshotProvider();
     const assignment = this.assignment();
-    if (!snapshot.config || !assignment) return undefined;
+    if (!snapshot.config || !assignment) {
+      this.log(`execute skipped: ${this.key} is not ready`);
+      return undefined;
+    }
 
     if (!assignment.script) {
       return {
@@ -606,9 +677,17 @@ export class GameAlgoExperimentExecutor {
     }
 
     const scriptFile = snapshot.configFiles.get(assignment.script.name);
-    if (!scriptFile) return undefined;
+    if (!scriptFile) {
+      this.log(`execute skipped: script not loaded: ${assignment.key} -> ${assignment.script.name}`);
+      return undefined;
+    }
 
-    await verifyScriptHash(scriptFile.content, assignment.script.hash);
+    try {
+      await verifyScriptHash(scriptFile.content, assignment.script.hash);
+    } catch (error) {
+      this.log(`execute skipped: script hash mismatch: ${assignment.key} -> ${assignment.script.name}`);
+      throw error;
+    }
     const input: GameAlgoScriptInput = {
       state,
       config: assignment.config,
@@ -623,16 +702,24 @@ export class GameAlgoExperimentExecutor {
     };
     const output = normalizeJsonValue(await this.scriptRuntime.execute(scriptFile.content, input));
     if (!output || typeof output !== "object" || Array.isArray(output)) {
+      this.log(`execute failed for ${assignment.key}: result must be an object`);
       return undefined;
     }
     const payload = (output as Record<string, JsonValue>).payload;
     const diagnostics = (output as Record<string, JsonValue>).diagnostics;
-    if (payload === undefined) return undefined;
+    if (payload === undefined) {
+      this.log(`execute failed for ${assignment.key}: result must contain payload`);
+      return undefined;
+    }
     return {
       payload,
       diagnostics: diagnostics ?? {},
       assignment,
     };
+  }
+
+  private log(message: string): void {
+    this.logger?.(`[GameAlgoSDK] ${message}`);
   }
 }
 
@@ -735,6 +822,15 @@ function randomId(): string {
 function clean(value: string | undefined | null): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function resolveLogger(logger: GameAlgoLogger | undefined): ((message: string) => void) | undefined {
+  if (logger === false) return undefined;
+  return logger ?? ((message) => console.log(message));
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function defaultTimezone(): string {

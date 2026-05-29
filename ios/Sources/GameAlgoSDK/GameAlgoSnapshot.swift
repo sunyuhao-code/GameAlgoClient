@@ -70,11 +70,18 @@ public final class GameAlgoExperimentExecutor: @unchecked Sendable {
     private let key: String
     private let store: GameAlgoSnapshotStore
     private let scriptRuntime: any GameAlgoScriptRuntime
+    private let logger: GameAlgoLogHandler?
 
-    init(key: String, store: GameAlgoSnapshotStore, scriptRuntime: any GameAlgoScriptRuntime) {
+    init(
+        key: String,
+        store: GameAlgoSnapshotStore,
+        scriptRuntime: any GameAlgoScriptRuntime,
+        logger: GameAlgoLogHandler?
+    ) {
         self.key = key
         self.store = store
         self.scriptRuntime = scriptRuntime
+        self.logger = logger
     }
 
     public var isReady: Bool {
@@ -116,7 +123,10 @@ public final class GameAlgoExperimentExecutor: @unchecked Sendable {
 
     public func execute(_ state: JSONValue) -> GameAlgoExecutionResult? {
         let snapshot = store.snapshot()
-        guard let config = snapshot.config, let assignment = assignment() else { return nil }
+        guard let config = snapshot.config, let assignment = assignment() else {
+            log("execute skipped: \(key) is not ready")
+            return nil
+        }
         guard let script = assignment.script else {
             return GameAlgoExecutionResult(
                 payload: assignment.config,
@@ -124,8 +134,14 @@ public final class GameAlgoExperimentExecutor: @unchecked Sendable {
                 assignment: assignment
             )
         }
-        guard let file = snapshot.configFiles[script.name] else { return nil }
-        guard Self.sha256(file.content) == script.hash else { return nil }
+        guard let file = snapshot.configFiles[script.name] else {
+            log("execute skipped: script not loaded: \(assignment.key) -> \(script.name)")
+            return nil
+        }
+        guard Self.sha256(file.content) == script.hash else {
+            log("execute skipped: script hash mismatch: \(assignment.key) -> \(script.name)")
+            return nil
+        }
 
         let input = GameAlgoScriptInput(
             state: state,
@@ -139,22 +155,29 @@ public final class GameAlgoExperimentExecutor: @unchecked Sendable {
                 variant: assignment.variant
             )
         )
-        guard
-            let output = try? scriptRuntime.execute(script: file.content, input: input),
-            let object = output.objectValue,
-            let payload = object["payload"]
-        else {
+        do {
+            let output = try scriptRuntime.execute(script: file.content, input: input)
+            guard let object = output.objectValue, let payload = object["payload"] else {
+                log("execute failed for \(assignment.key): result must contain payload")
+                return nil
+            }
+            return GameAlgoExecutionResult(
+                payload: payload,
+                diagnostics: object["diagnostics"] ?? .object([:]),
+                assignment: assignment
+            )
+        } catch {
+            log("execute failed for \(assignment.key): \(error)")
             return nil
         }
-        return GameAlgoExecutionResult(
-            payload: payload,
-            diagnostics: object["diagnostics"] ?? .object([:]),
-            assignment: assignment
-        )
     }
 
     private static func sha256(_ content: String) -> String {
         GameAlgoSHA256.hash(content)
+    }
+
+    private func log(_ message: String) {
+        logger?("[GameAlgoSDK] \(message)")
     }
 }
 

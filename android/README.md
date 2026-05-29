@@ -29,6 +29,8 @@ sdk.tracker().flushAsync()
 
 `startAsync` refreshes `/v1/config` and preloads config files on a background executor. It also creates or reuses the SDK anonymous `userId`; pass a `GameAlgoCacheStorage` when initializing if the app wants the dependency-free core to persist that ID. `executor` and `config()` read the latest local snapshot, so gameplay code does not need to call remote APIs when checking variants or tuning values.
 
+The SDK logs user id, config fetch, experiment assignment, config file, and script preload status to `System.out` by default. Pass `null` as the full constructor's `GameAlgoLogger` argument to silence logs, or provide a custom logger.
+
 If an experiment assignment includes `script`, `executor.execute(state)` runs the preloaded script through the configured `GameAlgoScriptRuntime`. The dependency-free core includes a JSR-223 runtime for Java environments; Android app packages should inject a QuickJS/WebView runtime.
 
 Lower-level blocking methods are still available when needed:

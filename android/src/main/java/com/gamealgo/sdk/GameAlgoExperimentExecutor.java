@@ -9,11 +9,13 @@ public final class GameAlgoExperimentExecutor {
     private final String key;
     private final GameAlgoSnapshotStore store;
     private final GameAlgoScriptRuntime scriptRuntime;
+    private final GameAlgoLogger logger;
 
-    GameAlgoExperimentExecutor(String key, GameAlgoSnapshotStore store, GameAlgoScriptRuntime scriptRuntime) {
+    GameAlgoExperimentExecutor(String key, GameAlgoSnapshotStore store, GameAlgoScriptRuntime scriptRuntime, GameAlgoLogger logger) {
         this.key = key;
         this.store = store;
         this.scriptRuntime = scriptRuntime;
+        this.logger = logger;
     }
 
     public boolean isReady() {
@@ -77,6 +79,7 @@ public final class GameAlgoExperimentExecutor {
         GameAlgoConfigResponse config = snapshot.getConfig();
         GameAlgoExperimentAssignment assignment = assignment();
         if (config == null || assignment == null) {
+            log("execute skipped: " + key + " is not ready");
             return null;
         }
 
@@ -88,9 +91,11 @@ public final class GameAlgoExperimentExecutor {
 
         GameAlgoConfigFile scriptFile = snapshot.getConfigFiles().get(assignment.getScript().getName());
         if (scriptFile == null) {
+            log("execute skipped: script not loaded: " + assignment.getKey() + " -> " + assignment.getScript().getName());
             return null;
         }
         if (assignment.getScript().getHash() == null || !assignment.getScript().getHash().equals(sha256(scriptFile.getContent()))) {
+            log("execute skipped: script hash mismatch: " + assignment.getKey() + " -> " + assignment.getScript().getName());
             return null;
         }
 
@@ -105,16 +110,19 @@ public final class GameAlgoExperimentExecutor {
         try {
             Object output = scriptRuntime.execute(scriptFile.getContent(), new GameAlgoScriptInput(state, assignment.getConfig(), meta));
             if (!(output instanceof Map)) {
+                log("execute failed for " + assignment.getKey() + ": result must be an object");
                 return null;
             }
             @SuppressWarnings("unchecked")
             Map<String, Object> object = (Map<String, Object>) output;
             if (!object.containsKey("payload")) {
+                log("execute failed for " + assignment.getKey() + ": result must contain payload");
                 return null;
             }
             Object diagnostics = object.containsKey("diagnostics") ? object.get("diagnostics") : new LinkedHashMap<String, Object>();
             return new GameAlgoExecutionResult(object.get("payload"), diagnostics, assignment);
         } catch (GameAlgoException error) {
+            log("execute failed for " + assignment.getKey() + ": " + error.getMessage());
             return null;
         }
     }
@@ -130,6 +138,12 @@ public final class GameAlgoExperimentExecutor {
             return builder.toString();
         } catch (NoSuchAlgorithmException error) {
             return "";
+        }
+    }
+
+    private void log(String message) {
+        if (logger != null) {
+            logger.log("[GameAlgoSDK] " + message);
         }
     }
 }

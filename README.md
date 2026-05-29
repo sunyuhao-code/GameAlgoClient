@@ -235,6 +235,7 @@ _tutorial_skip
 - `userId` 默认由 SDK 生成并持久化；有账号体系时也可以显式传自己的稳定匿名 ID。`sessionId` 每次启动或每局会话生成一个新的。
 - `timezone` 默认使用客户端本地时区，通常不需要游戏设置。
 - `payload` 只放业务字段，不要放密钥、手机号、邮箱等敏感信息。
+- SDK 默认向控制台输出配置拉取、实验分组、配置文件和脚本加载日志；需要静默时 iOS 传 `logger: nil`，Android 传 `null` logger，REST 传 `logger: false`。
 
 ## 验收清单
 

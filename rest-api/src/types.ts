@@ -83,6 +83,7 @@ export type GameAlgoRestClientOptions = {
   now?: () => number;
   storage?: GameAlgoStorage;
   scriptRuntime?: GameAlgoScriptRuntime;
+  logger?: GameAlgoLogger;
   cacheKey?: string;
 };
 
@@ -114,6 +115,8 @@ export type GameAlgoStorage = {
   setItem(key: string, value: string): void | Promise<void>;
   removeItem?(key: string): void | Promise<void>;
 };
+
+export type GameAlgoLogger = false | ((message: string) => void);
 
 export type GameAlgoExecutionResult = {
   payload: JsonValue;

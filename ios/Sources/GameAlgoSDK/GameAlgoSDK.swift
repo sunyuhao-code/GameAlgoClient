@@ -14,6 +14,7 @@ public actor GameAlgoSDK {
     private let userIdentityStore: GameAlgoUserIdentityStore
     private let snapshotCacheKey: String
     private let now: @Sendable () -> Date
+    private let logger: GameAlgoLogHandler?
     private let snapshotStore: GameAlgoSnapshotStore
     private let eventUploader: any GameAlgoEventBatchUploading
     private let readyTaskStore = GameAlgoReadyTaskStore()
@@ -24,6 +25,7 @@ public actor GameAlgoSDK {
     public nonisolated let tracker: GameAlgoEventTracker
 
     private var cachedConfig: CachedConfig?
+    private var didLogUserId = false
 
     public init(
         gameKey: String,
@@ -40,6 +42,7 @@ public actor GameAlgoSDK {
         eventFlushInterval: TimeInterval = 30,
         eventMaxBatchSize: Int = 100,
         eventQueueLimit: Int = 1000,
+        logger: GameAlgoLogHandler? = GameAlgoLoggers.console,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         let snapshotStore = GameAlgoSnapshotStore()
@@ -63,6 +66,7 @@ public actor GameAlgoSDK {
         self.userIdentityStore = userIdentityStore
         self.snapshotCacheKey = cacheKey ?? "gamealgo:v1:snapshot:\(baseURL.absoluteString):\(gameKey.prefix(16))"
         self.now = now
+        self.logger = logger
         self.snapshotStore = snapshotStore
         self.eventUploader = eventUploader
         self.config = GameAlgoConfigReader(store: snapshotStore)
@@ -85,7 +89,7 @@ public actor GameAlgoSDK {
     }
 
     public nonisolated func executor(_ key: String) -> GameAlgoExperimentExecutor {
-        GameAlgoExperimentExecutor(key: key, store: snapshotStore, scriptRuntime: scriptRuntime)
+        GameAlgoExperimentExecutor(key: key, store: snapshotStore, scriptRuntime: scriptRuntime, logger: logger)
     }
 
     public nonisolated func snapshotValue() -> GameAlgoSnapshot {
@@ -103,6 +107,7 @@ public actor GameAlgoSDK {
     ) -> Task<Void, Error> {
         let identity = userIdentityStore.identity(userId: userId, now: now())
         let task = Task {
+            await self.logUserId(identity.userId)
             await self.tracker.identify(
                 userId: identity.userId,
                 platform: platform ?? self.defaultPlatform,
@@ -122,8 +127,10 @@ public actor GameAlgoSDK {
                 )
             } catch {
                 if self.snapshotValue().config == nil {
+                    await self.log("config fetch failed: \(error)")
                     throw error
                 }
+                await self.log("config fetch failed, using cached snapshot: \(error)")
             }
         }
         readyTaskStore.set(task)
@@ -165,6 +172,7 @@ public actor GameAlgoSDK {
         forceRefresh: Bool = false
     ) async throws -> GameAlgoConfigResponse {
         let identity = userIdentityStore.identity(userId: userId, now: now())
+        logUserId(identity.userId)
         let resolvedPlatform = platform ?? defaultPlatform
         let resolvedSDKVersion = sdkVersion ?? defaultSDKVersion
         let resolvedAppVersion = appVersion ?? defaultAppVersion
@@ -187,10 +195,12 @@ public actor GameAlgoSDK {
            let cachedConfig,
            cachedConfig.key == cacheKey,
            cachedConfig.expiresAt > now() {
+            log("config cache hit: \(cachedConfig.value.configVersion)")
             return cachedConfig.value
         }
 
         do {
+            log("fetching config: userId=\(identity.userId), platform=\(resolvedPlatform.rawValue)")
             var components = URLComponents(
                 url: try endpoint("/v1/config"),
                 resolvingAgainstBaseURL: false
@@ -221,11 +231,15 @@ public actor GameAlgoSDK {
             snapshotStore.updateConfig(response, updatedAt: now(), userId: identity.userId)
             await tracker.setAssignments(response.experiments)
             persistSnapshot()
+            log("config fetched: version=\(response.configVersion), experiments=\(response.experiments.count), configFiles=\(response.configFiles.count), ttl=\(response.ttlSeconds)s")
+            logAssignments(response.experiments, prefix: "config ready")
             return response
         } catch {
             if let cachedConfig, cachedConfig.key == cacheKey {
+                log("config fetch failed, using cached config: \(error)")
                 return cachedConfig.value
             }
+            log("config fetch failed: \(error)")
             throw error
         }
     }
@@ -255,6 +269,7 @@ public actor GameAlgoSDK {
         )
         snapshotStore.updateConfigFile(file, updatedAt: now())
         persistSnapshot()
+        log("config file loaded: \(file.name) (\(file.contentType))")
         return file
     }
 
@@ -293,6 +308,12 @@ public actor GameAlgoSDK {
             names = selected
         }
 
+        if names.isEmpty {
+            log("no config files to preload")
+        } else {
+            log("preloading config files: \(names.sorted().joined(separator: ", "))")
+        }
+
         try await withThrowingTaskGroup(of: Void.self) { group in
             for name in names {
                 group.addTask {
@@ -301,8 +322,19 @@ public actor GameAlgoSDK {
             }
             try await group.waitForAll()
         }
+        let loadedFiles = Set(snapshotStore.snapshot().configFiles.keys)
+        for assignment in config.experiments {
+            if let script = assignment.script, loadedFiles.contains(script.name) {
+                log("script loaded: \(assignment.key) -> \(script.name)")
+            }
+        }
+        if !names.isEmpty {
+            log("all config files loaded")
+        }
         await tracker.setAssignments(config.experiments)
+        logAssignments(config.experiments, prefix: "experiment")
         _ = await tracker.trackConfigLoaded()
+        log("config_loaded queued")
     }
 
     private func loadCachedSnapshot() {
@@ -310,6 +342,7 @@ public actor GameAlgoSDK {
             return
         }
         snapshotStore.replace(snapshot)
+        log("cached snapshot loaded")
     }
 
     private func persistSnapshot() {
@@ -376,6 +409,22 @@ public actor GameAlgoSDK {
             )
         }
         return .apiError(statusCode: response.statusCode, code: nil, message: fallback)
+    }
+
+    private func logUserId(_ userId: String) {
+        guard !didLogUserId else { return }
+        didLogUserId = true
+        log("userId: \(userId)")
+    }
+
+    private func logAssignments(_ assignments: [GameAlgoExperimentAssignment], prefix: String) {
+        for assignment in assignments {
+            log("\(prefix): \(assignment.key) -> \(assignment.variant)")
+        }
+    }
+
+    private func log(_ message: String) {
+        logger?("[GameAlgoSDK] \(message)")
     }
 
 }

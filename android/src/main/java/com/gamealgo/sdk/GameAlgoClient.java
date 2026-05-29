@@ -31,11 +31,13 @@ public final class GameAlgoClient {
     private final GameAlgoScriptRuntime scriptRuntime;
     private final GameAlgoCacheStorage cacheStorage;
     private final String snapshotCacheKey;
+    private final GameAlgoLogger logger;
     private final GameAlgoSnapshotStore snapshotStore;
     private final GameAlgoConfigReader configReader;
     private final GameAlgoEventTracker tracker;
     private CachedConfig cachedConfig;
     private GameAlgoUserIdentity userIdentity;
+    private boolean didLogUserId;
 
     public GameAlgoClient(String gameKey, String baseUrl) {
         this(gameKey, baseUrl, DEFAULT_SDK_VERSION, null, "android", new UrlConnectionGameAlgoHttpClient());
@@ -61,6 +63,20 @@ public final class GameAlgoClient {
             GameAlgoScriptRuntime scriptRuntime,
             GameAlgoCacheStorage cacheStorage,
             String cacheKey) {
+        this(gameKey, baseUrl, sdkVersion, appVersion, platform, httpClient, scriptRuntime, cacheStorage, cacheKey, GameAlgoLogger.console());
+    }
+
+    public GameAlgoClient(
+            String gameKey,
+            String baseUrl,
+            String sdkVersion,
+            String appVersion,
+            String platform,
+            GameAlgoHttpClient httpClient,
+            GameAlgoScriptRuntime scriptRuntime,
+            GameAlgoCacheStorage cacheStorage,
+            String cacheKey,
+            GameAlgoLogger logger) {
         if (isBlank(gameKey)) {
             throw new IllegalArgumentException("gameKey is required");
         }
@@ -76,6 +92,7 @@ public final class GameAlgoClient {
         this.scriptRuntime = scriptRuntime == null ? new JavaxScriptGameAlgoRuntime() : scriptRuntime;
         this.cacheStorage = cacheStorage;
         this.snapshotCacheKey = cacheKey == null ? "gamealgo:v1:snapshot:" + this.baseUrl + ":" + gameKey.substring(0, Math.min(16, gameKey.length())) : cacheKey;
+        this.logger = logger;
         this.snapshotStore = new GameAlgoSnapshotStore();
         this.configReader = new GameAlgoConfigReader(snapshotStore);
         this.tracker = new GameAlgoEventTracker(this);
@@ -98,8 +115,10 @@ public final class GameAlgoClient {
                     refresh(resolvedRequest);
                 } catch (GameAlgoException error) {
                     if (snapshotStore.snapshot().getConfig() == null) {
+                        log("config fetch failed: " + error.getMessage());
                         throw error;
                     }
+                    log("config fetch failed, using cached snapshot: " + error.getMessage());
                 }
             } catch (GameAlgoException error) {
                 throw new CompletionException(error);
@@ -108,7 +127,7 @@ public final class GameAlgoClient {
     }
 
     public GameAlgoExperimentExecutor executor(String key) {
-        return new GameAlgoExperimentExecutor(key, snapshotStore, scriptRuntime);
+        return new GameAlgoExperimentExecutor(key, snapshotStore, scriptRuntime, logger);
     }
 
     public GameAlgoConfigReader config() {
@@ -157,10 +176,12 @@ public final class GameAlgoClient {
                 && cachedConfig != null
                 && cachedConfig.key.equals(cacheKey)
                 && cachedConfig.expiresAtMillis > nowMillis) {
+            log("config cache hit: " + cachedConfig.value.getConfigVersion());
             return cachedConfig.value;
         }
 
         try {
+            log("fetching config: userId=" + resolvedRequest.getUserId() + ", platform=" + platform);
             Map<String, String> query = new LinkedHashMap<>();
             query.put("userId", resolvedRequest.getUserId());
             query.put("platform", platform);
@@ -183,11 +204,18 @@ public final class GameAlgoClient {
             snapshotStore.updateConfig(response, System.currentTimeMillis(), resolvedRequest.getUserId());
             tracker.setAssignments(response.getExperiments());
             persistSnapshot();
+            log("config fetched: version=" + response.getConfigVersion()
+                    + ", experiments=" + response.getExperiments().size()
+                    + ", configFiles=" + response.getConfigFiles().size()
+                    + ", ttl=" + response.getTtlSeconds() + "s");
+            logAssignments(response.getExperiments(), "config ready");
             return response;
         } catch (GameAlgoException error) {
             if (cachedConfig != null && cachedConfig.key.equals(cacheKey)) {
+                log("config fetch failed, using cached config: " + error.getMessage());
                 return cachedConfig.value;
             }
+            log("config fetch failed: " + error.getMessage());
             throw error;
         }
     }
@@ -209,6 +237,7 @@ public final class GameAlgoClient {
         );
         snapshotStore.updateConfigFile(file, System.currentTimeMillis());
         persistSnapshot();
+        log("config file loaded: " + file.getName() + " (" + file.getContentType() + ")");
         return file;
     }
 
@@ -242,20 +271,45 @@ public final class GameAlgoClient {
 
     private synchronized void refresh(GameAlgoFetchConfigRequest request) throws GameAlgoException {
         GameAlgoConfigResponse config = fetchConfig(request.forceRefresh(true));
+        List<String> loadedNames = new ArrayList<>();
+        int preloadCount = config.getConfigFiles().size();
+        for (GameAlgoExperimentAssignment assignment : config.getExperiments()) {
+            if (assignment.getScript() != null) {
+                preloadCount += 1;
+            }
+        }
+        if (preloadCount == 0) {
+            log("no config files to preload");
+        } else {
+            log("preloading config files: " + preloadCount);
+        }
         for (GameAlgoConfigFileRef file : config.getConfigFiles()) {
             fetchConfigFile(file.getName());
+            loadedNames.add(file.getName());
         }
         for (GameAlgoExperimentAssignment assignment : config.getExperiments()) {
             if (assignment.getScript() != null) {
                 fetchConfigFile(assignment.getScript().getName());
+                loadedNames.add(assignment.getScript().getName());
+            }
+        }
+        if (!loadedNames.isEmpty()) {
+            log("all config files loaded");
+        }
+        for (GameAlgoExperimentAssignment assignment : config.getExperiments()) {
+            if (assignment.getScript() != null && snapshotStore.snapshot().getConfigFiles().containsKey(assignment.getScript().getName())) {
+                log("script loaded: " + assignment.getKey() + " -> " + assignment.getScript().getName());
             }
         }
         tracker.setAssignments(config.getExperiments());
+        logAssignments(config.getExperiments(), "experiment");
         tracker.trackConfigLoaded();
+        log("config_loaded queued");
     }
 
     private synchronized GameAlgoFetchConfigRequest requestWithResolvedUser(GameAlgoFetchConfigRequest request) throws GameAlgoException {
         GameAlgoUserIdentity identity = userIdentity(request.getUserId());
+        logUserId(identity.getUserId());
         tracker.identify(identity.getUserId(), null, identity.getUserCreatedAt());
         GameAlgoFetchConfigRequest resolved = new GameAlgoFetchConfigRequest(identity.getUserId())
                 .platform(request.getPlatform())
@@ -302,6 +356,7 @@ public final class GameAlgoClient {
         }
         try {
             snapshotStore.replace(snapshotFromJson(GameAlgoJson.asObject(GameAlgoJson.parse(raw), "snapshot")));
+            log("cached snapshot loaded");
         } catch (GameAlgoException error) {
             cacheStorage.removeItem(snapshotCacheKey);
         }
@@ -579,6 +634,26 @@ public final class GameAlgoClient {
 
     private static boolean isBlank(String value) {
         return value == null || value.trim().length() == 0;
+    }
+
+    private void logUserId(String userId) {
+        if (didLogUserId) {
+            return;
+        }
+        didLogUserId = true;
+        log("userId: " + userId);
+    }
+
+    private void logAssignments(List<GameAlgoExperimentAssignment> assignments, String prefix) {
+        for (GameAlgoExperimentAssignment assignment : assignments) {
+            log(prefix + ": " + assignment.getKey() + " -> " + assignment.getVariant());
+        }
+    }
+
+    private void log(String message) {
+        if (logger != null) {
+            logger.log("[GameAlgoSDK] " + message);
+        }
     }
 
     private static final class CachedConfig {
