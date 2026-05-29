@@ -47,9 +47,11 @@ public final class GameAlgoUserIdentityStore: @unchecked Sendable {
         }
 
         if let existing = clean(userDefaults.string(forKey: userIdKey)) {
+            let createdAt = clean(userDefaults.string(forKey: userCreatedAtKey)) ?? GameAlgoEventBatchUploader.isoTimestamp(now)
+            userDefaults.set(createdAt, forKey: userCreatedAtKey)
             return GameAlgoUserIdentity(
                 userId: existing,
-                userCreatedAt: userDefaults.string(forKey: userCreatedAtKey) ?? ""
+                userCreatedAt: createdAt
             )
         }
 

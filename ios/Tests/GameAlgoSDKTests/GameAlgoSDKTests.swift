@@ -44,6 +44,43 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(URLComponents(url: secondRequests[0].url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "userId" }?.value, persistedUserId)
     }
 
+    func testStartBackfillsCreatedAtForPersistedLegacyUserId() async throws {
+        let suiteName = "GameAlgoSDKTests.legacyIdentity.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defaults.set("legacy-user", forKey: GameAlgoUserIdentityStore.legacyUserIdKey)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let httpClient = MockHTTPClient()
+        try await httpClient.enqueueJSON(configResponse(version: "v1"))
+        try await httpClient.enqueueJSON(["ok": true, "accepted": 2])
+        let sdk = GameAlgoSDK(
+            gameKey: gameKey,
+            baseURL: URL(string: "https://gamealgo.test")!,
+            httpClient: httpClient,
+            userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
+            eventFlushInterval: 0,
+            now: { Date(timeIntervalSince1970: 1_779_962_400) }
+        )
+
+        let task = sdk.start()
+        try await task.value
+        XCTAssertEqual(sdk.userId, "legacy-user")
+        XCTAssertEqual(defaults.string(forKey: GameAlgoUserIdentityStore.legacyUserCreatedAtKey), "2026-05-28T10:00:00.000Z")
+
+        let didTrackSessionStart = await sdk.tracker.trackSessionStart()
+        XCTAssertTrue(didTrackSessionStart)
+        _ = await sdk.tracker.flush()
+
+        let requests = await httpClient.requests
+        let body = try JSONSerialization.jsonObject(with: requests[1].body ?? Data()) as? [String: Any]
+        let events = body?["events"] as? [[String: Any]]
+        let sessionStart = events?.first { $0["eventType"] as? String == "session_start" }
+        let sessionPayload = sessionStart?["payload"] as? [String: Any]
+        XCTAssertEqual(sessionStart?["userId"] as? String, "legacy-user")
+        XCTAssertEqual(sessionPayload?["userCreatedAt"] as? String, "2026-05-28T10:00:00.000Z")
+    }
+
     func testFetchConfigSendsProtocolHeadersAndCachesByTTL() async throws {
         let httpClient = MockHTTPClient()
         try await httpClient.enqueueJSON([

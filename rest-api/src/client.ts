@@ -144,10 +144,12 @@ export class GameAlgoRestClient {
 
     const existing = clean(await this.storage?.getItem(this.userIdKey));
     if (existing) {
+      const existingCreatedAt = clean(await this.storage?.getItem(this.userCreatedAtKey)) ?? new Date(this.now()).toISOString();
       this.currentIdentity = {
         userId: existing,
-        userCreatedAt: (await this.storage?.getItem(this.userCreatedAtKey)) ?? "",
+        userCreatedAt: existingCreatedAt,
       };
+      await this.storage?.setItem(this.userCreatedAtKey, existingCreatedAt);
       return this.currentIdentity;
     }
 

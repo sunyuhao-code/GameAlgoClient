@@ -352,6 +352,10 @@ public final class GameAlgoClient {
             String existing = cacheStorage.getItem(USER_ID_KEY);
             if (!isBlank(existing)) {
                 String createdAt = cacheStorage.getItem(USER_CREATED_AT_KEY);
+                if (isBlank(createdAt)) {
+                    createdAt = isoTimestamp(new Date());
+                    cacheStorage.setItem(USER_CREATED_AT_KEY, createdAt);
+                }
                 userIdentity = new GameAlgoUserIdentity(existing, createdAt);
                 return userIdentity;
             }

@@ -311,6 +311,49 @@ test("start generates and reuses anonymous user id when userId is omitted", asyn
   assert.equal(new URL(urls[1]).searchParams.get("userId"), firstIdentity.userId);
 });
 
+test("start backfills createdAt for persisted legacy user id", async () => {
+  const storage = new MapStorage();
+  storage.setItem("gamealgo_user_id", "legacy-user");
+  let uploadedEvents: Array<Record<string, unknown>> = [];
+  const client = new GameAlgoRestClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    storage,
+    eventFlushIntervalMs: 0,
+    now: () => Date.parse("2026-05-28T10:00:00.000Z"),
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      if (request.url.endsWith("/v1/events/batch")) {
+        const body = await request.json() as { events: Array<Record<string, unknown>> };
+        uploadedEvents = body.events;
+        return jsonResponse({ ok: true, accepted: body.events.length });
+      }
+      return jsonResponse({
+        gameId: "Mahjong",
+        environment: "live",
+        configVersion: "v1",
+        ttlSeconds: 60,
+        serverTime: "2026-05-28T10:00:00.000Z",
+        experiments: [],
+        configFiles: [],
+      });
+    },
+  });
+
+  await client.start();
+  const identity = await client.userIdentity();
+  assert.equal(identity.userId, "legacy-user");
+  assert.equal(identity.userCreatedAt, "2026-05-28T10:00:00.000Z");
+  assert.equal(storage.getItem("gamealgo_user_created_at"), "2026-05-28T10:00:00.000Z");
+
+  assert.equal(client.tracker.trackSessionStart(), true);
+  await client.tracker.flush();
+  const sessionStart = uploadedEvents.find((event) => event.eventType === "session_start");
+  assert.equal(sessionStart?.userId, "legacy-user");
+  assert.equal((sessionStart?.payload as Record<string, unknown>).userCreatedAt, "2026-05-28T10:00:00.000Z");
+  client.tracker.close();
+});
+
 test("uploadEvents fills platform, sdkVersion, appVersion, and timestamp defaults", async () => {
   const client = new GameAlgoRestClient({
     baseUrl: "https://gamealgo.test",

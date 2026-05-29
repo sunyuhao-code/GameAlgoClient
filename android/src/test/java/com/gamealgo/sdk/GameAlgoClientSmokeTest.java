@@ -17,6 +17,7 @@ public final class GameAlgoClientSmokeTest {
         testExecutorExecutesPreloadedScriptAgainstLocalSnapshot();
         testStartRestoresPersistedSnapshotThenStillRefreshes();
         testStartGeneratesAndReusesAnonymousUserId();
+        testStartBackfillsCreatedAtForPersistedLegacyUserId();
         testUploadEventsFillsDefaults();
         testTrackerQueuesAndFlushesEvents();
     }
@@ -289,6 +290,51 @@ public final class GameAlgoClientSmokeTest {
         check(TimeZone.getDefault().getID().equals(event.get("timezone")), "timezone should default");
         check(Boolean.FALSE.equals(event.get("isDebug")), "isDebug should default false");
         check(event.get("timestamp") instanceof String, "timestamp should default");
+    }
+
+    private static void testStartBackfillsCreatedAtForPersistedLegacyUserId() throws Exception {
+        FakeHttpClient httpClient = new FakeHttpClient();
+        httpClient.enqueue(jsonResponse(configJson("v1")));
+        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":2}"));
+        MemoryCacheStorage cache = new MemoryCacheStorage();
+        cache.setItem("gamealgo_user_id", "legacy-user");
+        GameAlgoClient client = new GameAlgoClient(
+                "ga_live_test_key_0123456789abcdef",
+                "https://gamealgo.test",
+                "1.0.0",
+                null,
+                "android",
+                httpClient,
+                new FakeScriptRuntime(),
+                cache,
+                "test-cache"
+        );
+
+        client.startAsync().get();
+        check("legacy-user".equals(client.userId()), "legacy user id should be reused");
+        check(cache.getItem("gamealgo_user_created_at") != null && cache.getItem("gamealgo_user_created_at").length() > 0, "legacy user createdAt should be backfilled");
+
+        check(client.tracker().trackSessionStart(), "tracker should enqueue session_start for legacy user");
+        client.tracker().flush();
+
+        Map<String, Object> body = GameAlgoJson.asObject(
+                GameAlgoJson.parse(new String(httpClient.requests.get(1).getBody(), StandardCharsets.UTF_8)),
+                "body"
+        );
+        List<Object> events = GameAlgoJson.asArray(body.get("events"), "events");
+        Map<String, Object> sessionStart = null;
+        for (Object event : events) {
+            Map<String, Object> parsed = GameAlgoJson.asObject(event, "events[]");
+            if ("session_start".equals(parsed.get("eventType"))) {
+                sessionStart = parsed;
+                break;
+            }
+        }
+
+        check(sessionStart != null, "session_start should be uploaded for legacy user");
+        check("legacy-user".equals(sessionStart.get("userId")), "session_start should use legacy user id");
+        Map<String, Object> payload = GameAlgoJson.asObject(sessionStart.get("payload"), "payload");
+        check(cache.getItem("gamealgo_user_created_at").equals(payload.get("userCreatedAt")), "session_start should include backfilled userCreatedAt");
     }
 
     private static void testTrackerQueuesAndFlushesEvents() throws Exception {
