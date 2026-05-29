@@ -127,7 +127,8 @@ public actor GameAlgoEventTracker {
         _ eventType: String,
         payload: JSONValue = .object([:]),
         userId: String? = nil,
-        sessionId: String? = nil
+        sessionId: String? = nil,
+        includeExperiments: Bool? = nil
     ) -> Bool {
         guard let resolvedUserId = clean(userId ?? self.userId) else {
             return false
@@ -143,7 +144,7 @@ public actor GameAlgoEventTracker {
             timezone: timezone,
             isDebug: isDebug,
             timestamp: GameAlgoEventBatchUploader.isoTimestamp(now()),
-            payload: payloadWithExperiments(eventType: eventType, payload: payload)
+            payload: payloadWithExperiments(eventType: eventType, payload: payload, includeExperiments: includeExperiments)
         )
         enqueue(event)
         return true
@@ -154,10 +155,11 @@ public actor GameAlgoEventTracker {
         _ type: String,
         payload: JSONValue = .object([:]),
         userId: String? = nil,
-        sessionId: String? = nil
+        sessionId: String? = nil,
+        includeExperiments: Bool = false
     ) -> Bool {
         let eventType = type.hasPrefix("_") ? type : "_\(type)"
-        return track(eventType, payload: payload, userId: userId, sessionId: sessionId)
+        return track(eventType, payload: payload, userId: userId, sessionId: sessionId, includeExperiments: includeExperiments)
     }
 
     @discardableResult
@@ -292,10 +294,8 @@ public actor GameAlgoEventTracker {
         }
     }
 
-    private func payloadWithExperiments(eventType: String, payload: JSONValue) -> JSONValue {
-        guard !["session_start", "session_end", "config_loaded"].contains(eventType),
-              !currentAssignments.isEmpty
-        else {
+    private func payloadWithExperiments(eventType: String, payload: JSONValue, includeExperiments: Bool?) -> JSONValue {
+        guard shouldAttachExperiments(eventType: eventType, includeExperiments: includeExperiments) else {
             return payload
         }
 
@@ -304,6 +304,18 @@ public actor GameAlgoEventTracker {
             object["experiments"] = experimentsPayload()
         }
         return .object(object)
+    }
+
+    private func shouldAttachExperiments(eventType: String, includeExperiments: Bool?) -> Bool {
+        guard !["session_start", "session_end", "config_loaded"].contains(eventType),
+              !currentAssignments.isEmpty
+        else {
+            return false
+        }
+        if let includeExperiments {
+            return includeExperiments
+        }
+        return !eventType.hasPrefix("_")
     }
 
     private func experimentsPayload() -> JSONValue {

@@ -102,6 +102,7 @@ export type GameAlgoUserIdentity = {
 export type TrackEventOptions = {
   userId?: string;
   sessionId?: string;
+  includeExperiments?: boolean;
   platform?: Platform;
   sdkVersion?: string;
   appVersion?: string;

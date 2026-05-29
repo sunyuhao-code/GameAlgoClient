@@ -218,6 +218,8 @@ function execute(input) {
 
 SDK 默认提供 `tracker`，游戏代码只需要调用 `trackSessionStart`、`trackLevelEnd`、`trackEvent` 等方法。tracker 会内存排队、最多 100 条一批上传、30 秒定时 flush、失败时保留上一批等待下次 retry。`uploadEvents` 仍保留为低层接口，只有在接入方自己有队列系统时才需要直接调用。
 
+标准事件默认会附带当前实验分组；自定义事件（`trackEvent` / `_custom_event`）默认不附带，需要时显式开启 `includeExperiments`。
+
 最小推荐事件：
 
 ```text

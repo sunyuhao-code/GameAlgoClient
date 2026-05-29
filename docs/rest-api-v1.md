@@ -132,6 +132,8 @@ _button_click
 _tutorial_skip
 ```
 
+SDK trackers do not attach experiment variants to custom events by default. Opt in per event when attribution is needed.
+
 ## 6. Error Response
 
 ```json

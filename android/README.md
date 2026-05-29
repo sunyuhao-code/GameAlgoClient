@@ -50,6 +50,8 @@ The SDK sends `X-GameAlgo-Key` on every request, caches `/v1/config` by `ttlSeco
 
 `tracker()` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, and keeps the failed batch for the next retry. `fetchConfig`, `fetchConfigFile`, and `uploadEvents` are blocking in this core package; Android apps should call those lower-level methods from their own background executor/coroutine layer.
 
+Standard events attach current experiment variants by default. Custom events do not; call `sdk.tracker().trackEvent("button_click", payload, true)` when a custom event should include them.
+
 ## Check
 
 ```bash

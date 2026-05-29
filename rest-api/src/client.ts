@@ -477,7 +477,7 @@ export class GameAlgoEventTracker {
       timezone: clean(options.timezone) ?? this.timezone,
       isDebug: options.isDebug ?? this.isDebug,
       timestamp: options.timestamp ?? new Date(this.now()).toISOString(),
-      payload: this.payloadWithExperiments(eventType, payload),
+      payload: this.payloadWithExperiments(eventType, payload, options.includeExperiments),
     });
     return true;
   }
@@ -593,12 +593,14 @@ export class GameAlgoEventTracker {
     }
   }
 
-  private payloadWithExperiments(eventType: string, payload: JsonValue): JsonValue {
+  private payloadWithExperiments(eventType: string, payload: JsonValue, includeExperiments?: boolean): JsonValue {
     if (
       eventType === "session_start" ||
       eventType === "session_end" ||
       eventType === "config_loaded" ||
-      Object.keys(this.currentExperiments).length === 0
+      Object.keys(this.currentExperiments).length === 0 ||
+      includeExperiments === false ||
+      (includeExperiments === undefined && eventType.startsWith("_"))
     ) {
       return payload;
     }

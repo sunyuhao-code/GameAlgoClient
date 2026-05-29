@@ -48,6 +48,8 @@ If an experiment assignment includes `script`, `executor.execute(state)` runs th
 
 `tracker` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, keeps the failed batch for the next retry, and fills the local `timezone` by default. `uploadEvents` remains available as a lower-level API when the integrating team already owns a queue/retry system.
 
+Standard events attach current experiment variants by default. Custom events do not; call `client.tracker.trackEvent("button_click", {}, { includeExperiments: true })` when a custom event should include them.
+
 ## 1. Auth
 
 Every request must include:

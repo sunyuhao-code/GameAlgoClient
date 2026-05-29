@@ -450,6 +450,50 @@ test("tracker queues and flushes events after start identifies user", async () =
   client.tracker.close();
 });
 
+test("custom events opt into experiment payloads", async () => {
+  let uploadedEvents: Array<Record<string, unknown>> = [];
+  const client = new GameAlgoRestClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    eventFlushIntervalMs: 0,
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      if (request.url.endsWith("/v1/events/batch")) {
+        const body = await request.json() as { events: Array<Record<string, unknown>> };
+        uploadedEvents = body.events;
+        return jsonResponse({ ok: true, accepted: body.events.length });
+      }
+      return jsonResponse({
+        gameId: "Mahjong",
+        environment: "live",
+        configVersion: "v1",
+        ttlSeconds: 60,
+        serverTime: "2026-05-28T10:00:00.000Z",
+        experiments: [{
+          key: "level_generator",
+          experimentId: "exp-level-generator-001",
+          variant: "variant-a",
+          config: {},
+        }],
+        configFiles: [],
+      });
+    },
+  });
+
+  await client.start({ userId: "u1" });
+  assert.equal(client.tracker.trackEvent("custom_action"), true);
+  assert.equal(client.tracker.trackEvent("custom_action_with_exp", {}, { includeExperiments: true }), true);
+  await client.tracker.flush();
+
+  assert.equal(uploadedEvents[1].eventType, "_custom_action");
+  assert.equal((uploadedEvents[1].payload as Record<string, unknown>).experiments, undefined);
+  assert.equal(uploadedEvents[2].eventType, "_custom_action_with_exp");
+  assert.deepEqual((uploadedEvents[2].payload as Record<string, unknown>).experiments, {
+    level_generator: "variant-a",
+  });
+  client.tracker.close();
+});
+
 test("throws structured API errors", async () => {
   const client = new GameAlgoRestClient({
     baseUrl: "https://gamealgo.test",

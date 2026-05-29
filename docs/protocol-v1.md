@@ -241,6 +241,8 @@ Content-Type: application/json
 
 自定义事件使用 `_` 前缀，例如 `_button_click`。
 
+SDK tracker 默认只给标准事件附加当前实验分组；自定义事件默认不附加，需要按事件显式开启。
+
 ## 7. 客户端 API 形态
 
 ### iOS

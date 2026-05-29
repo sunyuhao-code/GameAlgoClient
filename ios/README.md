@@ -60,6 +60,8 @@ If an experiment assignment includes `script`, `executor.execute(state)` runs th
 
 `tracker` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, flushes when the app enters background or terminates, and keeps the failed batch for the next retry. Call `await sdk.tracker.flush()` to manually flush critical events; `trackSessionEnd` also triggers an immediate flush after enqueueing `session_end`.
 
+Standard events attach current experiment variants by default. Custom events do not; call `await sdk.tracker.trackEvent("button_click", includeExperiments: true)` when a custom event should include them.
+
 Lower-level methods are still available when needed:
 
 ```swift

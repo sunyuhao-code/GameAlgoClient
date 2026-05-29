@@ -87,6 +87,14 @@ public final class GameAlgoEventTracker implements AutoCloseable {
     }
 
     public boolean track(String eventType, Map<String, Object> payload) {
+        return trackInternal(eventType, payload, null);
+    }
+
+    public boolean track(String eventType, Map<String, Object> payload, boolean includeExperiments) {
+        return trackInternal(eventType, payload, Boolean.valueOf(includeExperiments));
+    }
+
+    private boolean trackInternal(String eventType, Map<String, Object> payload, Boolean includeExperiments) {
         String resolvedUserId;
         String resolvedSessionId;
         String resolvedTimezone;
@@ -102,7 +110,7 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         }
 
         GameAlgoEvent event = new GameAlgoEvent(resolvedUserId, resolvedSessionId, eventType)
-                .payload(payloadWithExperiments(eventType, payload))
+                .payload(payloadWithExperiments(eventType, payload, includeExperiments))
                 .isDebug(resolvedIsDebug);
         if (!isBlank(resolvedTimezone)) {
             event.timezone(resolvedTimezone);
@@ -116,8 +124,12 @@ public final class GameAlgoEventTracker implements AutoCloseable {
     }
 
     public boolean trackEvent(String type, Map<String, Object> payload) {
+        return trackEvent(type, payload, false);
+    }
+
+    public boolean trackEvent(String type, Map<String, Object> payload, boolean includeExperiments) {
         String eventType = type != null && type.startsWith("_") ? type : "_" + type;
-        return track(eventType, payload);
+        return trackInternal(eventType, payload, Boolean.valueOf(includeExperiments));
     }
 
     public boolean trackSessionStart() {
@@ -282,12 +294,14 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         }
     }
 
-    private synchronized Map<String, Object> payloadWithExperiments(String eventType, Map<String, Object> payload) {
+    private synchronized Map<String, Object> payloadWithExperiments(String eventType, Map<String, Object> payload, Boolean includeExperiments) {
         Map<String, Object> merged = copyPayload(payload);
         if (currentExperiments.isEmpty()
                 || "session_start".equals(eventType)
                 || "session_end".equals(eventType)
                 || "config_loaded".equals(eventType)
+                || Boolean.FALSE.equals(includeExperiments)
+                || (includeExperiments == null && eventType != null && eventType.startsWith("_"))
                 || merged.containsKey("experiments")) {
             return merged;
         }

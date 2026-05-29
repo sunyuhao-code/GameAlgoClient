@@ -20,6 +20,7 @@ public final class GameAlgoClientSmokeTest {
         testStartBackfillsCreatedAtForPersistedLegacyUserId();
         testUploadEventsFillsDefaults();
         testTrackerQueuesAndFlushesEvents();
+        testCustomEventsOptIntoExperimentPayloads();
     }
 
     private static void testFetchConfigSendsHeadersAndCaches() throws Exception {
@@ -385,6 +386,42 @@ public final class GameAlgoClientSmokeTest {
         Map<String, Object> thirdPayload = GameAlgoJson.asObject(third.get("payload"), "payload");
         Map<String, Object> experiments = GameAlgoJson.asObject(thirdPayload.get("experiments"), "experiments");
         check("variant-a".equals(experiments.get("level_generator")), "tracker should attach experiment variants");
+        client.tracker().close();
+    }
+
+    private static void testCustomEventsOptIntoExperimentPayloads() throws Exception {
+        FakeHttpClient httpClient = new FakeHttpClient();
+        httpClient.enqueue(jsonResponse(configJsonWithExperiment("v1")));
+        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":3}"));
+        GameAlgoClient client = new GameAlgoClient(
+                "ga_live_test_key_0123456789abcdef",
+                "https://gamealgo.test",
+                "1.0.0",
+                null,
+                "android",
+                httpClient
+        );
+
+        client.startAsync("u1").get();
+        check(client.tracker().trackEvent("custom_action"), "custom event should enqueue");
+        check(client.tracker().trackEvent("custom_action_with_exp", new LinkedHashMap<String, Object>(), true), "custom event should opt into experiments");
+        client.tracker().flush();
+
+        Map<String, Object> body = GameAlgoJson.asObject(
+                GameAlgoJson.parse(new String(httpClient.requests.get(1).getBody(), StandardCharsets.UTF_8)),
+                "body"
+        );
+        List<Object> events = GameAlgoJson.asArray(body.get("events"), "events");
+        Map<String, Object> defaultEvent = GameAlgoJson.asObject(events.get(1), "events[]");
+        Map<String, Object> optInEvent = GameAlgoJson.asObject(events.get(2), "events[]");
+        Map<String, Object> defaultPayload = GameAlgoJson.asObject(defaultEvent.get("payload"), "payload");
+        Map<String, Object> optInPayload = GameAlgoJson.asObject(optInEvent.get("payload"), "payload");
+        Map<String, Object> experiments = GameAlgoJson.asObject(optInPayload.get("experiments"), "experiments");
+
+        check("_custom_action".equals(defaultEvent.get("eventType")), "custom event should be prefixed");
+        check(!defaultPayload.containsKey("experiments"), "custom event should not include experiments by default");
+        check("_custom_action_with_exp".equals(optInEvent.get("eventType")), "custom opt-in event should be prefixed");
+        check("variant-a".equals(experiments.get("level_generator")), "custom opt-in event should include experiments");
         client.tracker().close();
     }
 

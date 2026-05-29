@@ -469,6 +469,52 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(experiments?["level_generator"] as? String, "variant-a")
     }
 
+    func testCustomEventsOptIntoExperimentPayloads() async throws {
+        let suiteName = "GameAlgoSDKTests.customEventExperiments.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let httpClient = MockHTTPClient()
+        try await httpClient.enqueueJSON(configResponse(
+            version: "v1",
+            experiments: [[
+                "key": "level_generator",
+                "experimentId": "exp-level-generator-001",
+                "variant": "variant-a",
+                "config": [String: Any](),
+            ]]
+        ))
+        try await httpClient.enqueueJSON(["ok": true, "accepted": 3])
+        let sdk = GameAlgoSDK(
+            gameKey: gameKey,
+            baseURL: URL(string: "https://gamealgo.test")!,
+            httpClient: httpClient,
+            userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
+            eventFlushInterval: 0
+        )
+
+        let task = sdk.start(userId: "u1")
+        try await task.value
+        let didTrackCustomEvent = await sdk.tracker.trackEvent("custom_action")
+        let didTrackCustomEventWithExperiments = await sdk.tracker.trackEvent("custom_action_with_exp", includeExperiments: true)
+        XCTAssertTrue(didTrackCustomEvent)
+        XCTAssertTrue(didTrackCustomEventWithExperiments)
+        await sdk.tracker.flush()
+
+        let requests = await httpClient.requests
+        let body = try JSONSerialization.jsonObject(with: requests[1].body ?? Data()) as? [String: Any]
+        let events = body?["events"] as? [[String: Any]]
+        let defaultPayload = events?[1]["payload"] as? [String: Any]
+        let optInPayload = events?[2]["payload"] as? [String: Any]
+        let optInExperiments = optInPayload?["experiments"] as? [String: Any]
+
+        XCTAssertEqual(events?[1]["eventType"] as? String, "_custom_action")
+        XCTAssertNil(defaultPayload?["experiments"])
+        XCTAssertEqual(events?[2]["eventType"] as? String, "_custom_action_with_exp")
+        XCTAssertEqual(optInExperiments?["level_generator"] as? String, "variant-a")
+    }
+
     func testTrackSessionEndFlushesImmediately() async throws {
         let suiteName = "GameAlgoSDKTests.sessionEnd.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
