@@ -2,6 +2,7 @@ import type {
   ConfigFileResponse,
   ConfigResponse,
   EventBatchResponse,
+  ExperimentAssignment,
   FetchConfigOptions,
   GameAlgoExecutionResult,
   GameAlgoRestClientOptions,
@@ -167,6 +168,7 @@ export class GameAlgoRestClient {
       cacheKey,
       expiresAt: this.now() + Math.max(Number(config.ttlSeconds) || 0, 0) * 1000,
     };
+    this.tracker.setAssignments(config.experiments);
     this.snapshot = {
       ...this.snapshot,
       config,
@@ -248,6 +250,8 @@ export class GameAlgoRestClient {
           ...config.experiments.flatMap((experiment) => experiment.script?.name ? [experiment.script.name] : []),
         ];
     await Promise.all([...new Set(names)].map((name) => this.fetchConfigFile(name)));
+    this.tracker.setAssignments(config.experiments);
+    this.tracker.trackConfigLoaded();
   }
 
   private async loadPersistedSnapshot(): Promise<void> {
@@ -323,6 +327,7 @@ export class GameAlgoEventTracker {
   private timezone?: string;
   private userCreatedAt?: string;
   private isDebug: boolean;
+  private currentExperiments: Record<string, string> = {};
   private queue: GameEvent[] = [];
   private retryBatch: GameEvent[] = [];
   private flushTimer?: ReturnType<typeof setInterval>;
@@ -372,6 +377,13 @@ export class GameAlgoEventTracker {
     this.timezone = timezone;
   }
 
+  setAssignments(assignments: ExperimentAssignment[]): void {
+    this.currentExperiments = {};
+    for (const assignment of assignments) {
+      this.currentExperiments[assignment.key] = assignment.variant;
+    }
+  }
+
   track(eventType: string, payload: JsonValue = {}, options: TrackEventOptions = {}): boolean {
     const userId = clean(options.userId ?? this.userId);
     if (!userId) return false;
@@ -387,7 +399,7 @@ export class GameAlgoEventTracker {
       timezone: options.timezone ?? this.timezone,
       isDebug: options.isDebug ?? this.isDebug,
       timestamp: options.timestamp ?? new Date(this.now()).toISOString(),
-      payload,
+      payload: this.payloadWithExperiments(eventType, payload),
     });
     return true;
   }
@@ -411,6 +423,10 @@ export class GameAlgoEventTracker {
       merged.sessionDurationMs = this.now() - this.sessionStartMs;
     }
     return this.track("session_end", merged);
+  }
+
+  trackConfigLoaded(): boolean {
+    return this.track("config_loaded", { experiments: this.currentExperiments });
   }
 
   trackLevelStart(payload: JsonValue = {}): boolean {
@@ -497,6 +513,23 @@ export class GameAlgoEventTracker {
     if (this.queue.length >= this.maxBatchSize) {
       void this.flush().catch(() => undefined);
     }
+  }
+
+  private payloadWithExperiments(eventType: string, payload: JsonValue): JsonValue {
+    if (
+      eventType === "session_start" ||
+      eventType === "session_end" ||
+      eventType === "config_loaded" ||
+      Object.keys(this.currentExperiments).length === 0
+    ) {
+      return payload;
+    }
+
+    const merged = objectPayload(payload);
+    if (merged.experiments === undefined) {
+      merged.experiments = this.currentExperiments;
+    }
+    return merged;
   }
 
   private startTimer(): void {

@@ -181,6 +181,7 @@ public final class GameAlgoClient {
                     System.currentTimeMillis() + Math.max(response.getTtlSeconds(), 0) * 1000L
             );
             snapshotStore.updateConfig(response, System.currentTimeMillis(), resolvedRequest.getUserId());
+            tracker.setAssignments(response.getExperiments());
             persistSnapshot();
             return response;
         } catch (GameAlgoException error) {
@@ -249,6 +250,8 @@ public final class GameAlgoClient {
                 fetchConfigFile(assignment.getScript().getName());
             }
         }
+        tracker.setAssignments(config.getExperiments());
+        tracker.trackConfigLoaded();
     }
 
     private synchronized GameAlgoFetchConfigRequest requestWithResolvedUser(GameAlgoFetchConfigRequest request) throws GameAlgoException {

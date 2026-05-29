@@ -27,6 +27,7 @@ public actor GameAlgoEventTracker {
     private var flushTask: Task<Void, Never>?
     private var isFlushing = false
     private var sessionStartDate: Date?
+    private var currentAssignments: [GameAlgoExperimentAssignment] = []
 
     init(
         uploader: any GameAlgoEventBatchUploading,
@@ -110,6 +111,10 @@ public actor GameAlgoEventTracker {
         self.timezone = timezone
     }
 
+    public func setAssignments(_ assignments: [GameAlgoExperimentAssignment]) {
+        currentAssignments = assignments
+    }
+
     @discardableResult
     public func track(
         _ eventType: String,
@@ -131,7 +136,7 @@ public actor GameAlgoEventTracker {
             timezone: timezone,
             isDebug: isDebug,
             timestamp: GameAlgoEventBatchUploader.isoTimestamp(now()),
-            payload: payload
+            payload: payloadWithExperiments(eventType: eventType, payload: payload)
         )
         enqueue(event)
         return true
@@ -166,6 +171,11 @@ public actor GameAlgoEventTracker {
             merged["sessionDurationMs"] = .number(Double(durationMs))
         }
         return track("session_end", payload: .object(merged))
+    }
+
+    @discardableResult
+    public func trackConfigLoaded() -> Bool {
+        track("config_loaded", payload: .object(["experiments": experimentsPayload()]))
     }
 
     @discardableResult
@@ -265,6 +275,28 @@ public actor GameAlgoEventTracker {
             let tracker = self
             Task { await tracker.flush() }
         }
+    }
+
+    private func payloadWithExperiments(eventType: String, payload: JSONValue) -> JSONValue {
+        guard !["session_start", "session_end", "config_loaded"].contains(eventType),
+              !currentAssignments.isEmpty
+        else {
+            return payload
+        }
+
+        var object = payload.objectValue ?? [:]
+        if object["experiments"] == nil {
+            object["experiments"] = experimentsPayload()
+        }
+        return .object(object)
+    }
+
+    private func experimentsPayload() -> JSONValue {
+        var experiments: [String: JSONValue] = [:]
+        for assignment in currentAssignments {
+            experiments[assignment.key] = .string(assignment.variant)
+        }
+        return .object(experiments)
     }
 
     private func startFlushTimerIfNeeded() {

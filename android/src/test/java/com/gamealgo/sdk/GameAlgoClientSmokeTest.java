@@ -290,8 +290,8 @@ public final class GameAlgoClientSmokeTest {
 
     private static void testTrackerQueuesAndFlushesEvents() throws Exception {
         FakeHttpClient httpClient = new FakeHttpClient();
-        httpClient.enqueue(jsonResponse(configJson("v1")));
-        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":2}"));
+        httpClient.enqueue(jsonResponse(configJsonWithExperiment("v1")));
+        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":3}"));
         GameAlgoClient client = new GameAlgoClient(
                 "ga_live_test_key_0123456789abcdef",
                 "https://gamealgo.test",
@@ -316,18 +316,23 @@ public final class GameAlgoClientSmokeTest {
         List<Object> events = GameAlgoJson.asArray(body.get("events"), "events");
         Map<String, Object> first = GameAlgoJson.asObject(events.get(0), "events[]");
         Map<String, Object> second = GameAlgoJson.asObject(events.get(1), "events[]");
+        Map<String, Object> third = GameAlgoJson.asObject(events.get(2), "events[]");
 
         check(httpClient.requests.size() == 2, "tracker flush should upload one event batch");
         check("https://gamealgo.test/v1/events/batch".equals(httpClient.requests.get(1).getUrl().toString()), "tracker should post to events batch");
-        check(events.size() == 2, "tracker should upload queued events together");
-        check("u1".equals(first.get("userId")), "tracker should use identified user");
-        check(first.get("sessionId").equals(second.get("sessionId")), "tracker should keep session id");
-        check("session_start".equals(first.get("eventType")), "tracker should upload session_start");
-        check("level_end".equals(second.get("eventType")), "tracker should upload level_end");
-        check("android".equals(second.get("platform")), "tracker event platform should default");
-        check("1.2.3".equals(second.get("sdkVersion")), "tracker event sdkVersion should default");
-        check("4.5.6".equals(second.get("appVersion")), "tracker event appVersion should default");
-        check(Boolean.TRUE.equals(second.get("isDebug")), "tracker should preserve debug flag");
+        check(events.size() == 3, "tracker should upload config_loaded and queued events together");
+        check("config_loaded".equals(first.get("eventType")), "tracker should upload config_loaded");
+        check("u1".equals(second.get("userId")), "tracker should use identified user");
+        check(second.get("sessionId").equals(third.get("sessionId")), "tracker should keep session id");
+        check("session_start".equals(second.get("eventType")), "tracker should upload session_start");
+        check("level_end".equals(third.get("eventType")), "tracker should upload level_end");
+        check("android".equals(third.get("platform")), "tracker event platform should default");
+        check("1.2.3".equals(third.get("sdkVersion")), "tracker event sdkVersion should default");
+        check("4.5.6".equals(third.get("appVersion")), "tracker event appVersion should default");
+        check(Boolean.TRUE.equals(third.get("isDebug")), "tracker should preserve debug flag");
+        Map<String, Object> thirdPayload = GameAlgoJson.asObject(third.get("payload"), "payload");
+        Map<String, Object> experiments = GameAlgoJson.asObject(thirdPayload.get("experiments"), "experiments");
+        check("variant-a".equals(experiments.get("level_generator")), "tracker should attach experiment variants");
         client.tracker().close();
     }
 
@@ -339,6 +344,23 @@ public final class GameAlgoClientSmokeTest {
                 + "\"ttlSeconds\":60,"
                 + "\"serverTime\":\"2026-05-28T10:00:00.000Z\","
                 + "\"experiments\":[],"
+                + "\"configFiles\":[]"
+                + "}";
+    }
+
+    private static String configJsonWithExperiment(String version) {
+        return "{"
+                + "\"gameId\":\"Mahjong\","
+                + "\"environment\":\"live\","
+                + "\"configVersion\":\"" + version + "\","
+                + "\"ttlSeconds\":60,"
+                + "\"serverTime\":\"2026-05-28T10:00:00.000Z\","
+                + "\"experiments\":[{"
+                + "\"key\":\"level_generator\","
+                + "\"experimentId\":\"exp-level-generator-001\","
+                + "\"variant\":\"variant-a\","
+                + "\"config\":{}"
+                + "}],"
                 + "\"configFiles\":[]"
                 + "}";
     }

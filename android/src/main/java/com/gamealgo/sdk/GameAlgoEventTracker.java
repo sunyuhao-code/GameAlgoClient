@@ -23,6 +23,7 @@ public final class GameAlgoEventTracker implements AutoCloseable {
     private long sessionStartMillis;
     private final List<GameAlgoEvent> queue = new ArrayList<>();
     private final List<GameAlgoEvent> retryBatch = new ArrayList<>();
+    private final Map<String, String> currentExperiments = new LinkedHashMap<>();
     private ScheduledExecutorService scheduler;
     private boolean flushing;
 
@@ -70,6 +71,16 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         this.timezone = timezone;
     }
 
+    public synchronized void setAssignments(List<GameAlgoExperimentAssignment> assignments) {
+        currentExperiments.clear();
+        if (assignments == null) {
+            return;
+        }
+        for (GameAlgoExperimentAssignment assignment : assignments) {
+            currentExperiments.put(assignment.getKey(), assignment.getVariant());
+        }
+    }
+
     public boolean track(String eventType) {
         return track(eventType, new LinkedHashMap<String, Object>());
     }
@@ -90,7 +101,7 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         }
 
         GameAlgoEvent event = new GameAlgoEvent(resolvedUserId, resolvedSessionId, eventType)
-                .payload(payload)
+                .payload(payloadWithExperiments(eventType, payload))
                 .isDebug(resolvedIsDebug);
         if (!isBlank(resolvedTimezone)) {
             event.timezone(resolvedTimezone);
@@ -133,6 +144,12 @@ public final class GameAlgoEventTracker implements AutoCloseable {
             }
         }
         return track("session_end", merged);
+    }
+
+    public boolean trackConfigLoaded() {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("experiments", experimentsPayload());
+        return track("config_loaded", payload);
     }
 
     public boolean trackLevelStart(Map<String, Object> payload) {
@@ -262,6 +279,23 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         if (shouldFlush) {
             flushAsync();
         }
+    }
+
+    private synchronized Map<String, Object> payloadWithExperiments(String eventType, Map<String, Object> payload) {
+        Map<String, Object> merged = copyPayload(payload);
+        if (currentExperiments.isEmpty()
+                || "session_start".equals(eventType)
+                || "session_end".equals(eventType)
+                || "config_loaded".equals(eventType)
+                || merged.containsKey("experiments")) {
+            return merged;
+        }
+        merged.put("experiments", experimentsPayload());
+        return merged;
+    }
+
+    private synchronized Map<String, Object> experimentsPayload() {
+        return new LinkedHashMap<String, Object>(currentExperiments);
     }
 
     private synchronized void ensureScheduler() {

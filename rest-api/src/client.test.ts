@@ -24,7 +24,12 @@ test("fetchConfig sends Protocol v1 headers and caches by ttl", async () => {
         configVersion: "v1",
         ttlSeconds: 60,
         serverTime: "2026-05-28T10:00:00.000Z",
-        experiments: [],
+        experiments: [{
+          key: "level_generator",
+          experimentId: "exp-level-generator-001",
+          variant: "variant-a",
+          config: {},
+        }],
         configFiles: [],
       });
     },
@@ -53,7 +58,12 @@ test("fetchConfig can force refresh", async () => {
         configVersion: `v${calls}`,
         ttlSeconds: 60,
         serverTime: "2026-05-28T10:00:00.000Z",
-        experiments: [],
+        experiments: [{
+          key: "level_generator",
+          experimentId: "exp-level-generator-001",
+          variant: "variant-a",
+          config: {},
+        }],
         configFiles: [],
       });
     },
@@ -259,7 +269,12 @@ test("start generates and reuses anonymous user id when userId is omitted", asyn
         configVersion: "v1",
         ttlSeconds: 60,
         serverTime: "2026-05-28T10:00:00.000Z",
-        experiments: [],
+        experiments: [{
+          key: "level_generator",
+          experimentId: "exp-level-generator-001",
+          variant: "variant-a",
+          config: {},
+        }],
         configFiles: [],
       });
     },
@@ -353,7 +368,12 @@ test("tracker queues and flushes events after start identifies user", async () =
         configVersion: "v1",
         ttlSeconds: 60,
         serverTime: "2026-05-28T10:00:00.000Z",
-        experiments: [],
+        experiments: [{
+          key: "level_generator",
+          experimentId: "exp-level-generator-001",
+          variant: "variant-a",
+          config: {},
+        }],
         configFiles: [],
       });
     },
@@ -365,18 +385,22 @@ test("tracker queues and flushes events after start identifies user", async () =
   assert.equal(client.tracker.trackLevelEnd({ level: 3 }), true);
   const responses = await client.tracker.flush();
 
-  assert.equal(responses[0].accepted, 2);
+  assert.equal(responses[0].accepted, 3);
   assert.equal(requests.length, 2);
   assert.equal(requests[1].url, "https://gamealgo.test/v1/events/batch");
-  assert.equal(uploadedEvents.length, 2);
-  assert.equal(uploadedEvents[0].userId, "u1");
-  assert.equal(uploadedEvents[0].sessionId, uploadedEvents[1].sessionId);
-  assert.equal(uploadedEvents[0].eventType, "session_start");
-  assert.equal(uploadedEvents[1].eventType, "level_end");
-  assert.equal(uploadedEvents[1].platform, "rest");
-  assert.equal(uploadedEvents[1].sdkVersion, "1.2.3");
-  assert.equal(uploadedEvents[1].appVersion, "4.5.6");
-  assert.equal(uploadedEvents[1].isDebug, true);
+  assert.equal(uploadedEvents.length, 3);
+  assert.equal(uploadedEvents[0].eventType, "config_loaded");
+  assert.equal(uploadedEvents[1].userId, "u1");
+  assert.equal(uploadedEvents[1].sessionId, uploadedEvents[2].sessionId);
+  assert.equal(uploadedEvents[1].eventType, "session_start");
+  assert.equal(uploadedEvents[2].eventType, "level_end");
+  assert.equal(uploadedEvents[2].platform, "rest");
+  assert.equal(uploadedEvents[2].sdkVersion, "1.2.3");
+  assert.equal(uploadedEvents[2].appVersion, "4.5.6");
+  assert.equal(uploadedEvents[2].isDebug, true);
+  assert.deepEqual((uploadedEvents[2].payload as Record<string, unknown>).experiments, {
+    level_generator: "variant-a",
+  });
   client.tracker.close();
 });
 

@@ -219,6 +219,7 @@ public actor GameAlgoSDK {
                 expiresAt: now().addingTimeInterval(TimeInterval(max(response.ttlSeconds, 0)))
             )
             snapshotStore.updateConfig(response, updatedAt: now(), userId: identity.userId)
+            await tracker.setAssignments(response.experiments)
             persistSnapshot()
             return response
         } catch {
@@ -300,6 +301,8 @@ public actor GameAlgoSDK {
             }
             try await group.waitForAll()
         }
+        await tracker.setAssignments(config.experiments)
+        _ = await tracker.trackConfigLoaded()
     }
 
     private func loadCachedSnapshot() {

@@ -340,8 +340,16 @@ final class GameAlgoSDKTests: XCTestCase {
 
     func testTrackerQueuesAndFlushesEventsAfterStartIdentifiesUser() async throws {
         let httpClient = MockHTTPClient()
-        try await httpClient.enqueueJSON(configResponse(version: "v1"))
-        try await httpClient.enqueueJSON(["ok": true, "accepted": 2])
+        try await httpClient.enqueueJSON(configResponse(
+            version: "v1",
+            experiments: [[
+                "key": "level_generator",
+                "experimentId": "exp-level-generator-001",
+                "variant": "variant-a",
+                "config": [String: Any](),
+            ]]
+        ))
+        try await httpClient.enqueueJSON(["ok": true, "accepted": 3])
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
@@ -368,15 +376,19 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(requests.count, 2)
         XCTAssertEqual(requests[1].method, .post)
         XCTAssertEqual(requests[1].url.absoluteString, "https://gamealgo.test/v1/events/batch")
-        XCTAssertEqual(events?.count, 2)
-        XCTAssertEqual(events?.first?["userId"] as? String, "u1")
-        XCTAssertEqual(events?.first?["sessionId"] as? String, events?.last?["sessionId"] as? String)
-        XCTAssertEqual(events?.first?["eventType"] as? String, "session_start")
+        XCTAssertEqual(events?.count, 3)
+        XCTAssertEqual(events?[0]["eventType"] as? String, "config_loaded")
+        XCTAssertEqual(events?[1]["userId"] as? String, "u1")
+        XCTAssertEqual(events?[1]["sessionId"] as? String, events?.last?["sessionId"] as? String)
+        XCTAssertEqual(events?[1]["eventType"] as? String, "session_start")
         XCTAssertEqual(events?.last?["eventType"] as? String, "level_end")
         XCTAssertEqual(events?.last?["platform"] as? String, "ios")
         XCTAssertEqual(events?.last?["sdkVersion"] as? String, "1.2.3")
         XCTAssertEqual(events?.last?["appVersion"] as? String, "4.5.6")
         XCTAssertEqual(events?.last?["isDebug"] as? Bool, true)
+        let levelPayload = events?.last?["payload"] as? [String: Any]
+        let experiments = levelPayload?["experiments"] as? [String: Any]
+        XCTAssertEqual(experiments?["level_generator"] as? String, "variant-a")
     }
 
     func testThrowsStructuredAPIErrors() async throws {
@@ -414,14 +426,14 @@ final class GameAlgoSDKTests: XCTestCase {
         }
     }
 
-    private func configResponse(version: String, ttlSeconds: Int = 60) -> [String: Any] {
+    private func configResponse(version: String, ttlSeconds: Int = 60, experiments: [[String: Any]] = []) -> [String: Any] {
         [
             "gameId": "Mahjong",
             "environment": "live",
             "configVersion": version,
             "ttlSeconds": ttlSeconds,
             "serverTime": "2026-05-28T10:00:00.000Z",
-            "experiments": [],
+            "experiments": experiments,
             "configFiles": [],
         ]
     }
