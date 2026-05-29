@@ -34,6 +34,12 @@ await client.tracker.flush();
 
 `start` refreshes `/v1/config` and preloads config files. It also creates or reuses the SDK anonymous `userId`; pass `storage` when initializing if the helper should persist that ID across app launches. `executor` and `config` read the latest local snapshot, so game logic does not need to call remote APIs when checking variants or tuning values.
 
+Files created under the admin Configs page can be fetched directly when needed:
+
+```ts
+const gameplay = await client.fetchConfigFile("gameplay.json");
+```
+
 The helper logs user id, config fetch, experiment assignment, config file, and script preload status to `console.log` by default. Pass `logger: false` to silence logs, or provide a custom logger function.
 
 If an experiment assignment includes `script`, `executor.execute(state)` runs the preloaded script. Config-only experiments return their config as the execution payload.

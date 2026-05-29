@@ -27,6 +27,10 @@ All integrations call the same `/v1/*` endpoints and send `X-GameAlgo-Key` on ev
 - Use the SDK-generated anonymous `userId` by default. iOS reuses the old SDK's `gamealgo_user_id`, so existing players keep stable assignments after updating. Android core and REST helper need `cacheStorage` / `storage` configured to persist that ID across launches.
 - Cache config for `ttlSeconds`.
 - Cache config files by hash or `ETag`.
+- SDK users can manually fetch an admin Configs file when needed:
+  - iOS: `try await sdk.fetchConfigFile("gameplay.json")`
+  - Android: `sdk.fetchConfigFile("gameplay.json")`
+  - REST: `await client.fetchConfigFile("gameplay.json")`
 - Use the SDK tracker for events. It batches in memory, flushes periodically, and retries the failed batch.
 - Do not block gameplay on GameAlgo network calls.
 - Fall back to local defaults when GameAlgo is unavailable.

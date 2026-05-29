@@ -48,6 +48,12 @@ await sdk.tracker.flush()
 
 `start` refreshes `/v1/config` and preloads config files in the background. It also creates or reuses the SDK anonymous `userId`; iOS uses the same `gamealgo_user_id` key as the old SDK, so existing players keep stable experiment assignments after updating. `executor` and `config` read the latest local snapshot, so gameplay code does not need to call remote APIs when checking variants or tuning values.
 
+Files created under the admin Configs page can be fetched directly when needed:
+
+```swift
+let gameplay = try await sdk.fetchConfigFile("gameplay.json")
+```
+
 The SDK logs user id, config fetch, experiment assignment, config file, and script preload status to the console by default. Pass `logger: nil` to silence logs, or provide a custom `GameAlgoLogHandler`.
 
 If an experiment assignment includes `script`, `executor.execute(state)` runs the preloaded JavaScript file through JSCore. Config-only experiments return their config as the execution payload.

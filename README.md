@@ -70,6 +70,12 @@ let result = levelGenerator.execute(.object(["turn": .number(7)]))
 let adsEnabled = sdk.config.bool("ads.rewarded.enabled", default: true, fileName: "gameplay.json")
 ```
 
+`start()` 会预加载控制台 Configs 页面下发的配置文件。需要手动立刻拉某个文件时，可以直接调用：
+
+```swift
+let gameplay = try await sdk.fetchConfigFile("gameplay.json")
+```
+
 如果首屏逻辑必须等远端配置，可以短时间等待；超时后仍然走本地默认逻辑：
 
 ```swift
@@ -117,6 +123,12 @@ GameAlgoExecutionResult result = levelGenerator.execute(state);
 boolean adsEnabled = sdk.config().bool("ads.rewarded.enabled", true, "gameplay.json");
 ```
 
+`startAsync()` 会预加载控制台 Configs 页面下发的配置文件。需要手动立刻拉某个文件时，可以直接调用：
+
+```java
+GameAlgoConfigFile gameplay = sdk.fetchConfigFile("gameplay.json");
+```
+
 上传事件优先用内置 tracker。tracker 会把事件放进内存队列，最多 100 条一批上传，并每 30 秒自动 flush。
 
 ```kotlin
@@ -149,6 +161,7 @@ const variant = levelGenerator.variant("control");
 const difficulty = levelGenerator.string("difficulty", "normal");
 const result = await levelGenerator.execute({ turn: 7 });
 const adsEnabled = client.config.bool("ads.rewarded.enabled", true, "gameplay.json");
+const gameplay = await client.fetchConfigFile("gameplay.json");
 
 client.tracker.trackSessionStart();
 client.tracker.trackLevelEnd({ level: 3, result: "win" });
@@ -178,6 +191,7 @@ POST /v1/events/batch
 - `executor(key)` 读取实验分组和实验 config。
 - `executor(key).execute(state)` 执行预加载脚本；没有脚本时返回 config-only payload。
 - `config` / `config()` 读取预加载的配置文件，例如 `gameplay.json`。
+- 需要绕过预加载、立即拉取某个文件时，用 `fetchConfigFile("gameplay.json")`；iOS 写法是 `try await sdk.fetchConfigFile("gameplay.json")`。
 - 启动时会先恢复上一次成功快照，再刷新远端配置；刷新成功后覆盖旧快照。
 
 脚本格式：
