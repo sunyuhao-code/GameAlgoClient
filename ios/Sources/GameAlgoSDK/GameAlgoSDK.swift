@@ -14,10 +14,12 @@ public actor GameAlgoSDK {
     private let snapshotCacheKey: String
     private let now: @Sendable () -> Date
     private let snapshotStore: GameAlgoSnapshotStore
+    private let eventUploader: any GameAlgoEventBatchUploading
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
     public nonisolated let config: GameAlgoConfigReader
+    public nonisolated let tracker: GameAlgoEventTracker
 
     private var cachedConfig: CachedConfig?
     private var readyTask: Task<Void, Error>?
@@ -32,9 +34,22 @@ public actor GameAlgoSDK {
         scriptRuntime: any GameAlgoScriptRuntime = JavaScriptCoreGameAlgoScriptRuntime(),
         cacheStorage: (any GameAlgoCacheStorage)? = GameAlgoUserDefaultsCacheStorage(),
         cacheKey: String? = nil,
+        isDebug: Bool = false,
+        eventFlushInterval: TimeInterval = 30,
+        eventMaxBatchSize: Int = 100,
+        eventQueueLimit: Int = 1000,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         let snapshotStore = GameAlgoSnapshotStore()
+        let eventUploader = GameAlgoEventBatchUploader(
+            gameKey: gameKey,
+            baseURL: baseURL,
+            defaultPlatform: platform,
+            defaultSDKVersion: sdkVersion,
+            defaultAppVersion: appVersion,
+            httpClient: httpClient,
+            now: now
+        )
         self.gameKey = gameKey
         self.baseURL = baseURL
         self.defaultSDKVersion = sdkVersion
@@ -46,7 +61,16 @@ public actor GameAlgoSDK {
         self.snapshotCacheKey = cacheKey ?? "gamealgo:v1:snapshot:\(baseURL.absoluteString):\(gameKey.prefix(16))"
         self.now = now
         self.snapshotStore = snapshotStore
+        self.eventUploader = eventUploader
         self.config = GameAlgoConfigReader(store: snapshotStore)
+        self.tracker = GameAlgoEventTracker(
+            uploader: eventUploader,
+            maxBatchSize: eventMaxBatchSize,
+            queueLimit: eventQueueLimit,
+            flushInterval: eventFlushInterval,
+            isDebug: isDebug,
+            now: now
+        )
     }
 
     public nonisolated func executor(_ key: String) -> GameAlgoExperimentExecutor {
@@ -67,6 +91,12 @@ public actor GameAlgoSDK {
         preloadConfigFiles: GameAlgoConfigFilePreload = .all
     ) -> Task<Void, Error> {
         let task = Task {
+            await self.tracker.identify(
+                userId: userId,
+                platform: platform ?? self.defaultPlatform,
+                sdkVersion: sdkVersion ?? self.defaultSDKVersion,
+                appVersion: appVersion ?? self.defaultAppVersion
+            )
             self.loadCachedSnapshot()
             do {
                 try await self.refresh(
@@ -207,46 +237,7 @@ public actor GameAlgoSDK {
     }
 
     public func uploadEvents(_ events: [GameAlgoEvent]) async throws -> GameAlgoEventBatchResponse {
-        guard !events.isEmpty else {
-            throw GameAlgoError.invalidEvents("events must be a non-empty array")
-        }
-        guard events.count <= 100 else {
-            throw GameAlgoError.invalidEvents("Maximum 100 events per batch")
-        }
-
-        let timestamp = Self.isoTimestamp(now())
-        let normalizedEvents = events.map { event in
-            var normalized = event
-            if normalized.eventId?.isEmpty ?? true {
-                normalized.eventId = UUID().uuidString
-            }
-            if normalized.platform == nil {
-                normalized.platform = defaultPlatform
-            }
-            if normalized.sdkVersion?.isEmpty ?? true {
-                normalized.sdkVersion = defaultSDKVersion
-            }
-            if normalized.appVersion == nil {
-                normalized.appVersion = defaultAppVersion
-            }
-            if normalized.isDebug == nil {
-                normalized.isDebug = false
-            }
-            if normalized.timestamp?.isEmpty ?? true {
-                normalized.timestamp = timestamp
-            }
-            return normalized
-        }
-
-        let body = try encode(EventBatchRequest(events: normalizedEvents))
-        return try await requestJSON(
-            GameAlgoHTTPRequest(
-                url: try endpoint("/v1/events/batch"),
-                method: .post,
-                headers: ["content-type": "application/json"],
-                body: body
-            )
-        )
+        try await eventUploader.uploadEvents(events)
     }
 
     public func clearConfigCache() {
@@ -363,11 +354,6 @@ public actor GameAlgoSDK {
         return .apiError(statusCode: response.statusCode, code: nil, message: fallback)
     }
 
-    private static func isoTimestamp(_ date: Date) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.string(from: date)
-    }
 }
 
 private struct ConfigCacheKey: Sendable, Equatable {
@@ -382,10 +368,6 @@ private struct CachedConfig: Sendable {
     let key: ConfigCacheKey
     let value: GameAlgoConfigResponse
     let expiresAt: Date
-}
-
-private struct EventBatchRequest: Encodable {
-    let events: [GameAlgoEvent]
 }
 
 private struct APIErrorPayload: Decodable {

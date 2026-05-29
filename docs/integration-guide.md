@@ -26,7 +26,7 @@ All integrations call the same `/v1/*` endpoints and send `X-GameAlgo-Key` on ev
 - Fetch `/v1/config` at startup or before config-dependent gameplay starts.
 - Cache config for `ttlSeconds`.
 - Cache config files by hash or `ETag`.
-- Upload events in batches.
+- Use the SDK tracker for events. It batches in memory, flushes periodically, and retries the failed batch.
 - Do not block gameplay on GameAlgo network calls.
 - Fall back to local defaults when GameAlgo is unavailable.
 

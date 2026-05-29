@@ -22,9 +22,9 @@ val difficulty = levelGenerator.string("difficulty", "normal")
 val result = levelGenerator.execute(mapOf("turn" to 7))
 val adsEnabled = sdk.config().bool("ads.rewarded.enabled", true, "gameplay.json")
 
-val result = sdk.uploadEvents(
-    listOf(GameAlgoEvent("user-001", "session-001", "session_start"))
-)
+sdk.tracker().trackSessionStart()
+sdk.tracker().trackLevelEnd(mapOf("level" to 3, "result" to "win"))
+sdk.tracker().flushAsync()
 ```
 
 `startAsync` refreshes `/v1/config` and preloads config files on a background executor. `executor` and `config()` read the latest local snapshot, so gameplay code does not need to call remote APIs when checking variants or tuning values.
@@ -40,7 +40,7 @@ val gameplay = sdk.fetchConfigFile("gameplay.json")
 
 The SDK sends `X-GameAlgo-Key` on every request, caches `/v1/config` by `ttlSeconds`, and fills default event fields for `platform`, `sdkVersion`, `appVersion`, `timestamp`, and `isDebug`.
 
-`fetchConfig`, `fetchConfigFile`, and `uploadEvents` are blocking in this core package. Android apps should call them from their own background executor/coroutine layer, or use `startAsync` for initial config preload.
+`tracker()` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, and keeps the failed batch for the next retry. `fetchConfig`, `fetchConfigFile`, and `uploadEvents` are blocking in this core package; Android apps should call those lower-level methods from their own background executor/coroutine layer.
 
 ## Check
 

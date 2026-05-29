@@ -9,7 +9,7 @@ All REST requests use the same Protocol v1 endpoints as SDKs.
 This repository includes a small dependency-free REST helper:
 
 ```ts
-import { GameAlgoRestClient, createEvent } from "./src/index.ts";
+import { GameAlgoRestClient } from "./src/index.ts";
 
 const client = new GameAlgoRestClient({
   baseUrl: "https://gamealgo.example.com",
@@ -27,14 +27,9 @@ const difficulty = levelGenerator.string("difficulty", "normal");
 const result = await levelGenerator.execute({ turn: 7 });
 const adsEnabled = client.config.bool("ads.rewarded.enabled", true, "gameplay.json");
 
-await client.uploadEvents([
-  createEvent({
-    userId: "user-001",
-    sessionId: "session-001",
-    eventType: "session_start",
-    payload: {},
-  }),
-]);
+client.tracker.trackSessionStart();
+client.tracker.trackLevelEnd({ level: 3, result: "win" });
+await client.tracker.flush();
 ```
 
 `start` refreshes `/v1/config` and preloads config files. `executor` and `config` read the latest local snapshot, so game logic does not need to call remote APIs when checking variants or tuning values.
@@ -42,6 +37,8 @@ await client.uploadEvents([
 If an experiment assignment includes `script`, `executor.execute(state)` runs the preloaded script. Config-only experiments return their config as the execution payload.
 
 `fetchConfig` remains available for lower-level usage and caches the last successful config in memory until `ttlSeconds` expires. Use `forceRefresh: true` to bypass the cache.
+
+`tracker` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, and keeps the failed batch for the next retry. `uploadEvents` remains available as a lower-level API when the integrating team already owns a queue/retry system.
 
 ## 1. Auth
 

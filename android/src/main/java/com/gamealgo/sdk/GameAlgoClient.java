@@ -31,6 +31,7 @@ public final class GameAlgoClient {
     private final String snapshotCacheKey;
     private final GameAlgoSnapshotStore snapshotStore;
     private final GameAlgoConfigReader configReader;
+    private final GameAlgoEventTracker tracker;
     private CachedConfig cachedConfig;
 
     public GameAlgoClient(String gameKey, String baseUrl) {
@@ -74,6 +75,7 @@ public final class GameAlgoClient {
         this.snapshotCacheKey = cacheKey == null ? "gamealgo:v1:snapshot:" + this.baseUrl + ":" + gameKey.substring(0, Math.min(16, gameKey.length())) : cacheKey;
         this.snapshotStore = new GameAlgoSnapshotStore();
         this.configReader = new GameAlgoConfigReader(snapshotStore);
+        this.tracker = new GameAlgoEventTracker(this);
     }
 
     public CompletableFuture<Void> startAsync(String userId) {
@@ -81,6 +83,7 @@ public final class GameAlgoClient {
     }
 
     public CompletableFuture<Void> startAsync(GameAlgoFetchConfigRequest request) {
+        tracker.identify(request.getUserId());
         return CompletableFuture.runAsync(() -> {
             try {
                 loadCachedSnapshot();
@@ -105,6 +108,10 @@ public final class GameAlgoClient {
         return configReader;
     }
 
+    public GameAlgoEventTracker tracker() {
+        return tracker;
+    }
+
     public GameAlgoSnapshot snapshot() {
         return snapshotStore.snapshot();
     }
@@ -114,6 +121,7 @@ public final class GameAlgoClient {
     }
 
     public synchronized GameAlgoConfigResponse fetchConfig(GameAlgoFetchConfigRequest request) throws GameAlgoException {
+        tracker.identify(request.getUserId());
         String platform = isBlank(request.getPlatform()) ? defaultPlatform : request.getPlatform();
         String sdkVersion = isBlank(request.getSdkVersion()) ? defaultSDKVersion : request.getSdkVersion();
         String appVersion = request.getAppVersion() == null ? defaultAppVersion : request.getAppVersion();

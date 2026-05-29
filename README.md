@@ -78,19 +78,12 @@ if await sdk.waitForReady(timeout: 3.0) {
 }
 ```
 
-上传事件：
+上传事件优先用内置 tracker。tracker 会把事件放进内存队列，最多 100 条一批上传，并每 30 秒自动 flush；iOS 进入后台或退出时也会主动 flush。
 
 ```swift
-try await sdk.uploadEvents([
-    GameAlgoEvent(
-        userId: "user-001",
-        sessionId: "session-001",
-        eventType: "session_start",
-        timezone: "Asia/Shanghai",
-        isDebug: false,
-        payload: .object([:])
-    )
-])
+await sdk.tracker.trackSessionStart()
+await sdk.tracker.trackLevelEnd(payload: .object(["level": .number(3), "result": .string("win")]))
+await sdk.tracker.flush()
 ```
 
 ### Android
@@ -99,7 +92,6 @@ Android SDK 当前是 dependency-free Java core，后续可以封装成 AAR/Kotl
 
 ```java
 import com.gamealgo.sdk.*;
-import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -125,22 +117,22 @@ GameAlgoExecutionResult result = levelGenerator.execute(state);
 boolean adsEnabled = sdk.config().bool("ads.rewarded.enabled", true, "gameplay.json");
 ```
 
-上传事件：
+上传事件优先用内置 tracker。tracker 会把事件放进内存队列，最多 100 条一批上传，并每 30 秒自动 flush。
 
-```java
-GameAlgoEventBatchResponse response = sdk.uploadEvents(Arrays.asList(
-    new GameAlgoEvent("user-001", "session-001", "session_start")
-));
+```kotlin
+sdk.tracker().trackSessionStart()
+sdk.tracker().trackLevelEnd(mapOf("level" to 3, "result" to "win"))
+sdk.tracker().flushAsync()
 ```
 
-`fetchConfig`、`fetchConfigFile`、`uploadEvents` 在 Java core 中是阻塞方法。Android App 应放到自己的 executor/coroutine 层调用，或用 `startAsync` 做启动预加载。
+`fetchConfig`、`fetchConfigFile`、`uploadEvents` 在 Java core 中是阻塞方法。Android App 应放到自己的 executor/coroutine 层调用，或用 `startAsync` 做启动预加载。普通事件上报直接用 `tracker()`，不需要游戏自己维护批量队列。
 
 ### REST / Web / Backend
 
 不能使用原生 SDK 时，可以直接调用 REST API，或使用 `rest-api/src` 的 TypeScript helper。
 
 ```ts
-import { GameAlgoRestClient, createEvent } from "./rest-api/src/index.ts";
+import { GameAlgoRestClient } from "./rest-api/src/index.ts";
 
 const client = new GameAlgoRestClient({
   baseUrl: "https://gamealgo.example.com",
@@ -158,14 +150,9 @@ const difficulty = levelGenerator.string("difficulty", "normal");
 const result = await levelGenerator.execute({ turn: 7 });
 const adsEnabled = client.config.bool("ads.rewarded.enabled", true, "gameplay.json");
 
-await client.uploadEvents([
-  createEvent({
-    userId: "user-001",
-    sessionId: "session-001",
-    eventType: "session_start",
-    payload: {},
-  }),
-]);
+client.tracker.trackSessionStart();
+client.tracker.trackLevelEnd({ level: 3, result: "win" });
+await client.tracker.flush();
 ```
 
 底层 REST 请求都需要带鉴权头：
@@ -211,6 +198,8 @@ function execute(input) {
 如果 `execute` 返回空、脚本 hash 不匹配或脚本报错，客户端应使用本地兜底逻辑。
 
 ## 事件接入
+
+SDK 默认提供 `tracker`，游戏代码只需要调用 `trackSessionStart`、`trackLevelEnd`、`trackEvent` 等方法。tracker 会内存排队、最多 100 条一批上传、30 秒定时 flush、失败时保留上一批等待下次 retry。`uploadEvents` 仍保留为低层接口，只有在接入方自己有队列系统时才需要直接调用。
 
 最小推荐事件：
 

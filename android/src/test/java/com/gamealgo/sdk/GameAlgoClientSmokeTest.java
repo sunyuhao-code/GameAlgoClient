@@ -16,6 +16,7 @@ public final class GameAlgoClientSmokeTest {
         testExecutorExecutesPreloadedScriptAgainstLocalSnapshot();
         testStartRestoresPersistedSnapshotThenStillRefreshes();
         testUploadEventsFillsDefaults();
+        testTrackerQueuesAndFlushesEvents();
     }
 
     private static void testFetchConfigSendsHeadersAndCaches() throws Exception {
@@ -244,6 +245,49 @@ public final class GameAlgoClientSmokeTest {
         check("4.5.6".equals(event.get("appVersion")), "appVersion should default");
         check(Boolean.FALSE.equals(event.get("isDebug")), "isDebug should default false");
         check(event.get("timestamp") instanceof String, "timestamp should default");
+    }
+
+    private static void testTrackerQueuesAndFlushesEvents() throws Exception {
+        FakeHttpClient httpClient = new FakeHttpClient();
+        httpClient.enqueue(jsonResponse(configJson("v1")));
+        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":2}"));
+        GameAlgoClient client = new GameAlgoClient(
+                "ga_live_test_key_0123456789abcdef",
+                "https://gamealgo.test",
+                "1.2.3",
+                "4.5.6",
+                "android",
+                httpClient
+        );
+
+        client.startAsync("u1").get();
+        client.tracker().setDebug(true);
+        check(client.tracker().trackSessionStart(), "tracker should enqueue session_start after start");
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("level", 3);
+        check(client.tracker().trackLevelEnd(payload), "tracker should enqueue level_end");
+        client.tracker().flush();
+
+        Map<String, Object> body = GameAlgoJson.asObject(
+                GameAlgoJson.parse(new String(httpClient.requests.get(1).getBody(), StandardCharsets.UTF_8)),
+                "body"
+        );
+        List<Object> events = GameAlgoJson.asArray(body.get("events"), "events");
+        Map<String, Object> first = GameAlgoJson.asObject(events.get(0), "events[]");
+        Map<String, Object> second = GameAlgoJson.asObject(events.get(1), "events[]");
+
+        check(httpClient.requests.size() == 2, "tracker flush should upload one event batch");
+        check("https://gamealgo.test/v1/events/batch".equals(httpClient.requests.get(1).getUrl().toString()), "tracker should post to events batch");
+        check(events.size() == 2, "tracker should upload queued events together");
+        check("u1".equals(first.get("userId")), "tracker should use identified user");
+        check(first.get("sessionId").equals(second.get("sessionId")), "tracker should keep session id");
+        check("session_start".equals(first.get("eventType")), "tracker should upload session_start");
+        check("level_end".equals(second.get("eventType")), "tracker should upload level_end");
+        check("android".equals(second.get("platform")), "tracker event platform should default");
+        check("1.2.3".equals(second.get("sdkVersion")), "tracker event sdkVersion should default");
+        check("4.5.6".equals(second.get("appVersion")), "tracker event appVersion should default");
+        check(Boolean.TRUE.equals(second.get("isDebug")), "tracker should preserve debug flag");
+        client.tracker().close();
     }
 
     private static String configJson(String version) {

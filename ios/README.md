@@ -41,25 +41,25 @@ let difficulty = levelGenerator.string("difficulty", default: "normal")
 let result = levelGenerator.execute(.object(["turn": .number(7)]))
 let adsEnabled = sdk.config.bool("ads.rewarded.enabled", default: true, fileName: "gameplay.json")
 
-let result = try await sdk.uploadEvents([
-    GameAlgoEvent(
-        userId: "user-001",
-        sessionId: "session-001",
-        eventType: "session_start",
-        payload: .object([:])
-    )
-])
+await sdk.tracker.trackSessionStart()
+await sdk.tracker.trackLevelEnd(payload: .object(["level": .number(3), "result": .string("win")]))
+await sdk.tracker.flush()
 ```
 
 `start` refreshes `/v1/config` and preloads config files in the background. `executor` and `config` read the latest local snapshot, so gameplay code does not need to call remote APIs when checking variants or tuning values.
 
 If an experiment assignment includes `script`, `executor.execute(state)` runs the preloaded JavaScript file through JSCore. Config-only experiments return their config as the execution payload.
 
+`tracker` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, flushes when the app enters background or terminates, and keeps the failed batch for the next retry.
+
 Lower-level methods are still available when needed:
 
 ```swift
 let config = try await sdk.fetchConfig(userId: "user-001")
 let gameplay = try await sdk.fetchConfigFile("gameplay.json")
+let response = try await sdk.uploadEvents([
+    GameAlgoEvent(userId: "user-001", sessionId: "session-001", eventType: "session_start")
+])
 ```
 
 The SDK sends `X-GameAlgo-Key` on every request, caches `/v1/config` by `ttlSeconds`, and fills default event fields for `platform`, `sdkVersion`, `appVersion`, `timestamp`, and `isDebug`.

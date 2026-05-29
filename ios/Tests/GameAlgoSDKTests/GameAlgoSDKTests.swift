@@ -298,6 +298,47 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(events?.first?["isDebug"] as? Bool, false)
     }
 
+    func testTrackerQueuesAndFlushesEventsAfterStartIdentifiesUser() async throws {
+        let httpClient = MockHTTPClient()
+        try await httpClient.enqueueJSON(configResponse(version: "v1"))
+        try await httpClient.enqueueJSON(["ok": true, "accepted": 2])
+        let sdk = GameAlgoSDK(
+            gameKey: gameKey,
+            baseURL: URL(string: "https://gamealgo.test")!,
+            sdkVersion: "1.2.3",
+            appVersion: "4.5.6",
+            httpClient: httpClient,
+            isDebug: true,
+            eventFlushInterval: 0,
+            now: { Date(timeIntervalSince1970: 1_779_962_400) }
+        )
+
+        let task = await sdk.start(userId: "u1")
+        try await task.value
+        let didTrackSessionStart = await sdk.tracker.trackSessionStart()
+        let didTrackLevelEnd = await sdk.tracker.trackLevelEnd(payload: .object(["level": .number(3)]))
+        XCTAssertTrue(didTrackSessionStart)
+        XCTAssertTrue(didTrackLevelEnd)
+        await sdk.tracker.flush()
+
+        let requests = await httpClient.requests
+        let body = try JSONSerialization.jsonObject(with: requests[1].body ?? Data()) as? [String: Any]
+        let events = body?["events"] as? [[String: Any]]
+
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertEqual(requests[1].method, .post)
+        XCTAssertEqual(requests[1].url.absoluteString, "https://gamealgo.test/v1/events/batch")
+        XCTAssertEqual(events?.count, 2)
+        XCTAssertEqual(events?.first?["userId"] as? String, "u1")
+        XCTAssertEqual(events?.first?["sessionId"] as? String, events?.last?["sessionId"] as? String)
+        XCTAssertEqual(events?.first?["eventType"] as? String, "session_start")
+        XCTAssertEqual(events?.last?["eventType"] as? String, "level_end")
+        XCTAssertEqual(events?.last?["platform"] as? String, "ios")
+        XCTAssertEqual(events?.last?["sdkVersion"] as? String, "1.2.3")
+        XCTAssertEqual(events?.last?["appVersion"] as? String, "4.5.6")
+        XCTAssertEqual(events?.last?["isDebug"] as? Bool, true)
+    }
+
     func testThrowsStructuredAPIErrors() async throws {
         let httpClient = MockHTTPClient()
         try await httpClient.enqueueJSON(

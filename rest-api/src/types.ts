@@ -50,7 +50,7 @@ export type ConfigFileResponse = {
 };
 
 export type GameEvent = {
-  eventId: string;
+  eventId?: string;
   userId: string;
   sessionId: string;
   eventType: string;
@@ -74,6 +74,11 @@ export type GameAlgoRestClientOptions = {
   sdkVersion?: string;
   appVersion?: string;
   platform?: Platform;
+  isDebug?: boolean;
+  timezone?: string;
+  eventFlushIntervalMs?: number;
+  eventMaxBatchSize?: number;
+  eventQueueLimit?: number;
   fetchImpl?: typeof fetch;
   now?: () => number;
   storage?: GameAlgoStorage;
@@ -86,6 +91,17 @@ export type GameAlgoSnapshot = {
   configFiles: Map<string, ConfigFileResponse>;
   updatedAt: number;
   userId?: string;
+};
+
+export type TrackEventOptions = {
+  userId?: string;
+  sessionId?: string;
+  platform?: Platform;
+  sdkVersion?: string;
+  appVersion?: string;
+  timezone?: string;
+  isDebug?: boolean;
+  timestamp?: string;
 };
 
 export type GameAlgoStorage = {

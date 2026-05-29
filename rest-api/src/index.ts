@@ -1,6 +1,7 @@
 export {
   GameAlgoApiError,
   GameAlgoConfigReader,
+  GameAlgoEventTracker,
   GameAlgoExperimentExecutor,
   FunctionScriptRuntime,
   GameAlgoRestClient,
@@ -24,4 +25,5 @@ export type {
   JsonValue,
   Platform,
   StartOptions,
+  TrackEventOptions,
 } from "./types.ts";

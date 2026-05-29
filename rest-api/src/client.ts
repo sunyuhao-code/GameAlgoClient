@@ -13,6 +13,7 @@ import type {
   JsonValue,
   Platform,
   StartOptions,
+  TrackEventOptions,
 } from "./types.ts";
 
 export class GameAlgoApiError extends Error {
@@ -41,6 +42,7 @@ export class GameAlgoRestClient {
   private snapshot: GameAlgoSnapshot = { configFiles: new Map(), updatedAt: 0 };
   private readyPromise: Promise<void> | null = null;
   readonly config: GameAlgoConfigReader;
+  readonly tracker: GameAlgoEventTracker;
 
   constructor(options: GameAlgoRestClientOptions) {
     if (!options.baseUrl) throw new Error("baseUrl is required");
@@ -57,9 +59,22 @@ export class GameAlgoRestClient {
     this.scriptRuntime = options.scriptRuntime ?? new FunctionScriptRuntime();
     this.snapshotCacheKey = options.cacheKey ?? `gamealgo:v1:snapshot:${this.baseUrl.origin}:${this.gameKey.slice(0, 16)}`;
     this.config = new GameAlgoConfigReader(() => this.snapshot);
+    this.tracker = new GameAlgoEventTracker({
+      uploadEvents: (events) => this.uploadEvents(events),
+      platform: this.platform,
+      sdkVersion: this.sdkVersion,
+      appVersion: this.appVersion,
+      timezone: options.timezone,
+      isDebug: options.isDebug ?? false,
+      flushIntervalMs: options.eventFlushIntervalMs ?? 30000,
+      maxBatchSize: options.eventMaxBatchSize ?? 100,
+      queueLimit: options.eventQueueLimit ?? 1000,
+      now: this.now,
+    });
   }
 
   start(options: StartOptions): Promise<void> {
+    this.tracker.identify(options.userId);
     this.readyPromise = (async () => {
       await this.loadPersistedSnapshot();
       try {
@@ -94,6 +109,7 @@ export class GameAlgoRestClient {
   }
 
   async fetchConfig(options: FetchConfigOptions): Promise<ConfigResponse> {
+    this.tracker.identify(options.userId);
     const platform = options.platform ?? this.platform;
     const sdkVersion = options.sdkVersion ?? this.sdkVersion;
     const appVersion = options.appVersion ?? this.appVersion;
@@ -162,6 +178,7 @@ export class GameAlgoRestClient {
 
     const normalizedEvents = events.map((event) => ({
       ...event,
+      eventId: event.eventId ?? randomId(),
       platform: event.platform ?? this.platform,
       sdkVersion: event.sdkVersion ?? this.sdkVersion,
       appVersion: event.appVersion ?? this.appVersion,
@@ -259,6 +276,200 @@ export class GameAlgoRestClient {
     }
 
     return response;
+  }
+}
+
+export class GameAlgoEventTracker {
+  private readonly uploadEvents: (events: GameEvent[]) => Promise<EventBatchResponse>;
+  private readonly platform: Platform;
+  private readonly sdkVersion: string;
+  private readonly appVersion?: string;
+  private readonly maxBatchSize: number;
+  private readonly queueLimit: number;
+  private readonly flushIntervalMs: number;
+  private readonly now: () => number;
+
+  private userId?: string;
+  private sessionId = randomId();
+  private timezone?: string;
+  private isDebug: boolean;
+  private queue: GameEvent[] = [];
+  private retryBatch: GameEvent[] = [];
+  private flushTimer?: ReturnType<typeof setInterval>;
+  private flushing = false;
+  private sessionStartMs?: number;
+
+  constructor(options: {
+    uploadEvents: (events: GameEvent[]) => Promise<EventBatchResponse>;
+    platform: Platform;
+    sdkVersion: string;
+    appVersion?: string;
+    timezone?: string;
+    isDebug: boolean;
+    flushIntervalMs: number;
+    maxBatchSize: number;
+    queueLimit: number;
+    now: () => number;
+  }) {
+    this.uploadEvents = options.uploadEvents;
+    this.platform = options.platform;
+    this.sdkVersion = options.sdkVersion;
+    this.appVersion = options.appVersion;
+    this.timezone = options.timezone;
+    this.isDebug = options.isDebug;
+    this.flushIntervalMs = options.flushIntervalMs;
+    this.maxBatchSize = Math.max(1, Math.min(options.maxBatchSize, 100));
+    this.queueLimit = Math.max(options.queueLimit, this.maxBatchSize);
+    this.now = options.now;
+  }
+
+  identify(userId: string, sessionId?: string): void {
+    if (clean(userId)) this.userId = userId;
+    if (clean(sessionId)) this.sessionId = sessionId!;
+  }
+
+  newSession(sessionId = randomId()): void {
+    this.sessionId = sessionId;
+    this.sessionStartMs = undefined;
+  }
+
+  setDebug(isDebug: boolean): void {
+    this.isDebug = isDebug;
+  }
+
+  setTimezone(timezone?: string): void {
+    this.timezone = timezone;
+  }
+
+  track(eventType: string, payload: JsonValue = {}, options: TrackEventOptions = {}): boolean {
+    const userId = clean(options.userId ?? this.userId);
+    if (!userId) return false;
+
+    this.enqueue({
+      eventId: randomId(),
+      userId,
+      sessionId: clean(options.sessionId) ?? this.sessionId,
+      eventType,
+      platform: options.platform ?? this.platform,
+      sdkVersion: options.sdkVersion ?? this.sdkVersion,
+      appVersion: options.appVersion ?? this.appVersion,
+      timezone: options.timezone ?? this.timezone,
+      isDebug: options.isDebug ?? this.isDebug,
+      timestamp: options.timestamp ?? new Date(this.now()).toISOString(),
+      payload,
+    });
+    return true;
+  }
+
+  trackEvent(type: string, payload: JsonValue = {}, options: TrackEventOptions = {}): boolean {
+    return this.track(type.startsWith("_") ? type : `_${type}`, payload, options);
+  }
+
+  trackSessionStart(payload: JsonValue = {}): boolean {
+    this.sessionStartMs = this.now();
+    return this.track("session_start", payload);
+  }
+
+  trackSessionEnd(payload: JsonValue = {}): boolean {
+    const merged = objectPayload(payload);
+    if (this.sessionStartMs !== undefined) {
+      merged.sessionDurationMs = this.now() - this.sessionStartMs;
+    }
+    return this.track("session_end", merged);
+  }
+
+  trackLevelStart(payload: JsonValue = {}): boolean {
+    return this.track("level_start", payload);
+  }
+
+  trackLevelEnd(payload: JsonValue = {}): boolean {
+    return this.track("level_end", payload);
+  }
+
+  trackAdView(cpm: number, placement?: string, payload: JsonValue = {}): boolean {
+    const merged = objectPayload(payload);
+    merged.cpm = cpm;
+    if (placement) merged.placement = placement;
+    return this.track("ad_view", merged);
+  }
+
+  trackPurchase(productId?: string, revenue?: number, currency?: string, payload: JsonValue = {}): boolean {
+    const merged = objectPayload(payload);
+    if (productId) merged.productId = productId;
+    if (revenue !== undefined) merged.revenue = revenue;
+    if (currency) merged.currency = currency;
+    return this.track("purchase", merged);
+  }
+
+  gameStart(payload: JsonValue = {}): boolean {
+    return this.track("game_start", payload);
+  }
+
+  gameOver(payload: JsonValue = {}): boolean {
+    return this.track("game_over", payload);
+  }
+
+  move(payload: JsonValue = {}): boolean {
+    return this.track("move", payload);
+  }
+
+  replay(payload: JsonValue = {}): boolean {
+    return this.track("replay", payload);
+  }
+
+  quit(payload: JsonValue = {}): boolean {
+    return this.track("quit", payload);
+  }
+
+  async flush(): Promise<EventBatchResponse[]> {
+    if (this.flushing) return [];
+    this.flushing = true;
+
+    const responses: EventBatchResponse[] = [];
+    try {
+      while (this.retryBatch.length > 0 || this.queue.length > 0) {
+        const pending = [...this.retryBatch, ...this.queue];
+        const batch = pending.slice(0, this.maxBatchSize);
+        this.retryBatch = [];
+        this.queue = pending.slice(this.maxBatchSize);
+
+        try {
+          responses.push(await this.uploadEvents(batch));
+        } catch (error) {
+          this.retryBatch = batch;
+          throw error;
+        }
+      }
+      return responses;
+    } finally {
+      this.flushing = false;
+    }
+  }
+
+  close(): void {
+    if (this.flushTimer) {
+      clearInterval(this.flushTimer);
+      this.flushTimer = undefined;
+    }
+  }
+
+  private enqueue(event: GameEvent): void {
+    this.queue.push(event);
+    if (this.queue.length > this.queueLimit) {
+      this.queue.splice(0, this.queue.length - this.queueLimit);
+    }
+    this.startTimer();
+    if (this.queue.length >= this.maxBatchSize) {
+      void this.flush().catch(() => undefined);
+    }
+  }
+
+  private startTimer(): void {
+    if (this.flushTimer || this.flushIntervalMs <= 0) return;
+    this.flushTimer = setInterval(() => {
+      void this.flush().catch(() => undefined);
+    }, this.flushIntervalMs);
+    this.flushTimer.unref?.();
   }
 }
 
@@ -422,7 +633,7 @@ export class GameAlgoConfigReader {
 export function createEvent(input: Omit<GameEvent, "eventId" | "timestamp"> & { eventId?: string; timestamp?: string }): GameEvent {
   return {
     ...input,
-    eventId: input.eventId ?? crypto.randomUUID(),
+    eventId: input.eventId ?? randomId(),
     timestamp: input.timestamp ?? new Date().toISOString(),
   };
 }
@@ -443,6 +654,22 @@ function normalizeFileName(name: string): string {
     throw new Error("Invalid config file name");
   }
   return trimmed;
+}
+
+function randomId(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function clean(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function objectPayload(value: JsonValue): Record<string, JsonValue> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return { ...(value as Record<string, JsonValue>) };
+  }
+  return {};
 }
 
 async function verifyScriptHash(content: string, expected: string): Promise<void> {

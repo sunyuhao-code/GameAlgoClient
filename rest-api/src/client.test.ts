@@ -273,6 +273,59 @@ test("uploadEvents fills platform, sdkVersion, appVersion, and timestamp default
   assert.equal(result.accepted, 1);
 });
 
+test("tracker queues and flushes events after start identifies user", async () => {
+  let now = Date.parse("2026-05-28T10:00:00.000Z");
+  const requests: Request[] = [];
+  let uploadedEvents: Array<Record<string, unknown>> = [];
+  const client = new GameAlgoRestClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    sdkVersion: "1.2.3",
+    appVersion: "4.5.6",
+    isDebug: true,
+    eventFlushIntervalMs: 0,
+    now: () => now,
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      if (request.url.endsWith("/v1/events/batch")) {
+        const body = await request.json() as { events: Array<Record<string, unknown>> };
+        uploadedEvents = body.events;
+        return jsonResponse({ ok: true, accepted: body.events.length });
+      }
+      return jsonResponse({
+        gameId: "Mahjong",
+        environment: "live",
+        configVersion: "v1",
+        ttlSeconds: 60,
+        serverTime: "2026-05-28T10:00:00.000Z",
+        experiments: [],
+        configFiles: [],
+      });
+    },
+  });
+
+  await client.start({ userId: "u1" });
+  assert.equal(client.tracker.trackSessionStart(), true);
+  now += 1500;
+  assert.equal(client.tracker.trackLevelEnd({ level: 3 }), true);
+  const responses = await client.tracker.flush();
+
+  assert.equal(responses[0].accepted, 2);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].url, "https://gamealgo.test/v1/events/batch");
+  assert.equal(uploadedEvents.length, 2);
+  assert.equal(uploadedEvents[0].userId, "u1");
+  assert.equal(uploadedEvents[0].sessionId, uploadedEvents[1].sessionId);
+  assert.equal(uploadedEvents[0].eventType, "session_start");
+  assert.equal(uploadedEvents[1].eventType, "level_end");
+  assert.equal(uploadedEvents[1].platform, "rest");
+  assert.equal(uploadedEvents[1].sdkVersion, "1.2.3");
+  assert.equal(uploadedEvents[1].appVersion, "4.5.6");
+  assert.equal(uploadedEvents[1].isDebug, true);
+  client.tracker.close();
+});
+
 test("throws structured API errors", async () => {
   const client = new GameAlgoRestClient({
     baseUrl: "https://gamealgo.test",
