@@ -58,7 +58,7 @@ The SDK logs user id, config fetch, experiment assignment, config file, and scri
 
 If an experiment assignment includes `script`, `executor.execute(state)` runs the preloaded JavaScript file through JSCore. Config-only experiments return their config as the execution payload.
 
-`tracker` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, flushes when the app enters background or terminates, and keeps the failed batch for the next retry.
+`tracker` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, flushes when the app enters background or terminates, and keeps the failed batch for the next retry. Call `await sdk.tracker.flush()` to manually flush critical events; `trackSessionEnd` also triggers an immediate flush after enqueueing `session_end`.
 
 Lower-level methods are still available when needed:
 

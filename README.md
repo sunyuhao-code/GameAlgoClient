@@ -92,6 +92,8 @@ await sdk.tracker.trackLevelEnd(payload: .object(["level": .number(3), "result":
 await sdk.tracker.flush()
 ```
 
+`await sdk.tracker.flush()` 是手动 flush 接口，适合在切后台、游戏结束、关键事件后主动调用。`trackSessionEnd` 入队后也会自动触发一次 flush。
+
 ### Android
 
 Android SDK 当前是 dependency-free Java core，后续可以封装成 AAR/Kotlin facade。

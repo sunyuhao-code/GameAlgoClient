@@ -438,6 +438,45 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(experiments?["level_generator"] as? String, "variant-a")
     }
 
+    func testTrackSessionEndFlushesImmediately() async throws {
+        let suiteName = "GameAlgoSDKTests.sessionEnd.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let httpClient = MockHTTPClient()
+        try await httpClient.enqueueJSON(configResponse(version: "v1"))
+        try await httpClient.enqueueJSON(["ok": true, "accepted": 3])
+        let sdk = GameAlgoSDK(
+            gameKey: gameKey,
+            baseURL: URL(string: "https://gamealgo.test")!,
+            httpClient: httpClient,
+            userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
+            eventFlushInterval: 0,
+            now: { Date(timeIntervalSince1970: 1_779_962_400) }
+        )
+
+        let task = sdk.start(userId: "u1")
+        try await task.value
+        let didTrackSessionStart = await sdk.tracker.trackSessionStart()
+        let didTrackSessionEnd = await sdk.tracker.trackSessionEnd(payload: .object(["reason": .string("background")]))
+        XCTAssertTrue(didTrackSessionStart)
+        XCTAssertTrue(didTrackSessionEnd)
+
+        let requests = await httpClient.requests
+        let body = try JSONSerialization.jsonObject(with: requests[1].body ?? Data()) as? [String: Any]
+        let events = body?["events"] as? [[String: Any]]
+        let sessionEnd = events?.last
+        let sessionEndPayload = sessionEnd?["payload"] as? [String: Any]
+
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertEqual(requests[1].url.absoluteString, "https://gamealgo.test/v1/events/batch")
+        XCTAssertEqual(events?.map { $0["eventType"] as? String }, ["config_loaded", "session_start", "session_end"])
+        XCTAssertEqual(sessionEnd?["userId"] as? String, "u1")
+        XCTAssertEqual(sessionEndPayload?["reason"] as? String, "background")
+        XCTAssertEqual(sessionEndPayload?["sessionDurationMs"] as? Double, 0)
+    }
+
     func testThrowsStructuredAPIErrors() async throws {
         let httpClient = MockHTTPClient()
         try await httpClient.enqueueJSON(

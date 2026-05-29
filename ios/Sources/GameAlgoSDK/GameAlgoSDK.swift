@@ -76,6 +76,7 @@ public actor GameAlgoSDK {
             queueLimit: eventQueueLimit,
             flushInterval: eventFlushInterval,
             isDebug: isDebug,
+            logger: logger,
             now: now
         )
     }

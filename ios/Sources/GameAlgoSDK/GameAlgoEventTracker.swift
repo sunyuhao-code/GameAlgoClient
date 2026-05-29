@@ -13,6 +13,7 @@ public actor GameAlgoEventTracker {
     private let queueLimit: Int
     private let flushInterval: TimeInterval
     private let now: @Sendable () -> Date
+    private let logger: GameAlgoLogHandler?
 
     private var userId: String?
     private var sessionId = UUID().uuidString
@@ -35,6 +36,7 @@ public actor GameAlgoEventTracker {
         queueLimit: Int = 1000,
         flushInterval: TimeInterval = 30,
         isDebug: Bool = false,
+        logger: GameAlgoLogHandler? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.uploader = uploader
@@ -43,6 +45,7 @@ public actor GameAlgoEventTracker {
         self.flushInterval = flushInterval
         self.isDebug = isDebug
         self.now = now
+        self.logger = logger
         self.timezone = Self.defaultTimezone()
 
         #if canImport(UIKit)
@@ -165,13 +168,17 @@ public actor GameAlgoEventTracker {
     }
 
     @discardableResult
-    public func trackSessionEnd(payload: JSONValue = .object([:])) -> Bool {
+    public func trackSessionEnd(payload: JSONValue = .object([:])) async -> Bool {
         var merged = payload.objectValue ?? [:]
         if let sessionStartDate {
             let durationMs = Int(now().timeIntervalSince(sessionStartDate) * 1000)
             merged["sessionDurationMs"] = .number(Double(durationMs))
         }
-        return track("session_end", payload: .object(merged))
+        let didTrack = track("session_end", payload: .object(merged))
+        if didTrack {
+            await flush()
+        }
+        return didTrack
     }
 
     @discardableResult
@@ -257,10 +264,13 @@ public actor GameAlgoEventTracker {
             queue = Array(pending.dropFirst(maxBatchSize))
             retryBatch = []
 
+            log("flushing \(batch.count) events")
             do {
                 _ = try await uploader.uploadEvents(batch)
+                log("flush success: \(batch.count) events")
             } catch {
                 retryBatch = batch
+                log("flush failed: \(error)")
                 return
             }
         }
@@ -268,6 +278,7 @@ public actor GameAlgoEventTracker {
 
     private func enqueue(_ event: GameAlgoEvent) {
         queue.append(event)
+        log("enqueued \(event.eventType), queue size: \(queue.count)")
         if queue.count > queueLimit {
             queue.removeFirst(queue.count - queueLimit)
         }
@@ -319,6 +330,10 @@ public actor GameAlgoEventTracker {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func log(_ message: String) {
+        logger?("[GameAlgoSDK] \(message)")
     }
 
     private static func defaultTimezone() -> String {
