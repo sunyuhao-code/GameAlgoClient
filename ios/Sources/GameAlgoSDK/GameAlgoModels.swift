@@ -56,6 +56,7 @@ public struct GameAlgoConfigFileRef: Sendable, Equatable, Codable {
 }
 
 public struct GameAlgoConfigResponse: Sendable, Equatable, Codable {
+    public let contextId: String
     public let gameId: String
     public let environment: GameAlgoEnvironment
     public let configVersion: String
@@ -65,6 +66,7 @@ public struct GameAlgoConfigResponse: Sendable, Equatable, Codable {
     public let configFiles: [GameAlgoConfigFileRef]
 
     public init(
+        contextId: String,
         gameId: String,
         environment: GameAlgoEnvironment,
         configVersion: String,
@@ -73,6 +75,7 @@ public struct GameAlgoConfigResponse: Sendable, Equatable, Codable {
         experiments: [GameAlgoExperimentAssignment],
         configFiles: [GameAlgoConfigFileRef]
     ) {
+        self.contextId = contextId
         self.gameId = gameId
         self.environment = environment
         self.configVersion = configVersion
@@ -104,41 +107,45 @@ public struct GameAlgoConfigFile: Sendable, Equatable, Codable {
 
 public struct GameAlgoEvent: Sendable, Equatable, Codable {
     public var eventId: String?
+    public var contextId: String
     public var userId: String
     public var sessionId: String
     public var eventType: String
-    public var platform: GameAlgoPlatform?
-    public var sdkVersion: String?
-    public var appVersion: String?
-    public var timezone: String?
     public var isDebug: Bool?
     public var timestamp: String?
-    public var payload: JSONValue
+    public var dimensions: [String: JSONValue]
+    public var metrics: [GameAlgoEventMetric]
 
     public init(
         eventId: String? = nil,
+        contextId: String,
         userId: String,
         sessionId: String,
         eventType: String,
-        platform: GameAlgoPlatform? = nil,
-        sdkVersion: String? = nil,
-        appVersion: String? = nil,
-        timezone: String? = TimeZone.current.identifier,
         isDebug: Bool? = nil,
         timestamp: String? = nil,
-        payload: JSONValue = .object([:])
+        dimensions: [String: JSONValue] = [:],
+        metrics: [GameAlgoEventMetric] = []
     ) {
         self.eventId = eventId
+        self.contextId = contextId
         self.userId = userId
         self.sessionId = sessionId
         self.eventType = eventType
-        self.platform = platform
-        self.sdkVersion = sdkVersion
-        self.appVersion = appVersion
-        self.timezone = timezone ?? TimeZone.current.identifier
         self.isDebug = isDebug
         self.timestamp = timestamp
-        self.payload = payload
+        self.dimensions = dimensions
+        self.metrics = metrics
+    }
+}
+
+public struct GameAlgoEventMetric: Sendable, Equatable, Codable {
+    public var key: String
+    public var value: Double
+
+    public init(key: String, value: Double) {
+        self.key = key
+        self.value = value
     }
 }
 

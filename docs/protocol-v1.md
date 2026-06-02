@@ -96,24 +96,48 @@ Content-Type: application/json
 ## 4. 拉取配置
 
 ```http
-GET /v1/config?userId={userId}&platform=ios&sdkVersion=1.0.0&appVersion=1.2.3
+POST /v1/config
 X-GameAlgo-Key: ga_live_xxx
+Content-Type: application/json
 ```
 
-请求参数：
+请求体：
+
+```json
+{
+  "userId": "user-001",
+  "sessionId": "session-001",
+  "platform": "ios",
+  "sdkVersion": "1.0.0",
+  "appVersion": "1.2.3",
+  "timezone": "Asia/Shanghai",
+  "device": {
+    "deviceId": "debug-device-id",
+    "os": "iOS 18.0",
+    "model": "iPhone"
+  }
+}
+```
+
+请求字段：
 
 | 字段 | 必填 | 说明 |
 |------|------|------|
 | `userId` | 是 | 游戏用户 ID；没有账号体系时由 SDK 生成并持久化 |
+| `sessionId` | 是 | SDK 生成或游戏指定的会话 ID |
 | `platform` | 是 | `ios` / `android` / `rest` |
 | `sdkVersion` | 是 | SDK 版本 |
 | `appVersion` | 否 | 游戏 App 版本 |
-| `deviceId` | 否 | 调试或排查用，不作为强身份 |
+| `timezone` | 否 | 客户端本地时区 |
+| `device` | 否 | 设备上下文；调试或排查用，不作为强身份 |
+
+服务端收到配置请求后会生成一条 SDK context 日志，记录可信 `gameId`、`sessionId`、设备上下文和本次实验分配。后续事件只需要引用返回的 `contextId`。
 
 响应：
 
 ```json
 {
+  "contextId": "ctx-001",
   "gameId": "Mahjong",
   "environment": "live",
   "configVersion": "2026-05-28-001",
@@ -194,16 +218,19 @@ Content-Type: application/json
   "events": [
     {
       "eventId": "uuid",
+      "contextId": "ctx-001",
       "userId": "user-001",
       "sessionId": "session-001",
       "eventType": "level_end",
-      "platform": "ios",
-      "sdkVersion": "1.0.0",
-      "appVersion": "1.2.3",
-      "timezone": "Asia/Shanghai",
       "isDebug": false,
       "timestamp": "2026-05-28T10:00:00Z",
-      "payload": {}
+      "dimensions": {
+        "result": "success"
+      },
+      "metrics": [
+        { "key": "durationMs", "value": 12500 },
+        { "key": "clearRate", "value": 0.93 }
+      ]
     }
   ]
 }
@@ -221,10 +248,13 @@ Content-Type: application/json
 服务端行为：
 
 - 根据 `X-GameAlgo-Key` 补充可信 `gameId`。
+- 事件不能携带客户端自填 `gameId`、`experiments` 或旧 `payload`。
+- `contextId` 必须来自本 session 的 `/v1/config` 响应。
 - `isDebug=true` 数据默认入库，但分析看板默认过滤。
 - 单批事件建议最多 100 条。
 - 重复 `eventId` 后续可用于去重，v1 可先不强制。
-- SDK 默认填充客户端本地 `timezone`。
+- `dimensions` 只放用于筛选或分组的低基数字段；值只允许 string / number / boolean / null。
+- `metrics` 只放可聚合数值；离线任务按 `key/value` 展开后做报表聚合。
 
 推荐标准事件：
 
@@ -233,7 +263,6 @@ Content-Type: application/json
 | `session_start` | 会话开始 |
 | `session_end` | 会话结束 |
 | `config_loaded` | 配置拉取成功 |
-| `experiment_exposed` | 实验曝光 |
 | `level_start` | 关卡开始 |
 | `level_end` | 关卡结束 |
 | `ad_view` | 广告展示 |
@@ -241,7 +270,7 @@ Content-Type: application/json
 
 自定义事件使用 `_` 前缀，例如 `_button_click`。
 
-SDK tracker 默认只给标准事件附加当前实验分组；自定义事件默认不附加，需要按事件显式开启。
+实验分组不再复制到每条事件里；服务端在 SDK context 日志中保存 `strategy_name -> variant_name`，离线统计通过 `contextId/sessionId` 关联。
 
 ## 7. 客户端 API 形态
 

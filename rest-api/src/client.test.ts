@@ -17,8 +17,15 @@ test("fetchConfig sends Protocol v1 headers and caches by ttl", async () => {
       requests.push(request);
       calls += 1;
       assert.equal(request.headers.get("X-GameAlgo-Key"), gameKey);
-      assert.equal(new URL(request.url).searchParams.get("userId"), "u1");
+      assert.equal(request.method, "POST");
+      assert.equal(request.url, "https://gamealgo.test/v1/config");
+      const body = await request.json() as Record<string, unknown>;
+      assert.equal(body.userId, "u1");
+      assert.equal(body.sessionId, client.tracker.currentSessionId());
+      assert.equal(body.platform, "rest");
+      assert.equal(body.sdkVersion, "1.0.0");
       return jsonResponse({
+        contextId: "ctx-1",
         gameId: "Mahjong",
         environment: "live",
         configVersion: "v1",
@@ -41,7 +48,7 @@ test("fetchConfig sends Protocol v1 headers and caches by ttl", async () => {
   assert.equal(first.gameId, "Mahjong");
   assert.equal(second.configVersion, "v1");
   assert.equal(calls, 1);
-  assert.equal(requests[0].url, "https://gamealgo.test/v1/config?userId=u1&platform=rest&sdkVersion=1.0.0");
+  assert.equal(requests[0].url, "https://gamealgo.test/v1/config");
 });
 
 test("fetchConfig can force refresh", async () => {
@@ -53,6 +60,7 @@ test("fetchConfig can force refresh", async () => {
     fetchImpl: async () => {
       calls += 1;
       return jsonResponse({
+        contextId: "ctx-1",
         gameId: "Mahjong",
         environment: "live",
         configVersion: `v${calls}`,
@@ -80,8 +88,8 @@ test("fetchConfigFile returns text and etag", async () => {
   const client = new GameAlgoRestClient({
     baseUrl: "https://gamealgo.test",
     gameKey,
-    fetchImpl: async (input) => {
-      const request = new Request(input);
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
       assert.equal(request.url, "https://gamealgo.test/v1/config-files/gameplay.json");
       return new Response("{\"difficulty\":\"normal\"}\n", {
         status: 200,
@@ -115,6 +123,7 @@ test("start preloads config files and exposes local executor/config readers", as
         });
       }
       return jsonResponse({
+        contextId: "ctx-1",
         gameId: "Mahjong",
         environment: "live",
         configVersion: "v1",
@@ -163,14 +172,15 @@ function execute(input) {
     baseUrl: "https://gamealgo.test",
     gameKey,
     sdkVersion: "1.0.0",
-    fetchImpl: async (input) => {
-      const request = new Request(input);
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
       if (request.url.includes("/v1/config-files/level-generator.js")) {
         return new Response(script, {
           headers: { "content-type": "text/plain; charset=utf-8" },
         });
       }
       return jsonResponse({
+        contextId: "ctx-1",
         gameId: "Mahjong",
         environment: "live",
         configVersion: "v1",
@@ -205,14 +215,15 @@ test("start restores persisted snapshot then still tries to refresh", async () =
     baseUrl: "https://gamealgo.test",
     gameKey,
     storage,
-    fetchImpl: async (input) => {
-      const request = new Request(input);
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
       if (request.url.includes("/v1/config-files/gameplay.json")) {
         return new Response("{\"difficulty\":\"cached\"}\n", {
           headers: { "content-type": "application/json; charset=utf-8" },
         });
       }
       return jsonResponse({
+        contextId: "ctx-1",
         gameId: "Mahjong",
         environment: "live",
         configVersion: "cached-v1",
@@ -254,16 +265,17 @@ test("start restores persisted snapshot then still tries to refresh", async () =
 
 test("start generates and reuses anonymous user id when userId is omitted", async () => {
   const storage = new MapStorage();
-  const urls: string[] = [];
+  const configBodies: Array<Record<string, unknown>> = [];
   const first = new GameAlgoRestClient({
     baseUrl: "https://gamealgo.test",
     gameKey,
     storage,
     now: () => Date.parse("2026-05-28T10:00:00.000Z"),
-    fetchImpl: async (input) => {
-      const request = new Request(input);
-      urls.push(request.url);
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      configBodies.push(await request.json() as Record<string, unknown>);
       return jsonResponse({
+        contextId: "ctx-1",
         gameId: "Mahjong",
         environment: "live",
         configVersion: "v1",
@@ -287,10 +299,11 @@ test("start generates and reuses anonymous user id when userId is omitted", asyn
     baseUrl: "https://gamealgo.test",
     gameKey,
     storage,
-    fetchImpl: async (input) => {
-      const request = new Request(input);
-      urls.push(request.url);
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      configBodies.push(await request.json() as Record<string, unknown>);
       return jsonResponse({
+        contextId: "ctx-1",
         gameId: "Mahjong",
         environment: "live",
         configVersion: "v2",
@@ -307,8 +320,8 @@ test("start generates and reuses anonymous user id when userId is omitted", asyn
 
   assert.equal(firstIdentity.userId, secondIdentity.userId);
   assert.equal(firstIdentity.userCreatedAt, "2026-05-28T10:00:00.000Z");
-  assert.equal(new URL(urls[0]).searchParams.get("userId"), firstIdentity.userId);
-  assert.equal(new URL(urls[1]).searchParams.get("userId"), firstIdentity.userId);
+  assert.equal(configBodies[0].userId, firstIdentity.userId);
+  assert.equal(configBodies[1].userId, firstIdentity.userId);
 });
 
 test("start backfills createdAt for persisted legacy user id", async () => {
@@ -329,6 +342,7 @@ test("start backfills createdAt for persisted legacy user id", async () => {
         return jsonResponse({ ok: true, accepted: body.events.length });
       }
       return jsonResponse({
+        contextId: "ctx-1",
         gameId: "Mahjong",
         environment: "live",
         configVersion: "v1",
@@ -350,11 +364,11 @@ test("start backfills createdAt for persisted legacy user id", async () => {
   await client.tracker.flush();
   const sessionStart = uploadedEvents.find((event) => event.eventType === "session_start");
   assert.equal(sessionStart?.userId, "legacy-user");
-  assert.equal((sessionStart?.payload as Record<string, unknown>).userCreatedAt, "2026-05-28T10:00:00.000Z");
+  assert.equal((sessionStart?.dimensions as Record<string, unknown>).userCreatedAt, "2026-05-28T10:00:00.000Z");
   client.tracker.close();
 });
 
-test("uploadEvents fills platform, sdkVersion, appVersion, and timestamp defaults", async () => {
+test("uploadEvents fills timestamp and preserves metric event fields", async () => {
   const client = new GameAlgoRestClient({
     baseUrl: "https://gamealgo.test",
     gameKey,
@@ -366,21 +380,22 @@ test("uploadEvents fills platform, sdkVersion, appVersion, and timestamp default
       assert.equal(request.method, "POST");
       assert.equal(request.url, "https://gamealgo.test/v1/events/batch");
       const body = await request.json() as { events: Array<Record<string, unknown>> };
-      assert.equal(body.events[0].platform, "rest");
-      assert.equal(body.events[0].sdkVersion, "1.2.3");
-      assert.equal(body.events[0].appVersion, "4.5.6");
-      assert.equal(body.events[0].timezone, testTimezone());
+      assert.equal(body.events[0].contextId, "ctx-1");
       assert.equal(body.events[0].timestamp, "2026-05-28T10:00:00.000Z");
+      assert.deepEqual(body.events[0].dimensions, {});
+      assert.deepEqual(body.events[0].metrics, []);
       return jsonResponse({ ok: true, accepted: 1 });
     },
   });
 
   const result = await client.uploadEvents([{
     eventId: "event-1",
+    contextId: "ctx-1",
     userId: "u1",
     sessionId: "s1",
     eventType: "session_start",
-    payload: {},
+    dimensions: {},
+    metrics: [],
   }]);
 
   assert.equal(result.accepted, 1);
@@ -407,6 +422,7 @@ test("tracker queues and flushes events after start identifies user", async () =
         return jsonResponse({ ok: true, accepted: body.events.length });
       }
       return jsonResponse({
+        contextId: "ctx-1",
         gameId: "Mahjong",
         environment: "live",
         configVersion: "v1",
@@ -434,23 +450,18 @@ test("tracker queues and flushes events after start identifies user", async () =
   assert.equal(requests[1].url, "https://gamealgo.test/v1/events/batch");
   assert.equal(uploadedEvents.length, 3);
   assert.equal(uploadedEvents[0].eventType, "config_loaded");
+  assert.equal(uploadedEvents[0].contextId, "ctx-1");
   assert.equal(uploadedEvents[1].userId, "u1");
   assert.equal(uploadedEvents[1].sessionId, uploadedEvents[2].sessionId);
   assert.equal(uploadedEvents[1].eventType, "session_start");
-  assert.equal((uploadedEvents[1].payload as Record<string, unknown>).userCreatedAt, "2026-05-28T10:00:00.000Z");
+  assert.equal((uploadedEvents[1].dimensions as Record<string, unknown>).userCreatedAt, "2026-05-28T10:00:00.000Z");
   assert.equal(uploadedEvents[2].eventType, "level_end");
-  assert.equal(uploadedEvents[2].platform, "rest");
-  assert.equal(uploadedEvents[2].sdkVersion, "1.2.3");
-  assert.equal(uploadedEvents[2].appVersion, "4.5.6");
-  assert.equal(uploadedEvents[2].timezone, testTimezone());
   assert.equal(uploadedEvents[2].isDebug, true);
-  assert.deepEqual((uploadedEvents[2].payload as Record<string, unknown>).experiments, {
-    level_generator: "variant-a",
-  });
+  assert.deepEqual(uploadedEvents[2].metrics, [{ key: "level", value: 3 }]);
   client.tracker.close();
 });
 
-test("custom events opt into experiment payloads", async () => {
+test("custom events use dimensions and metrics", async () => {
   let uploadedEvents: Array<Record<string, unknown>> = [];
   const client = new GameAlgoRestClient({
     baseUrl: "https://gamealgo.test",
@@ -464,6 +475,7 @@ test("custom events opt into experiment payloads", async () => {
         return jsonResponse({ ok: true, accepted: body.events.length });
       }
       return jsonResponse({
+        contextId: "ctx-1",
         gameId: "Mahjong",
         environment: "live",
         configVersion: "v1",
@@ -481,16 +493,12 @@ test("custom events opt into experiment payloads", async () => {
   });
 
   await client.start({ userId: "u1" });
-  assert.equal(client.tracker.trackEvent("custom_action"), true);
-  assert.equal(client.tracker.trackEvent("custom_action_with_exp", {}, { includeExperiments: true }), true);
+  assert.equal(client.tracker.trackEvent("custom_action", { button: "start", value: 2 }), true);
   await client.tracker.flush();
 
   assert.equal(uploadedEvents[1].eventType, "_custom_action");
-  assert.equal((uploadedEvents[1].payload as Record<string, unknown>).experiments, undefined);
-  assert.equal(uploadedEvents[2].eventType, "_custom_action_with_exp");
-  assert.deepEqual((uploadedEvents[2].payload as Record<string, unknown>).experiments, {
-    level_generator: "variant-a",
-  });
+  assert.deepEqual(uploadedEvents[1].dimensions, { button: "start" });
+  assert.deepEqual(uploadedEvents[1].metrics, [{ key: "value", value: 2 }]);
   client.tracker.close();
 });
 
@@ -514,14 +522,16 @@ test("throws structured API errors", async () => {
 
 test("createEvent fills eventId and timestamp", () => {
   const event = createEvent({
+    contextId: "ctx-1",
     userId: "u1",
     sessionId: "s1",
     eventType: "session_start",
-    payload: {},
+    dimensions: {},
+    metrics: [],
   });
 
   assert.equal(typeof event.eventId, "string");
-  assert.equal(event.timezone, testTimezone());
+  assert.equal(event.contextId, "ctx-1");
   assert.equal(typeof event.timestamp, "string");
 });
 

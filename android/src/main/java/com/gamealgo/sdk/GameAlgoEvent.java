@@ -1,52 +1,33 @@
 package com.gamealgo.sdk;
 
 import java.util.Collections;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
-import java.util.TimeZone;
 
 public final class GameAlgoEvent {
     private String eventId;
+    private final String contextId;
     private final String userId;
     private final String sessionId;
     private final String eventType;
-    private String platform;
-    private String sdkVersion;
-    private String appVersion;
-    private String timezone = TimeZone.getDefault().getID();
     private Boolean isDebug;
     private String timestamp;
-    private Map<String, Object> payload;
+    private Map<String, Object> dimensions;
+    private List<GameAlgoEventMetric> metrics;
 
-    public GameAlgoEvent(String userId, String sessionId, String eventType) {
+    public GameAlgoEvent(String contextId, String userId, String sessionId, String eventType) {
+        this.contextId = contextId;
         this.userId = userId;
         this.sessionId = sessionId;
         this.eventType = eventType;
-        this.payload = new LinkedHashMap<>();
+        this.dimensions = new LinkedHashMap<>();
+        this.metrics = new ArrayList<>();
     }
 
     public GameAlgoEvent eventId(String eventId) {
         this.eventId = eventId;
-        return this;
-    }
-
-    public GameAlgoEvent platform(String platform) {
-        this.platform = platform;
-        return this;
-    }
-
-    public GameAlgoEvent sdkVersion(String sdkVersion) {
-        this.sdkVersion = sdkVersion;
-        return this;
-    }
-
-    public GameAlgoEvent appVersion(String appVersion) {
-        this.appVersion = appVersion;
-        return this;
-    }
-
-    public GameAlgoEvent timezone(String timezone) {
-        this.timezone = timezone;
         return this;
     }
 
@@ -60,13 +41,27 @@ public final class GameAlgoEvent {
         return this;
     }
 
-    public GameAlgoEvent payload(Map<String, Object> payload) {
-        this.payload = payload == null ? new LinkedHashMap<String, Object>() : new LinkedHashMap<>(payload);
+    public GameAlgoEvent dimensions(Map<String, Object> dimensions) {
+        this.dimensions = dimensions == null ? new LinkedHashMap<String, Object>() : new LinkedHashMap<>(dimensions);
+        return this;
+    }
+
+    public GameAlgoEvent metric(String key, double value) {
+        this.metrics.add(new GameAlgoEventMetric(key, value));
+        return this;
+    }
+
+    public GameAlgoEvent metrics(List<GameAlgoEventMetric> metrics) {
+        this.metrics = metrics == null ? new ArrayList<GameAlgoEventMetric>() : new ArrayList<>(metrics);
         return this;
     }
 
     public String getEventId() {
         return eventId;
+    }
+
+    public String getContextId() {
+        return contextId;
     }
 
     public String getUserId() {
@@ -81,22 +76,6 @@ public final class GameAlgoEvent {
         return eventType;
     }
 
-    public String getPlatform() {
-        return platform;
-    }
-
-    public String getSdkVersion() {
-        return sdkVersion;
-    }
-
-    public String getAppVersion() {
-        return appVersion;
-    }
-
-    public String getTimezone() {
-        return timezone;
-    }
-
     public Boolean getIsDebug() {
         return isDebug;
     }
@@ -105,25 +84,29 @@ public final class GameAlgoEvent {
         return timestamp;
     }
 
-    public Map<String, Object> getPayload() {
-        return Collections.unmodifiableMap(payload);
+    public Map<String, Object> getDimensions() {
+        return Collections.unmodifiableMap(dimensions);
     }
 
-    Map<String, Object> toJson(String defaultPlatform, String defaultSDKVersion, String defaultAppVersion, String defaultTimestamp) {
+    public List<GameAlgoEventMetric> getMetrics() {
+        return Collections.unmodifiableList(metrics);
+    }
+
+    Map<String, Object> toJson(String defaultTimestamp) {
         Map<String, Object> object = new LinkedHashMap<>();
         object.put("eventId", isBlank(eventId) ? java.util.UUID.randomUUID().toString() : eventId);
+        object.put("contextId", contextId);
         object.put("userId", userId);
         object.put("sessionId", sessionId);
         object.put("eventType", eventType);
-        object.put("platform", isBlank(platform) ? defaultPlatform : platform);
-        object.put("sdkVersion", isBlank(sdkVersion) ? defaultSDKVersion : sdkVersion);
-        if (appVersion != null || defaultAppVersion != null) {
-            object.put("appVersion", appVersion == null ? defaultAppVersion : appVersion);
-        }
-        object.put("timezone", isBlank(timezone) ? TimeZone.getDefault().getID() : timezone);
         object.put("isDebug", isDebug == null ? Boolean.FALSE : isDebug);
         object.put("timestamp", isBlank(timestamp) ? defaultTimestamp : timestamp);
-        object.put("payload", payload);
+        object.put("dimensions", dimensions);
+        List<Object> metricItems = new ArrayList<>();
+        for (GameAlgoEventMetric metric : metrics) {
+            metricItems.add(metric.toJson());
+        }
+        object.put("metrics", metricItems);
         return object;
     }
 

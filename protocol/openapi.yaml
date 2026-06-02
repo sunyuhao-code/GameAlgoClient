@@ -9,38 +9,15 @@ security:
   - gameKey: []
 paths:
   /v1/config:
-    get:
+    post:
       summary: Fetch game config, experiment assignments, and config file metadata.
       operationId: fetchConfig
-      parameters:
-        - name: userId
-          in: query
-          required: true
-          schema:
-            type: string
-            minLength: 1
-        - name: platform
-          in: query
-          required: true
-          schema:
-            type: string
-            enum: [ios, android, rest]
-        - name: sdkVersion
-          in: query
-          required: true
-          schema:
-            type: string
-            minLength: 1
-        - name: appVersion
-          in: query
-          required: false
-          schema:
-            type: string
-        - name: deviceId
-          in: query
-          required: false
-          schema:
-            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfigRequest"
       responses:
         "200":
           description: Config response.
@@ -164,9 +141,39 @@ components:
             $ref: "#/components/schemas/ErrorResponse"
 
   schemas:
+    ConfigRequest:
+      type: object
+      required:
+        - userId
+        - sessionId
+        - platform
+        - sdkVersion
+      properties:
+        userId:
+          type: string
+          minLength: 1
+        sessionId:
+          type: string
+          minLength: 1
+        platform:
+          type: string
+          enum: [ios, android, rest]
+        sdkVersion:
+          type: string
+          minLength: 1
+        appVersion:
+          type: string
+        timezone:
+          type: string
+        device:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/JsonValue"
+
     ConfigResponse:
       type: object
       required:
+        - contextId
         - gameId
         - environment
         - configVersion
@@ -175,6 +182,8 @@ components:
         - experiments
         - configFiles
       properties:
+        contextId:
+          type: string
         gameId:
           type: string
         environment:
@@ -263,15 +272,15 @@ components:
       type: object
       required:
         - eventId
+        - contextId
         - userId
         - sessionId
         - eventType
-        - platform
-        - sdkVersion
         - timestamp
-        - payload
       properties:
         eventId:
+          type: string
+        contextId:
           type: string
         userId:
           type: string
@@ -279,24 +288,38 @@ components:
           type: string
         eventType:
           type: string
-        platform:
-          type: string
-          enum: [ios, android, rest]
-        sdkVersion:
-          type: string
-        appVersion:
-          type: string
-        timezone:
-          type: string
-          description: SDK helpers default this to the client's local timezone.
         isDebug:
           type: boolean
           default: false
         timestamp:
           type: string
           format: date-time
-        payload:
-          $ref: "#/components/schemas/JsonValue"
+        dimensions:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/EventDimensionValue"
+        metrics:
+          type: array
+          items:
+            $ref: "#/components/schemas/EventMetric"
+
+    EventDimensionValue:
+      oneOf:
+        - type: string
+        - type: number
+        - type: boolean
+        - type: "null"
+
+    EventMetric:
+      type: object
+      required:
+        - key
+        - value
+      properties:
+        key:
+          type: string
+        value:
+          type: number
 
     ErrorResponse:
       type: object

@@ -20,6 +20,7 @@ export type ConfigFileRef = {
 };
 
 export type ConfigResponse = {
+  contextId: string;
   gameId: string;
   environment: GameEnvironment;
   configVersion: string;
@@ -31,10 +32,13 @@ export type ConfigResponse = {
 
 export type FetchConfigOptions = {
   userId?: string;
+  sessionId?: string;
   platform?: Platform;
   sdkVersion?: string;
   appVersion?: string;
   deviceId?: string;
+  timezone?: string;
+  device?: Record<string, JsonValue>;
   forceRefresh?: boolean;
 };
 
@@ -51,16 +55,21 @@ export type ConfigFileResponse = {
 
 export type GameEvent = {
   eventId?: string;
+  contextId: string;
   userId: string;
   sessionId: string;
   eventType: string;
-  platform?: Platform;
-  sdkVersion?: string;
-  appVersion?: string;
-  timezone?: string;
   isDebug?: boolean;
   timestamp?: string;
-  payload: JsonValue;
+  dimensions?: EventDimensions;
+  metrics?: EventMetric[];
+};
+
+export type EventDimensionValue = string | number | boolean | null;
+export type EventDimensions = Record<string, EventDimensionValue>;
+export type EventMetric = {
+  key: string;
+  value: number;
 };
 
 export type EventBatchResponse = {
@@ -102,13 +111,11 @@ export type GameAlgoUserIdentity = {
 export type TrackEventOptions = {
   userId?: string;
   sessionId?: string;
-  includeExperiments?: boolean;
-  platform?: Platform;
-  sdkVersion?: string;
-  appVersion?: string;
-  timezone?: string;
+  contextId?: string;
   isDebug?: boolean;
   timestamp?: string;
+  dimensions?: EventDimensions;
+  metrics?: EventMetric[] | Record<string, number>;
 };
 
 export type GameAlgoStorage = {

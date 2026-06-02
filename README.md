@@ -179,7 +179,7 @@ X-GameAlgo-Key: ga_live_xxx
 常用接口：
 
 ```text
-GET  /v1/config?userId=...&platform=ios|android|rest&sdkVersion=...
+POST /v1/config
 GET  /v1/config-files/{fileName}
 POST /v1/events/batch
 ```
@@ -218,7 +218,7 @@ function execute(input) {
 
 SDK 默认提供 `tracker`，游戏代码只需要调用 `trackSessionStart`、`trackLevelEnd`、`trackEvent` 等方法。tracker 会内存排队、最多 100 条一批上传、30 秒定时 flush、失败时保留上一批等待下次 retry。`uploadEvents` 仍保留为低层接口，只有在接入方自己有队列系统时才需要直接调用。
 
-标准事件默认会附带当前实验分组；自定义事件（`trackEvent` / `_custom_event`）默认不附带，需要时显式开启 `includeExperiments`。
+SDK 拉取配置时会带上 `userId/sessionId/platform/sdkVersion/timezone/device`，服务端生成一条 SDK context 日志并返回 `contextId`。后续事件只引用这个 `contextId`；实验分组保存在 context 里，不再复制到每条事件。
 
 最小推荐事件：
 
@@ -226,7 +226,6 @@ SDK 默认提供 `tracker`，游戏代码只需要调用 `trackSessionStart`、`
 session_start
 session_end
 config_loaded
-experiment_exposed
 level_start
 level_end
 ```
@@ -251,8 +250,8 @@ _tutorial_skip
 - QA 或测试设备设置 `isDebug=true`。
 - 网络失败时重试，不阻塞游戏。
 - `userId` 默认由 SDK 生成并持久化；有账号体系时也可以显式传自己的稳定匿名 ID。`sessionId` 每次启动或每局会话生成一个新的。
-- `timezone` 默认使用客户端本地时区，通常不需要游戏设置。
-- `payload` 只放业务字段，不要放密钥、手机号、邮箱等敏感信息。
+- 业务字符串、布尔值等进入 `dimensions`；可聚合数值进入 `metrics`，例如 `level`、`durationMs`、`revenue`。
+- 不要在事件字段里放密钥、手机号、邮箱等敏感信息。
 - SDK 默认向控制台输出配置拉取、实验分组、配置文件和脚本加载日志；需要静默时 iOS 传 `logger: nil`，Android 传 `null` logger，REST 传 `logger: false`。
 
 ## 验收清单

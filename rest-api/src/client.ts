@@ -2,6 +2,8 @@ import type {
   ConfigFileResponse,
   ConfigResponse,
   EventBatchResponse,
+  EventDimensions,
+  EventMetric,
   ExperimentAssignment,
   FetchConfigOptions,
   GameAlgoExecutionResult,
@@ -88,7 +90,7 @@ export class GameAlgoRestClient {
     this.readyPromise = (async () => {
       const identity = await this.userIdentity(options.userId);
       this.logUserId(identity.userId);
-      this.tracker.identify(identity.userId, undefined, identity.userCreatedAt);
+      this.tracker.identify(identity.userId, options.sessionId, identity.userCreatedAt);
       await this.loadPersistedSnapshot();
       try {
         await this.refresh({ ...options, userId: identity.userId, forceRefresh: true });
@@ -165,16 +167,20 @@ export class GameAlgoRestClient {
   async fetchConfig(options: FetchConfigOptions = {}): Promise<ConfigResponse> {
     const identity = await this.userIdentity(options.userId);
     this.logUserId(identity.userId);
-    this.tracker.identify(identity.userId, undefined, identity.userCreatedAt);
+    this.tracker.identify(identity.userId, options.sessionId, identity.userCreatedAt);
     const platform = options.platform ?? this.platform;
     const sdkVersion = options.sdkVersion ?? this.sdkVersion;
     const appVersion = options.appVersion ?? this.appVersion;
+    const sessionId = clean(options.sessionId) ?? this.tracker.currentSessionId();
     const cacheKey = JSON.stringify({
       userId: identity.userId,
+      sessionId,
       platform,
       sdkVersion,
       appVersion,
       deviceId: options.deviceId,
+      timezone: options.timezone ?? this.timezone,
+      device: options.device,
     });
 
     if (!options.forceRefresh && this.cachedConfig && this.cachedConfig.cacheKey === cacheKey && this.cachedConfig.expiresAt > this.now()) {
@@ -183,20 +189,31 @@ export class GameAlgoRestClient {
     }
 
     this.log(`fetching config: userId=${identity.userId}, platform=${platform}`);
-    const url = this.url("/v1/config");
-    url.searchParams.set("userId", identity.userId);
-    url.searchParams.set("platform", platform);
-    url.searchParams.set("sdkVersion", sdkVersion);
-    if (appVersion) url.searchParams.set("appVersion", appVersion);
-    if (options.deviceId) url.searchParams.set("deviceId", options.deviceId);
+    const device = {
+      ...(options.device ?? {}),
+      ...(options.deviceId ? { deviceId: options.deviceId } : {}),
+    };
 
     try {
-      const config = await this.requestJson<ConfigResponse>(url, { method: "GET" });
+      const config = await this.requestJson<ConfigResponse>(this.url("/v1/config"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          userId: identity.userId,
+          sessionId,
+          platform,
+          sdkVersion,
+          appVersion,
+          timezone: options.timezone ?? this.timezone,
+          device,
+        }),
+      });
       this.cachedConfig = {
         value: config,
         cacheKey,
         expiresAt: this.now() + Math.max(Number(config.ttlSeconds) || 0, 0) * 1000,
       };
+      this.tracker.setContextId(config.contextId);
       this.tracker.setAssignments(config.experiments);
       this.snapshot = {
         ...this.snapshot,
@@ -250,12 +267,10 @@ export class GameAlgoRestClient {
     const normalizedEvents = events.map((event) => ({
       ...event,
       eventId: event.eventId ?? randomId(),
-      platform: event.platform ?? this.platform,
-      sdkVersion: event.sdkVersion ?? this.sdkVersion,
-      appVersion: event.appVersion ?? this.appVersion,
-      timezone: clean(event.timezone) ?? this.timezone,
       isDebug: Boolean(event.isDebug),
       timestamp: event.timestamp ?? new Date(this.now()).toISOString(),
+      dimensions: event.dimensions ?? {},
+      metrics: event.metrics ?? [],
     }));
 
     return this.requestJson<EventBatchResponse>(this.url("/v1/events/batch"), {
@@ -402,6 +417,7 @@ export class GameAlgoEventTracker {
 
   private userId?: string;
   private sessionId = randomId();
+  private contextId?: string;
   private timezone?: string;
   private userCreatedAt?: string;
   private isDebug: boolean;
@@ -444,7 +460,16 @@ export class GameAlgoEventTracker {
 
   newSession(sessionId = randomId()): void {
     this.sessionId = sessionId;
+    this.contextId = undefined;
     this.sessionStartMs = undefined;
+  }
+
+  currentSessionId(): string {
+    return this.sessionId;
+  }
+
+  setContextId(contextId: string): void {
+    this.contextId = clean(contextId);
   }
 
   setDebug(isDebug: boolean): void {
@@ -465,19 +490,20 @@ export class GameAlgoEventTracker {
   track(eventType: string, payload: JsonValue = {}, options: TrackEventOptions = {}): boolean {
     const userId = clean(options.userId ?? this.userId);
     if (!userId) return false;
+    const contextId = clean(options.contextId ?? this.contextId);
+    if (!contextId) return false;
+    const split = splitPayload(payload);
 
     this.enqueue({
       eventId: randomId(),
+      contextId,
       userId,
       sessionId: clean(options.sessionId) ?? this.sessionId,
       eventType,
-      platform: options.platform ?? this.platform,
-      sdkVersion: options.sdkVersion ?? this.sdkVersion,
-      appVersion: options.appVersion ?? this.appVersion,
-      timezone: clean(options.timezone) ?? this.timezone,
       isDebug: options.isDebug ?? this.isDebug,
       timestamp: options.timestamp ?? new Date(this.now()).toISOString(),
-      payload: this.payloadWithExperiments(eventType, payload, options.includeExperiments),
+      dimensions: { ...split.dimensions, ...(options.dimensions ?? {}) },
+      metrics: [...split.metrics, ...normalizeMetrics(options.metrics)],
     });
     return true;
   }
@@ -504,7 +530,7 @@ export class GameAlgoEventTracker {
   }
 
   trackConfigLoaded(): boolean {
-    return this.track("config_loaded", { experiments: this.currentExperiments });
+    return this.track("config_loaded", {});
   }
 
   trackLevelStart(payload: JsonValue = {}): boolean {
@@ -591,25 +617,6 @@ export class GameAlgoEventTracker {
     if (this.queue.length >= this.maxBatchSize) {
       void this.flush().catch(() => undefined);
     }
-  }
-
-  private payloadWithExperiments(eventType: string, payload: JsonValue, includeExperiments?: boolean): JsonValue {
-    if (
-      eventType === "session_start" ||
-      eventType === "session_end" ||
-      eventType === "config_loaded" ||
-      Object.keys(this.currentExperiments).length === 0 ||
-      includeExperiments === false ||
-      (includeExperiments === undefined && eventType.startsWith("_"))
-    ) {
-      return payload;
-    }
-
-    const merged = objectPayload(payload);
-    if (merged.experiments === undefined) {
-      merged.experiments = this.currentExperiments;
-    }
-    return merged;
   }
 
   private startTimer(): void {
@@ -808,8 +815,9 @@ export function createEvent(input: Omit<GameEvent, "eventId" | "timestamp"> & { 
   return {
     ...input,
     eventId: input.eventId ?? randomId(),
-    timezone: clean(input.timezone) ?? defaultTimezone(),
     timestamp: input.timestamp ?? new Date().toISOString(),
+    dimensions: input.dimensions ?? {},
+    metrics: input.metrics ?? [],
   };
 }
 
@@ -862,6 +870,28 @@ function objectPayload(value: JsonValue): Record<string, JsonValue> {
     return { ...(value as Record<string, JsonValue>) };
   }
   return {};
+}
+
+function splitPayload(value: JsonValue): { dimensions: EventDimensions; metrics: EventMetric[] } {
+  const dimensions: EventDimensions = {};
+  const metrics: EventMetric[] = [];
+  const object = objectPayload(value);
+  for (const [key, rawValue] of Object.entries(object)) {
+    if (typeof rawValue === "number" && Number.isFinite(rawValue)) {
+      metrics.push({ key, value: rawValue });
+    } else if (rawValue === null || typeof rawValue === "string" || typeof rawValue === "boolean") {
+      dimensions[key] = rawValue;
+    } else if (rawValue !== undefined) {
+      dimensions[key] = JSON.stringify(rawValue);
+    }
+  }
+  return { dimensions, metrics };
+}
+
+function normalizeMetrics(value: TrackEventOptions["metrics"]): EventMetric[] {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  return Object.entries(value).map(([key, metricValue]) => ({ key, value: metricValue }));
 }
 
 async function verifyScriptHash(content: string, expected: string): Promise<void> {

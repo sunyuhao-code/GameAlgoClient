@@ -7,7 +7,6 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.TimeZone;
 
 public final class GameAlgoClientSmokeTest {
     public static void main(String[] args) throws Exception {
@@ -20,7 +19,7 @@ public final class GameAlgoClientSmokeTest {
         testStartBackfillsCreatedAtForPersistedLegacyUserId();
         testUploadEventsFillsDefaults();
         testTrackerQueuesAndFlushesEvents();
-        testCustomEventsOptIntoExperimentPayloads();
+        testCustomEventsUseDimensionsAndMetrics();
     }
 
     private static void testFetchConfigSendsHeadersAndCaches() throws Exception {
@@ -46,7 +45,13 @@ public final class GameAlgoClientSmokeTest {
         check(httpClient.requests.size() == 1, "config should be cached");
         GameAlgoHttpRequest request = httpClient.requests.get(0);
         check("ga_live_test_key_0123456789abcdef".equals(request.getHeaders().get("X-GameAlgo-Key")), "game key header should be sent");
-        check("https://gamealgo.test/v1/config?userId=u1&platform=android&sdkVersion=1.0.0".equals(request.getUrl().toString()), "config URL should match Protocol v1");
+        check(GameAlgoHttpMethod.POST.equals(request.getMethod()), "config should use POST");
+        check("https://gamealgo.test/v1/config".equals(request.getUrl().toString()), "config URL should match Protocol v1");
+        Map<String, Object> requestBody = requestBody(request);
+        check("u1".equals(requestBody.get("userId")), "config body should include userId");
+        check(requestBody.get("sessionId") instanceof String && ((String) requestBody.get("sessionId")).length() > 0, "config body should include sessionId");
+        check("android".equals(requestBody.get("platform")), "config body should include platform");
+        check("1.0.0".equals(requestBody.get("sdkVersion")), "config body should include sdkVersion");
     }
 
     private static void testFetchConfigFile() throws Exception {
@@ -82,6 +87,7 @@ public final class GameAlgoClientSmokeTest {
     private static void testStartAsyncPreloadsConfigFilesAndExposesLocalExecutorAndConfigReaders() throws Exception {
         FakeHttpClient httpClient = new FakeHttpClient();
         httpClient.enqueue(jsonResponse("{"
+                + "\"contextId\":\"ctx-1\","
                 + "\"gameId\":\"Mahjong\","
                 + "\"environment\":\"live\","
                 + "\"configVersion\":\"v1\","
@@ -131,6 +137,7 @@ public final class GameAlgoClientSmokeTest {
         String script = "function execute(input) { return { payload: input.config, diagnostics: input.meta }; }";
         FakeHttpClient httpClient = new FakeHttpClient();
         httpClient.enqueue(jsonResponse("{"
+                + "\"contextId\":\"ctx-1\","
                 + "\"gameId\":\"Mahjong\","
                 + "\"environment\":\"live\","
                 + "\"configVersion\":\"v1\","
@@ -174,6 +181,7 @@ public final class GameAlgoClientSmokeTest {
         MemoryCacheStorage cache = new MemoryCacheStorage();
         FakeHttpClient firstHttpClient = new FakeHttpClient();
         firstHttpClient.enqueue(jsonResponse("{"
+                + "\"contextId\":\"ctx-1\","
                 + "\"gameId\":\"Mahjong\","
                 + "\"environment\":\"live\","
                 + "\"configVersion\":\"cached-v1\","
@@ -257,8 +265,8 @@ public final class GameAlgoClientSmokeTest {
 
         check(firstUserId.length() > 0, "anonymous user id should be generated");
         check(firstUserId.equals(second.userId()), "anonymous user id should be persisted");
-        check(firstHttpClient.requests.get(0).getUrl().toString().contains("userId=" + firstUserId), "first config request should use generated user id");
-        check(secondHttpClient.requests.get(0).getUrl().toString().contains("userId=" + firstUserId), "second config request should reuse generated user id");
+        check(firstUserId.equals(requestBody(firstHttpClient.requests.get(0)).get("userId")), "first config request should use generated user id");
+        check(firstUserId.equals(requestBody(secondHttpClient.requests.get(0)).get("userId")), "second config request should reuse generated user id");
     }
 
     private static void testUploadEventsFillsDefaults() throws Exception {
@@ -274,7 +282,7 @@ public final class GameAlgoClientSmokeTest {
         );
 
         GameAlgoEventBatchResponse response = client.uploadEvents(Arrays.asList(
-                new GameAlgoEvent("u1", "s1", "session_start")
+                new GameAlgoEvent("ctx-1", "u1", "s1", "session_start")
         ));
         Map<String, Object> body = GameAlgoJson.asObject(
                 GameAlgoJson.parse(new String(httpClient.requests.get(0).getBody(), StandardCharsets.UTF_8)),
@@ -284,13 +292,11 @@ public final class GameAlgoClientSmokeTest {
         Map<String, Object> event = GameAlgoJson.asObject(events.get(0), "events[]");
 
         check(response.getAccepted() == 1, "accepted should decode");
-        check(TimeZone.getDefault().getID().equals(new GameAlgoEvent("u1", "s1", "session_start").getTimezone()), "event should expose default timezone");
-        check("android".equals(event.get("platform")), "platform should default");
-        check("1.2.3".equals(event.get("sdkVersion")), "sdkVersion should default");
-        check("4.5.6".equals(event.get("appVersion")), "appVersion should default");
-        check(TimeZone.getDefault().getID().equals(event.get("timezone")), "timezone should default");
+        check("ctx-1".equals(event.get("contextId")), "contextId should be preserved");
         check(Boolean.FALSE.equals(event.get("isDebug")), "isDebug should default false");
         check(event.get("timestamp") instanceof String, "timestamp should default");
+        check(GameAlgoJson.asObject(event.get("dimensions"), "dimensions").isEmpty(), "dimensions should default empty");
+        check(GameAlgoJson.asArray(event.get("metrics"), "metrics").isEmpty(), "metrics should default empty");
     }
 
     private static void testStartBackfillsCreatedAtForPersistedLegacyUserId() throws Exception {
@@ -334,8 +340,8 @@ public final class GameAlgoClientSmokeTest {
 
         check(sessionStart != null, "session_start should be uploaded for legacy user");
         check("legacy-user".equals(sessionStart.get("userId")), "session_start should use legacy user id");
-        Map<String, Object> payload = GameAlgoJson.asObject(sessionStart.get("payload"), "payload");
-        check(cache.getItem("gamealgo_user_created_at").equals(payload.get("userCreatedAt")), "session_start should include backfilled userCreatedAt");
+        Map<String, Object> dimensions = GameAlgoJson.asObject(sessionStart.get("dimensions"), "dimensions");
+        check(cache.getItem("gamealgo_user_created_at").equals(dimensions.get("userCreatedAt")), "session_start should include backfilled userCreatedAt");
     }
 
     private static void testTrackerQueuesAndFlushesEvents() throws Exception {
@@ -372,27 +378,25 @@ public final class GameAlgoClientSmokeTest {
         check("https://gamealgo.test/v1/events/batch".equals(httpClient.requests.get(1).getUrl().toString()), "tracker should post to events batch");
         check(events.size() == 3, "tracker should upload config_loaded and queued events together");
         check("config_loaded".equals(first.get("eventType")), "tracker should upload config_loaded");
+        check("ctx-1".equals(first.get("contextId")), "tracker should attach contextId");
         check("u1".equals(second.get("userId")), "tracker should use identified user");
         check(second.get("sessionId").equals(third.get("sessionId")), "tracker should keep session id");
         check("session_start".equals(second.get("eventType")), "tracker should upload session_start");
-        Map<String, Object> secondPayload = GameAlgoJson.asObject(second.get("payload"), "payload");
-        check(secondPayload.get("userCreatedAt") instanceof String && ((String) secondPayload.get("userCreatedAt")).length() > 0, "session_start should include userCreatedAt");
+        Map<String, Object> secondDimensions = GameAlgoJson.asObject(second.get("dimensions"), "dimensions");
+        check(secondDimensions.get("userCreatedAt") instanceof String && ((String) secondDimensions.get("userCreatedAt")).length() > 0, "session_start should include userCreatedAt");
         check("level_end".equals(third.get("eventType")), "tracker should upload level_end");
-        check("android".equals(third.get("platform")), "tracker event platform should default");
-        check("1.2.3".equals(third.get("sdkVersion")), "tracker event sdkVersion should default");
-        check("4.5.6".equals(third.get("appVersion")), "tracker event appVersion should default");
-        check(TimeZone.getDefault().getID().equals(third.get("timezone")), "tracker should default timezone");
         check(Boolean.TRUE.equals(third.get("isDebug")), "tracker should preserve debug flag");
-        Map<String, Object> thirdPayload = GameAlgoJson.asObject(third.get("payload"), "payload");
-        Map<String, Object> experiments = GameAlgoJson.asObject(thirdPayload.get("experiments"), "experiments");
-        check("variant-a".equals(experiments.get("level_generator")), "tracker should attach experiment variants");
+        List<Object> thirdMetrics = GameAlgoJson.asArray(third.get("metrics"), "metrics");
+        Map<String, Object> levelMetric = GameAlgoJson.asObject(thirdMetrics.get(0), "metrics[]");
+        check("level".equals(levelMetric.get("key")), "tracker should split numeric payload as metric");
+        check(((Number) levelMetric.get("value")).doubleValue() == 3.0, "tracker should preserve metric value");
         client.tracker().close();
     }
 
-    private static void testCustomEventsOptIntoExperimentPayloads() throws Exception {
+    private static void testCustomEventsUseDimensionsAndMetrics() throws Exception {
         FakeHttpClient httpClient = new FakeHttpClient();
         httpClient.enqueue(jsonResponse(configJsonWithExperiment("v1")));
-        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":3}"));
+        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":2}"));
         GameAlgoClient client = new GameAlgoClient(
                 "ga_live_test_key_0123456789abcdef",
                 "https://gamealgo.test",
@@ -403,8 +407,10 @@ public final class GameAlgoClientSmokeTest {
         );
 
         client.startAsync("u1").get();
-        check(client.tracker().trackEvent("custom_action"), "custom event should enqueue");
-        check(client.tracker().trackEvent("custom_action_with_exp", new LinkedHashMap<String, Object>(), true), "custom event should opt into experiments");
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("button", "start");
+        payload.put("value", 2);
+        check(client.tracker().trackEvent("custom_action", payload), "custom event should enqueue");
         client.tracker().flush();
 
         Map<String, Object> body = GameAlgoJson.asObject(
@@ -412,21 +418,21 @@ public final class GameAlgoClientSmokeTest {
                 "body"
         );
         List<Object> events = GameAlgoJson.asArray(body.get("events"), "events");
-        Map<String, Object> defaultEvent = GameAlgoJson.asObject(events.get(1), "events[]");
-        Map<String, Object> optInEvent = GameAlgoJson.asObject(events.get(2), "events[]");
-        Map<String, Object> defaultPayload = GameAlgoJson.asObject(defaultEvent.get("payload"), "payload");
-        Map<String, Object> optInPayload = GameAlgoJson.asObject(optInEvent.get("payload"), "payload");
-        Map<String, Object> experiments = GameAlgoJson.asObject(optInPayload.get("experiments"), "experiments");
+        Map<String, Object> event = GameAlgoJson.asObject(events.get(1), "events[]");
+        Map<String, Object> eventDimensions = GameAlgoJson.asObject(event.get("dimensions"), "dimensions");
+        List<Object> metrics = GameAlgoJson.asArray(event.get("metrics"), "metrics");
+        Map<String, Object> metric = GameAlgoJson.asObject(metrics.get(0), "metrics[]");
 
-        check("_custom_action".equals(defaultEvent.get("eventType")), "custom event should be prefixed");
-        check(!defaultPayload.containsKey("experiments"), "custom event should not include experiments by default");
-        check("_custom_action_with_exp".equals(optInEvent.get("eventType")), "custom opt-in event should be prefixed");
-        check("variant-a".equals(experiments.get("level_generator")), "custom opt-in event should include experiments");
+        check("_custom_action".equals(event.get("eventType")), "custom event should be prefixed");
+        check("start".equals(eventDimensions.get("button")), "custom string payload should become dimension");
+        check("value".equals(metric.get("key")), "custom numeric payload should become metric");
+        check(((Number) metric.get("value")).doubleValue() == 2.0, "custom metric value should be preserved");
         client.tracker().close();
     }
 
     private static String configJson(String version) {
         return "{"
+                + "\"contextId\":\"ctx-1\","
                 + "\"gameId\":\"Mahjong\","
                 + "\"environment\":\"live\","
                 + "\"configVersion\":\"" + version + "\","
@@ -439,6 +445,7 @@ public final class GameAlgoClientSmokeTest {
 
     private static String configJsonWithExperiment(String version) {
         return "{"
+                + "\"contextId\":\"ctx-1\","
                 + "\"gameId\":\"Mahjong\","
                 + "\"environment\":\"live\","
                 + "\"configVersion\":\"" + version + "\","
@@ -452,6 +459,13 @@ public final class GameAlgoClientSmokeTest {
                 + "}],"
                 + "\"configFiles\":[]"
                 + "}";
+    }
+
+    private static Map<String, Object> requestBody(GameAlgoHttpRequest request) throws GameAlgoException {
+        return GameAlgoJson.asObject(
+                GameAlgoJson.parse(new String(request.getBody(), StandardCharsets.UTF_8)),
+                "request"
+        );
     }
 
     private static GameAlgoHttpResponse jsonResponse(String body) {

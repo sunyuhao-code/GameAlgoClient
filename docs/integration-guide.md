@@ -32,7 +32,7 @@ All integrations call the same `/v1/*` endpoints and send `X-GameAlgo-Key` on ev
   - Android: `sdk.fetchConfigFile("gameplay.json")`
   - REST: `await client.fetchConfigFile("gameplay.json")`
 - Use the SDK tracker for events. It batches in memory, flushes periodically, and retries the failed batch.
-- Standard events attach current experiment variants by default. Custom events do not; opt in per event when needed.
+- Experiment assignments are stored in the SDK context created during config fetch; events do not copy experiment fields.
 - Do not block gameplay on GameAlgo network calls.
 - Fall back to local defaults when GameAlgo is unavailable.
 
@@ -44,7 +44,6 @@ Minimum recommended events:
 session_start
 session_end
 config_loaded
-experiment_exposed
 level_start
 level_end
 ```

@@ -46,9 +46,7 @@ If an experiment assignment includes `script`, `executor.execute(state)` runs th
 
 `fetchConfig` remains available for lower-level usage and caches the last successful config in memory until `ttlSeconds` expires. Use `forceRefresh: true` to bypass the cache.
 
-`tracker` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, keeps the failed batch for the next retry, and fills the local `timezone` by default. `uploadEvents` remains available as a lower-level API when the integrating team already owns a queue/retry system.
-
-Standard events attach current experiment variants by default. Custom events do not; call `client.tracker.trackEvent("button_click", {}, { includeExperiments: true })` when a custom event should include them.
+`tracker` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, and keeps the failed batch for the next retry. Payload numbers become `metrics`; strings, booleans, and nulls become `dimensions`. Experiment assignments are stored in the SDK context created by `/v1/config`, not copied onto each event.
 
 ## 1. Auth
 
@@ -63,14 +61,25 @@ The server resolves `gameId` from this key. Do not send `gameId` as a trusted id
 ## 2. Fetch Config
 
 ```bash
-curl -s "https://gamealgo.example.com/v1/config?userId=user-001&platform=rest&sdkVersion=1.0.0&appVersion=1.2.3" \
-  -H "X-GameAlgo-Key: ga_live_xxx"
+curl -s -X POST "https://gamealgo.example.com/v1/config" \
+  -H "X-GameAlgo-Key: ga_live_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": "user-001",
+    "sessionId": "session-001",
+    "platform": "rest",
+    "sdkVersion": "1.0.0",
+    "appVersion": "1.2.3",
+    "timezone": "Asia/Shanghai",
+    "device": {}
+  }'
 ```
 
 Response:
 
 ```json
 {
+  "contextId": "ctx-001",
   "gameId": "Mahjong",
   "environment": "live",
   "configVersion": "2026-05-28-001",
@@ -119,19 +128,18 @@ curl -s -X POST "https://gamealgo.example.com/v1/events/batch" \
     "events": [
       {
         "eventId": "00000000-0000-0000-0000-000000000001",
+        "contextId": "ctx-001",
         "userId": "user-001",
         "sessionId": "session-001",
         "eventType": "level_end",
-        "platform": "rest",
-        "sdkVersion": "1.0.0",
-        "appVersion": "1.2.3",
-        "timezone": "Asia/Shanghai",
         "isDebug": false,
         "timestamp": "2026-05-28T10:00:00Z",
-        "payload": {
-          "level": 1,
+        "dimensions": {
           "result": "win"
-        }
+        },
+        "metrics": [
+          { "key": "level", "value": 1 }
+        ]
       }
     ]
   }'
@@ -161,7 +169,6 @@ Recommended event types:
 session_start
 session_end
 config_loaded
-experiment_exposed
 level_start
 level_end
 ad_view

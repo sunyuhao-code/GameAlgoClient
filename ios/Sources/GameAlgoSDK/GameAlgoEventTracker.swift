@@ -17,6 +17,7 @@ public actor GameAlgoEventTracker {
 
     private var userId: String?
     private var sessionId = UUID().uuidString
+    private var contextId: String?
     private var platform: GameAlgoPlatform?
     private var sdkVersion: String?
     private var appVersion: String?
@@ -107,7 +108,16 @@ public actor GameAlgoEventTracker {
 
     public func newSession(_ sessionId: String = UUID().uuidString) {
         self.sessionId = sessionId
+        contextId = nil
         sessionStartDate = nil
+    }
+
+    public func currentSessionId() -> String {
+        sessionId
+    }
+
+    public func setContextId(_ contextId: String) {
+        self.contextId = clean(contextId)
     }
 
     public func setDebug(_ isDebug: Bool) {
@@ -128,23 +138,28 @@ public actor GameAlgoEventTracker {
         payload: JSONValue = .object([:]),
         userId: String? = nil,
         sessionId: String? = nil,
-        includeExperiments: Bool? = nil
+        contextId: String? = nil,
+        dimensions: [String: JSONValue] = [:],
+        metrics: [GameAlgoEventMetric] = []
     ) -> Bool {
         guard let resolvedUserId = clean(userId ?? self.userId) else {
             return false
         }
+        guard let resolvedContextId = clean(contextId ?? self.contextId) else {
+            return false
+        }
+
+        let split = splitPayload(payload)
 
         let event = GameAlgoEvent(
+            contextId: resolvedContextId,
             userId: resolvedUserId,
             sessionId: clean(sessionId) ?? self.sessionId,
             eventType: eventType,
-            platform: platform,
-            sdkVersion: sdkVersion,
-            appVersion: appVersion,
-            timezone: timezone,
             isDebug: isDebug,
             timestamp: GameAlgoEventBatchUploader.isoTimestamp(now()),
-            payload: payloadWithExperiments(eventType: eventType, payload: payload, includeExperiments: includeExperiments)
+            dimensions: split.dimensions.merging(normalizeDimensions(dimensions)) { _, explicit in explicit },
+            metrics: split.metrics + metrics.filter { !$0.key.isEmpty && $0.value.isFinite }
         )
         enqueue(event)
         return true
@@ -156,10 +171,20 @@ public actor GameAlgoEventTracker {
         payload: JSONValue = .object([:]),
         userId: String? = nil,
         sessionId: String? = nil,
-        includeExperiments: Bool = false
+        contextId: String? = nil,
+        dimensions: [String: JSONValue] = [:],
+        metrics: [GameAlgoEventMetric] = []
     ) -> Bool {
         let eventType = type.hasPrefix("_") ? type : "_\(type)"
-        return track(eventType, payload: payload, userId: userId, sessionId: sessionId, includeExperiments: includeExperiments)
+        return track(
+            eventType,
+            payload: payload,
+            userId: userId,
+            sessionId: sessionId,
+            contextId: contextId,
+            dimensions: dimensions,
+            metrics: metrics
+        )
     }
 
     @discardableResult
@@ -188,7 +213,7 @@ public actor GameAlgoEventTracker {
 
     @discardableResult
     public func trackConfigLoaded() -> Bool {
-        track("config_loaded", payload: .object(["experiments": experimentsPayload()]))
+        track("config_loaded")
     }
 
     @discardableResult
@@ -294,38 +319,6 @@ public actor GameAlgoEventTracker {
         }
     }
 
-    private func payloadWithExperiments(eventType: String, payload: JSONValue, includeExperiments: Bool?) -> JSONValue {
-        guard shouldAttachExperiments(eventType: eventType, includeExperiments: includeExperiments) else {
-            return payload
-        }
-
-        var object = payload.objectValue ?? [:]
-        if object["experiments"] == nil {
-            object["experiments"] = experimentsPayload()
-        }
-        return .object(object)
-    }
-
-    private func shouldAttachExperiments(eventType: String, includeExperiments: Bool?) -> Bool {
-        guard !["session_start", "session_end", "config_loaded"].contains(eventType),
-              !currentAssignments.isEmpty
-        else {
-            return false
-        }
-        if let includeExperiments {
-            return includeExperiments
-        }
-        return !eventType.hasPrefix("_")
-    }
-
-    private func experimentsPayload() -> JSONValue {
-        var experiments: [String: JSONValue] = [:]
-        for assignment in currentAssignments {
-            experiments[assignment.key] = .string(assignment.variant)
-        }
-        return .object(experiments)
-    }
-
     private func startFlushTimerIfNeeded() {
         guard flushTask == nil, flushInterval > 0 else {
             return
@@ -345,6 +338,49 @@ public actor GameAlgoEventTracker {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func splitPayload(_ payload: JSONValue) -> (dimensions: [String: JSONValue], metrics: [GameAlgoEventMetric]) {
+        guard let object = payload.objectValue else {
+            return ([:], [])
+        }
+
+        var dimensions: [String: JSONValue] = [:]
+        var metrics: [GameAlgoEventMetric] = []
+        for (key, value) in object where !key.isEmpty {
+            if case let .number(number) = value, number.isFinite {
+                metrics.append(GameAlgoEventMetric(key: key, value: number))
+            } else if let dimension = dimensionValue(value) {
+                dimensions[key] = dimension
+            }
+        }
+        return (dimensions, metrics)
+    }
+
+    private func normalizeDimensions(_ dimensions: [String: JSONValue]) -> [String: JSONValue] {
+        var normalized: [String: JSONValue] = [:]
+        for (key, value) in dimensions where !key.isEmpty {
+            if let dimension = dimensionValue(value) {
+                normalized[key] = dimension
+            }
+        }
+        return normalized
+    }
+
+    private func dimensionValue(_ value: JSONValue) -> JSONValue? {
+        switch value {
+        case .string, .bool, .null:
+            return value
+        case let .number(number):
+            return number.isFinite ? value : nil
+        case .object, .array:
+            guard let data = try? JSONEncoder().encode(value),
+                  let string = String(data: data, encoding: .utf8)
+            else {
+                return nil
+            }
+            return .string(string)
+        }
     }
 
     private func log(_ message: String) {
@@ -398,18 +434,6 @@ final class GameAlgoEventBatchUploader: GameAlgoEventBatchUploading, @unchecked 
             var normalized = event
             if normalized.eventId?.isEmpty ?? true {
                 normalized.eventId = UUID().uuidString
-            }
-            if normalized.platform == nil {
-                normalized.platform = defaultPlatform
-            }
-            if normalized.sdkVersion?.isEmpty ?? true {
-                normalized.sdkVersion = defaultSDKVersion
-            }
-            if normalized.appVersion == nil {
-                normalized.appVersion = defaultAppVersion
-            }
-            if normalized.timezone?.isEmpty ?? true {
-                normalized.timezone = TimeZone.current.identifier
             }
             if normalized.isDebug == nil {
                 normalized.isDebug = false

@@ -17,14 +17,25 @@ The server resolves `gameId` from this key. Do not send `gameId` as a trusted id
 ## 2. Fetch Config
 
 ```bash
-curl -s "https://gamealgo.example.com/v1/config?userId=user-001&platform=rest&sdkVersion=1.0.0&appVersion=1.2.3" \
-  -H "X-GameAlgo-Key: ga_live_xxx"
+curl -s -X POST "https://gamealgo.example.com/v1/config" \
+  -H "X-GameAlgo-Key: ga_live_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": "user-001",
+    "sessionId": "session-001",
+    "platform": "rest",
+    "sdkVersion": "1.0.0",
+    "appVersion": "1.2.3",
+    "timezone": "Asia/Shanghai",
+    "device": {}
+  }'
 ```
 
 Response:
 
 ```json
 {
+  "contextId": "ctx-001",
   "gameId": "Mahjong",
   "environment": "live",
   "configVersion": "2026-05-28-001",
@@ -73,19 +84,18 @@ curl -s -X POST "https://gamealgo.example.com/v1/events/batch" \
     "events": [
       {
         "eventId": "00000000-0000-0000-0000-000000000001",
+        "contextId": "ctx-001",
         "userId": "user-001",
         "sessionId": "session-001",
         "eventType": "level_end",
-        "platform": "rest",
-        "sdkVersion": "1.0.0",
-        "appVersion": "1.2.3",
-        "timezone": "Asia/Shanghai",
         "isDebug": false,
         "timestamp": "2026-05-28T10:00:00Z",
-        "payload": {
-          "level": 1,
+        "dimensions": {
           "result": "win"
-        }
+        },
+        "metrics": [
+          { "key": "level", "value": 1 }
+        ]
       }
     ]
   }'
@@ -106,7 +116,8 @@ Batch requirements:
 - retry with backoff on network failure
 - do not block gameplay on upload
 - set `isDebug=true` for test devices or QA builds
-- SDK helpers fill the local `timezone` by default
+- send `contextId` from the latest `/v1/config` response
+- put grouping fields in `dimensions` and aggregatable values in `metrics`
 
 The TypeScript helper exposes `client.tracker` for this behavior. Direct `uploadEvents` is intended for teams that already have their own event queue and retry layer.
 
@@ -118,7 +129,6 @@ Recommended event types:
 session_start
 session_end
 config_loaded
-experiment_exposed
 level_start
 level_end
 ad_view

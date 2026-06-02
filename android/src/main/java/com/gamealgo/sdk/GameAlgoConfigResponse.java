@@ -4,6 +4,7 @@ import java.util.Collections;
 import java.util.List;
 
 public final class GameAlgoConfigResponse {
+    private final String contextId;
     private final String gameId;
     private final String environment;
     private final String configVersion;
@@ -13,6 +14,7 @@ public final class GameAlgoConfigResponse {
     private final List<GameAlgoConfigFileRef> configFiles;
 
     GameAlgoConfigResponse(
+            String contextId,
             String gameId,
             String environment,
             String configVersion,
@@ -20,6 +22,7 @@ public final class GameAlgoConfigResponse {
             String serverTime,
             List<GameAlgoExperimentAssignment> experiments,
             List<GameAlgoConfigFileRef> configFiles) {
+        this.contextId = contextId;
         this.gameId = gameId;
         this.environment = environment;
         this.configVersion = configVersion;
@@ -27,6 +30,10 @@ public final class GameAlgoConfigResponse {
         this.serverTime = serverTime;
         this.experiments = Collections.unmodifiableList(experiments);
         this.configFiles = Collections.unmodifiableList(configFiles);
+    }
+
+    public String getContextId() {
+        return contextId;
     }
 
     public String getGameId() {

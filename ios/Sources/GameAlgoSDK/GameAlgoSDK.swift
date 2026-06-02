@@ -102,10 +102,13 @@ public actor GameAlgoSDK {
     @discardableResult
     public nonisolated func start(
         userId: String? = nil,
+        sessionId: String? = nil,
         platform: GameAlgoPlatform? = nil,
         sdkVersion: String? = nil,
         appVersion: String? = nil,
         deviceId: String? = nil,
+        timezone: String? = nil,
+        device: [String: JSONValue] = [:],
         preloadConfigFiles: GameAlgoConfigFilePreload = .all
     ) -> Task<Void, Error> {
         let identity = userIdentityStore.identity(userId: userId, now: now())
@@ -113,19 +116,24 @@ public actor GameAlgoSDK {
             await self.logUserId(identity.userId)
             await self.tracker.identify(
                 userId: identity.userId,
+                sessionId: sessionId,
                 platform: platform ?? self.defaultPlatform,
                 sdkVersion: sdkVersion ?? self.defaultSDKVersion,
                 appVersion: appVersion ?? self.defaultAppVersion,
+                timezone: timezone,
                 userCreatedAt: identity.userCreatedAt
             )
             await self.loadCachedSnapshot()
             do {
                 try await self.refresh(
                     userId: identity.userId,
+                    sessionId: sessionId,
                     platform: platform,
                     sdkVersion: sdkVersion,
                     appVersion: appVersion,
                     deviceId: deviceId,
+                    timezone: timezone,
+                    device: device,
                     preloadConfigFiles: preloadConfigFiles
                 )
             } catch {
@@ -168,10 +176,13 @@ public actor GameAlgoSDK {
 
     public func fetchConfig(
         userId: String? = nil,
+        sessionId: String? = nil,
         platform: GameAlgoPlatform? = nil,
         sdkVersion: String? = nil,
         appVersion: String? = nil,
         deviceId: String? = nil,
+        timezone: String? = nil,
+        device: [String: JSONValue] = [:],
         forceRefresh: Bool = false
     ) async throws -> GameAlgoConfigResponse {
         let identity = userIdentityStore.identity(userId: userId, now: now())
@@ -181,17 +192,27 @@ public actor GameAlgoSDK {
         let resolvedAppVersion = appVersion ?? defaultAppVersion
         await tracker.identify(
             userId: identity.userId,
+            sessionId: sessionId,
             platform: resolvedPlatform,
             sdkVersion: resolvedSDKVersion,
             appVersion: resolvedAppVersion,
+            timezone: timezone,
             userCreatedAt: identity.userCreatedAt
         )
+        let resolvedSessionId = await tracker.currentSessionId()
+        let resolvedTimezone = clean(timezone) ?? TimeZone.current.identifier
+        var resolvedDevice = device
+        if let deviceId = clean(deviceId) {
+            resolvedDevice["deviceId"] = .string(deviceId)
+        }
         let cacheKey = ConfigCacheKey(
             userId: identity.userId,
+            sessionId: resolvedSessionId,
             platform: resolvedPlatform,
             sdkVersion: resolvedSDKVersion,
             appVersion: resolvedAppVersion,
-            deviceId: deviceId
+            timezone: resolvedTimezone,
+            device: resolvedDevice
         )
 
         if !forceRefresh,
@@ -204,27 +225,23 @@ public actor GameAlgoSDK {
 
         do {
             log("fetching config: userId=\(identity.userId), platform=\(resolvedPlatform.rawValue)")
-            var components = URLComponents(
-                url: try endpoint("/v1/config"),
-                resolvingAgainstBaseURL: false
+            let requestBody = ConfigRequest(
+                userId: identity.userId,
+                sessionId: resolvedSessionId,
+                platform: resolvedPlatform,
+                sdkVersion: resolvedSDKVersion,
+                appVersion: resolvedAppVersion,
+                timezone: resolvedTimezone,
+                device: resolvedDevice
             )
-            components?.queryItems = [
-                URLQueryItem(name: "userId", value: identity.userId),
-                URLQueryItem(name: "platform", value: resolvedPlatform.rawValue),
-                URLQueryItem(name: "sdkVersion", value: resolvedSDKVersion),
-            ]
-            if let resolvedAppVersion {
-                components?.queryItems?.append(URLQueryItem(name: "appVersion", value: resolvedAppVersion))
-            }
-            if let deviceId {
-                components?.queryItems?.append(URLQueryItem(name: "deviceId", value: deviceId))
-            }
-            guard let url = components?.url else {
-                throw GameAlgoError.invalidURL("/v1/config")
-            }
 
             let response: GameAlgoConfigResponse = try await requestJSON(
-                GameAlgoHTTPRequest(url: url, method: .get)
+                GameAlgoHTTPRequest(
+                    url: try endpoint("/v1/config"),
+                    method: .post,
+                    headers: ["content-type": "application/json"],
+                    body: try encode(requestBody)
+                )
             )
             cachedConfig = CachedConfig(
                 key: cacheKey,
@@ -232,6 +249,7 @@ public actor GameAlgoSDK {
                 expiresAt: now().addingTimeInterval(TimeInterval(max(response.ttlSeconds, 0)))
             )
             snapshotStore.updateConfig(response, updatedAt: now(), userId: identity.userId)
+            await tracker.setContextId(response.contextId)
             await tracker.setAssignments(response.experiments)
             persistSnapshot()
             log("config fetched: version=\(response.configVersion), experiments=\(response.experiments.count), configFiles=\(response.configFiles.count), ttl=\(response.ttlSeconds)s")
@@ -286,18 +304,24 @@ public actor GameAlgoSDK {
 
     private func refresh(
         userId: String,
+        sessionId: String?,
         platform: GameAlgoPlatform?,
         sdkVersion: String?,
         appVersion: String?,
         deviceId: String?,
+        timezone: String?,
+        device: [String: JSONValue],
         preloadConfigFiles: GameAlgoConfigFilePreload
     ) async throws {
         let config = try await fetchConfig(
             userId: userId,
+            sessionId: sessionId,
             platform: platform,
             sdkVersion: sdkVersion,
             appVersion: appVersion,
             deviceId: deviceId,
+            timezone: timezone,
+            device: device,
             forceRefresh: true
         )
 
@@ -430,14 +454,32 @@ public actor GameAlgoSDK {
         logger?("[GameAlgoSDK] \(message)")
     }
 
+    private func clean(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
 }
 
 private struct ConfigCacheKey: Sendable, Equatable {
     let userId: String
+    let sessionId: String
     let platform: GameAlgoPlatform
     let sdkVersion: String
     let appVersion: String?
-    let deviceId: String?
+    let timezone: String
+    let device: [String: JSONValue]
+}
+
+private struct ConfigRequest: Encodable {
+    let userId: String
+    let sessionId: String
+    let platform: GameAlgoPlatform
+    let sdkVersion: String
+    let appVersion: String?
+    let timezone: String
+    let device: [String: JSONValue]
 }
 
 private struct CachedConfig: Sendable {

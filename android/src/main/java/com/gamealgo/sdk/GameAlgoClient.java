@@ -163,12 +163,20 @@ public final class GameAlgoClient {
         String platform = isBlank(request.getPlatform()) ? defaultPlatform : request.getPlatform();
         String sdkVersion = isBlank(request.getSdkVersion()) ? defaultSDKVersion : request.getSdkVersion();
         String appVersion = request.getAppVersion() == null ? defaultAppVersion : request.getAppVersion();
+        String sessionId = isBlank(resolvedRequest.getSessionId()) ? tracker.currentSessionId() : resolvedRequest.getSessionId();
+        String timezone = isBlank(request.getTimezone()) ? TimeZone.getDefault().getID() : request.getTimezone();
+        Map<String, Object> device = request.getDevice();
+        if (!isBlank(request.getDeviceId())) {
+            device.put("deviceId", request.getDeviceId());
+        }
         ConfigCacheKey cacheKey = new ConfigCacheKey(
                 resolvedRequest.getUserId(),
+                sessionId,
                 platform,
                 sdkVersion,
                 appVersion,
-                request.getDeviceId()
+                timezone,
+                device
         );
 
         long nowMillis = System.currentTimeMillis();
@@ -182,19 +190,23 @@ public final class GameAlgoClient {
 
         try {
             log("fetching config: userId=" + resolvedRequest.getUserId() + ", platform=" + platform);
-            Map<String, String> query = new LinkedHashMap<>();
-            query.put("userId", resolvedRequest.getUserId());
-            query.put("platform", platform);
-            query.put("sdkVersion", sdkVersion);
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("userId", resolvedRequest.getUserId());
+            body.put("sessionId", sessionId);
+            body.put("platform", platform);
+            body.put("sdkVersion", sdkVersion);
             if (appVersion != null) {
-                query.put("appVersion", appVersion);
+                body.put("appVersion", appVersion);
             }
-            if (request.getDeviceId() != null) {
-                query.put("deviceId", request.getDeviceId());
-            }
+            body.put("timezone", timezone);
+            body.put("device", device);
 
             GameAlgoConfigResponse response = parseConfigResponse(
-                    requestJson(endpoint("/v1/config", query), GameAlgoHttpMethod.GET, null)
+                    requestJson(
+                            endpoint("/v1/config", null),
+                            GameAlgoHttpMethod.POST,
+                            GameAlgoJson.stringify(body).getBytes(StandardCharsets.UTF_8)
+                    )
             );
             cachedConfig = new CachedConfig(
                     cacheKey,
@@ -202,6 +214,7 @@ public final class GameAlgoClient {
                     System.currentTimeMillis() + Math.max(response.getTtlSeconds(), 0) * 1000L
             );
             snapshotStore.updateConfig(response, System.currentTimeMillis(), resolvedRequest.getUserId());
+            tracker.setContextId(response.getContextId());
             tracker.setAssignments(response.getExperiments());
             persistSnapshot();
             log("config fetched: version=" + response.getConfigVersion()
@@ -252,7 +265,7 @@ public final class GameAlgoClient {
         String timestamp = isoTimestamp(new Date());
         List<Object> normalizedEvents = new ArrayList<>();
         for (GameAlgoEvent event : events) {
-            normalizedEvents.add(event.toJson(defaultPlatform, defaultSDKVersion, defaultAppVersion, timestamp));
+            normalizedEvents.add(event.toJson(timestamp));
         }
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("events", normalizedEvents);
@@ -310,12 +323,15 @@ public final class GameAlgoClient {
     private synchronized GameAlgoFetchConfigRequest requestWithResolvedUser(GameAlgoFetchConfigRequest request) throws GameAlgoException {
         GameAlgoUserIdentity identity = userIdentity(request.getUserId());
         logUserId(identity.getUserId());
-        tracker.identify(identity.getUserId(), null, identity.getUserCreatedAt());
+        tracker.identify(identity.getUserId(), request.getSessionId(), identity.getUserCreatedAt());
         GameAlgoFetchConfigRequest resolved = new GameAlgoFetchConfigRequest(identity.getUserId())
+                .sessionId(request.getSessionId())
                 .platform(request.getPlatform())
                 .sdkVersion(request.getSdkVersion())
                 .appVersion(request.getAppVersion())
                 .deviceId(request.getDeviceId())
+                .timezone(request.getTimezone())
+                .device(request.getDevice())
                 .forceRefresh(request.isForceRefresh());
         return resolved;
     }
@@ -454,6 +470,7 @@ public final class GameAlgoClient {
         }
 
         return new GameAlgoConfigResponse(
+                GameAlgoJson.stringValue(object, "contextId", true),
                 GameAlgoJson.stringValue(object, "gameId", true),
                 GameAlgoJson.stringValue(object, "environment", true),
                 GameAlgoJson.stringValue(object, "configVersion", true),
@@ -533,6 +550,7 @@ public final class GameAlgoClient {
 
     private Map<String, Object> configToJson(GameAlgoConfigResponse config) {
         Map<String, Object> object = new LinkedHashMap<>();
+        object.put("contextId", config.getContextId());
         object.put("gameId", config.getGameId());
         object.put("environment", config.getEnvironment());
         object.put("configVersion", config.getConfigVersion());
@@ -580,6 +598,7 @@ public final class GameAlgoClient {
         }
 
         return new GameAlgoConfigResponse(
+                GameAlgoJson.stringValue(object, "contextId", true),
                 GameAlgoJson.stringValue(object, "gameId", true),
                 GameAlgoJson.stringValue(object, "environment", true),
                 GameAlgoJson.stringValue(object, "configVersion", true),
@@ -694,17 +713,21 @@ public final class GameAlgoClient {
 
     private static final class ConfigCacheKey {
         private final String userId;
+        private final String sessionId;
         private final String platform;
         private final String sdkVersion;
         private final String appVersion;
-        private final String deviceId;
+        private final String timezone;
+        private final Map<String, Object> device;
 
-        private ConfigCacheKey(String userId, String platform, String sdkVersion, String appVersion, String deviceId) {
+        private ConfigCacheKey(String userId, String sessionId, String platform, String sdkVersion, String appVersion, String timezone, Map<String, Object> device) {
             this.userId = userId;
+            this.sessionId = sessionId;
             this.platform = platform;
             this.sdkVersion = sdkVersion;
             this.appVersion = appVersion;
-            this.deviceId = deviceId;
+            this.timezone = timezone;
+            this.device = device == null ? new LinkedHashMap<String, Object>() : new LinkedHashMap<>(device);
         }
 
         @Override
@@ -717,19 +740,23 @@ public final class GameAlgoClient {
             }
             ConfigCacheKey that = (ConfigCacheKey) other;
             return equalsNullable(userId, that.userId)
+                    && equalsNullable(sessionId, that.sessionId)
                     && equalsNullable(platform, that.platform)
                     && equalsNullable(sdkVersion, that.sdkVersion)
                     && equalsNullable(appVersion, that.appVersion)
-                    && equalsNullable(deviceId, that.deviceId);
+                    && equalsNullable(timezone, that.timezone)
+                    && equalsNullable(device, that.device);
         }
 
         @Override
         public int hashCode() {
             int result = hashNullable(userId);
+            result = 31 * result + hashNullable(sessionId);
             result = 31 * result + hashNullable(platform);
             result = 31 * result + hashNullable(sdkVersion);
             result = 31 * result + hashNullable(appVersion);
-            result = 31 * result + hashNullable(deviceId);
+            result = 31 * result + hashNullable(timezone);
+            result = 31 * result + hashNullable(device);
             return result;
         }
 

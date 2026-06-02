@@ -18,13 +18,13 @@ public final class GameAlgoEventTracker implements AutoCloseable {
 
     private String userId;
     private String sessionId = UUID.randomUUID().toString();
+    private String contextId;
     private String timezone = TimeZone.getDefault().getID();
     private String userCreatedAt;
     private boolean isDebug;
     private long sessionStartMillis;
     private final List<GameAlgoEvent> queue = new ArrayList<>();
     private final List<GameAlgoEvent> retryBatch = new ArrayList<>();
-    private final Map<String, String> currentExperiments = new LinkedHashMap<>();
     private ScheduledExecutorService scheduler;
     private boolean flushing;
 
@@ -61,7 +61,16 @@ public final class GameAlgoEventTracker implements AutoCloseable {
 
     public synchronized void newSession() {
         sessionId = UUID.randomUUID().toString();
+        contextId = null;
         sessionStartMillis = 0L;
+    }
+
+    public synchronized String currentSessionId() {
+        return sessionId;
+    }
+
+    public synchronized void setContextId(String contextId) {
+        this.contextId = isBlank(contextId) ? null : contextId;
     }
 
     public synchronized void setDebug(boolean isDebug) {
@@ -73,13 +82,7 @@ public final class GameAlgoEventTracker implements AutoCloseable {
     }
 
     public synchronized void setAssignments(List<GameAlgoExperimentAssignment> assignments) {
-        currentExperiments.clear();
-        if (assignments == null) {
-            return;
-        }
-        for (GameAlgoExperimentAssignment assignment : assignments) {
-            currentExperiments.put(assignment.getKey(), assignment.getVariant());
-        }
+        // Experiment assignments are captured in the SDK context log, not copied onto each event.
     }
 
     public boolean track(String eventType) {
@@ -87,34 +90,32 @@ public final class GameAlgoEventTracker implements AutoCloseable {
     }
 
     public boolean track(String eventType, Map<String, Object> payload) {
-        return trackInternal(eventType, payload, null);
+        return trackInternal(eventType, payload);
     }
 
-    public boolean track(String eventType, Map<String, Object> payload, boolean includeExperiments) {
-        return trackInternal(eventType, payload, Boolean.valueOf(includeExperiments));
-    }
-
-    private boolean trackInternal(String eventType, Map<String, Object> payload, Boolean includeExperiments) {
+    private boolean trackInternal(String eventType, Map<String, Object> payload) {
         String resolvedUserId;
         String resolvedSessionId;
-        String resolvedTimezone;
+        String resolvedContextId;
         boolean resolvedIsDebug;
         synchronized (this) {
             if (isBlank(userId)) {
                 return false;
             }
+            if (isBlank(contextId)) {
+                return false;
+            }
             resolvedUserId = userId;
             resolvedSessionId = sessionId;
-            resolvedTimezone = timezone;
+            resolvedContextId = contextId;
             resolvedIsDebug = isDebug;
         }
 
-        GameAlgoEvent event = new GameAlgoEvent(resolvedUserId, resolvedSessionId, eventType)
-                .payload(payloadWithExperiments(eventType, payload, includeExperiments))
+        SplitPayload split = splitPayload(payload);
+        GameAlgoEvent event = new GameAlgoEvent(resolvedContextId, resolvedUserId, resolvedSessionId, eventType)
+                .dimensions(split.dimensions)
+                .metrics(split.metrics)
                 .isDebug(resolvedIsDebug);
-        if (!isBlank(resolvedTimezone)) {
-            event.timezone(resolvedTimezone);
-        }
         enqueue(event);
         return true;
     }
@@ -124,12 +125,8 @@ public final class GameAlgoEventTracker implements AutoCloseable {
     }
 
     public boolean trackEvent(String type, Map<String, Object> payload) {
-        return trackEvent(type, payload, false);
-    }
-
-    public boolean trackEvent(String type, Map<String, Object> payload, boolean includeExperiments) {
         String eventType = type != null && type.startsWith("_") ? type : "_" + type;
-        return trackInternal(eventType, payload, Boolean.valueOf(includeExperiments));
+        return trackInternal(eventType, payload);
     }
 
     public boolean trackSessionStart() {
@@ -160,9 +157,7 @@ public final class GameAlgoEventTracker implements AutoCloseable {
     }
 
     public boolean trackConfigLoaded() {
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("experiments", experimentsPayload());
-        return track("config_loaded", payload);
+        return track("config_loaded");
     }
 
     public boolean trackLevelStart(Map<String, Object> payload) {
@@ -294,25 +289,6 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         }
     }
 
-    private synchronized Map<String, Object> payloadWithExperiments(String eventType, Map<String, Object> payload, Boolean includeExperiments) {
-        Map<String, Object> merged = copyPayload(payload);
-        if (currentExperiments.isEmpty()
-                || "session_start".equals(eventType)
-                || "session_end".equals(eventType)
-                || "config_loaded".equals(eventType)
-                || Boolean.FALSE.equals(includeExperiments)
-                || (includeExperiments == null && eventType != null && eventType.startsWith("_"))
-                || merged.containsKey("experiments")) {
-            return merged;
-        }
-        merged.put("experiments", experimentsPayload());
-        return merged;
-    }
-
-    private synchronized Map<String, Object> experimentsPayload() {
-        return new LinkedHashMap<String, Object>(currentExperiments);
-    }
-
     private synchronized void ensureScheduler() {
         if (scheduler != null) {
             return;
@@ -337,7 +313,47 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         return payload == null ? new LinkedHashMap<String, Object>() : new LinkedHashMap<>(payload);
     }
 
+    private static SplitPayload splitPayload(Map<String, Object> payload) {
+        Map<String, Object> dimensions = new LinkedHashMap<>();
+        List<GameAlgoEventMetric> metrics = new ArrayList<>();
+        Map<String, Object> source = copyPayload(payload);
+        for (Map.Entry<String, Object> entry : source.entrySet()) {
+            String key = entry.getKey();
+            if (isBlank(key)) {
+                continue;
+            }
+            Object value = entry.getValue();
+            if (value instanceof Number && isFiniteNumber((Number) value)) {
+                metrics.add(new GameAlgoEventMetric(key, ((Number) value).doubleValue()));
+            } else if (value == null || value instanceof String || value instanceof Boolean) {
+                dimensions.put(key, value);
+            } else {
+                try {
+                    dimensions.put(key, GameAlgoJson.stringify(value));
+                } catch (GameAlgoException ignored) {
+                    // Unsupported complex values are skipped instead of making tracking throw.
+                }
+            }
+        }
+        return new SplitPayload(dimensions, metrics);
+    }
+
+    private static boolean isFiniteNumber(Number value) {
+        double doubleValue = value.doubleValue();
+        return !Double.isNaN(doubleValue) && !Double.isInfinite(doubleValue);
+    }
+
     private static boolean isBlank(String value) {
         return value == null || value.length() == 0;
+    }
+
+    private static final class SplitPayload {
+        private final Map<String, Object> dimensions;
+        private final List<GameAlgoEventMetric> metrics;
+
+        private SplitPayload(Map<String, Object> dimensions, List<GameAlgoEventMetric> metrics) {
+            this.dimensions = dimensions;
+            this.metrics = metrics;
+        }
     }
 }
