@@ -8,15 +8,22 @@ The SDK sends business fields as event `payload`. GameAlgo stores that payload a
 
 In the admin console, select a game, then open the `Reports` tab.
 
-Use the `Report Packs` editor to:
+Use the `Reports` tab to view the active dashboard. Use `Manage Pack` when you need to edit the report pack JSON, validate SQL preview, or save a new version.
+
+In `Manage Pack` you can:
 
 - create a version such as `1.0.0`
 - paste or edit the report pack JSON
 - click `Validate` to preview validation results and generated SQL
 - choose `draft`, `active`, or `disabled`
 - click `Save`
-- choose a report and date range in `Run Report`
-- click `Run` to execute the active report and view result rows
+
+In the main `Reports` view you can:
+
+- choose an active report pack version
+- choose a date range
+- switch configured report tabs
+- click `Run` to execute the charts in the active tab
 
 ## Example
 
@@ -56,7 +63,44 @@ Use the `Report Packs` editor to:
       "groupBy": ["dt", "level_id", "experiment.level_generator"],
       "metrics": ["attempts", "users", "avg_duration", "win_rate"]
     }
-  ]
+  ],
+  "dashboard": {
+    "title": "Mahjong Reports",
+    "tabs": [
+      {
+        "id": "overview",
+        "title": "Overview",
+        "charts": [
+          {
+            "id": "win_rate_trend",
+            "title": "Win Rate Trend",
+            "type": "line",
+            "report": "level_overview",
+            "x": "dt",
+            "y": "win_rate",
+            "series": "level_id",
+            "format": "percent",
+            "size": "lg"
+          },
+          {
+            "id": "attempt_share",
+            "title": "Attempt Share",
+            "type": "pie",
+            "report": "level_overview",
+            "label": "level_id",
+            "value": "attempts"
+          },
+          {
+            "id": "level_table",
+            "title": "Level Detail",
+            "type": "table",
+            "report": "level_overview",
+            "size": "full"
+          }
+        ]
+      }
+    ]
+  }
 }
 ```
 
@@ -72,6 +116,12 @@ Use the `Report Packs` editor to:
 - Supported metric aggregations are `count`, `count_distinct`, `sum`, `avg`, `min`, `max`, and `ratio`.
 - `reports` define visible report queries.
 - `groupBy` supports `dt`, dataset dimensions, and `experiment.<strategy_name>`.
+- `dashboard.tabs` defines how the admin console lays out reports.
+- A dashboard tab contains multiple `charts`.
+- Chart `type` supports `line`, `pie`, and `table`.
+- Line charts use `x`, `y`, and optional `series` result columns.
+- Pie charts use `label` and `value` result columns.
+- Tables render the full report result.
 
 Identity fields available to metrics are:
 
