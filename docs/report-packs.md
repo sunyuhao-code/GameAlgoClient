@@ -43,6 +43,11 @@ In the main `Reports` view you can:
       "fields": {
         "revenue": { "path": "$.revenue", "type": "number" }
       }
+    },
+    "session_end": {
+      "fields": {
+        "session_duration_ms": { "path": "$.sessionDurationMs", "type": "number" }
+      }
     }
   },
   "datasets": {
@@ -64,10 +69,15 @@ In the main `Reports` view you can:
     "user_progress": {
       "type": "rollup",
       "fromEvent": "level_end",
-      "entity": "userId",
-      "rollupMetrics": {
-        "user_max_level": { "agg": "max", "field": "level_no" }
-      },
+      "stages": [
+        {
+          "id": "user_rollup",
+          "entity": "userId",
+          "metrics": {
+            "user_max_level": { "agg": "max", "field": "level_no" }
+          }
+        }
+      ],
       "metrics": {
         "avg_max_level": { "agg": "avg", "field": "user_max_level" },
         "users": { "agg": "count" }
@@ -82,6 +92,32 @@ In the main `Reports` view you can:
         "cohort_users": { "agg": "count_distinct", "field": "userId" },
         "revenue": { "agg": "sum", "field": "revenue" },
         "ltv": { "formula": "revenue / cohort_users" }
+      }
+    },
+    "new_user_lifetime_duration": {
+      "type": "cohort",
+      "fromEvent": "session_end",
+      "cohort": { "dateField": "userCreatedAt" },
+      "windowDays": 14,
+      "stages": [
+        {
+          "id": "session_rollup",
+          "entity": "sessionId",
+          "metrics": {
+            "session_max_duration_ms": { "agg": "max", "field": "session_duration_ms" }
+          }
+        },
+        {
+          "id": "user_rollup",
+          "entity": "userId",
+          "metrics": {
+            "user_lifetime_duration_ms": { "agg": "sum", "field": "session_max_duration_ms" }
+          }
+        }
+      ],
+      "metrics": {
+        "cohort_users": { "agg": "count_distinct", "field": "userId" },
+        "avg_lifetime_duration_ms": { "agg": "avg", "field": "user_lifetime_duration_ms" }
       }
     }
   },
@@ -106,6 +142,13 @@ In the main `Reports` view you can:
       "dataset": "new_user_ltv",
       "groupBy": ["cohort_dt", "day_offset", "experiment.level_generator"],
       "metrics": ["cohort_users", "revenue", "ltv"]
+    },
+    {
+      "id": "lifetime_duration_overview",
+      "title": "Lifetime Duration Overview",
+      "dataset": "new_user_lifetime_duration",
+      "groupBy": ["cohort_dt", "day_offset", "experiment.level_generator"],
+      "metrics": ["cohort_users", "avg_lifetime_duration_ms"]
     }
   ],
   "dashboard": {
@@ -158,6 +201,8 @@ In the main `Reports` view you can:
 - `dimensions` are fields allowed in report `groupBy`.
 - `metrics` are aggregated values.
 - Supported metric aggregations are `count`, `count_distinct`, `sum`, `avg`, `min`, `max`, and `ratio`.
+- `stages` define multi-step aggregation. Each stage groups by `entity` and emits stage metrics that the next stage or final `metrics` can use.
+- Top-level `entity` and `rollupMetrics` are not supported; use `stages[].entity` and `stages[].metrics`.
 - Any non-`ratio` metric can include `filter`.
 - Formula metrics use a safe arithmetic expression over non-formula metrics in the same dataset, for example `"ltv": { "formula": "revenue / cohort_users" }`.
 - `reports` define visible report queries.
@@ -183,16 +228,21 @@ Experiment groups are not duplicated in event payloads. The platform joins SDK c
 
 `event` datasets aggregate event rows directly.
 
-`rollup` datasets first aggregate by an entity, then aggregate those entity-level values. Use this for metrics like average user max level:
+`rollup` datasets aggregate rows through one or more `stages`, then aggregate the final stage rows. Use this for metrics like average user max level:
 
 ```json
 {
   "type": "rollup",
   "fromEvent": "level_end",
-  "entity": "userId",
-  "rollupMetrics": {
-    "user_max_level": { "agg": "max", "field": "level_no" }
-  },
+  "stages": [
+    {
+      "id": "user_rollup",
+      "entity": "userId",
+      "metrics": {
+        "user_max_level": { "agg": "max", "field": "level_no" }
+      }
+    }
+  ],
   "metrics": {
     "avg_max_level": { "agg": "avg", "field": "user_max_level" }
   }
@@ -211,6 +261,36 @@ Experiment groups are not duplicated in event payloads. The platform joins SDK c
     "cohort_users": { "agg": "count_distinct", "field": "userId" },
     "revenue": { "agg": "sum", "field": "revenue" },
     "ltv": { "formula": "revenue / cohort_users" }
+  }
+}
+```
+
+`cohort` datasets can also use `stages`. For example, average new-user lifetime duration through each cohort day is session max duration by `sessionId`, then user total duration by `userId`, then final average across users:
+
+```json
+{
+  "type": "cohort",
+  "fromEvent": "session_end",
+  "cohort": { "dateField": "userCreatedAt" },
+  "windowDays": 14,
+  "stages": [
+    {
+      "id": "session_rollup",
+      "entity": "sessionId",
+      "metrics": {
+        "session_max_duration_ms": { "agg": "max", "field": "session_duration_ms" }
+      }
+    },
+    {
+      "id": "user_rollup",
+      "entity": "userId",
+      "metrics": {
+        "user_lifetime_duration_ms": { "agg": "sum", "field": "session_max_duration_ms" }
+      }
+    }
+  ],
+  "metrics": {
+    "avg_lifetime_duration_ms": { "agg": "avg", "field": "user_lifetime_duration_ms" }
   }
 }
 ```
