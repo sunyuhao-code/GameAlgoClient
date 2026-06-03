@@ -76,9 +76,9 @@ final class GameAlgoSDKTests: XCTestCase {
         let body = try JSONSerialization.jsonObject(with: requests[1].body ?? Data()) as? [String: Any]
         let events = body?["events"] as? [[String: Any]]
         let sessionStart = events?.first { $0["eventType"] as? String == "session_start" }
-        let sessionDimensions = sessionStart?["dimensions"] as? [String: Any]
+        let sessionPayload = sessionStart?["payload"] as? [String: Any]
         XCTAssertEqual(sessionStart?["userId"] as? String, "legacy-user")
-        XCTAssertEqual(sessionDimensions?["userCreatedAt"] as? String, "2026-05-28T10:00:00.000Z")
+        XCTAssertEqual(sessionPayload?["userCreatedAt"] as? String, "2026-05-28T10:00:00.000Z")
     }
 
     func testTrackerRequiresConfigContextBeforeSending() async throws {
@@ -410,8 +410,7 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(events?.first?["contextId"] as? String, "ctx-1")
         XCTAssertEqual(events?.first?["timestamp"] as? String, "2026-05-28T10:00:00.000Z")
         XCTAssertEqual(events?.first?["isDebug"] as? Bool, false)
-        XCTAssertEqual((events?.first?["dimensions"] as? [String: Any])?.count, 0)
-        XCTAssertEqual((events?.first?["metrics"] as? [[String: Any]])?.count, 0)
+        XCTAssertEqual((events?.first?["payload"] as? [String: Any])?.count, 0)
     }
 
     func testTrackerQueuesAndFlushesEventsAfterStartIdentifiesUser() async throws {
@@ -464,16 +463,15 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(events?[1]["userId"] as? String, "u1")
         XCTAssertEqual(events?[1]["sessionId"] as? String, events?.last?["sessionId"] as? String)
         XCTAssertEqual(events?[1]["eventType"] as? String, "session_start")
-        let sessionDimensions = events?[1]["dimensions"] as? [String: Any]
-        XCTAssertEqual(sessionDimensions?["userCreatedAt"] as? String, "2026-05-28T10:00:00.000Z")
+        let sessionPayload = events?[1]["payload"] as? [String: Any]
+        XCTAssertEqual(sessionPayload?["userCreatedAt"] as? String, "2026-05-28T10:00:00.000Z")
         XCTAssertEqual(events?.last?["eventType"] as? String, "level_end")
         XCTAssertEqual(events?.last?["isDebug"] as? Bool, true)
-        let levelMetrics = events?.last?["metrics"] as? [[String: Any]]
-        XCTAssertEqual(levelMetrics?.first?["key"] as? String, "level")
-        XCTAssertEqual(levelMetrics?.first?["value"] as? Double, 3)
+        let levelPayload = events?.last?["payload"] as? [String: Any]
+        XCTAssertEqual(levelPayload?["level"] as? Double, 3)
     }
 
-    func testCustomEventsUseDimensionsAndMetrics() async throws {
+    func testCustomEventsPreservePayload() async throws {
         let suiteName = "GameAlgoSDKTests.customEventExperiments.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
@@ -510,13 +508,11 @@ final class GameAlgoSDKTests: XCTestCase {
         let requests = await httpClient.requests
         let body = try JSONSerialization.jsonObject(with: requests[1].body ?? Data()) as? [String: Any]
         let events = body?["events"] as? [[String: Any]]
-        let dimensions = events?[1]["dimensions"] as? [String: Any]
-        let metrics = events?[1]["metrics"] as? [[String: Any]]
+        let payload = events?[1]["payload"] as? [String: Any]
 
         XCTAssertEqual(events?[1]["eventType"] as? String, "_custom_action")
-        XCTAssertEqual(dimensions?["button"] as? String, "start")
-        XCTAssertEqual(metrics?.first?["key"] as? String, "value")
-        XCTAssertEqual(metrics?.first?["value"] as? Double, 2)
+        XCTAssertEqual(payload?["button"] as? String, "start")
+        XCTAssertEqual(payload?["value"] as? Double, 2)
     }
 
     func testTrackSessionEndFlushesImmediately() async throws {
@@ -548,16 +544,14 @@ final class GameAlgoSDKTests: XCTestCase {
         let body = try JSONSerialization.jsonObject(with: requests[1].body ?? Data()) as? [String: Any]
         let events = body?["events"] as? [[String: Any]]
         let sessionEnd = events?.last
-        let sessionEndDimensions = sessionEnd?["dimensions"] as? [String: Any]
-        let sessionEndMetrics = sessionEnd?["metrics"] as? [[String: Any]]
+        let sessionEndPayload = sessionEnd?["payload"] as? [String: Any]
 
         XCTAssertEqual(requests.count, 2)
         XCTAssertEqual(requests[1].url.absoluteString, "https://gamealgo.test/v1/events/batch")
         XCTAssertEqual(events?.map { $0["eventType"] as? String }, ["config_loaded", "session_start", "session_end"])
         XCTAssertEqual(sessionEnd?["userId"] as? String, "u1")
-        XCTAssertEqual(sessionEndDimensions?["reason"] as? String, "background")
-        XCTAssertEqual(sessionEndMetrics?.first?["key"] as? String, "sessionDurationMs")
-        XCTAssertEqual(sessionEndMetrics?.first?["value"] as? Double, 0)
+        XCTAssertEqual(sessionEndPayload?["reason"] as? String, "background")
+        XCTAssertEqual(sessionEndPayload?["sessionDurationMs"] as? Double, 0)
     }
 
     func testThrowsStructuredAPIErrors() async throws {

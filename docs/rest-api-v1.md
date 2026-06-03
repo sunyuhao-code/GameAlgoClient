@@ -95,12 +95,11 @@ curl -s -X POST "https://gamealgo.example.com/v1/events/batch" \
         "eventType": "level_end",
         "isDebug": false,
         "timestamp": "2026-05-28T10:00:00Z",
-        "dimensions": {
-          "result": "win"
-        },
-        "metrics": [
-          { "key": "level", "value": 1 }
-        ]
+        "payload": {
+          "level_id": "level_1",
+          "result": "win",
+          "duration_ms": 12500
+        }
       }
     ]
   }'
@@ -122,11 +121,11 @@ Batch requirements:
 - do not block gameplay on upload
 - set `isDebug=true` for test devices or QA builds
 - send `contextId` from the latest `/v1/config` response
-- put grouping fields in `dimensions` and aggregatable values in `metrics`
+- send business fields in a flat `payload` object
 
-`dimensions` are categorical labels for filtering and group by in analytics reports. The platform stores them as `dimensions_json`, then offline jobs expand them by `eventType + key`; values are treated as labels even when the JSON value is a number. Do not put timestamps, random ids, full user ids, free text, email, phone, device info, or experiment assignments in `dimensions`.
+The platform stores `payload` as `payload_json` and does not interpret fields at ingestion time. A game-specific report pack later declares which payload fields should be parsed as report dimensions or metrics.
 
-`metrics` are the numeric values the platform can aggregate, such as sum, average, percentiles, min, or max. Put values like `durationMs`, `revenue`, `score`, and `clearRate` in `metrics`, not `dimensions`.
+Keep first-version payloads flat, with string, number, boolean, or null values. Do not put secrets, email, phone, device context, experiment assignments, or duplicated identity fields in `payload`.
 
 The TypeScript helper exposes `client.tracker` for this behavior. Direct `uploadEvents` is intended for teams that already have their own event queue and retry layer.
 

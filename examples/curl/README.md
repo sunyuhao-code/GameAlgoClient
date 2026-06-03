@@ -42,8 +42,7 @@ curl -s -X POST "https://gamealgo.example.com/v1/events/batch" \
         "eventType": "session_start",
         "isDebug": false,
         "timestamp": "2026-05-28T10:00:00Z",
-        "dimensions": {},
-        "metrics": []
+        "payload": {}
       }
     ]
   }'

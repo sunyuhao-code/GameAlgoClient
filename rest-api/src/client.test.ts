@@ -367,11 +367,11 @@ test("start backfills createdAt for persisted legacy user id", async () => {
   await client.tracker.flush();
   const sessionStart = uploadedEvents.find((event) => event.eventType === "session_start");
   assert.equal(sessionStart?.userId, "legacy-user");
-  assert.equal((sessionStart?.dimensions as Record<string, unknown>).userCreatedAt, "2026-05-28T10:00:00.000Z");
+  assert.equal((sessionStart?.payload as Record<string, unknown>).userCreatedAt, "2026-05-28T10:00:00.000Z");
   client.tracker.close();
 });
 
-test("uploadEvents fills timestamp and preserves metric event fields", async () => {
+test("uploadEvents fills timestamp and preserves payload fields", async () => {
   const client = new GameAlgoRestClient({
     baseUrl: "https://gamealgo.test",
     gameKey,
@@ -385,8 +385,7 @@ test("uploadEvents fills timestamp and preserves metric event fields", async () 
       const body = await request.json() as { events: Array<Record<string, unknown>> };
       assert.equal(body.events[0].contextId, "ctx-1");
       assert.equal(body.events[0].timestamp, "2026-05-28T10:00:00.000Z");
-      assert.deepEqual(body.events[0].dimensions, {});
-      assert.deepEqual(body.events[0].metrics, []);
+      assert.deepEqual(body.events[0].payload, { reason: "manual" });
       return jsonResponse({ ok: true, accepted: 1 });
     },
   });
@@ -397,8 +396,7 @@ test("uploadEvents fills timestamp and preserves metric event fields", async () 
     userId: "u1",
     sessionId: "s1",
     eventType: "session_start",
-    dimensions: {},
-    metrics: [],
+    payload: { reason: "manual" },
   }]);
 
   assert.equal(result.accepted, 1);
@@ -457,14 +455,14 @@ test("tracker queues and flushes events after start identifies user", async () =
   assert.equal(uploadedEvents[1].userId, "u1");
   assert.equal(uploadedEvents[1].sessionId, uploadedEvents[2].sessionId);
   assert.equal(uploadedEvents[1].eventType, "session_start");
-  assert.equal((uploadedEvents[1].dimensions as Record<string, unknown>).userCreatedAt, "2026-05-28T10:00:00.000Z");
+  assert.equal((uploadedEvents[1].payload as Record<string, unknown>).userCreatedAt, "2026-05-28T10:00:00.000Z");
   assert.equal(uploadedEvents[2].eventType, "level_end");
   assert.equal(uploadedEvents[2].isDebug, true);
-  assert.deepEqual(uploadedEvents[2].metrics, [{ key: "level", value: 3 }]);
+  assert.deepEqual(uploadedEvents[2].payload, { level: 3 });
   client.tracker.close();
 });
 
-test("custom events use dimensions and metrics", async () => {
+test("custom events preserve payload", async () => {
   let uploadedEvents: Array<Record<string, unknown>> = [];
   const client = new GameAlgoRestClient({
     baseUrl: "https://gamealgo.test",
@@ -500,8 +498,7 @@ test("custom events use dimensions and metrics", async () => {
   await client.tracker.flush();
 
   assert.equal(uploadedEvents[1].eventType, "_custom_action");
-  assert.deepEqual(uploadedEvents[1].dimensions, { button: "start" });
-  assert.deepEqual(uploadedEvents[1].metrics, [{ key: "value", value: 2 }]);
+  assert.deepEqual(uploadedEvents[1].payload, { button: "start", value: 2 });
   client.tracker.close();
 });
 
@@ -529,8 +526,7 @@ test("createEvent fills eventId and timestamp", () => {
     userId: "u1",
     sessionId: "s1",
     eventType: "session_start",
-    dimensions: {},
-    metrics: [],
+    payload: {},
   });
 
   assert.equal(typeof event.eventId, "string");

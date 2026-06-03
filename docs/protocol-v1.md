@@ -224,13 +224,12 @@ Content-Type: application/json
       "eventType": "level_end",
       "isDebug": false,
       "timestamp": "2026-05-28T10:00:00Z",
-      "dimensions": {
-        "result": "success"
-      },
-      "metrics": [
-        { "key": "durationMs", "value": 12500 },
-        { "key": "clearRate", "value": 0.93 }
-      ]
+      "payload": {
+        "level_id": "level_12",
+        "result": "success",
+        "duration_ms": 12500,
+        "clear_rate": 0.93
+      }
     }
   ]
 }
@@ -248,23 +247,24 @@ Content-Type: application/json
 服务端行为：
 
 - 根据 `X-GameAlgo-Key` 补充可信 `gameId`。
-- 事件不能携带客户端自填 `gameId`、`experiments` 或旧 `payload`。
+- 事件不能携带客户端自填 `gameId` 或 `experiments`。
 - `contextId` 必须来自本 session 的 `/v1/config` 响应。
 - `isDebug=true` 数据默认入库，但分析看板默认过滤。
 - 单批事件建议最多 100 条。
 - 重复 `eventId` 后续可用于去重，v1 可先不强制。
-- `dimensions` 只放用于筛选或分组的低基数字段；值只允许 string / number / boolean / null。
-- `metrics` 只放可聚合数值；离线任务按 `key/value` 展开后做报表聚合。
+- `payload` 是 flat object；字段值只允许 string / number / boolean / null。
+- 服务端写入时不解释 `payload` 字段含义，只把它保存为 `payload_json`。
+- 报表配置文件负责声明哪些 payload 字段是维度、哪些是指标，离线任务只展开报表声明过的字段。
 
-### `dimensions` 和 `metrics` 语义
+### `payload` 和报表配置
 
-`dimensions` 是事件上的分类维度，用来解释“这条事件发生在什么类别、状态、入口或分组下”。平台会把 `dimensions` 当作报表的筛选和分组字段处理，例如按 `result`、`placement`、`currency`、`unitType`、`unitId` 拆分事件数、转化率、留存或收入。
+`payload` 是事件上的原始业务属性，用来描述“这条事件发生时游戏侧知道的状态”。SDK 和服务端不会在上报链路里提前区分维度和指标，也不会把所有 payload key/value 展开成宽表或明细维度。
 
-`dimensions` 的值即使是 number，也会被当作标签值使用，不会做 sum / avg / p50 / max 这类数值聚合。需要聚合的数值必须放进 `metrics`，例如 `durationMs`、`revenue`、`score`、`clearRate`。如果同一个数值既需要分组又需要聚合，可以同时上报一个离散维度和一个 metric，例如 `dimensions.levelBucket = "11-20"`，`metrics.level = 17`。
+平台落库时会把 `payload` 原样保存为 `payload_json`。后续每个游戏可以提交 report pack，声明某个报表需要读取哪些事件、哪些 payload 字段、字段类型、聚合方式和图表展示方式。离线任务只解析 report pack 里声明过的字段，避免把所有自定义字段都展开导致数据膨胀。
 
-平台落库时会把 `dimensions` 原样保存为 `dimensions_json`，离线报表再按 `eventType + dimension key` 展开成可筛选、可 group by 的维度。高基数字段会让报表变慢且难以聚合，因此不要把 `eventId`、时间戳、完整用户 ID、随机字符串、自由文本、手机号、邮箱等放进 `dimensions`。`gameId`、`userId`、`sessionId`、实验分组、设备信息已经由协议字段或 SDK context 提供，不要重复塞进 `dimensions`。
+第一版 `payload` 建议保持 flat object。复杂对象或数组如果确实需要保留，官方 SDK 会序列化成字符串，但这类字段不适合作为稳定报表字段。不要把密钥、手机号、邮箱等敏感信息放进 `payload`。`gameId`、`userId`、`sessionId`、实验分组、设备信息已经由协议字段或 SDK context 提供，不要重复塞进 `payload`。
 
-官方 SDK 的 `track...` 便捷接口会把 payload 里的数字拆进 `metrics`，把 string / boolean / null 拆进 `dimensions`；object / array 会序列化成字符串维度，只适合调试，不建议作为稳定报表字段。直接调用 REST API 时应显式传 `dimensions` 和 `metrics`。
+直接调用 REST API 时，即使事件没有业务字段，也应该传 `payload: {}`。官方 SDK 的 `track...` 便捷接口会自动补空 payload。
 
 推荐标准事件：
 

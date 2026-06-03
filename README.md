@@ -250,10 +250,10 @@ _tutorial_skip
 - QA 或测试设备设置 `isDebug=true`。
 - 网络失败时重试，不阻塞游戏。
 - `userId` 默认由 SDK 生成并持久化；有账号体系时也可以显式传自己的稳定匿名 ID。`sessionId` 每次启动或每局会话生成一个新的。
-- `dimensions` 是报表里的筛选和分组字段，例如 `result`、`placement`、`currency`、`unitType`、`unitId`。平台会把它当标签值理解，即使值是 number 也不会做 sum / avg / p50。
-- 可聚合数值进入 `metrics`，例如 `durationMs`、`revenue`、`score`、`clearRate`。官方 SDK 会把 payload 里的 number 拆进 `metrics`，把 string / boolean / null 拆进 `dimensions`。
-- 不要把时间戳、随机 ID、完整用户 ID、自由文本、实验分组或设备信息放进 `dimensions`；这些会造成高基数或和 SDK context 重复。
-- 不要在事件字段里放密钥、手机号、邮箱等敏感信息。
+- 业务字段统一放在 `payload`；平台上报链路只保存原始 `payload_json`，不在写入时解释维度或指标。
+- 后续由游戏提交 report pack 声明哪些 payload 字段用于报表维度、哪些字段用于聚合指标；离线任务只展开声明过的字段。
+- 第一版建议 payload 保持 flat object，字段值使用 string / number / boolean / null。
+- 不要在 payload 里放密钥、手机号、邮箱、完整用户 ID、实验分组或设备信息；这些要么敏感，要么已经由协议字段或 SDK context 提供。
 - SDK 默认向控制台输出配置拉取、实验分组、配置文件和脚本加载日志；需要静默时 iOS 传 `logger: nil`，Android 传 `null` logger，REST 传 `logger: false`。
 
 ## 验收清单

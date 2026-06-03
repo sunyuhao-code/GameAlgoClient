@@ -138,9 +138,7 @@ public actor GameAlgoEventTracker {
         payload: JSONValue = .object([:]),
         userId: String? = nil,
         sessionId: String? = nil,
-        contextId: String? = nil,
-        dimensions: [String: JSONValue] = [:],
-        metrics: [GameAlgoEventMetric] = []
+        contextId: String? = nil
     ) -> Bool {
         guard let resolvedUserId = clean(userId ?? self.userId) else {
             return false
@@ -149,8 +147,6 @@ public actor GameAlgoEventTracker {
             return false
         }
 
-        let split = splitPayload(payload)
-
         let event = GameAlgoEvent(
             contextId: resolvedContextId,
             userId: resolvedUserId,
@@ -158,8 +154,7 @@ public actor GameAlgoEventTracker {
             eventType: eventType,
             isDebug: isDebug,
             timestamp: GameAlgoEventBatchUploader.isoTimestamp(now()),
-            dimensions: split.dimensions.merging(normalizeDimensions(dimensions)) { _, explicit in explicit },
-            metrics: split.metrics + metrics.filter { !$0.key.isEmpty && $0.value.isFinite }
+            payload: normalizePayload(payload)
         )
         enqueue(event)
         return true
@@ -171,9 +166,7 @@ public actor GameAlgoEventTracker {
         payload: JSONValue = .object([:]),
         userId: String? = nil,
         sessionId: String? = nil,
-        contextId: String? = nil,
-        dimensions: [String: JSONValue] = [:],
-        metrics: [GameAlgoEventMetric] = []
+        contextId: String? = nil
     ) -> Bool {
         let eventType = type.hasPrefix("_") ? type : "_\(type)"
         return track(
@@ -181,9 +174,7 @@ public actor GameAlgoEventTracker {
             payload: payload,
             userId: userId,
             sessionId: sessionId,
-            contextId: contextId,
-            dimensions: dimensions,
-            metrics: metrics
+            contextId: contextId
         )
     }
 
@@ -340,34 +331,21 @@ public actor GameAlgoEventTracker {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private func splitPayload(_ payload: JSONValue) -> (dimensions: [String: JSONValue], metrics: [GameAlgoEventMetric]) {
+    private func normalizePayload(_ payload: JSONValue) -> [String: JSONValue] {
         guard let object = payload.objectValue else {
-            return ([:], [])
+            return [:]
         }
 
-        var dimensions: [String: JSONValue] = [:]
-        var metrics: [GameAlgoEventMetric] = []
-        for (key, value) in object where !key.isEmpty {
-            if case let .number(number) = value, number.isFinite {
-                metrics.append(GameAlgoEventMetric(key: key, value: number))
-            } else if let dimension = dimensionValue(value) {
-                dimensions[key] = dimension
-            }
-        }
-        return (dimensions, metrics)
-    }
-
-    private func normalizeDimensions(_ dimensions: [String: JSONValue]) -> [String: JSONValue] {
         var normalized: [String: JSONValue] = [:]
-        for (key, value) in dimensions where !key.isEmpty {
-            if let dimension = dimensionValue(value) {
-                normalized[key] = dimension
+        for (key, value) in object where !key.isEmpty {
+            if let payloadValue = payloadValue(value) {
+                normalized[key] = payloadValue
             }
         }
         return normalized
     }
 
-    private func dimensionValue(_ value: JSONValue) -> JSONValue? {
+    private func payloadValue(_ value: JSONValue) -> JSONValue? {
         switch value {
         case .string, .bool, .null:
             return value

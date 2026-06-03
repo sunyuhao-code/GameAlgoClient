@@ -111,10 +111,8 @@ public final class GameAlgoEventTracker implements AutoCloseable {
             resolvedIsDebug = isDebug;
         }
 
-        SplitPayload split = splitPayload(payload);
         GameAlgoEvent event = new GameAlgoEvent(resolvedContextId, resolvedUserId, resolvedSessionId, eventType)
-                .dimensions(split.dimensions)
-                .metrics(split.metrics)
+                .payload(normalizePayload(payload))
                 .isDebug(resolvedIsDebug);
         enqueue(event);
         return true;
@@ -313,9 +311,8 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         return payload == null ? new LinkedHashMap<String, Object>() : new LinkedHashMap<>(payload);
     }
 
-    private static SplitPayload splitPayload(Map<String, Object> payload) {
-        Map<String, Object> dimensions = new LinkedHashMap<>();
-        List<GameAlgoEventMetric> metrics = new ArrayList<>();
+    private static Map<String, Object> normalizePayload(Map<String, Object> payload) {
+        Map<String, Object> normalized = new LinkedHashMap<>();
         Map<String, Object> source = copyPayload(payload);
         for (Map.Entry<String, Object> entry : source.entrySet()) {
             String key = entry.getKey();
@@ -323,19 +320,26 @@ public final class GameAlgoEventTracker implements AutoCloseable {
                 continue;
             }
             Object value = entry.getValue();
-            if (value instanceof Number && isFiniteNumber((Number) value)) {
-                metrics.add(new GameAlgoEventMetric(key, ((Number) value).doubleValue()));
-            } else if (value == null || value instanceof String || value instanceof Boolean) {
-                dimensions.put(key, value);
-            } else {
-                try {
-                    dimensions.put(key, GameAlgoJson.stringify(value));
-                } catch (GameAlgoException ignored) {
-                    // Unsupported complex values are skipped instead of making tracking throw.
-                }
+            Object normalizedValue = payloadValue(value);
+            if (normalizedValue != null || value == null) {
+                normalized.put(key, normalizedValue);
             }
         }
-        return new SplitPayload(dimensions, metrics);
+        return normalized;
+    }
+
+    private static Object payloadValue(Object value) {
+        if (value == null || value instanceof String || value instanceof Boolean) {
+            return value;
+        }
+        if (value instanceof Number) {
+            return isFiniteNumber((Number) value) ? value : null;
+        }
+        try {
+            return GameAlgoJson.stringify(value);
+        } catch (GameAlgoException ignored) {
+            return null;
+        }
     }
 
     private static boolean isFiniteNumber(Number value) {
@@ -347,13 +351,4 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         return value == null || value.length() == 0;
     }
 
-    private static final class SplitPayload {
-        private final Map<String, Object> dimensions;
-        private final List<GameAlgoEventMetric> metrics;
-
-        private SplitPayload(Map<String, Object> dimensions, List<GameAlgoEventMetric> metrics) {
-            this.dimensions = dimensions;
-            this.metrics = metrics;
-        }
-    }
 }

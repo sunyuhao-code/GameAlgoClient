@@ -2,8 +2,8 @@ import type {
   ConfigFileResponse,
   ConfigResponse,
   EventBatchResponse,
-  EventDimensions,
-  EventMetric,
+  EventPayload,
+  EventPayloadValue,
   ExperimentAssignment,
   FetchConfigOptions,
   GameAlgoExecutionResult,
@@ -270,8 +270,7 @@ export class GameAlgoRestClient {
       eventId: event.eventId ?? randomId(),
       isDebug: Boolean(event.isDebug),
       timestamp: event.timestamp ?? new Date(this.now()).toISOString(),
-      dimensions: event.dimensions ?? {},
-      metrics: event.metrics ?? [],
+      payload: normalizePayload(event.payload ?? {}),
     }));
 
     return this.requestJson<EventBatchResponse>(this.url("/v1/events/batch"), {
@@ -493,7 +492,6 @@ export class GameAlgoEventTracker {
     if (!userId) return false;
     const contextId = clean(options.contextId ?? this.contextId);
     if (!contextId) return false;
-    const split = splitPayload(payload);
 
     this.enqueue({
       eventId: randomId(),
@@ -503,8 +501,7 @@ export class GameAlgoEventTracker {
       eventType,
       isDebug: options.isDebug ?? this.isDebug,
       timestamp: options.timestamp ?? new Date(this.now()).toISOString(),
-      dimensions: { ...split.dimensions, ...(options.dimensions ?? {}) },
-      metrics: [...split.metrics, ...normalizeMetrics(options.metrics)],
+      payload: normalizePayload(payload),
     });
     return true;
   }
@@ -817,8 +814,7 @@ export function createEvent(input: Omit<GameEvent, "eventId" | "timestamp"> & { 
     ...input,
     eventId: input.eventId ?? randomId(),
     timestamp: input.timestamp ?? new Date().toISOString(),
-    dimensions: input.dimensions ?? {},
-    metrics: input.metrics ?? [],
+    payload: normalizePayload(input.payload ?? {}),
   };
 }
 
@@ -900,26 +896,24 @@ function objectPayload(value: JsonValue): Record<string, JsonValue> {
   return {};
 }
 
-function splitPayload(value: JsonValue): { dimensions: EventDimensions; metrics: EventMetric[] } {
-  const dimensions: EventDimensions = {};
-  const metrics: EventMetric[] = [];
+function normalizePayload(value: JsonValue): EventPayload {
+  const payload: EventPayload = {};
   const object = objectPayload(value);
   for (const [key, rawValue] of Object.entries(object)) {
-    if (typeof rawValue === "number" && Number.isFinite(rawValue)) {
-      metrics.push({ key, value: rawValue });
-    } else if (rawValue === null || typeof rawValue === "string" || typeof rawValue === "boolean") {
-      dimensions[key] = rawValue;
-    } else if (rawValue !== undefined) {
-      dimensions[key] = JSON.stringify(rawValue);
+    if (!key) continue;
+    const normalized = payloadValue(rawValue);
+    if (normalized !== undefined) {
+      payload[key] = normalized;
     }
   }
-  return { dimensions, metrics };
+  return payload;
 }
 
-function normalizeMetrics(value: TrackEventOptions["metrics"]): EventMetric[] {
-  if (!value) return [];
-  if (Array.isArray(value)) return value;
-  return Object.entries(value).map(([key, metricValue]) => ({ key, value: metricValue }));
+function payloadValue(value: JsonValue): EventPayloadValue | undefined {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  if (value !== undefined) return JSON.stringify(value);
+  return undefined;
 }
 
 async function verifyScriptHash(content: string, expected: string): Promise<void> {

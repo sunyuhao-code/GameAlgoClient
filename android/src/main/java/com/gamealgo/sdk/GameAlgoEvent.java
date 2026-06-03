@@ -1,9 +1,7 @@
 package com.gamealgo.sdk;
 
 import java.util.Collections;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 
 public final class GameAlgoEvent {
@@ -14,16 +12,14 @@ public final class GameAlgoEvent {
     private final String eventType;
     private Boolean isDebug;
     private String timestamp;
-    private Map<String, Object> dimensions;
-    private List<GameAlgoEventMetric> metrics;
+    private Map<String, Object> payload;
 
     public GameAlgoEvent(String contextId, String userId, String sessionId, String eventType) {
         this.contextId = contextId;
         this.userId = userId;
         this.sessionId = sessionId;
         this.eventType = eventType;
-        this.dimensions = new LinkedHashMap<>();
-        this.metrics = new ArrayList<>();
+        this.payload = new LinkedHashMap<>();
     }
 
     public GameAlgoEvent eventId(String eventId) {
@@ -41,18 +37,8 @@ public final class GameAlgoEvent {
         return this;
     }
 
-    public GameAlgoEvent dimensions(Map<String, Object> dimensions) {
-        this.dimensions = dimensions == null ? new LinkedHashMap<String, Object>() : new LinkedHashMap<>(dimensions);
-        return this;
-    }
-
-    public GameAlgoEvent metric(String key, double value) {
-        this.metrics.add(new GameAlgoEventMetric(key, value));
-        return this;
-    }
-
-    public GameAlgoEvent metrics(List<GameAlgoEventMetric> metrics) {
-        this.metrics = metrics == null ? new ArrayList<GameAlgoEventMetric>() : new ArrayList<>(metrics);
+    public GameAlgoEvent payload(Map<String, Object> payload) {
+        this.payload = payload == null ? new LinkedHashMap<String, Object>() : new LinkedHashMap<>(payload);
         return this;
     }
 
@@ -84,12 +70,8 @@ public final class GameAlgoEvent {
         return timestamp;
     }
 
-    public Map<String, Object> getDimensions() {
-        return Collections.unmodifiableMap(dimensions);
-    }
-
-    public List<GameAlgoEventMetric> getMetrics() {
-        return Collections.unmodifiableList(metrics);
+    public Map<String, Object> getPayload() {
+        return Collections.unmodifiableMap(payload);
     }
 
     Map<String, Object> toJson(String defaultTimestamp) {
@@ -101,12 +83,7 @@ public final class GameAlgoEvent {
         object.put("eventType", eventType);
         object.put("isDebug", isDebug == null ? Boolean.FALSE : isDebug);
         object.put("timestamp", isBlank(timestamp) ? defaultTimestamp : timestamp);
-        object.put("dimensions", dimensions);
-        List<Object> metricItems = new ArrayList<>();
-        for (GameAlgoEventMetric metric : metrics) {
-            metricItems.add(metric.toJson());
-        }
-        object.put("metrics", metricItems);
+        object.put("payload", payload);
         return object;
     }
 

@@ -61,16 +61,11 @@ export type GameEvent = {
   eventType: string;
   isDebug?: boolean;
   timestamp?: string;
-  dimensions?: EventDimensions;
-  metrics?: EventMetric[];
+  payload?: EventPayload;
 };
 
-export type EventDimensionValue = string | number | boolean | null;
-export type EventDimensions = Record<string, EventDimensionValue>;
-export type EventMetric = {
-  key: string;
-  value: number;
-};
+export type EventPayloadValue = string | number | boolean | null;
+export type EventPayload = Record<string, EventPayloadValue>;
 
 export type EventBatchResponse = {
   ok: boolean;
@@ -114,8 +109,6 @@ export type TrackEventOptions = {
   contextId?: string;
   isDebug?: boolean;
   timestamp?: string;
-  dimensions?: EventDimensions;
-  metrics?: EventMetric[] | Record<string, number>;
 };
 
 export type GameAlgoStorage = {
