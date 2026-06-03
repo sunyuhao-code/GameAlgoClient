@@ -15,6 +15,8 @@ Use the `Report Packs` editor to:
 - click `Validate` to preview validation results and generated SQL
 - choose `draft`, `active`, or `disabled`
 - click `Save`
+- choose a report and date range in `Run Report`
+- click `Run` to execute the active report and view result rows
 
 ## Example
 
@@ -97,4 +99,4 @@ Do not put secrets, phone numbers, emails, full account identifiers, device meta
 
 ## Current Boundary
 
-The platform currently stores and validates report packs and generates SQL preview. It does not yet schedule MaxCompute jobs, create materialized result tables, or execute arbitrary user SQL.
+The platform currently stores and validates report packs, generates SQL preview, and can run an active report online from the admin console. It does not yet schedule MaxCompute jobs or create materialized result tables.
