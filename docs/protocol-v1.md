@@ -135,6 +135,8 @@ Content-Type: application/json
 
 服务端收到配置请求后会生成一条 SDK context 日志，记录可信 `gameId`、`userId`、`userCreatedAt`、`sessionId`、设备上下文和本次实验分配。后续事件只需要引用返回的 `contextId`，不再把设备信息复制到每条事件。
 
+`/v1/config` 对同一个 `gameId + userId + sessionId` 做 5 分钟幂等缓存。5 分钟内重复请求会返回同一个 `contextId` 和同一份配置响应，不重复写 SDK context 日志；超过 5 分钟会重新计算配置和实验分组。
+
 响应：
 
 ```json

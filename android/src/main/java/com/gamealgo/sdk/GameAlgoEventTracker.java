@@ -106,12 +106,9 @@ public final class GameAlgoEventTracker implements AutoCloseable {
             if (isBlank(userId)) {
                 return false;
             }
-            if (isBlank(contextId)) {
-                return false;
-            }
             resolvedUserId = userId;
             resolvedSessionId = sessionId;
-            resolvedContextId = contextId;
+            resolvedContextId = isBlank(contextId) ? "" : contextId;
             resolvedIsDebug = isDebug;
         }
 
@@ -221,6 +218,16 @@ public final class GameAlgoEventTracker implements AutoCloseable {
                     pending.addAll(queue);
                     int end = Math.min(maxBatchSize, pending.size());
                     batch = new ArrayList<>(pending.subList(0, end));
+                    String resolvedContextId = contextId;
+                    if (hasMissingContextId(batch) && isBlank(resolvedContextId)) {
+                        retryBatch.clear();
+                        queue.clear();
+                        queue.addAll(pending);
+                        return;
+                    }
+                    if (!isBlank(resolvedContextId)) {
+                        batch = withResolvedContextId(batch, resolvedContextId);
+                    }
                     retryBatch.clear();
                     queue.clear();
                     if (end < pending.size()) {
@@ -277,6 +284,23 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         if (shouldFlush) {
             flushAsync();
         }
+    }
+
+    private static boolean hasMissingContextId(List<GameAlgoEvent> events) {
+        for (GameAlgoEvent event : events) {
+            if (isBlank(event.getContextId())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static List<GameAlgoEvent> withResolvedContextId(List<GameAlgoEvent> events, String contextId) {
+        List<GameAlgoEvent> resolved = new ArrayList<>(events.size());
+        for (GameAlgoEvent event : events) {
+            resolved.add(isBlank(event.getContextId()) ? event.withContextId(contextId) : event);
+        }
+        return resolved;
     }
 
     private synchronized void ensureScheduler() {

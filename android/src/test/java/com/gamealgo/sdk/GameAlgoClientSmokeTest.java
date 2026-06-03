@@ -18,6 +18,7 @@ public final class GameAlgoClientSmokeTest {
         testStartGeneratesAndReusesAnonymousUserId();
         testStartBackfillsCreatedAtForPersistedLegacyUserId();
         testUploadEventsFillsDefaults();
+        testTrackerBuffersEventsUntilContextIsReady();
         testTrackerQueuesAndFlushesEvents();
         testCustomEventsPreservePayload();
     }
@@ -300,6 +301,39 @@ public final class GameAlgoClientSmokeTest {
         check(Boolean.FALSE.equals(event.get("isDebug")), "isDebug should default false");
         check(event.get("timestamp") instanceof String, "timestamp should default");
         check(GameAlgoJson.asObject(event.get("payload"), "payload").isEmpty(), "payload should default empty");
+    }
+
+    private static void testTrackerBuffersEventsUntilContextIsReady() throws Exception {
+        FakeHttpClient httpClient = new FakeHttpClient();
+        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":1}"));
+        GameAlgoClient client = new GameAlgoClient(
+                "ga_live_test_key_0123456789abcdef",
+                "https://gamealgo.test",
+                "1.2.3",
+                "4.5.6",
+                "android",
+                httpClient
+        );
+
+        client.tracker().identify("u1", "s1", "2026-05-28T10:00:00.000Z");
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("level", 3);
+        check(client.tracker().trackLevelEnd(payload), "tracker should queue before context is ready");
+        client.tracker().flush();
+        check(httpClient.requests.isEmpty(), "flush should wait for context id");
+
+        client.tracker().setContextId("ctx-1");
+        client.tracker().flush();
+
+        Map<String, Object> body = GameAlgoJson.asObject(
+                GameAlgoJson.parse(new String(httpClient.requests.get(0).getBody(), StandardCharsets.UTF_8)),
+                "body"
+        );
+        List<Object> events = GameAlgoJson.asArray(body.get("events"), "events");
+        Map<String, Object> event = GameAlgoJson.asObject(events.get(0), "events[]");
+        check("ctx-1".equals(event.get("contextId")), "tracker should fill context id at flush");
+        check("level_end".equals(event.get("eventType")), "tracker should preserve event type");
+        client.tracker().close();
     }
 
     private static void testStartBackfillsCreatedAtForPersistedLegacyUserId() throws Exception {

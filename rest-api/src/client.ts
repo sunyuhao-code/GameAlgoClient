@@ -497,11 +497,10 @@ export class GameAlgoEventTracker {
     const userId = clean(options.userId ?? this.userId);
     if (!userId) return false;
     const contextId = clean(options.contextId ?? this.contextId);
-    if (!contextId) return false;
 
     this.enqueue({
       eventId: randomId(),
-      contextId,
+      contextId: contextId ?? "",
       userId,
       sessionId: clean(options.sessionId) ?? this.sessionId,
       eventType,
@@ -582,13 +581,20 @@ export class GameAlgoEventTracker {
       while (this.retryBatch.length > 0 || this.queue.length > 0) {
         const pending = [...this.retryBatch, ...this.queue];
         const batch = pending.slice(0, this.maxBatchSize);
+        const resolvedContextId = clean(this.contextId);
+        if (batch.some((event) => !clean(event.contextId)) && !resolvedContextId) {
+          this.retryBatch = [];
+          this.queue = pending;
+          return responses;
+        }
+        const uploadBatch = batch.map((event) => clean(event.contextId) ? event : { ...event, contextId: resolvedContextId! });
         this.retryBatch = [];
         this.queue = pending.slice(this.maxBatchSize);
 
         try {
-          responses.push(await this.uploadEvents(batch));
+          responses.push(await this.uploadEvents(uploadBatch));
         } catch (error) {
-          this.retryBatch = batch;
+          this.retryBatch = uploadBatch;
           throw error;
         }
       }

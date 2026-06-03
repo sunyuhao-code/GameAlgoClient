@@ -50,7 +50,7 @@ The SDK sends `X-GameAlgo-Key` on every request, caches `/v1/config` by `ttlSeco
 
 The SDK sends `userCreatedAt` and basic `device` context with `/v1/config` automatically. Pass `device` or `deviceId` to `startAsync`/`fetchConfig` to add app-specific fields or override defaults.
 
-`tracker()` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, and keeps the failed batch for the next retry. `fetchConfig`, `fetchConfigFile`, and `uploadEvents` are blocking in this core package; Android apps should call those lower-level methods from their own background executor/coroutine layer.
+`tracker()` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, and keeps the failed batch for the next retry. If config context is not ready yet, queued events stay local and `flush` fills the current `contextId` before upload. `fetchConfig`, `fetchConfigFile`, and `uploadEvents` are blocking in this core package; Android apps should call those lower-level methods from their own background executor/coroutine layer.
 
 Event payload fields are sent as `payload` and stored raw. Analytics does not interpret payload fields during ingestion; a game-specific report pack later declares which fields become report dimensions or metrics. Experiment assignments are stored in the SDK context created by `/v1/config`, not copied onto each event.
 

@@ -147,9 +147,7 @@ public actor GameAlgoEventTracker {
         guard let resolvedUserId = clean(userId ?? self.userId) else {
             return false
         }
-        guard let resolvedContextId = clean(contextId ?? self.contextId) else {
-            return false
-        }
+        let resolvedContextId = clean(contextId ?? self.contextId) ?? ""
 
         let event = GameAlgoEvent(
             contextId: resolvedContextId,
@@ -278,15 +276,29 @@ public actor GameAlgoEventTracker {
         while !retryBatch.isEmpty || !queue.isEmpty {
             let pending = retryBatch + queue
             let batch = Array(pending.prefix(maxBatchSize))
+            let resolvedContextId = clean(contextId)
+            if batch.contains(where: { clean($0.contextId) == nil }) && resolvedContextId == nil {
+                retryBatch = []
+                queue = pending
+                return
+            }
+            let uploadBatch = batch.map { event in
+                if clean(event.contextId) != nil {
+                    return event
+                }
+                var updated = event
+                updated.contextId = resolvedContextId!
+                return updated
+            }
             queue = Array(pending.dropFirst(maxBatchSize))
             retryBatch = []
 
-            log("flushing \(batch.count) events")
+            log("flushing \(uploadBatch.count) events")
             do {
-                _ = try await uploader.uploadEvents(batch)
-                log("flush success: \(batch.count) events")
+                _ = try await uploader.uploadEvents(uploadBatch)
+                log("flush success: \(uploadBatch.count) events")
             } catch {
-                retryBatch = batch
+                retryBatch = uploadBatch
                 log("flush failed: \(error)")
                 return
             }

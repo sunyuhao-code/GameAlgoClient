@@ -74,6 +74,14 @@ public final class GameAlgoEvent {
         return Collections.unmodifiableMap(payload);
     }
 
+    GameAlgoEvent withContextId(String contextId) {
+        return new GameAlgoEvent(contextId, userId, sessionId, eventType)
+                .eventId(eventId)
+                .isDebug(isDebug)
+                .timestamp(timestamp)
+                .payload(payload);
+    }
+
     Map<String, Object> toJson(String defaultTimestamp) {
         Map<String, Object> object = new LinkedHashMap<>();
         object.put("eventId", isBlank(eventId) ? java.util.UUID.randomUUID().toString() : eventId);

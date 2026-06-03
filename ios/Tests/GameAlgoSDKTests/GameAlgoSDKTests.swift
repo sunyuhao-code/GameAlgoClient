@@ -73,7 +73,7 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(configRequest["userCreatedAt"] as? String, "2026-05-28T10:00:00.000Z")
     }
 
-    func testTrackerRequiresConfigContextBeforeSending() async throws {
+    func testTrackerBuffersEventsUntilConfigContextIsReady() async throws {
         let suiteName = "GameAlgoSDKTests.initialTrackerIdentity.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
@@ -90,12 +90,23 @@ final class GameAlgoSDKTests: XCTestCase {
             eventFlushInterval: 0
         )
 
-        let didTrackSessionStart = await sdk.tracker.trackSessionStart()
-        XCTAssertTrue(didTrackSessionStart)
+        let didTrackLevelEnd = await sdk.tracker.trackLevelEnd(payload: .object(["level": .number(3)]))
+        XCTAssertTrue(didTrackLevelEnd)
         await sdk.tracker.flush()
 
-        let requests = await httpClient.requests
+        var requests = await httpClient.requests
         XCTAssertEqual(requests.count, 0)
+
+        try await httpClient.enqueueJSON(["ok": true, "accepted": 1])
+        await sdk.tracker.setContextId("ctx-1")
+        await sdk.tracker.flush()
+
+        requests = await httpClient.requests
+        let body = try JSONSerialization.jsonObject(with: requests[0].body ?? Data()) as? [String: Any]
+        let events = body?["events"] as? [[String: Any]]
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(events?[0]["contextId"] as? String, "ctx-1")
+        XCTAssertEqual(events?[0]["eventType"] as? String, "level_end")
     }
 
     func testFetchConfigSendsProtocolHeadersAndCachesByTTL() async throws {

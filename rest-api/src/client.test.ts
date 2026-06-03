@@ -399,6 +399,35 @@ test("uploadEvents fills timestamp and preserves payload fields", async () => {
   assert.equal(result.accepted, 1);
 });
 
+test("tracker buffers events until context is ready", async () => {
+  let uploadedEvents: Array<Record<string, unknown>> = [];
+  const client = new GameAlgoRestClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    eventFlushIntervalMs: 0,
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      assert.equal(request.url, "https://gamealgo.test/v1/events/batch");
+      const body = await request.json() as { events: Array<Record<string, unknown>> };
+      uploadedEvents = body.events;
+      return jsonResponse({ ok: true, accepted: body.events.length });
+    },
+  });
+
+  client.tracker.identify("u1", "s1", "2026-05-28T10:00:00.000Z");
+  assert.equal(client.tracker.trackLevelEnd({ level: 3 }), true);
+  assert.deepEqual(await client.tracker.flush(), []);
+  assert.equal(uploadedEvents.length, 0);
+
+  client.tracker.setContextId("ctx-1");
+  const responses = await client.tracker.flush();
+
+  assert.equal(responses[0].accepted, 1);
+  assert.equal(uploadedEvents[0].contextId, "ctx-1");
+  assert.equal(uploadedEvents[0].eventType, "level_end");
+  client.tracker.close();
+});
+
 test("tracker queues and flushes events after start identifies user", async () => {
   let now = Date.parse("2026-05-28T10:00:00.000Z");
   const requests: Request[] = [];
