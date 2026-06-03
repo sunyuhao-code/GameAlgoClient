@@ -272,7 +272,6 @@ Content-Type: application/json
 
 | eventType | 说明 |
 |-----------|------|
-| `session_start` | 会话开始 |
 | `session_end` | 会话结束 |
 | `config_loaded` | 配置拉取成功 |
 | `level_start` | 关卡开始 |

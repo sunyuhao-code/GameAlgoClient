@@ -53,7 +53,6 @@ final class GameAlgoSDKTests: XCTestCase {
 
         let httpClient = MockHTTPClient()
         try await httpClient.enqueueJSON(configResponse(version: "v1"))
-        try await httpClient.enqueueJSON(["ok": true, "accepted": 2])
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
@@ -68,17 +67,10 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(sdk.userId, "legacy-user")
         XCTAssertEqual(defaults.string(forKey: GameAlgoUserIdentityStore.legacyUserCreatedAtKey), "2026-05-28T10:00:00.000Z")
 
-        let didTrackSessionStart = await sdk.tracker.trackSessionStart()
-        XCTAssertTrue(didTrackSessionStart)
-        _ = await sdk.tracker.flush()
-
         let requests = await httpClient.requests
-        let body = try JSONSerialization.jsonObject(with: requests[1].body ?? Data()) as? [String: Any]
-        let events = body?["events"] as? [[String: Any]]
-        let sessionStart = events?.first { $0["eventType"] as? String == "session_start" }
-        let sessionPayload = sessionStart?["payload"] as? [String: Any]
-        XCTAssertEqual(sessionStart?["userId"] as? String, "legacy-user")
-        XCTAssertEqual(sessionPayload?["userCreatedAt"] as? String, "2026-05-28T10:00:00.000Z")
+        let configRequest = try requestBody(requests[0])
+        XCTAssertEqual(configRequest["userId"] as? String, "legacy-user")
+        XCTAssertEqual(configRequest["userCreatedAt"] as? String, "2026-05-28T10:00:00.000Z")
     }
 
     func testTrackerRequiresConfigContextBeforeSending() async throws {
@@ -99,7 +91,7 @@ final class GameAlgoSDKTests: XCTestCase {
         )
 
         let didTrackSessionStart = await sdk.tracker.trackSessionStart()
-        XCTAssertFalse(didTrackSessionStart)
+        XCTAssertTrue(didTrackSessionStart)
         await sdk.tracker.flush()
 
         let requests = await httpClient.requests
@@ -437,7 +429,7 @@ final class GameAlgoSDKTests: XCTestCase {
                 "config": [String: Any](),
             ]]
         ))
-        try await httpClient.enqueueJSON(["ok": true, "accepted": 3])
+        try await httpClient.enqueueJSON(["ok": true, "accepted": 2])
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
@@ -452,9 +444,7 @@ final class GameAlgoSDKTests: XCTestCase {
 
         let task = sdk.start(userId: "u1")
         try await task.value
-        let didTrackSessionStart = await sdk.tracker.trackSessionStart()
         let didTrackLevelEnd = await sdk.tracker.trackLevelEnd(payload: .object(["level": .number(3)]))
-        XCTAssertTrue(didTrackSessionStart)
         XCTAssertTrue(didTrackLevelEnd)
         await sdk.tracker.flush()
 
@@ -465,17 +455,13 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(requests.count, 2)
         XCTAssertEqual(requests[1].method, .post)
         XCTAssertEqual(requests[1].url.absoluteString, "https://gamealgo.test/v1/events/batch")
-        XCTAssertEqual(events?.count, 3)
+        XCTAssertEqual(events?.count, 2)
         XCTAssertEqual(events?[0]["eventType"] as? String, "config_loaded")
         XCTAssertEqual(events?[0]["contextId"] as? String, "ctx-1")
         XCTAssertEqual(events?[1]["userId"] as? String, "u1")
-        XCTAssertEqual(events?[1]["sessionId"] as? String, events?.last?["sessionId"] as? String)
-        XCTAssertEqual(events?[1]["eventType"] as? String, "session_start")
-        let sessionPayload = events?[1]["payload"] as? [String: Any]
-        XCTAssertEqual(sessionPayload?["userCreatedAt"] as? String, "2026-05-28T10:00:00.000Z")
-        XCTAssertEqual(events?.last?["eventType"] as? String, "level_end")
-        XCTAssertEqual(events?.last?["isDebug"] as? Bool, true)
-        let levelPayload = events?.last?["payload"] as? [String: Any]
+        XCTAssertEqual(events?[1]["eventType"] as? String, "level_end")
+        XCTAssertEqual(events?[1]["isDebug"] as? Bool, true)
+        let levelPayload = events?[1]["payload"] as? [String: Any]
         XCTAssertEqual(levelPayload?["level"] as? Double, 3)
     }
 
@@ -531,21 +517,21 @@ final class GameAlgoSDKTests: XCTestCase {
 
         let httpClient = MockHTTPClient()
         try await httpClient.enqueueJSON(configResponse(version: "v1"))
-        try await httpClient.enqueueJSON(["ok": true, "accepted": 3])
+        try await httpClient.enqueueJSON(["ok": true, "accepted": 2])
+        let clock = TestClock(date: Date(timeIntervalSince1970: 1_779_962_400))
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
             httpClient: httpClient,
             userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
             eventFlushInterval: 0,
-            now: { Date(timeIntervalSince1970: 1_779_962_400) }
+            now: { clock.now() }
         )
 
         let task = sdk.start(userId: "u1")
         try await task.value
-        let didTrackSessionStart = await sdk.tracker.trackSessionStart()
+        clock.advance(2.5)
         let didTrackSessionEnd = await sdk.tracker.trackSessionEnd(payload: .object(["reason": .string("background")]))
-        XCTAssertTrue(didTrackSessionStart)
         XCTAssertTrue(didTrackSessionEnd)
 
         let requests = await httpClient.requests
@@ -556,10 +542,10 @@ final class GameAlgoSDKTests: XCTestCase {
 
         XCTAssertEqual(requests.count, 2)
         XCTAssertEqual(requests[1].url.absoluteString, "https://gamealgo.test/v1/events/batch")
-        XCTAssertEqual(events?.map { $0["eventType"] as? String }, ["config_loaded", "session_start", "session_end"])
+        XCTAssertEqual(events?.map { $0["eventType"] as? String }, ["config_loaded", "session_end"])
         XCTAssertEqual(sessionEnd?["userId"] as? String, "u1")
         XCTAssertEqual(sessionEndPayload?["reason"] as? String, "background")
-        XCTAssertEqual(sessionEndPayload?["sessionDurationMs"] as? Double, 0)
+        XCTAssertEqual(sessionEndPayload?["sessionDurationMs"] as? Double, 2500)
     }
 
     func testThrowsStructuredAPIErrors() async throws {
@@ -655,6 +641,27 @@ private actor MockHTTPClient: GameAlgoHTTPClient {
         case let .failure(error):
             throw error
         }
+    }
+}
+
+private final class TestClock: @unchecked Sendable {
+    private var date: Date
+    private let lock = NSLock()
+
+    init(date: Date) {
+        self.date = date
+    }
+
+    func now() -> Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return date
+    }
+
+    func advance(_ seconds: TimeInterval) {
+        lock.lock()
+        date = date.addingTimeInterval(seconds)
+        lock.unlock()
     }
 }
 

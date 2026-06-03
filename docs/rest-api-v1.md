@@ -135,7 +135,6 @@ The TypeScript helper exposes `client.tracker` for this behavior. Direct `upload
 Recommended event types:
 
 ```text
-session_start
 session_end
 config_loaded
 level_start
@@ -179,7 +178,7 @@ Common errors:
 - `/v1/config` returns experiments and config files.
 - Config response is cached locally.
 - Config files can be fetched and cached.
-- `session_start` and `session_end` are uploaded.
+- `session_end` is uploaded with duration when the session finishes.
 - `level_start` and `level_end` are uploaded if the game has levels.
 - `ad_view` is uploaded if the game has ads.
 - QA builds set `isDebug=true`.

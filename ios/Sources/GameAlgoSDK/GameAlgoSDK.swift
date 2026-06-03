@@ -126,6 +126,7 @@ public actor GameAlgoSDK {
                 timezone: timezone,
                 userCreatedAt: identity.userCreatedAt
             )
+            await self.tracker.markSessionStarted()
             await self.loadCachedSnapshot()
             do {
                 try await self.refresh(

@@ -41,7 +41,6 @@ All integrations call the same `/v1/*` endpoints and send `X-GameAlgo-Key` on ev
 Minimum recommended events:
 
 ```text
-session_start
 session_end
 config_loaded
 level_start

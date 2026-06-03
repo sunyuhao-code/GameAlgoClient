@@ -87,8 +87,8 @@ if await sdk.waitForReady(timeout: 3.0) {
 上传事件优先用内置 tracker。tracker 会把事件放进内存队列，最多 100 条一批上传，并每 30 秒自动 flush；iOS 进入后台或退出时也会主动 flush。
 
 ```swift
-await sdk.tracker.trackSessionStart()
 await sdk.tracker.trackLevelEnd(payload: .object(["level": .number(3), "result": .string("win")]))
+await sdk.tracker.trackSessionEnd()
 await sdk.tracker.flush()
 ```
 
@@ -134,8 +134,8 @@ GameAlgoConfigFile gameplay = sdk.fetchConfigFile("gameplay.json");
 上传事件优先用内置 tracker。tracker 会把事件放进内存队列，最多 100 条一批上传，并每 30 秒自动 flush。
 
 ```kotlin
-sdk.tracker().trackSessionStart()
 sdk.tracker().trackLevelEnd(mapOf("level" to 3, "result" to "win"))
+sdk.tracker().trackSessionEnd()
 sdk.tracker().flushAsync()
 ```
 
@@ -165,8 +165,8 @@ const result = await levelGenerator.execute({ turn: 7 });
 const adsEnabled = client.config.bool("ads.rewarded.enabled", true, "gameplay.json");
 const gameplay = await client.fetchConfigFile("gameplay.json");
 
-client.tracker.trackSessionStart();
 client.tracker.trackLevelEnd({ level: 3, result: "win" });
+client.tracker.trackSessionEnd();
 await client.tracker.flush();
 ```
 
@@ -216,14 +216,13 @@ function execute(input) {
 
 ## 事件接入
 
-SDK 默认提供 `tracker`，游戏代码只需要调用 `trackSessionStart`、`trackLevelEnd`、`trackEvent` 等方法。tracker 会内存排队、最多 100 条一批上传、30 秒定时 flush、失败时保留上一批等待下次 retry。`uploadEvents` 仍保留为低层接口，只有在接入方自己有队列系统时才需要直接调用。
+SDK 默认提供 `tracker`，游戏代码只需要调用 `trackLevelEnd`、`trackSessionEnd`、`trackEvent` 等方法。tracker 会内存排队、最多 100 条一批上传、30 秒定时 flush、失败时保留上一批等待下次 retry。`uploadEvents` 仍保留为低层接口，只有在接入方自己有队列系统时才需要直接调用。
 
 SDK 拉取配置时会带上 `userId/userCreatedAt/sessionId/platform/sdkVersion/timezone/device`，服务端生成一条 SDK context 日志并返回 `contextId`。官方 SDK 会自动补基础 `device` 信息，接入方可以额外传入自定义字段覆盖或追加。后续事件只引用这个 `contextId`；实验分组保存在 context 里，不再复制到每条事件。
 
 最小推荐事件：
 
 ```text
-session_start
 session_end
 config_loaded
 level_start
@@ -264,7 +263,7 @@ _tutorial_skip
 - 配置未就绪时，游戏有本地默认逻辑。
 - `executor(key).variant(...)` 能读到实验分组。
 - `config` 能读到 `gameplay.json` 等配置文件。
-- `session_start`、`session_end`、核心玩法事件能上传成功。
+- `session_end` 和核心玩法事件能上传成功。
 - QA 包设置 `isDebug=true`，生产包使用正式 key。
 - key 不写入日志、截图、崩溃上报或公开仓库。
 

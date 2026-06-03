@@ -39,10 +39,12 @@ curl -s -X POST "https://gamealgo.example.com/v1/events/batch" \
         "contextId": "ctx-001",
         "userId": "user-001",
         "sessionId": "session-001",
-        "eventType": "session_start",
+        "eventType": "session_end",
         "isDebug": false,
         "timestamp": "2026-05-28T10:00:00Z",
-        "payload": {}
+        "payload": {
+          "sessionDurationMs": 125000
+        }
       }
     ]
   }'

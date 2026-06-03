@@ -91,6 +91,7 @@ export class GameAlgoRestClient {
       const identity = await this.userIdentity(options.userId);
       this.logUserId(identity.userId);
       this.tracker.identify(identity.userId, options.sessionId, identity.userCreatedAt);
+      this.tracker.markSessionStarted();
       await this.loadPersistedSnapshot();
       try {
         await this.refresh({ ...options, userId: identity.userId, forceRefresh: true });
@@ -464,7 +465,7 @@ export class GameAlgoEventTracker {
   newSession(sessionId = randomId()): void {
     this.sessionId = sessionId;
     this.contextId = undefined;
-    this.sessionStartMs = undefined;
+    this.sessionStartMs = this.now();
   }
 
   currentSessionId(): string {
@@ -488,6 +489,10 @@ export class GameAlgoEventTracker {
     for (const assignment of assignments) {
       this.currentExperiments[assignment.key] = assignment.variant;
     }
+  }
+
+  markSessionStarted(): void {
+    this.sessionStartMs = this.now();
   }
 
   track(eventType: string, payload: JsonValue = {}, options: TrackEventOptions = {}): boolean {
@@ -514,12 +519,9 @@ export class GameAlgoEventTracker {
   }
 
   trackSessionStart(payload: JsonValue = {}): boolean {
-    this.sessionStartMs = this.now();
-    const merged = objectPayload(payload);
-    if (this.userCreatedAt && merged.userCreatedAt === undefined) {
-      merged.userCreatedAt = this.userCreatedAt;
-    }
-    return this.track("session_start", merged);
+    void payload;
+    this.markSessionStarted();
+    return true;
   }
 
   trackSessionEnd(payload: JsonValue = {}): boolean {

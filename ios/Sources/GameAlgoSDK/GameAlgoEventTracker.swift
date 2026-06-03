@@ -109,7 +109,7 @@ public actor GameAlgoEventTracker {
     public func newSession(_ sessionId: String = UUID().uuidString) {
         self.sessionId = sessionId
         contextId = nil
-        sessionStartDate = nil
+        sessionStartDate = now()
     }
 
     public func currentSessionId() -> String {
@@ -130,6 +130,10 @@ public actor GameAlgoEventTracker {
 
     public func setAssignments(_ assignments: [GameAlgoExperimentAssignment]) {
         currentAssignments = assignments
+    }
+
+    public func markSessionStarted() {
+        sessionStartDate = now()
     }
 
     @discardableResult
@@ -180,12 +184,9 @@ public actor GameAlgoEventTracker {
 
     @discardableResult
     public func trackSessionStart(payload: JSONValue = .object([:])) -> Bool {
-        sessionStartDate = now()
-        var merged = payload.objectValue ?? [:]
-        if let userCreatedAt = clean(userCreatedAt), merged["userCreatedAt"] == nil {
-            merged["userCreatedAt"] = .string(userCreatedAt)
-        }
-        return track("session_start", payload: .object(merged))
+        _ = payload
+        markSessionStarted()
+        return true
     }
 
     @discardableResult

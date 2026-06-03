@@ -305,7 +305,6 @@ public final class GameAlgoClientSmokeTest {
     private static void testStartBackfillsCreatedAtForPersistedLegacyUserId() throws Exception {
         FakeHttpClient httpClient = new FakeHttpClient();
         httpClient.enqueue(jsonResponse(configJson("v1")));
-        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":2}"));
         MemoryCacheStorage cache = new MemoryCacheStorage();
         cache.setItem("gamealgo_user_id", "legacy-user");
         GameAlgoClient client = new GameAlgoClient(
@@ -323,28 +322,9 @@ public final class GameAlgoClientSmokeTest {
         client.startAsync().get();
         check("legacy-user".equals(client.userId()), "legacy user id should be reused");
         check(cache.getItem("gamealgo_user_created_at") != null && cache.getItem("gamealgo_user_created_at").length() > 0, "legacy user createdAt should be backfilled");
-
-        check(client.tracker().trackSessionStart(), "tracker should enqueue session_start for legacy user");
-        client.tracker().flush();
-
-        Map<String, Object> body = GameAlgoJson.asObject(
-                GameAlgoJson.parse(new String(httpClient.requests.get(1).getBody(), StandardCharsets.UTF_8)),
-                "body"
-        );
-        List<Object> events = GameAlgoJson.asArray(body.get("events"), "events");
-        Map<String, Object> sessionStart = null;
-        for (Object event : events) {
-            Map<String, Object> parsed = GameAlgoJson.asObject(event, "events[]");
-            if ("session_start".equals(parsed.get("eventType"))) {
-                sessionStart = parsed;
-                break;
-            }
-        }
-
-        check(sessionStart != null, "session_start should be uploaded for legacy user");
-        check("legacy-user".equals(sessionStart.get("userId")), "session_start should use legacy user id");
-        Map<String, Object> sessionPayload = GameAlgoJson.asObject(sessionStart.get("payload"), "payload");
-        check(cache.getItem("gamealgo_user_created_at").equals(sessionPayload.get("userCreatedAt")), "session_start should include backfilled userCreatedAt");
+        Map<String, Object> requestBody = requestBody(httpClient.requests.get(0));
+        check("legacy-user".equals(requestBody.get("userId")), "config should use legacy user id");
+        check(cache.getItem("gamealgo_user_created_at").equals(requestBody.get("userCreatedAt")), "config should include backfilled userCreatedAt");
     }
 
     private static void testTrackerQueuesAndFlushesEvents() throws Exception {
@@ -362,10 +342,12 @@ public final class GameAlgoClientSmokeTest {
 
         client.startAsync("u1").get();
         client.tracker().setDebug(true);
-        check(client.tracker().trackSessionStart(), "tracker should enqueue session_start after start");
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("level", 3);
         check(client.tracker().trackLevelEnd(payload), "tracker should enqueue level_end");
+        Map<String, Object> sessionEndPayload = new LinkedHashMap<>();
+        sessionEndPayload.put("reason", "background");
+        check(client.tracker().trackSessionEnd(sessionEndPayload), "tracker should enqueue session_end");
         client.tracker().flush();
 
         Map<String, Object> body = GameAlgoJson.asObject(
@@ -384,13 +366,14 @@ public final class GameAlgoClientSmokeTest {
         check("ctx-1".equals(first.get("contextId")), "tracker should attach contextId");
         check("u1".equals(second.get("userId")), "tracker should use identified user");
         check(second.get("sessionId").equals(third.get("sessionId")), "tracker should keep session id");
-        check("session_start".equals(second.get("eventType")), "tracker should upload session_start");
+        check("level_end".equals(second.get("eventType")), "tracker should upload level_end");
+        check(Boolean.TRUE.equals(second.get("isDebug")), "tracker should preserve debug flag");
         Map<String, Object> secondPayload = GameAlgoJson.asObject(second.get("payload"), "payload");
-        check(secondPayload.get("userCreatedAt") instanceof String && ((String) secondPayload.get("userCreatedAt")).length() > 0, "session_start should include userCreatedAt");
-        check("level_end".equals(third.get("eventType")), "tracker should upload level_end");
-        check(Boolean.TRUE.equals(third.get("isDebug")), "tracker should preserve debug flag");
+        check(((Number) secondPayload.get("level")).doubleValue() == 3.0, "tracker should preserve payload value");
+        check("session_end".equals(third.get("eventType")), "tracker should upload session_end");
         Map<String, Object> thirdPayload = GameAlgoJson.asObject(third.get("payload"), "payload");
-        check(((Number) thirdPayload.get("level")).doubleValue() == 3.0, "tracker should preserve payload value");
+        check("background".equals(thirdPayload.get("reason")), "session_end should preserve reason");
+        check(thirdPayload.get("sessionDurationMs") instanceof Number && ((Number) thirdPayload.get("sessionDurationMs")).longValue() >= 0L, "session_end should include duration from startAsync");
         client.tracker().close();
     }
 

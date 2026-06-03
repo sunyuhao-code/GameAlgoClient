@@ -27,8 +27,8 @@ const difficulty = levelGenerator.string("difficulty", "normal");
 const result = await levelGenerator.execute({ turn: 7 });
 const adsEnabled = client.config.bool("ads.rewarded.enabled", true, "gameplay.json");
 
-client.tracker.trackSessionStart();
 client.tracker.trackLevelEnd({ level: 3, result: "win" });
+client.tracker.trackSessionEnd();
 await client.tracker.flush();
 ```
 
@@ -172,7 +172,6 @@ Batch requirements:
 Recommended event types:
 
 ```text
-session_start
 session_end
 config_loaded
 level_start
@@ -214,7 +213,7 @@ Common errors:
 - `/v1/config` returns experiments and config files.
 - Config response is cached locally.
 - Config files can be fetched and cached.
-- `session_start` and `session_end` are uploaded.
+- `session_end` is uploaded with duration when the session finishes.
 - `level_start` and `level_end` are uploaded if the game has levels.
 - `ad_view` is uploaded if the game has ads.
 - QA builds set `isDebug=true`.

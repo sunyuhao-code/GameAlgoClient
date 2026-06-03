@@ -331,7 +331,7 @@ test("start generates and reuses anonymous user id when userId is omitted", asyn
 test("start backfills createdAt for persisted legacy user id", async () => {
   const storage = new MapStorage();
   storage.setItem("gamealgo_user_id", "legacy-user");
-  let uploadedEvents: Array<Record<string, unknown>> = [];
+  let configRequest: Record<string, unknown> = {};
   const client = new GameAlgoRestClient({
     baseUrl: "https://gamealgo.test",
     gameKey,
@@ -342,9 +342,9 @@ test("start backfills createdAt for persisted legacy user id", async () => {
       const request = new Request(input, init);
       if (request.url.endsWith("/v1/events/batch")) {
         const body = await request.json() as { events: Array<Record<string, unknown>> };
-        uploadedEvents = body.events;
         return jsonResponse({ ok: true, accepted: body.events.length });
       }
+      configRequest = await request.json() as Record<string, unknown>;
       return jsonResponse({
         contextId: "ctx-1",
         gameId: "Mahjong",
@@ -363,12 +363,8 @@ test("start backfills createdAt for persisted legacy user id", async () => {
   assert.equal(identity.userId, "legacy-user");
   assert.equal(identity.userCreatedAt, "2026-05-28T10:00:00.000Z");
   assert.equal(storage.getItem("gamealgo_user_created_at"), "2026-05-28T10:00:00.000Z");
-
-  assert.equal(client.tracker.trackSessionStart(), true);
-  await client.tracker.flush();
-  const sessionStart = uploadedEvents.find((event) => event.eventType === "session_start");
-  assert.equal(sessionStart?.userId, "legacy-user");
-  assert.equal((sessionStart?.payload as Record<string, unknown>).userCreatedAt, "2026-05-28T10:00:00.000Z");
+  assert.equal(configRequest.userId, "legacy-user");
+  assert.equal(configRequest.userCreatedAt, "2026-05-28T10:00:00.000Z");
   client.tracker.close();
 });
 
@@ -442,9 +438,10 @@ test("tracker queues and flushes events after start identifies user", async () =
   });
 
   await client.start({ userId: "u1" });
-  assert.equal(client.tracker.trackSessionStart(), true);
   now += 1500;
   assert.equal(client.tracker.trackLevelEnd({ level: 3 }), true);
+  now += 500;
+  assert.equal(client.tracker.trackSessionEnd({ reason: "background" }), true);
   const responses = await client.tracker.flush();
 
   assert.equal(responses[0].accepted, 3);
@@ -455,11 +452,11 @@ test("tracker queues and flushes events after start identifies user", async () =
   assert.equal(uploadedEvents[0].contextId, "ctx-1");
   assert.equal(uploadedEvents[1].userId, "u1");
   assert.equal(uploadedEvents[1].sessionId, uploadedEvents[2].sessionId);
-  assert.equal(uploadedEvents[1].eventType, "session_start");
-  assert.equal((uploadedEvents[1].payload as Record<string, unknown>).userCreatedAt, "2026-05-28T10:00:00.000Z");
-  assert.equal(uploadedEvents[2].eventType, "level_end");
-  assert.equal(uploadedEvents[2].isDebug, true);
-  assert.deepEqual(uploadedEvents[2].payload, { level: 3 });
+  assert.equal(uploadedEvents[1].eventType, "level_end");
+  assert.equal(uploadedEvents[1].isDebug, true);
+  assert.deepEqual(uploadedEvents[1].payload, { level: 3 });
+  assert.equal(uploadedEvents[2].eventType, "session_end");
+  assert.equal((uploadedEvents[2].payload as Record<string, unknown>).sessionDurationMs, 2000);
   client.tracker.close();
 });
 

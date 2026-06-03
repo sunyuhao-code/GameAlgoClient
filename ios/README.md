@@ -41,8 +41,8 @@ let difficulty = levelGenerator.string("difficulty", default: "normal")
 let result = levelGenerator.execute(.object(["turn": .number(7)]))
 let adsEnabled = sdk.config.bool("ads.rewarded.enabled", default: true, fileName: "gameplay.json")
 
-await sdk.tracker.trackSessionStart()
 await sdk.tracker.trackLevelEnd(payload: .object(["level": .number(3), "result": .string("win")]))
+await sdk.tracker.trackSessionEnd()
 await sdk.tracker.flush()
 ```
 
@@ -70,7 +70,7 @@ Lower-level methods are still available when needed:
 let config = try await sdk.fetchConfig()
 let gameplay = try await sdk.fetchConfigFile("gameplay.json")
 let response = try await sdk.uploadEvents([
-    GameAlgoEvent(contextId: config.contextId, userId: sdk.userId, sessionId: "session-001", eventType: "session_start")
+    GameAlgoEvent(contextId: config.contextId, userId: sdk.userId, sessionId: "session-001", eventType: "session_end", payload: .object(["sessionDurationMs": .number(125000)]))
 ])
 ```
 

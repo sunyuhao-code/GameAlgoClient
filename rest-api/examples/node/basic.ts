@@ -26,8 +26,8 @@ await client.uploadEvents([
   createEvent({
     userId,
     sessionId,
-    eventType: "session_start",
-    payload: {},
+    eventType: "session_end",
+    payload: { sessionDurationMs: 125000 },
   }),
 ]);
 

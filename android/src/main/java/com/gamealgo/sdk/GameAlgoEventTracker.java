@@ -62,7 +62,7 @@ public final class GameAlgoEventTracker implements AutoCloseable {
     public synchronized void newSession() {
         sessionId = UUID.randomUUID().toString();
         contextId = null;
-        sessionStartMillis = 0L;
+        sessionStartMillis = System.currentTimeMillis();
     }
 
     public synchronized String currentSessionId() {
@@ -83,6 +83,10 @@ public final class GameAlgoEventTracker implements AutoCloseable {
 
     public synchronized void setAssignments(List<GameAlgoExperimentAssignment> assignments) {
         // Experiment assignments are captured in the SDK context log, not copied onto each event.
+    }
+
+    public synchronized void markSessionStarted() {
+        sessionStartMillis = System.currentTimeMillis();
     }
 
     public boolean track(String eventType) {
@@ -128,16 +132,8 @@ public final class GameAlgoEventTracker implements AutoCloseable {
     }
 
     public boolean trackSessionStart() {
-        synchronized (this) {
-            sessionStartMillis = System.currentTimeMillis();
-        }
-        Map<String, Object> payload = new LinkedHashMap<>();
-        synchronized (this) {
-            if (!isBlank(userCreatedAt)) {
-                payload.put("userCreatedAt", userCreatedAt);
-            }
-        }
-        return track("session_start", payload);
+        markSessionStarted();
+        return true;
     }
 
     public boolean trackSessionEnd() {

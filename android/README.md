@@ -22,8 +22,8 @@ val difficulty = levelGenerator.string("difficulty", "normal")
 val result = levelGenerator.execute(mapOf("turn" to 7))
 val adsEnabled = sdk.config().bool("ads.rewarded.enabled", true, "gameplay.json")
 
-sdk.tracker().trackSessionStart()
 sdk.tracker().trackLevelEnd(mapOf("level" to 3, "result" to "win"))
+sdk.tracker().trackSessionEnd()
 sdk.tracker().flushAsync()
 ```
 

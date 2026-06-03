@@ -110,6 +110,7 @@ public final class GameAlgoClient {
         return CompletableFuture.runAsync(() -> {
             try {
                 GameAlgoFetchConfigRequest resolvedRequest = requestWithResolvedUser(request);
+                tracker.markSessionStarted();
                 loadCachedSnapshot();
                 try {
                     refresh(resolvedRequest);
