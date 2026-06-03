@@ -241,7 +241,7 @@ _tutorial_skip
 - 网络失败时重试，不阻塞游戏。
 - `userId` 默认由 SDK 生成并持久化；有账号体系时也可以显式传自己的稳定匿名 ID。`sessionId` 每次启动或每局会话生成一个新的。
 - 业务字段统一放在 `payload`；平台上报链路只保存原始 `payload_json`，不在写入时解释维度或指标。
-- 后续由游戏提交 report pack 声明哪些 payload 字段用于报表维度、哪些字段用于聚合指标；离线任务只展开声明过的字段。
+- 后续由游戏提交 report pack 声明哪些 payload 字段用于报表维度、哪些字段用于聚合指标；离线任务只展开声明过的字段。配置格式见 [Report Packs](./docs/report-packs.md)。
 - 第一版建议 payload 保持 flat object，字段值使用 string / number / boolean / null。
 - 不要在 payload 里放密钥、手机号、邮箱、完整用户 ID、实验分组或设备信息；这些要么敏感，要么已经由协议字段或 SDK context 提供。
 - SDK 默认向控制台输出配置拉取、实验分组、配置文件和脚本加载日志；需要静默时 iOS 传 `logger: nil`，Android 传 `null` logger，REST 传 `logger: false`。
