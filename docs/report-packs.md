@@ -309,6 +309,24 @@ Keep event payloads flat for the first version:
 
 Do not put secrets, phone numbers, emails, full account identifiers, device metadata, or experiment assignments in payload. SDK context already carries identity, device, app, and experiment metadata.
 
+## Validation
+
+For AI or local validation before saving, call the admin preview endpoint with the same fields the save flow uses:
+
+```json
+{
+  "version": "1.0.0",
+  "status": "active",
+  "content": {
+    "version": "1.0.0"
+  }
+}
+```
+
+When `version` is provided, preview also verifies `content.version` matches the save version. It still does not write to the management database.
+
+Server-side local validators should use `validateReportPackForSave(content, version)`, not the lower-level content-only validator, when they need save-equivalent validation.
+
 ## Current Boundary
 
 The platform currently stores and validates report packs, generates SQL preview, and can run an active report online from the admin console. It does not yet schedule MaxCompute jobs or create materialized result tables.
