@@ -107,6 +107,11 @@ final class GameAlgoSDKTests: XCTestCase {
     }
 
     func testFetchConfigSendsProtocolHeadersAndCachesByTTL() async throws {
+        let suiteName = "GameAlgoSDKTests.fetchConfig.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
         let httpClient = MockHTTPClient()
         try await httpClient.enqueueJSON([
             "contextId": "ctx-1",
@@ -123,6 +128,8 @@ final class GameAlgoSDKTests: XCTestCase {
             baseURL: URL(string: "https://gamealgo.test")!,
             sdkVersion: "1.0.0",
             httpClient: httpClient,
+            cacheStorage: GameAlgoUserDefaultsCacheStorage(userDefaults: defaults),
+            userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
             now: { Date(timeIntervalSince1970: 1_000) }
         )
 
@@ -138,6 +145,7 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(requests[0].url.absoluteString, "https://gamealgo.test/v1/config")
         let requestPayload = try requestBody(requests[0])
         XCTAssertEqual(requestPayload["userId"] as? String, "u1")
+        XCTAssertEqual(requestPayload["userCreatedAt"] as? String, "1970-01-01T00:16:40.000Z")
         XCTAssertFalse((requestPayload["sessionId"] as? String ?? "").isEmpty)
         XCTAssertEqual(requestPayload["platform"] as? String, "ios")
         XCTAssertEqual(requestPayload["sdkVersion"] as? String, "1.0.0")

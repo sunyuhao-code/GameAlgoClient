@@ -22,6 +22,7 @@ curl -s -X POST "https://gamealgo.example.com/v1/config" \
   -H "Content-Type: application/json" \
   -d '{
     "userId": "user-001",
+    "userCreatedAt": "2026-05-27T12:23:10Z",
     "sessionId": "session-001",
     "platform": "rest",
     "sdkVersion": "1.0.0",
@@ -68,7 +69,7 @@ Client requirements:
 - cache response for `ttlSeconds`
 - keep last successful config
 - use local defaults if the server is unavailable
-- send stable `userId/sessionId` and useful `device` context when calling REST directly; official helpers fill basic device fields automatically
+- send stable `userId/sessionId`, persisted `userCreatedAt`, and useful `device` context when calling REST directly; official helpers fill these automatically
 
 ## 3. Fetch Config File
 

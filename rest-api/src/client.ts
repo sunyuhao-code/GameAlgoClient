@@ -166,8 +166,9 @@ export class GameAlgoRestClient {
 
   async fetchConfig(options: FetchConfigOptions = {}): Promise<ConfigResponse> {
     const identity = await this.userIdentity(options.userId);
+    const userCreatedAt = clean(options.userCreatedAt) ?? identity.userCreatedAt;
     this.logUserId(identity.userId);
-    this.tracker.identify(identity.userId, options.sessionId, identity.userCreatedAt);
+    this.tracker.identify(identity.userId, options.sessionId, userCreatedAt);
     const platform = options.platform ?? this.platform;
     const sdkVersion = options.sdkVersion ?? this.sdkVersion;
     const appVersion = options.appVersion ?? this.appVersion;
@@ -179,6 +180,7 @@ export class GameAlgoRestClient {
     };
     const cacheKey = JSON.stringify({
       userId: identity.userId,
+      userCreatedAt,
       sessionId,
       platform,
       sdkVersion,
@@ -201,6 +203,7 @@ export class GameAlgoRestClient {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           userId: identity.userId,
+          userCreatedAt,
           sessionId,
           platform,
           sdkVersion,

@@ -106,6 +106,7 @@ Content-Type: application/json
 ```json
 {
   "userId": "user-001",
+  "userCreatedAt": "2026-05-27T12:23:10Z",
   "sessionId": "session-001",
   "platform": "ios",
   "sdkVersion": "1.0.0",
@@ -124,6 +125,7 @@ Content-Type: application/json
 | 字段 | 必填 | 说明 |
 |------|------|------|
 | `userId` | 是 | 游戏用户 ID；没有账号体系时由 SDK 生成并持久化 |
+| `userCreatedAt` | 否 | `userId` 首次生成或绑定的时间；官方 SDK 会自动生成并持久化，用于 SDK context 分析 |
 | `sessionId` | 是 | SDK 生成或游戏指定的会话 ID |
 | `platform` | 是 | `ios` / `android` / `rest` |
 | `sdkVersion` | 是 | SDK 版本 |
@@ -131,7 +133,7 @@ Content-Type: application/json
 | `timezone` | 否 | 客户端本地时区 |
 | `device` | 否 | 设备上下文；官方 SDK 会自动补基础设备信息，接入方可覆盖或追加字段；调试或排查用，不作为强身份 |
 
-服务端收到配置请求后会生成一条 SDK context 日志，记录可信 `gameId`、`sessionId`、设备上下文和本次实验分配。后续事件只需要引用返回的 `contextId`，不再把设备信息复制到每条事件。
+服务端收到配置请求后会生成一条 SDK context 日志，记录可信 `gameId`、`userId`、`userCreatedAt`、`sessionId`、设备上下文和本次实验分配。后续事件只需要引用返回的 `contextId`，不再把设备信息复制到每条事件。
 
 响应：
 

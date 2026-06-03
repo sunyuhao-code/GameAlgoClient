@@ -60,7 +60,7 @@ If an experiment assignment includes `script`, `executor.execute(state)` runs th
 
 `tracker` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, flushes when the app enters background or terminates, and keeps the failed batch for the next retry. Call `await sdk.tracker.flush()` to manually flush critical events; `trackSessionEnd` also triggers an immediate flush after enqueueing `session_end`.
 
-The SDK sends basic `device` context with `/v1/config` automatically. Pass `device` or `deviceId` to `start`/`fetchConfig` to add app-specific fields or override defaults.
+The SDK sends `userCreatedAt` and basic `device` context with `/v1/config` automatically. Pass `device` or `deviceId` to `start`/`fetchConfig` to add app-specific fields or override defaults.
 
 Event payload fields are sent as `payload` and stored raw. Analytics does not interpret payload fields during ingestion; a game-specific report pack later declares which fields become report dimensions or metrics. Experiment assignments are stored in the SDK context created by `/v1/config`, not copied onto each event.
 

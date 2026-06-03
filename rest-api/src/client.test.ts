@@ -21,6 +21,7 @@ test("fetchConfig sends Protocol v1 headers and caches by ttl", async () => {
       assert.equal(request.url, "https://gamealgo.test/v1/config");
       const body = await request.json() as Record<string, unknown>;
       assert.equal(body.userId, "u1");
+      assert.equal(body.userCreatedAt, "1970-01-01T00:00:01.000Z");
       assert.equal(body.sessionId, client.tracker.currentSessionId());
       assert.equal(body.platform, "rest");
       assert.equal(body.sdkVersion, "1.0.0");

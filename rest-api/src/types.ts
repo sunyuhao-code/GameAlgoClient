@@ -32,6 +32,7 @@ export type ConfigResponse = {
 
 export type FetchConfigOptions = {
   userId?: string;
+  userCreatedAt?: string;
   sessionId?: string;
   platform?: Platform;
   sdkVersion?: string;

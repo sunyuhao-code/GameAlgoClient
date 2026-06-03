@@ -190,6 +190,7 @@ public actor GameAlgoSDK {
     ) async throws -> GameAlgoConfigResponse {
         let identity = userIdentityStore.identity(userId: userId, now: now())
         logUserId(identity.userId)
+        let resolvedUserCreatedAt = identity.userCreatedAt
         let resolvedPlatform = platform ?? defaultPlatform
         let resolvedSDKVersion = sdkVersion ?? defaultSDKVersion
         let resolvedAppVersion = appVersion ?? defaultAppVersion
@@ -213,6 +214,7 @@ public actor GameAlgoSDK {
         }
         let cacheKey = ConfigCacheKey(
             userId: identity.userId,
+            userCreatedAt: resolvedUserCreatedAt,
             sessionId: resolvedSessionId,
             platform: resolvedPlatform,
             sdkVersion: resolvedSDKVersion,
@@ -233,6 +235,7 @@ public actor GameAlgoSDK {
             log("fetching config: userId=\(identity.userId), platform=\(resolvedPlatform.rawValue)")
             let requestBody = ConfigRequest(
                 userId: identity.userId,
+                userCreatedAt: resolvedUserCreatedAt,
                 sessionId: resolvedSessionId,
                 platform: resolvedPlatform,
                 sdkVersion: resolvedSDKVersion,
@@ -490,6 +493,7 @@ public actor GameAlgoSDK {
 
 private struct ConfigCacheKey: Sendable, Equatable {
     let userId: String
+    let userCreatedAt: String
     let sessionId: String
     let platform: GameAlgoPlatform
     let sdkVersion: String
@@ -500,6 +504,7 @@ private struct ConfigCacheKey: Sendable, Equatable {
 
 private struct ConfigRequest: Encodable {
     let userId: String
+    let userCreatedAt: String
     let sessionId: String
     let platform: GameAlgoPlatform
     let sdkVersion: String

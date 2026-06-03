@@ -46,7 +46,7 @@ If an experiment assignment includes `script`, `executor.execute(state)` runs th
 
 `fetchConfig` remains available for lower-level usage and caches the last successful config in memory until `ttlSeconds` expires. Use `forceRefresh: true` to bypass the cache.
 
-The helper sends basic `device` context with `/v1/config` automatically. Pass `device` or `deviceId` to `start`/`fetchConfig` to add app-specific fields or override defaults.
+The helper sends `userCreatedAt` and basic `device` context with `/v1/config` automatically. Pass `device` or `deviceId` to `start`/`fetchConfig` to add app-specific fields or override defaults.
 
 `tracker` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, and keeps the failed batch for the next retry. Event payload fields are sent as `payload` and stored raw. Analytics does not interpret payload fields during ingestion; a game-specific report pack later declares which fields become report dimensions or metrics. Experiment assignments are stored in the SDK context created by `/v1/config`, not copied onto each event.
 

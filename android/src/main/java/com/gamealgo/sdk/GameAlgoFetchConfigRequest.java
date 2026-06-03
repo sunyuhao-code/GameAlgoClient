@@ -5,6 +5,7 @@ import java.util.Map;
 
 public final class GameAlgoFetchConfigRequest {
     private final String userId;
+    private String userCreatedAt;
     private String sessionId;
     private String platform;
     private String sdkVersion;
@@ -25,6 +26,11 @@ public final class GameAlgoFetchConfigRequest {
 
     public GameAlgoFetchConfigRequest sessionId(String sessionId) {
         this.sessionId = sessionId;
+        return this;
+    }
+
+    GameAlgoFetchConfigRequest userCreatedAt(String userCreatedAt) {
+        this.userCreatedAt = userCreatedAt;
         return this;
     }
 
@@ -64,6 +70,10 @@ public final class GameAlgoFetchConfigRequest {
 
     public String getSessionId() {
         return sessionId;
+    }
+
+    String getUserCreatedAt() {
+        return userCreatedAt;
     }
 
     public String getPlatform() {

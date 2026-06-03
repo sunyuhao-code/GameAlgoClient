@@ -49,6 +49,7 @@ public final class GameAlgoClientSmokeTest {
         check("https://gamealgo.test/v1/config".equals(request.getUrl().toString()), "config URL should match Protocol v1");
         Map<String, Object> requestBody = requestBody(request);
         check("u1".equals(requestBody.get("userId")), "config body should include userId");
+        check(requestBody.get("userCreatedAt") instanceof String && ((String) requestBody.get("userCreatedAt")).length() > 0, "config body should include userCreatedAt");
         check(requestBody.get("sessionId") instanceof String && ((String) requestBody.get("sessionId")).length() > 0, "config body should include sessionId");
         check("android".equals(requestBody.get("platform")), "config body should include platform");
         check("1.0.0".equals(requestBody.get("sdkVersion")), "config body should include sdkVersion");

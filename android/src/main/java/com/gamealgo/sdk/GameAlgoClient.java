@@ -172,6 +172,7 @@ public final class GameAlgoClient {
         }
         ConfigCacheKey cacheKey = new ConfigCacheKey(
                 resolvedRequest.getUserId(),
+                resolvedRequest.getUserCreatedAt(),
                 sessionId,
                 platform,
                 sdkVersion,
@@ -193,6 +194,7 @@ public final class GameAlgoClient {
             log("fetching config: userId=" + resolvedRequest.getUserId() + ", platform=" + platform);
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("userId", resolvedRequest.getUserId());
+            body.put("userCreatedAt", resolvedRequest.getUserCreatedAt());
             body.put("sessionId", sessionId);
             body.put("platform", platform);
             body.put("sdkVersion", sdkVersion);
@@ -326,6 +328,7 @@ public final class GameAlgoClient {
         logUserId(identity.getUserId());
         tracker.identify(identity.getUserId(), request.getSessionId(), identity.getUserCreatedAt());
         GameAlgoFetchConfigRequest resolved = new GameAlgoFetchConfigRequest(identity.getUserId())
+                .userCreatedAt(identity.getUserCreatedAt())
                 .sessionId(request.getSessionId())
                 .platform(request.getPlatform())
                 .sdkVersion(request.getSdkVersion())
@@ -765,6 +768,7 @@ public final class GameAlgoClient {
 
     private static final class ConfigCacheKey {
         private final String userId;
+        private final String userCreatedAt;
         private final String sessionId;
         private final String platform;
         private final String sdkVersion;
@@ -772,8 +776,9 @@ public final class GameAlgoClient {
         private final String timezone;
         private final Map<String, Object> device;
 
-        private ConfigCacheKey(String userId, String sessionId, String platform, String sdkVersion, String appVersion, String timezone, Map<String, Object> device) {
+        private ConfigCacheKey(String userId, String userCreatedAt, String sessionId, String platform, String sdkVersion, String appVersion, String timezone, Map<String, Object> device) {
             this.userId = userId;
+            this.userCreatedAt = userCreatedAt;
             this.sessionId = sessionId;
             this.platform = platform;
             this.sdkVersion = sdkVersion;
@@ -792,6 +797,7 @@ public final class GameAlgoClient {
             }
             ConfigCacheKey that = (ConfigCacheKey) other;
             return equalsNullable(userId, that.userId)
+                    && equalsNullable(userCreatedAt, that.userCreatedAt)
                     && equalsNullable(sessionId, that.sessionId)
                     && equalsNullable(platform, that.platform)
                     && equalsNullable(sdkVersion, that.sdkVersion)
@@ -803,6 +809,7 @@ public final class GameAlgoClient {
         @Override
         public int hashCode() {
             int result = hashNullable(userId);
+            result = 31 * result + hashNullable(userCreatedAt);
             result = 31 * result + hashNullable(sessionId);
             result = 31 * result + hashNullable(platform);
             result = 31 * result + hashNullable(sdkVersion);
