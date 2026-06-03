@@ -62,7 +62,7 @@ If an experiment assignment includes `script`, `executor.execute(state)` runs th
 
 The SDK sends basic `device` context with `/v1/config` automatically. Pass `device` or `deviceId` to `start`/`fetchConfig` to add app-specific fields or override defaults.
 
-Numeric payload fields become `metrics`; string, boolean, and null payload fields become `dimensions`. Experiment assignments are stored in the SDK context created by `/v1/config`, not copied onto each event.
+Numeric payload fields become `metrics`; string, boolean, and null payload fields become `dimensions`. Analytics treats `dimensions` as categorical labels for filtering and group by, even when the JSON value is a number. Aggregatable values such as `durationMs`, `revenue`, `score`, and `clearRate` should be sent as metrics. Experiment assignments are stored in the SDK context created by `/v1/config`, not copied onto each event.
 
 Lower-level methods are still available when needed:
 

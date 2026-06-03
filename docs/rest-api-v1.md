@@ -124,6 +124,10 @@ Batch requirements:
 - send `contextId` from the latest `/v1/config` response
 - put grouping fields in `dimensions` and aggregatable values in `metrics`
 
+`dimensions` are categorical labels for filtering and group by in analytics reports. The platform stores them as `dimensions_json`, then offline jobs expand them by `eventType + key`; values are treated as labels even when the JSON value is a number. Do not put timestamps, random ids, full user ids, free text, email, phone, device info, or experiment assignments in `dimensions`.
+
+`metrics` are the numeric values the platform can aggregate, such as sum, average, percentiles, min, or max. Put values like `durationMs`, `revenue`, `score`, and `clearRate` in `metrics`, not `dimensions`.
+
 The TypeScript helper exposes `client.tracker` for this behavior. Direct `uploadEvents` is intended for teams that already have their own event queue and retry layer.
 
 ## 5. Standard Events

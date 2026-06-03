@@ -52,7 +52,7 @@ The SDK sends basic `device` context with `/v1/config` automatically. Pass `devi
 
 `tracker()` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, and keeps the failed batch for the next retry. `fetchConfig`, `fetchConfigFile`, and `uploadEvents` are blocking in this core package; Android apps should call those lower-level methods from their own background executor/coroutine layer.
 
-Numeric payload fields become `metrics`; string, boolean, and null payload fields become `dimensions`. Experiment assignments are stored in the SDK context created by `/v1/config`, not copied onto each event.
+Numeric payload fields become `metrics`; string, boolean, and null payload fields become `dimensions`. Analytics treats `dimensions` as categorical labels for filtering and group by, even when the JSON value is a number. Aggregatable values such as `durationMs`, `revenue`, `score`, and `clearRate` should be sent as metrics. Experiment assignments are stored in the SDK context created by `/v1/config`, not copied onto each event.
 
 ## Check
 

@@ -256,6 +256,16 @@ Content-Type: application/json
 - `dimensions` 只放用于筛选或分组的低基数字段；值只允许 string / number / boolean / null。
 - `metrics` 只放可聚合数值；离线任务按 `key/value` 展开后做报表聚合。
 
+### `dimensions` 和 `metrics` 语义
+
+`dimensions` 是事件上的分类维度，用来解释“这条事件发生在什么类别、状态、入口或分组下”。平台会把 `dimensions` 当作报表的筛选和分组字段处理，例如按 `result`、`placement`、`currency`、`unitType`、`unitId` 拆分事件数、转化率、留存或收入。
+
+`dimensions` 的值即使是 number，也会被当作标签值使用，不会做 sum / avg / p50 / max 这类数值聚合。需要聚合的数值必须放进 `metrics`，例如 `durationMs`、`revenue`、`score`、`clearRate`。如果同一个数值既需要分组又需要聚合，可以同时上报一个离散维度和一个 metric，例如 `dimensions.levelBucket = "11-20"`，`metrics.level = 17`。
+
+平台落库时会把 `dimensions` 原样保存为 `dimensions_json`，离线报表再按 `eventType + dimension key` 展开成可筛选、可 group by 的维度。高基数字段会让报表变慢且难以聚合，因此不要把 `eventId`、时间戳、完整用户 ID、随机字符串、自由文本、手机号、邮箱等放进 `dimensions`。`gameId`、`userId`、`sessionId`、实验分组、设备信息已经由协议字段或 SDK context 提供，不要重复塞进 `dimensions`。
+
+官方 SDK 的 `track...` 便捷接口会把 payload 里的数字拆进 `metrics`，把 string / boolean / null 拆进 `dimensions`；object / array 会序列化成字符串维度，只适合调试，不建议作为稳定报表字段。直接调用 REST API 时应显式传 `dimensions` 和 `metrics`。
+
 推荐标准事件：
 
 | eventType | 说明 |

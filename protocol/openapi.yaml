@@ -296,10 +296,17 @@ components:
           format: date-time
         dimensions:
           type: object
+          description: >
+            Categorical event labels used for analytics filtering and group by.
+            Values are treated as labels even when the JSON value is a number;
+            aggregatable numeric values must be sent as metrics. Do not include
+            timestamps, random ids, full user ids, free text, device context, or
+            experiment assignments.
           additionalProperties:
             $ref: "#/components/schemas/EventDimensionValue"
         metrics:
           type: array
+          description: Numeric event values that analytics can aggregate.
           items:
             $ref: "#/components/schemas/EventMetric"
 
@@ -318,8 +325,10 @@ components:
       properties:
         key:
           type: string
+          description: Metric name, for example durationMs, revenue, score, or clearRate.
         value:
           type: number
+          description: Numeric value to aggregate in reports.
 
     ErrorResponse:
       type: object

@@ -48,7 +48,7 @@ If an experiment assignment includes `script`, `executor.execute(state)` runs th
 
 The helper sends basic `device` context with `/v1/config` automatically. Pass `device` or `deviceId` to `start`/`fetchConfig` to add app-specific fields or override defaults.
 
-`tracker` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, and keeps the failed batch for the next retry. Payload numbers become `metrics`; strings, booleans, and nulls become `dimensions`. Experiment assignments are stored in the SDK context created by `/v1/config`, not copied onto each event.
+`tracker` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, and keeps the failed batch for the next retry. Payload numbers become `metrics`; strings, booleans, and nulls become `dimensions`. Analytics treats `dimensions` as categorical labels for filtering and group by, even when the JSON value is a number. Aggregatable values such as `durationMs`, `revenue`, `score`, and `clearRate` should be sent as metrics. Experiment assignments are stored in the SDK context created by `/v1/config`, not copied onto each event.
 
 ## 1. Auth
 
@@ -166,6 +166,8 @@ Batch requirements:
 - retry with backoff on network failure
 - do not block gameplay on upload
 - set `isDebug=true` for test devices or QA builds
+- use `dimensions` for categorical labels that reports filter or group by
+- use `metrics` for numeric values that reports aggregate
 
 ## 5. Standard Events
 
