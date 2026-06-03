@@ -25,6 +25,5 @@ export type {
   GameEvent,
   JsonValue,
   Platform,
-  StartOptions,
   TrackEventOptions,
 } from "./types.ts";

@@ -1,16 +1,26 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { GameAlgoApiError, GameAlgoRestClient, createEvent } from "./client.ts";
+import type { GameAlgoRestClientOptions } from "./types.ts";
 
 const gameKey = "ga_live_test_key_0123456789abcdef";
+
+type TestClientOptions = GameAlgoRestClientOptions & {
+  autoStart?: boolean;
+};
+
+function createClient(options: TestClientOptions): GameAlgoRestClient {
+  return new GameAlgoRestClient(options);
+}
 
 test("fetchConfig sends Protocol v1 headers and caches by ttl", async () => {
   let calls = 0;
   const requests: Request[] = [];
-  const client = new GameAlgoRestClient({
+  const client = createClient({
     baseUrl: "https://gamealgo.test",
     gameKey,
     sdkVersion: "1.0.0",
+    autoStart: false,
     now: () => 1000,
     fetchImpl: async (input, init) => {
       const request = new Request(input, init);
@@ -57,9 +67,10 @@ test("fetchConfig sends Protocol v1 headers and caches by ttl", async () => {
 
 test("fetchConfig can force refresh", async () => {
   let calls = 0;
-  const client = new GameAlgoRestClient({
+  const client = createClient({
     baseUrl: "https://gamealgo.test",
     gameKey,
+    autoStart: false,
     now: () => 1000,
     fetchImpl: async () => {
       calls += 1;
@@ -89,9 +100,10 @@ test("fetchConfig can force refresh", async () => {
 });
 
 test("fetchConfigFile returns text and etag", async () => {
-  const client = new GameAlgoRestClient({
+  const client = createClient({
     baseUrl: "https://gamealgo.test",
     gameKey,
+    autoStart: false,
     fetchImpl: async (input, init) => {
       const request = new Request(input, init);
       assert.equal(request.url, "https://gamealgo.test/v1/config-files/gameplay.json");
@@ -112,11 +124,12 @@ test("fetchConfigFile returns text and etag", async () => {
   assert.equal(file.content, "{\"difficulty\":\"normal\"}\n");
 });
 
-test("start preloads config files and exposes local executor/config readers", async () => {
+test("constructor preloads config files and exposes local executor/config readers", async () => {
   const requests: Request[] = [];
-  const client = new GameAlgoRestClient({
+  const client = createClient({
     baseUrl: "https://gamealgo.test",
     gameKey,
+    userId: "u1",
     sdkVersion: "1.0.0",
     fetchImpl: async (input, init) => {
       const request = new Request(input, init);
@@ -152,7 +165,7 @@ test("start preloads config files and exposes local executor/config readers", as
   assert.equal(executor.isReady, false);
   assert.equal(executor.variant("control"), "control");
 
-  await client.start({ userId: "u1" });
+  assert.equal(await client.waitForReady(), true);
 
   assert.equal(executor.isReady, true);
   assert.equal(executor.variant("control"), "variant-a");
@@ -172,9 +185,10 @@ function execute(input) {
   };
 }
 `;
-  const client = new GameAlgoRestClient({
+  const client = createClient({
     baseUrl: "https://gamealgo.test",
     gameKey,
+    userId: "u1",
     sdkVersion: "1.0.0",
     fetchImpl: async (input, init) => {
       const request = new Request(input, init);
@@ -206,18 +220,19 @@ function execute(input) {
     },
   });
 
-  await client.start({ userId: "u1" });
+  assert.equal(await client.waitForReady(), true);
   const result = await client.executor("level_generator").execute({ turn: 7 });
 
   assert.deepEqual(result?.payload, { difficulty: "hard", turn: 7 });
   assert.deepEqual(result?.diagnostics, { variant: "variant-a", userId: "u1" });
 });
 
-test("start restores persisted snapshot then still tries to refresh", async () => {
+test("constructor restores persisted snapshot then still tries to refresh", async () => {
   const storage = new MapStorage();
-  const first = new GameAlgoRestClient({
+  const first = createClient({
     baseUrl: "https://gamealgo.test",
     gameKey,
+    userId: "u1",
     storage,
     fetchImpl: async (input, init) => {
       const request = new Request(input, init);
@@ -247,12 +262,13 @@ test("start restores persisted snapshot then still tries to refresh", async () =
       });
     },
   });
-  await first.start({ userId: "u1" });
+  assert.equal(await first.waitForReady(), true);
 
   let refreshAttempts = 0;
-  const second = new GameAlgoRestClient({
+  const second = createClient({
     baseUrl: "https://gamealgo.test",
     gameKey,
+    userId: "u1",
     storage,
     fetchImpl: async () => {
       refreshAttempts += 1;
@@ -260,17 +276,17 @@ test("start restores persisted snapshot then still tries to refresh", async () =
     },
   });
 
-  await second.start({ userId: "u1" });
+  assert.equal(await second.waitForReady(), true);
 
   assert.equal(refreshAttempts, 1);
   assert.equal(second.executor("level_generator").variant("control"), "variant-a");
   assert.equal(second.config.string("difficulty", "", "gameplay.json"), "cached");
 });
 
-test("start generates and reuses anonymous user id when userId is omitted", async () => {
+test("constructor generates and reuses anonymous user id when userId is omitted", async () => {
   const storage = new MapStorage();
   const configBodies: Array<Record<string, unknown>> = [];
-  const first = new GameAlgoRestClient({
+  const first = createClient({
     baseUrl: "https://gamealgo.test",
     gameKey,
     storage,
@@ -296,10 +312,10 @@ test("start generates and reuses anonymous user id when userId is omitted", asyn
     },
   });
 
-  await first.start();
+  assert.equal(await first.waitForReady(), true);
   const firstIdentity = await first.userIdentity();
 
-  const second = new GameAlgoRestClient({
+  const second = createClient({
     baseUrl: "https://gamealgo.test",
     gameKey,
     storage,
@@ -319,7 +335,7 @@ test("start generates and reuses anonymous user id when userId is omitted", asyn
     },
   });
 
-  await second.start();
+  assert.equal(await second.waitForReady(), true);
   const secondIdentity = await second.userIdentity();
 
   assert.equal(firstIdentity.userId, secondIdentity.userId);
@@ -328,11 +344,11 @@ test("start generates and reuses anonymous user id when userId is omitted", asyn
   assert.equal(configBodies[1].userId, firstIdentity.userId);
 });
 
-test("start backfills createdAt for persisted legacy user id", async () => {
+test("constructor backfills createdAt for persisted legacy user id", async () => {
   const storage = new MapStorage();
   storage.setItem("gamealgo_user_id", "legacy-user");
   let configRequest: Record<string, unknown> = {};
-  const client = new GameAlgoRestClient({
+  const client = createClient({
     baseUrl: "https://gamealgo.test",
     gameKey,
     storage,
@@ -358,7 +374,7 @@ test("start backfills createdAt for persisted legacy user id", async () => {
     },
   });
 
-  await client.start();
+  assert.equal(await client.waitForReady(), true);
   const identity = await client.userIdentity();
   assert.equal(identity.userId, "legacy-user");
   assert.equal(identity.userCreatedAt, "2026-05-28T10:00:00.000Z");
@@ -369,11 +385,12 @@ test("start backfills createdAt for persisted legacy user id", async () => {
 });
 
 test("uploadEvents fills timestamp and preserves payload fields", async () => {
-  const client = new GameAlgoRestClient({
+  const client = createClient({
     baseUrl: "https://gamealgo.test",
     gameKey,
     sdkVersion: "1.2.3",
     appVersion: "4.5.6",
+    autoStart: false,
     now: () => Date.parse("2026-05-28T10:00:00.000Z"),
     fetchImpl: async (input, init) => {
       const request = new Request(input, init);
@@ -401,9 +418,10 @@ test("uploadEvents fills timestamp and preserves payload fields", async () => {
 
 test("tracker buffers events until context is ready", async () => {
   let uploadedEvents: Array<Record<string, unknown>> = [];
-  const client = new GameAlgoRestClient({
+  const client = createClient({
     baseUrl: "https://gamealgo.test",
     gameKey,
+    autoStart: false,
     eventFlushIntervalMs: 0,
     fetchImpl: async (input, init) => {
       const request = new Request(input, init);
@@ -428,13 +446,14 @@ test("tracker buffers events until context is ready", async () => {
   client.tracker.close();
 });
 
-test("tracker queues and flushes events after start identifies user", async () => {
+test("tracker queues and flushes events after ready identifies user", async () => {
   let now = Date.parse("2026-05-28T10:00:00.000Z");
   const requests: Request[] = [];
   let uploadedEvents: Array<Record<string, unknown>> = [];
-  const client = new GameAlgoRestClient({
+  const client = createClient({
     baseUrl: "https://gamealgo.test",
     gameKey,
+    userId: "u1",
     sdkVersion: "1.2.3",
     appVersion: "4.5.6",
     isDebug: true,
@@ -466,7 +485,7 @@ test("tracker queues and flushes events after start identifies user", async () =
     },
   });
 
-  await client.start({ userId: "u1" });
+  assert.equal(await client.waitForReady(), true);
   now += 1500;
   assert.equal(client.tracker.trackLevelEnd({ level: 3 }), true);
   now += 500;
@@ -490,9 +509,10 @@ test("tracker queues and flushes events after start identifies user", async () =
 
 test("custom events preserve payload", async () => {
   let uploadedEvents: Array<Record<string, unknown>> = [];
-  const client = new GameAlgoRestClient({
+  const client = createClient({
     baseUrl: "https://gamealgo.test",
     gameKey,
+    userId: "u1",
     eventFlushIntervalMs: 0,
     fetchImpl: async (input, init) => {
       const request = new Request(input, init);
@@ -519,7 +539,7 @@ test("custom events preserve payload", async () => {
     },
   });
 
-  await client.start({ userId: "u1" });
+  assert.equal(await client.waitForReady(), true);
   assert.equal(client.tracker.trackEvent("custom_action", { button: "start", value: 2 }), true);
   await client.tracker.flush();
 
@@ -529,9 +549,10 @@ test("custom events preserve payload", async () => {
 });
 
 test("throws structured API errors", async () => {
-  const client = new GameAlgoRestClient({
+  const client = createClient({
     baseUrl: "https://gamealgo.test",
     gameKey,
+    autoStart: false,
     fetchImpl: async () => jsonResponse({ error: "invalid_game_key", message: "Unknown key" }, 403),
   });
 

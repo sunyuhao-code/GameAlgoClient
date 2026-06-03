@@ -12,11 +12,11 @@ public final class GameAlgoClientSmokeTest {
     public static void main(String[] args) throws Exception {
         testFetchConfigSendsHeadersAndCaches();
         testFetchConfigFile();
-        testStartAsyncPreloadsConfigFilesAndExposesLocalExecutorAndConfigReaders();
+        testConstructorPreloadsConfigFilesAndExposesLocalExecutorAndConfigReaders();
         testExecutorExecutesPreloadedScriptAgainstLocalSnapshot();
-        testStartRestoresPersistedSnapshotThenStillRefreshes();
-        testStartGeneratesAndReusesAnonymousUserId();
-        testStartBackfillsCreatedAtForPersistedLegacyUserId();
+        testConstructorRestoresPersistedSnapshotThenStillRefreshes();
+        testConstructorGeneratesAndReusesAnonymousUserId();
+        testConstructorBackfillsCreatedAtForPersistedLegacyUserId();
         testUploadEventsFillsDefaults();
         testTrackerBuffersEventsUntilContextIsReady();
         testTrackerQueuesAndFlushesEvents();
@@ -35,7 +35,9 @@ public final class GameAlgoClientSmokeTest {
                 httpClient,
                 new FakeScriptRuntime(),
                 null,
-                null
+                null,
+                GameAlgoLogger.console(),
+                false
         );
 
         GameAlgoConfigResponse first = client.fetchConfig("u1");
@@ -78,7 +80,9 @@ public final class GameAlgoClientSmokeTest {
                 httpClient,
                 new FakeScriptRuntime(),
                 null,
-                null
+                null,
+                GameAlgoLogger.console(),
+                false
         );
 
         GameAlgoConfigFile file = client.fetchConfigFile("gameplay.json");
@@ -89,7 +93,7 @@ public final class GameAlgoClientSmokeTest {
         check("https://gamealgo.test/v1/config-files/gameplay.json".equals(httpClient.requests.get(0).getUrl().toString()), "config file URL should match Protocol v1");
     }
 
-    private static void testStartAsyncPreloadsConfigFilesAndExposesLocalExecutorAndConfigReaders() throws Exception {
+    private static void testConstructorPreloadsConfigFilesAndExposesLocalExecutorAndConfigReaders() throws Exception {
         FakeHttpClient httpClient = new FakeHttpClient();
         httpClient.enqueue(jsonResponse("{"
                 + "\"contextId\":\"ctx-1\","
@@ -120,22 +124,21 @@ public final class GameAlgoClientSmokeTest {
                 httpClient,
                 new FakeScriptRuntime(),
                 null,
-                null
+                null,
+                GameAlgoLogger.console(),
+                new GameAlgoFetchConfigRequest("u1")
         );
         GameAlgoExperimentExecutor executor = client.executor("level_generator");
 
-        check(!executor.isReady(), "executor should not be ready before start");
-        check("control".equals(executor.variant("control")), "executor should use default variant before start");
+        client.ready().get();
 
-        client.startAsync("u1").get();
-
-        check(executor.isReady(), "executor should be ready after start");
+        check(executor.isReady(), "executor should be ready after initialization");
         check("variant-a".equals(executor.variant("control")), "variant should decode");
         check("hard".equals(executor.string("difficulty", "normal")), "executor config should decode");
         check(Math.abs(executor.number("spawnRate", 0) - 0.7) < 0.0001, "executor number config should decode");
         check(!client.config().bool("ads.rewarded.enabled", true, "gameplay.json"), "config bool should decode");
         check(client.config().integer("economy.startCoins", 0) == 120, "config int should decode");
-        check(httpClient.requests.size() == 2, "start should fetch config and preload file");
+        check(httpClient.requests.size() == 2, "constructor should fetch config and preload file");
     }
 
     private static void testExecutorExecutesPreloadedScriptAgainstLocalSnapshot() throws Exception {
@@ -171,10 +174,12 @@ public final class GameAlgoClientSmokeTest {
                 httpClient,
                 new FakeScriptRuntime(),
                 null,
-                null
+                null,
+                GameAlgoLogger.console(),
+                new GameAlgoFetchConfigRequest("u1")
         );
 
-        client.startAsync("u1").get();
+        client.ready().get();
         GameAlgoExecutionResult result = client.executor("level_generator").execute(new LinkedHashMap<String, Object>());
 
         check(result != null, "script result should be available");
@@ -182,7 +187,7 @@ public final class GameAlgoClientSmokeTest {
         check("u1".equals(GameAlgoJson.readPath(result.getDiagnostics(), "userId")), "script meta should include userId");
     }
 
-    private static void testStartRestoresPersistedSnapshotThenStillRefreshes() throws Exception {
+    private static void testConstructorRestoresPersistedSnapshotThenStillRefreshes() throws Exception {
         MemoryCacheStorage cache = new MemoryCacheStorage();
         FakeHttpClient firstHttpClient = new FakeHttpClient();
         firstHttpClient.enqueue(jsonResponse("{"
@@ -210,9 +215,11 @@ public final class GameAlgoClientSmokeTest {
                 firstHttpClient,
                 new FakeScriptRuntime(),
                 cache,
-                "test-cache"
+                "test-cache",
+                GameAlgoLogger.console(),
+                new GameAlgoFetchConfigRequest("u1")
         );
-        first.startAsync("u1").get();
+        first.ready().get();
 
         FakeHttpClient secondHttpClient = new FakeHttpClient();
         secondHttpClient.enqueueError(new java.io.IOException("offline"));
@@ -225,16 +232,18 @@ public final class GameAlgoClientSmokeTest {
                 secondHttpClient,
                 new FakeScriptRuntime(),
                 cache,
-                "test-cache"
+                "test-cache",
+                GameAlgoLogger.console(),
+                new GameAlgoFetchConfigRequest("u1")
         );
-        second.startAsync("u1").get();
+        second.ready().get();
 
         check("variant-a".equals(second.executor("level_generator").variant("control")), "cached variant should restore");
         check("cached".equals(second.config().string("difficulty", "", "gameplay.json")), "cached file should restore");
-        check(secondHttpClient.requests.size() == 1, "start should still try to refresh");
+        check(secondHttpClient.requests.size() == 1, "constructor should still try to refresh");
     }
 
-    private static void testStartGeneratesAndReusesAnonymousUserId() throws Exception {
+    private static void testConstructorGeneratesAndReusesAnonymousUserId() throws Exception {
         MemoryCacheStorage cache = new MemoryCacheStorage();
         FakeHttpClient firstHttpClient = new FakeHttpClient();
         firstHttpClient.enqueue(jsonResponse(configJson("v1")));
@@ -250,7 +259,7 @@ public final class GameAlgoClientSmokeTest {
                 "test-cache"
         );
 
-        first.startAsync().get();
+        first.ready().get();
         String firstUserId = first.userId();
 
         FakeHttpClient secondHttpClient = new FakeHttpClient();
@@ -266,7 +275,7 @@ public final class GameAlgoClientSmokeTest {
                 cache,
                 "test-cache"
         );
-        second.startAsync().get();
+        second.ready().get();
 
         check(firstUserId.length() > 0, "anonymous user id should be generated");
         check(firstUserId.equals(second.userId()), "anonymous user id should be persisted");
@@ -283,7 +292,12 @@ public final class GameAlgoClientSmokeTest {
                 "1.2.3",
                 "4.5.6",
                 "android",
-                httpClient
+                httpClient,
+                new FakeScriptRuntime(),
+                null,
+                null,
+                GameAlgoLogger.console(),
+                false
         );
 
         GameAlgoEventBatchResponse response = client.uploadEvents(Arrays.asList(
@@ -312,7 +326,12 @@ public final class GameAlgoClientSmokeTest {
                 "1.2.3",
                 "4.5.6",
                 "android",
-                httpClient
+                httpClient,
+                new FakeScriptRuntime(),
+                null,
+                null,
+                GameAlgoLogger.console(),
+                false
         );
 
         client.tracker().identify("u1", "s1", "2026-05-28T10:00:00.000Z");
@@ -336,7 +355,7 @@ public final class GameAlgoClientSmokeTest {
         client.tracker().close();
     }
 
-    private static void testStartBackfillsCreatedAtForPersistedLegacyUserId() throws Exception {
+    private static void testConstructorBackfillsCreatedAtForPersistedLegacyUserId() throws Exception {
         FakeHttpClient httpClient = new FakeHttpClient();
         httpClient.enqueue(jsonResponse(configJson("v1")));
         MemoryCacheStorage cache = new MemoryCacheStorage();
@@ -353,7 +372,7 @@ public final class GameAlgoClientSmokeTest {
                 "test-cache"
         );
 
-        client.startAsync().get();
+        client.ready().get();
         check("legacy-user".equals(client.userId()), "legacy user id should be reused");
         check(cache.getItem("gamealgo_user_created_at") != null && cache.getItem("gamealgo_user_created_at").length() > 0, "legacy user createdAt should be backfilled");
         Map<String, Object> requestBody = requestBody(httpClient.requests.get(0));
@@ -371,10 +390,15 @@ public final class GameAlgoClientSmokeTest {
                 "1.2.3",
                 "4.5.6",
                 "android",
-                httpClient
+                httpClient,
+                new FakeScriptRuntime(),
+                null,
+                null,
+                GameAlgoLogger.console(),
+                new GameAlgoFetchConfigRequest("u1")
         );
 
-        client.startAsync("u1").get();
+        client.ready().get();
         client.tracker().setDebug(true);
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("level", 3);
@@ -405,7 +429,7 @@ public final class GameAlgoClientSmokeTest {
         check("session_end".equals(second.get("eventType")), "tracker should upload session_end");
         Map<String, Object> secondPayload = GameAlgoJson.asObject(second.get("payload"), "payload");
         check("background".equals(secondPayload.get("reason")), "session_end should preserve reason");
-        check(secondPayload.get("sessionDurationMs") instanceof Number && ((Number) secondPayload.get("sessionDurationMs")).longValue() >= 0L, "session_end should include duration from startAsync");
+        check(secondPayload.get("sessionDurationMs") instanceof Number && ((Number) secondPayload.get("sessionDurationMs")).longValue() >= 0L, "session_end should include duration from initialization");
         client.tracker().close();
     }
 
@@ -419,10 +443,15 @@ public final class GameAlgoClientSmokeTest {
                 "1.0.0",
                 null,
                 "android",
-                httpClient
+                httpClient,
+                new FakeScriptRuntime(),
+                null,
+                null,
+                GameAlgoLogger.console(),
+                new GameAlgoFetchConfigRequest("u1")
         );
 
-        client.startAsync("u1").get();
+        client.ready().get();
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("button", "start");
         payload.put("value", 2);

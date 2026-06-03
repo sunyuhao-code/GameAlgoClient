@@ -43,10 +43,6 @@ export type FetchConfigOptions = {
   forceRefresh?: boolean;
 };
 
-export type StartOptions = FetchConfigOptions & {
-  preloadConfigFiles?: boolean | string[];
-};
-
 export type ConfigFileResponse = {
   name: string;
   content: string;
@@ -76,9 +72,15 @@ export type EventBatchResponse = {
 export type GameAlgoRestClientOptions = {
   baseUrl: string;
   gameKey: string;
+  userId?: string;
+  userCreatedAt?: string;
+  sessionId?: string;
   sdkVersion?: string;
   appVersion?: string;
   platform?: Platform;
+  deviceId?: string;
+  device?: Record<string, JsonValue>;
+  preloadConfigFiles?: boolean | string[];
   isDebug?: boolean;
   timezone?: string;
   eventFlushIntervalMs?: number;

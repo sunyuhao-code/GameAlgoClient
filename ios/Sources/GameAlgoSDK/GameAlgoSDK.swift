@@ -41,6 +41,64 @@ public actor GameAlgoSDK {
         cacheStorage: (any GameAlgoCacheStorage)? = GameAlgoUserDefaultsCacheStorage(),
         userIdentityStore: GameAlgoUserIdentityStore = GameAlgoUserIdentityStore(),
         cacheKey: String? = nil,
+        userId: String? = nil,
+        sessionId: String? = nil,
+        deviceId: String? = nil,
+        timezone: String? = nil,
+        device: [String: JSONValue] = [:],
+        preloadConfigFiles: GameAlgoConfigFilePreload = .all,
+        isDebug: Bool = false,
+        eventFlushInterval: TimeInterval = 30,
+        eventMaxBatchSize: Int = 100,
+        eventQueueLimit: Int = 1000,
+        logger: GameAlgoLogHandler? = GameAlgoLoggers.console,
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
+        self.init(
+            gameKey: gameKey,
+            baseURL: baseURL,
+            sdkVersion: sdkVersion,
+            appVersion: appVersion,
+            platform: platform,
+            httpClient: httpClient,
+            scriptRuntime: scriptRuntime,
+            cacheStorage: cacheStorage,
+            userIdentityStore: userIdentityStore,
+            cacheKey: cacheKey,
+            userId: userId,
+            sessionId: sessionId,
+            deviceId: deviceId,
+            timezone: timezone,
+            device: device,
+            preloadConfigFiles: preloadConfigFiles,
+            _autoStart: true,
+            isDebug: isDebug,
+            eventFlushInterval: eventFlushInterval,
+            eventMaxBatchSize: eventMaxBatchSize,
+            eventQueueLimit: eventQueueLimit,
+            logger: logger,
+            now: now
+        )
+    }
+
+    init(
+        gameKey: String,
+        baseURL: URL,
+        sdkVersion: String = GameAlgoSDK.defaultSDKVersion,
+        appVersion: String? = nil,
+        platform: GameAlgoPlatform = .ios,
+        httpClient: any GameAlgoHTTPClient = URLSessionGameAlgoHTTPClient(),
+        scriptRuntime: any GameAlgoScriptRuntime = JavaScriptCoreGameAlgoScriptRuntime(),
+        cacheStorage: (any GameAlgoCacheStorage)? = GameAlgoUserDefaultsCacheStorage(),
+        userIdentityStore: GameAlgoUserIdentityStore = GameAlgoUserIdentityStore(),
+        cacheKey: String? = nil,
+        userId: String? = nil,
+        sessionId: String? = nil,
+        deviceId: String? = nil,
+        timezone: String? = nil,
+        device: [String: JSONValue] = [:],
+        preloadConfigFiles: GameAlgoConfigFilePreload = .all,
+        _autoStart: Bool,
         isDebug: Bool = false,
         eventFlushInterval: TimeInterval = 30,
         eventMaxBatchSize: Int = 100,
@@ -84,6 +142,19 @@ public actor GameAlgoSDK {
             logger: logger,
             now: now
         )
+        if _autoStart {
+            readyTaskStore.set(makeReadyTask(
+                userId: userId,
+                sessionId: sessionId,
+                platform: platform,
+                sdkVersion: sdkVersion,
+                appVersion: appVersion,
+                deviceId: deviceId,
+                timezone: timezone,
+                device: device,
+                preloadConfigFiles: preloadConfigFiles
+            ))
+        }
     }
 
     public nonisolated var userIdentity: GameAlgoUserIdentity {
@@ -102,12 +173,11 @@ public actor GameAlgoSDK {
         snapshotStore.snapshot()
     }
 
-    @discardableResult
-    public nonisolated func start(
+    private nonisolated func makeReadyTask(
         userId: String? = nil,
         sessionId: String? = nil,
-        platform: GameAlgoPlatform? = nil,
-        sdkVersion: String? = nil,
+        platform: GameAlgoPlatform,
+        sdkVersion: String,
         appVersion: String? = nil,
         deviceId: String? = nil,
         timezone: String? = nil,
@@ -115,14 +185,14 @@ public actor GameAlgoSDK {
         preloadConfigFiles: GameAlgoConfigFilePreload = .all
     ) -> Task<Void, Error> {
         let identity = userIdentityStore.identity(userId: userId, now: now())
-        let task = Task {
+        return Task {
             await self.logUserId(identity.userId)
             await self.tracker.identify(
                 userId: identity.userId,
                 sessionId: sessionId,
-                platform: platform ?? self.defaultPlatform,
-                sdkVersion: sdkVersion ?? self.defaultSDKVersion,
-                appVersion: appVersion ?? self.defaultAppVersion,
+                platform: platform,
+                sdkVersion: sdkVersion,
+                appVersion: appVersion,
                 timezone: timezone,
                 userCreatedAt: identity.userCreatedAt
             )
@@ -148,8 +218,6 @@ public actor GameAlgoSDK {
                 await self.log("config fetch failed, using cached snapshot: \(error)")
             }
         }
-        readyTaskStore.set(task)
-        return task
     }
 
     public nonisolated func waitForReady(timeout: TimeInterval = 5.0) async -> Bool {

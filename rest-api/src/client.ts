@@ -17,9 +17,16 @@ import type {
   GameEvent,
   JsonValue,
   Platform,
-  StartOptions,
   TrackEventOptions,
 } from "./types.ts";
+
+type RefreshOptions = FetchConfigOptions & {
+  preloadConfigFiles?: boolean | string[];
+};
+
+type InternalClientOptions = GameAlgoRestClientOptions & {
+  autoStart?: boolean;
+};
 
 export class GameAlgoApiError extends Error {
   readonly status: number;
@@ -84,26 +91,10 @@ export class GameAlgoRestClient {
       queueLimit: options.eventQueueLimit ?? 1000,
       now: this.now,
     });
-  }
-
-  start(options: StartOptions = {}): Promise<void> {
-    this.readyPromise = (async () => {
-      const identity = await this.userIdentity(options.userId);
-      this.logUserId(identity.userId);
-      this.tracker.identify(identity.userId, options.sessionId, identity.userCreatedAt);
-      this.tracker.markSessionStarted();
-      await this.loadPersistedSnapshot();
-      try {
-        await this.refresh({ ...options, userId: identity.userId, forceRefresh: true });
-      } catch (error) {
-        if (!this.snapshot.config) {
-          this.log(`config fetch failed: ${errorMessage(error)}`);
-          throw error;
-        }
-        this.log(`config fetch failed, using cached snapshot: ${errorMessage(error)}`);
-      }
-    })();
-    return this.readyPromise;
+    const internalOptions = options as InternalClientOptions;
+    if (internalOptions.autoStart !== false) {
+      this.readyPromise = this.initialize(options);
+    }
   }
 
   async waitForReady(timeoutMs = 5000): Promise<boolean> {
@@ -298,7 +289,25 @@ export class GameAlgoRestClient {
     };
   }
 
-  private async refresh(options: StartOptions): Promise<void> {
+  private async initialize(options: RefreshOptions): Promise<void> {
+    const identity = await this.userIdentity(options.userId);
+    const userCreatedAt = clean(options.userCreatedAt) ?? identity.userCreatedAt;
+    this.logUserId(identity.userId);
+    this.tracker.identify(identity.userId, options.sessionId, userCreatedAt);
+    this.tracker.markSessionStarted();
+    await this.loadPersistedSnapshot();
+    try {
+      await this.refresh({ ...options, userId: identity.userId, userCreatedAt, forceRefresh: true });
+    } catch (error) {
+      if (!this.snapshot.config) {
+        this.log(`config fetch failed: ${errorMessage(error)}`);
+        throw error;
+      }
+      this.log(`config fetch failed, using cached snapshot: ${errorMessage(error)}`);
+    }
+  }
+
+  private async refresh(options: RefreshOptions): Promise<void> {
     const config = await this.fetchConfig(options);
     const preload = options.preloadConfigFiles ?? true;
     if (!preload) {

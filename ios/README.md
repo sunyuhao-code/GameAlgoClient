@@ -34,8 +34,6 @@ let sdk = GameAlgoSDK(
 ```swift
 let levelGenerator = sdk.executor("level_generator")
 
-sdk.start()
-
 let variant = levelGenerator.variant(default: "control")
 let difficulty = levelGenerator.string("difficulty", default: "normal")
 let result = levelGenerator.execute(.object(["turn": .number(7)]))
@@ -46,7 +44,7 @@ await sdk.tracker.trackSessionEnd()
 await sdk.tracker.flush()
 ```
 
-`start` refreshes `/v1/config` and preloads config files in the background. It also creates or reuses the SDK anonymous `userId`; iOS uses the same `gamealgo_user_id` key as the old SDK, so existing players keep stable experiment assignments after updating. `executor` and `config` read the latest local snapshot, so gameplay code does not need to call remote APIs when checking variants or tuning values.
+`GameAlgoSDK(...)` refreshes `/v1/config` and preloads config files in the background. It also creates or reuses the SDK anonymous `userId`; iOS uses the same `gamealgo_user_id` key as the old SDK, so existing players keep stable experiment assignments after updating. `executor` and `config` read the latest local snapshot, so gameplay code does not need to call remote APIs when checking variants or tuning values.
 
 Files created under the admin Configs page can be fetched directly when needed:
 
@@ -60,7 +58,7 @@ If an experiment assignment includes `script`, `executor.execute(state)` runs th
 
 `tracker` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, flushes when the app enters background or terminates, and keeps the failed batch for the next retry. If config context is not ready yet, queued events stay local and `flush` fills the current `contextId` before upload. Call `await sdk.tracker.flush()` to manually flush critical events; `trackSessionEnd` also triggers an immediate flush after enqueueing `session_end`.
 
-The SDK sends `userCreatedAt` and basic `device` context with `/v1/config` automatically. Pass `device` or `deviceId` to `start`/`fetchConfig` to add app-specific fields or override defaults.
+The SDK sends `userCreatedAt` and basic `device` context with `/v1/config` automatically. Pass `device` or `deviceId` to `GameAlgoSDK(...)` or `fetchConfig` to add app-specific fields or override defaults.
 
 Event payload fields are sent as `payload` and stored raw. Analytics does not interpret payload fields during ingestion; a game-specific report pack later declares which fields become report dimensions or metrics. Experiment assignments are stored in the SDK context created by `/v1/config`, not copied onto each event.
 

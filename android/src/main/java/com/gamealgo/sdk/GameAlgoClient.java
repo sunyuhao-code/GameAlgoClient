@@ -16,6 +16,7 @@ import java.util.Map;
 import java.util.TimeZone;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeUnit;
 
 public final class GameAlgoClient {
     public static final String DEFAULT_SDK_VERSION = "1.0.0";
@@ -35,6 +36,7 @@ public final class GameAlgoClient {
     private final GameAlgoSnapshotStore snapshotStore;
     private final GameAlgoConfigReader configReader;
     private final GameAlgoEventTracker tracker;
+    private final CompletableFuture<Void> readyFuture;
     private CachedConfig cachedConfig;
     private GameAlgoUserIdentity userIdentity;
     private boolean didLogUserId;
@@ -77,6 +79,52 @@ public final class GameAlgoClient {
             GameAlgoCacheStorage cacheStorage,
             String cacheKey,
             GameAlgoLogger logger) {
+        this(gameKey, baseUrl, sdkVersion, appVersion, platform, httpClient, scriptRuntime, cacheStorage, cacheKey, logger, new GameAlgoFetchConfigRequest(null), true);
+    }
+
+    GameAlgoClient(
+            String gameKey,
+            String baseUrl,
+            String sdkVersion,
+            String appVersion,
+            String platform,
+            GameAlgoHttpClient httpClient,
+            GameAlgoScriptRuntime scriptRuntime,
+            GameAlgoCacheStorage cacheStorage,
+            String cacheKey,
+            GameAlgoLogger logger,
+            boolean autoStart) {
+        this(gameKey, baseUrl, sdkVersion, appVersion, platform, httpClient, scriptRuntime, cacheStorage, cacheKey, logger, new GameAlgoFetchConfigRequest(null), autoStart);
+    }
+
+    public GameAlgoClient(
+            String gameKey,
+            String baseUrl,
+            String sdkVersion,
+            String appVersion,
+            String platform,
+            GameAlgoHttpClient httpClient,
+            GameAlgoScriptRuntime scriptRuntime,
+            GameAlgoCacheStorage cacheStorage,
+            String cacheKey,
+            GameAlgoLogger logger,
+            GameAlgoFetchConfigRequest initialRequest) {
+        this(gameKey, baseUrl, sdkVersion, appVersion, platform, httpClient, scriptRuntime, cacheStorage, cacheKey, logger, initialRequest, true);
+    }
+
+    GameAlgoClient(
+            String gameKey,
+            String baseUrl,
+            String sdkVersion,
+            String appVersion,
+            String platform,
+            GameAlgoHttpClient httpClient,
+            GameAlgoScriptRuntime scriptRuntime,
+            GameAlgoCacheStorage cacheStorage,
+            String cacheKey,
+            GameAlgoLogger logger,
+            GameAlgoFetchConfigRequest initialRequest,
+            boolean autoStart) {
         if (isBlank(gameKey)) {
             throw new IllegalArgumentException("gameKey is required");
         }
@@ -96,17 +144,23 @@ public final class GameAlgoClient {
         this.snapshotStore = new GameAlgoSnapshotStore();
         this.configReader = new GameAlgoConfigReader(snapshotStore);
         this.tracker = new GameAlgoEventTracker(this);
+        this.readyFuture = autoStart ? initializeAsync(initialRequest == null ? new GameAlgoFetchConfigRequest(null) : initialRequest) : CompletableFuture.completedFuture(null);
     }
 
-    public CompletableFuture<Void> startAsync() {
-        return startAsync(new GameAlgoFetchConfigRequest(null));
+    public CompletableFuture<Void> ready() {
+        return readyFuture;
     }
 
-    public CompletableFuture<Void> startAsync(String userId) {
-        return startAsync(new GameAlgoFetchConfigRequest(userId));
+    public boolean waitForReady(long timeoutMillis) {
+        try {
+            readyFuture.get(Math.max(timeoutMillis, 0L), TimeUnit.MILLISECONDS);
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
-    public CompletableFuture<Void> startAsync(GameAlgoFetchConfigRequest request) {
+    private CompletableFuture<Void> initializeAsync(GameAlgoFetchConfigRequest request) {
         return CompletableFuture.runAsync(() -> {
             try {
                 GameAlgoFetchConfigRequest resolvedRequest = requestWithResolvedUser(request);

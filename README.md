@@ -61,16 +61,13 @@ let sdk = GameAlgoSDK(
 
 let levelGenerator = sdk.executor("level_generator")
 
-// App 启动后尽早调用。SDK 会自动生成并持久化匿名 userId。
-sdk.start()
-
 let variant = levelGenerator.variant(default: "control")
 let difficulty = levelGenerator.string("difficulty", default: "normal")
 let result = levelGenerator.execute(.object(["turn": .number(7)]))
 let adsEnabled = sdk.config.bool("ads.rewarded.enabled", default: true, fileName: "gameplay.json")
 ```
 
-`start()` 会预加载控制台 Configs 页面下发的配置文件。需要手动立刻拉某个文件时，可以直接调用：
+初始化 `GameAlgoSDK` 时会自动生成并持久化匿名 `userId`，后台刷新 `/v1/config`，并预加载控制台 Configs 页面下发的配置文件。需要手动立刻拉某个文件时，可以直接调用：
 
 ```swift
 let gameplay = try await sdk.fetchConfigFile("gameplay.json")
@@ -112,9 +109,6 @@ GameAlgoClient sdk = GameAlgo.init(
 
 GameAlgoExperimentExecutor levelGenerator = sdk.executor("level_generator");
 
-// 后台线程拉取 /v1/config 并预加载配置文件。SDK 会自动生成匿名 userId。
-sdk.startAsync();
-
 String variant = levelGenerator.variant("control");
 String difficulty = levelGenerator.string("difficulty", "normal");
 
@@ -125,7 +119,7 @@ GameAlgoExecutionResult result = levelGenerator.execute(state);
 boolean adsEnabled = sdk.config().bool("ads.rewarded.enabled", true, "gameplay.json");
 ```
 
-`startAsync()` 会预加载控制台 Configs 页面下发的配置文件。需要手动立刻拉某个文件时，可以直接调用：
+`GameAlgo.init(...)` 会自动生成匿名 `userId`，后台刷新 `/v1/config`，并预加载控制台 Configs 页面下发的配置文件。需要手动立刻拉某个文件时，可以直接调用：
 
 ```java
 GameAlgoConfigFile gameplay = sdk.fetchConfigFile("gameplay.json");
@@ -139,7 +133,7 @@ sdk.tracker().trackSessionEnd()
 sdk.tracker().flushAsync()
 ```
 
-`fetchConfig`、`fetchConfigFile`、`uploadEvents` 在 Java core 中是阻塞方法。Android App 应放到自己的 executor/coroutine 层调用，或用 `startAsync` 做启动预加载。普通事件上报直接用 `tracker()`，不需要游戏自己维护批量队列。
+`fetchConfig`、`fetchConfigFile`、`uploadEvents` 在 Java core 中是阻塞方法。Android App 应放到自己的 executor/coroutine 层调用。普通事件上报直接用 `tracker()`，不需要游戏自己维护批量队列。
 
 ### REST / Web / Backend
 
@@ -156,8 +150,6 @@ const client = new GameAlgoRestClient({
 });
 
 const levelGenerator = client.executor("level_generator");
-
-await client.start();
 
 const variant = levelGenerator.variant("control");
 const difficulty = levelGenerator.string("difficulty", "normal");
@@ -188,13 +180,13 @@ POST /v1/events/batch
 
 客户端推荐只读本地快照：
 
-- `start` / `startAsync` 刷新 `/v1/config`，并预加载配置文件。
+- 初始化 SDK 对象时会后台刷新 `/v1/config`，并预加载配置文件。
 - SDK 默认生成匿名 `userId`；iOS 会用老版的 `gamealgo_user_id` 持久化，老用户升级后实验分组保持稳定。Android core / REST helper 传入 `cacheStorage` / `storage` 后也会持久化同一组 key。
 - `executor(key)` 读取实验分组和实验 config。
 - `executor(key).execute(state)` 执行预加载脚本；没有脚本时返回 config-only payload。
 - `config` / `config()` 读取预加载的配置文件，例如 `gameplay.json`。
 - 需要绕过预加载、立即拉取某个文件时，用 `fetchConfigFile("gameplay.json")`；iOS 写法是 `try await sdk.fetchConfigFile("gameplay.json")`。
-- 启动时会先恢复上一次成功快照，再刷新远端配置；刷新成功后覆盖旧快照。
+- 初始化时会先恢复上一次成功快照，再刷新远端配置；刷新成功后覆盖旧快照。
 
 脚本格式：
 

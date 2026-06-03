@@ -15,8 +15,6 @@ val sdk = GameAlgo.init("ga_live_xxx", "https://gamealgo.example.com")
 ```kotlin
 val levelGenerator = sdk.executor("level_generator")
 
-sdk.startAsync()
-
 val variant = levelGenerator.variant("control")
 val difficulty = levelGenerator.string("difficulty", "normal")
 val result = levelGenerator.execute(mapOf("turn" to 7))
@@ -27,7 +25,7 @@ sdk.tracker().trackSessionEnd()
 sdk.tracker().flushAsync()
 ```
 
-`startAsync` refreshes `/v1/config` and preloads config files on a background executor. It also creates or reuses the SDK anonymous `userId`; pass a `GameAlgoCacheStorage` when initializing if the app wants the dependency-free core to persist that ID. `executor` and `config()` read the latest local snapshot, so gameplay code does not need to call remote APIs when checking variants or tuning values.
+`GameAlgo.init(...)` refreshes `/v1/config` and preloads config files on a background executor. It also creates or reuses the SDK anonymous `userId`; pass a `GameAlgoCacheStorage` when initializing if the app wants the dependency-free core to persist that ID. `executor` and `config()` read the latest local snapshot, so gameplay code does not need to call remote APIs when checking variants or tuning values.
 
 Files created under the admin Configs page can be fetched directly when needed:
 
@@ -48,7 +46,7 @@ val gameplay = sdk.fetchConfigFile("gameplay.json")
 
 The SDK sends `X-GameAlgo-Key` on every request, caches `/v1/config` by `ttlSeconds`, and fills default event fields for `eventId`, `timestamp`, and `isDebug`.
 
-The SDK sends `userCreatedAt` and basic `device` context with `/v1/config` automatically. Pass `device` or `deviceId` to `startAsync`/`fetchConfig` to add app-specific fields or override defaults.
+The SDK sends `userCreatedAt` and basic `device` context with `/v1/config` automatically. Pass `device` or `deviceId` with a `GameAlgoFetchConfigRequest` in the full `GameAlgoClient` constructor, or to `fetchConfig`, to add app-specific fields or override defaults.
 
 `tracker()` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, and keeps the failed batch for the next retry. If config context is not ready yet, queued events stay local and `flush` fills the current `contextId` before upload. `fetchConfig`, `fetchConfigFile`, and `uploadEvents` are blocking in this core package; Android apps should call those lower-level methods from their own background executor/coroutine layer.
 

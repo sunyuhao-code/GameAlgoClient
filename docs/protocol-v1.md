@@ -172,7 +172,7 @@ Content-Type: application/json
 
 客户端行为：
 
-- App 启动时先加载上一次成功缓存，让 `executor` / `config` 立即可用。
+- SDK 初始化时先加载上一次成功缓存，让 `executor` / `config` 立即可用。
 - 每次 App 新启动都必须请求最新配置；不能因为本地缓存还在 TTL 内就跳过启动刷新。
 - 新配置和配置文件拉取成功后，原子覆盖本地 snapshot 和持久化缓存。
 - App 运行中可按 `ttlSeconds` 周期刷新。

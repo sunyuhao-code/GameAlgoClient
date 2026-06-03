@@ -20,8 +20,6 @@ const client = new GameAlgoRestClient({
 
 const levelGenerator = client.executor("level_generator");
 
-await client.start();
-
 const variant = levelGenerator.variant("control");
 const difficulty = levelGenerator.string("difficulty", "normal");
 const result = await levelGenerator.execute({ turn: 7 });
@@ -32,7 +30,7 @@ client.tracker.trackSessionEnd();
 await client.tracker.flush();
 ```
 
-`start` refreshes `/v1/config` and preloads config files. It also creates or reuses the SDK anonymous `userId`; pass `storage` when initializing if the helper should persist that ID across app launches. `executor` and `config` read the latest local snapshot, so game logic does not need to call remote APIs when checking variants or tuning values.
+`new GameAlgoRestClient(...)` refreshes `/v1/config` and preloads config files in the background. It also creates or reuses the SDK anonymous `userId`; pass `storage` when initializing if the helper should persist that ID across app launches. `executor` and `config` read the latest local snapshot, so game logic does not need to call remote APIs when checking variants or tuning values.
 
 Files created under the admin Configs page can be fetched directly when needed:
 
@@ -46,7 +44,7 @@ If an experiment assignment includes `script`, `executor.execute(state)` runs th
 
 `fetchConfig` remains available for lower-level usage and caches the last successful config in memory until `ttlSeconds` expires. Use `forceRefresh: true` to bypass the cache.
 
-The helper sends `userCreatedAt` and basic `device` context with `/v1/config` automatically. Pass `device` or `deviceId` to `start`/`fetchConfig` to add app-specific fields or override defaults.
+The helper sends `userCreatedAt` and basic `device` context with `/v1/config` automatically. Pass `device` or `deviceId` to `new GameAlgoRestClient(...)` or `fetchConfig` to add app-specific fields or override defaults.
 
 `tracker` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, and keeps the failed batch for the next retry. If config context is not ready yet, queued events stay local and `flush` fills the current `contextId` before upload. Event payload fields are sent as `payload` and stored raw. Analytics does not interpret payload fields during ingestion; a game-specific report pack later declares which fields become report dimensions or metrics. Experiment assignments are stored in the SDK context created by `/v1/config`, not copied onto each event.
 
