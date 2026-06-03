@@ -320,8 +320,6 @@ public final class GameAlgoClient {
         }
         tracker.setAssignments(config.getExperiments());
         logAssignments(config.getExperiments(), "experiment");
-        tracker.trackConfigLoaded();
-        log("config_loaded queued");
     }
 
     private synchronized GameAlgoFetchConfigRequest requestWithResolvedUser(GameAlgoFetchConfigRequest request) throws GameAlgoException {

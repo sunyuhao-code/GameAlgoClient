@@ -429,7 +429,7 @@ final class GameAlgoSDKTests: XCTestCase {
                 "config": [String: Any](),
             ]]
         ))
-        try await httpClient.enqueueJSON(["ok": true, "accepted": 2])
+        try await httpClient.enqueueJSON(["ok": true, "accepted": 1])
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
@@ -455,13 +455,12 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(requests.count, 2)
         XCTAssertEqual(requests[1].method, .post)
         XCTAssertEqual(requests[1].url.absoluteString, "https://gamealgo.test/v1/events/batch")
-        XCTAssertEqual(events?.count, 2)
-        XCTAssertEqual(events?[0]["eventType"] as? String, "config_loaded")
+        XCTAssertEqual(events?.count, 1)
         XCTAssertEqual(events?[0]["contextId"] as? String, "ctx-1")
-        XCTAssertEqual(events?[1]["userId"] as? String, "u1")
-        XCTAssertEqual(events?[1]["eventType"] as? String, "level_end")
-        XCTAssertEqual(events?[1]["isDebug"] as? Bool, true)
-        let levelPayload = events?[1]["payload"] as? [String: Any]
+        XCTAssertEqual(events?[0]["userId"] as? String, "u1")
+        XCTAssertEqual(events?[0]["eventType"] as? String, "level_end")
+        XCTAssertEqual(events?[0]["isDebug"] as? Bool, true)
+        let levelPayload = events?[0]["payload"] as? [String: Any]
         XCTAssertEqual(levelPayload?["level"] as? Double, 3)
     }
 
@@ -481,7 +480,7 @@ final class GameAlgoSDKTests: XCTestCase {
                 "config": [String: Any](),
             ]]
         ))
-        try await httpClient.enqueueJSON(["ok": true, "accepted": 2])
+        try await httpClient.enqueueJSON(["ok": true, "accepted": 1])
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
@@ -502,9 +501,9 @@ final class GameAlgoSDKTests: XCTestCase {
         let requests = await httpClient.requests
         let body = try JSONSerialization.jsonObject(with: requests[1].body ?? Data()) as? [String: Any]
         let events = body?["events"] as? [[String: Any]]
-        let payload = events?[1]["payload"] as? [String: Any]
+        let payload = events?[0]["payload"] as? [String: Any]
 
-        XCTAssertEqual(events?[1]["eventType"] as? String, "_custom_action")
+        XCTAssertEqual(events?[0]["eventType"] as? String, "_custom_action")
         XCTAssertEqual(payload?["button"] as? String, "start")
         XCTAssertEqual(payload?["value"] as? Double, 2)
     }
@@ -517,7 +516,7 @@ final class GameAlgoSDKTests: XCTestCase {
 
         let httpClient = MockHTTPClient()
         try await httpClient.enqueueJSON(configResponse(version: "v1"))
-        try await httpClient.enqueueJSON(["ok": true, "accepted": 2])
+        try await httpClient.enqueueJSON(["ok": true, "accepted": 1])
         let clock = TestClock(date: Date(timeIntervalSince1970: 1_779_962_400))
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
@@ -542,7 +541,7 @@ final class GameAlgoSDKTests: XCTestCase {
 
         XCTAssertEqual(requests.count, 2)
         XCTAssertEqual(requests[1].url.absoluteString, "https://gamealgo.test/v1/events/batch")
-        XCTAssertEqual(events?.map { $0["eventType"] as? String }, ["config_loaded", "session_end"])
+        XCTAssertEqual(events?.map { $0["eventType"] as? String }, ["session_end"])
         XCTAssertEqual(sessionEnd?["userId"] as? String, "u1")
         XCTAssertEqual(sessionEndPayload?["reason"] as? String, "background")
         XCTAssertEqual(sessionEndPayload?["sessionDurationMs"] as? Double, 2500)

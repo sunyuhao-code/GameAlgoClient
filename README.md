@@ -224,7 +224,6 @@ SDK 拉取配置时会带上 `userId/userCreatedAt/sessionId/platform/sdkVersion
 
 ```text
 session_end
-config_loaded
 level_start
 level_end
 ```

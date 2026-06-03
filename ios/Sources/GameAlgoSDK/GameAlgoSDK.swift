@@ -370,8 +370,6 @@ public actor GameAlgoSDK {
         }
         await tracker.setAssignments(config.experiments)
         logAssignments(config.experiments, prefix: "experiment")
-        _ = await tracker.trackConfigLoaded()
-        log("config_loaded queued")
     }
 
     private func loadCachedSnapshot() {

@@ -173,7 +173,6 @@ Recommended event types:
 
 ```text
 session_end
-config_loaded
 level_start
 level_end
 ad_view

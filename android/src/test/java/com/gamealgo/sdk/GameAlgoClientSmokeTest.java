@@ -330,7 +330,7 @@ public final class GameAlgoClientSmokeTest {
     private static void testTrackerQueuesAndFlushesEvents() throws Exception {
         FakeHttpClient httpClient = new FakeHttpClient();
         httpClient.enqueue(jsonResponse(configJsonWithExperiment("v1")));
-        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":3}"));
+        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":2}"));
         GameAlgoClient client = new GameAlgoClient(
                 "ga_live_test_key_0123456789abcdef",
                 "https://gamealgo.test",
@@ -357,30 +357,28 @@ public final class GameAlgoClientSmokeTest {
         List<Object> events = GameAlgoJson.asArray(body.get("events"), "events");
         Map<String, Object> first = GameAlgoJson.asObject(events.get(0), "events[]");
         Map<String, Object> second = GameAlgoJson.asObject(events.get(1), "events[]");
-        Map<String, Object> third = GameAlgoJson.asObject(events.get(2), "events[]");
 
         check(httpClient.requests.size() == 2, "tracker flush should upload one event batch");
         check("https://gamealgo.test/v1/events/batch".equals(httpClient.requests.get(1).getUrl().toString()), "tracker should post to events batch");
-        check(events.size() == 3, "tracker should upload config_loaded and queued events together");
-        check("config_loaded".equals(first.get("eventType")), "tracker should upload config_loaded");
+        check(events.size() == 2, "tracker should upload queued events together");
+        check("level_end".equals(first.get("eventType")), "tracker should upload level_end");
         check("ctx-1".equals(first.get("contextId")), "tracker should attach contextId");
-        check("u1".equals(second.get("userId")), "tracker should use identified user");
-        check(second.get("sessionId").equals(third.get("sessionId")), "tracker should keep session id");
-        check("level_end".equals(second.get("eventType")), "tracker should upload level_end");
-        check(Boolean.TRUE.equals(second.get("isDebug")), "tracker should preserve debug flag");
+        check("u1".equals(first.get("userId")), "tracker should use identified user");
+        check(first.get("sessionId").equals(second.get("sessionId")), "tracker should keep session id");
+        check(Boolean.TRUE.equals(first.get("isDebug")), "tracker should preserve debug flag");
+        Map<String, Object> firstPayload = GameAlgoJson.asObject(first.get("payload"), "payload");
+        check(((Number) firstPayload.get("level")).doubleValue() == 3.0, "tracker should preserve payload value");
+        check("session_end".equals(second.get("eventType")), "tracker should upload session_end");
         Map<String, Object> secondPayload = GameAlgoJson.asObject(second.get("payload"), "payload");
-        check(((Number) secondPayload.get("level")).doubleValue() == 3.0, "tracker should preserve payload value");
-        check("session_end".equals(third.get("eventType")), "tracker should upload session_end");
-        Map<String, Object> thirdPayload = GameAlgoJson.asObject(third.get("payload"), "payload");
-        check("background".equals(thirdPayload.get("reason")), "session_end should preserve reason");
-        check(thirdPayload.get("sessionDurationMs") instanceof Number && ((Number) thirdPayload.get("sessionDurationMs")).longValue() >= 0L, "session_end should include duration from startAsync");
+        check("background".equals(secondPayload.get("reason")), "session_end should preserve reason");
+        check(secondPayload.get("sessionDurationMs") instanceof Number && ((Number) secondPayload.get("sessionDurationMs")).longValue() >= 0L, "session_end should include duration from startAsync");
         client.tracker().close();
     }
 
     private static void testCustomEventsPreservePayload() throws Exception {
         FakeHttpClient httpClient = new FakeHttpClient();
         httpClient.enqueue(jsonResponse(configJsonWithExperiment("v1")));
-        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":2}"));
+        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":1}"));
         GameAlgoClient client = new GameAlgoClient(
                 "ga_live_test_key_0123456789abcdef",
                 "https://gamealgo.test",
@@ -402,7 +400,7 @@ public final class GameAlgoClientSmokeTest {
                 "body"
         );
         List<Object> events = GameAlgoJson.asArray(body.get("events"), "events");
-        Map<String, Object> event = GameAlgoJson.asObject(events.get(1), "events[]");
+        Map<String, Object> event = GameAlgoJson.asObject(events.get(0), "events[]");
         Map<String, Object> eventPayload = GameAlgoJson.asObject(event.get("payload"), "payload");
 
         check("_custom_action".equals(event.get("eventType")), "custom event should be prefixed");

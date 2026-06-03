@@ -150,10 +150,6 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         return track("session_end", merged);
     }
 
-    public boolean trackConfigLoaded() {
-        return track("config_loaded");
-    }
-
     public boolean trackLevelStart(Map<String, Object> payload) {
         return track("level_start", payload);
     }

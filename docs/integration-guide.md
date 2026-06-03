@@ -42,7 +42,6 @@ Minimum recommended events:
 
 ```text
 session_end
-config_loaded
 level_start
 level_end
 ```

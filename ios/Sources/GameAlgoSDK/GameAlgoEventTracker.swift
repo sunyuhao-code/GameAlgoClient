@@ -204,11 +204,6 @@ public actor GameAlgoEventTracker {
     }
 
     @discardableResult
-    public func trackConfigLoaded() -> Bool {
-        track("config_loaded")
-    }
-
-    @discardableResult
     public func trackLevelStart(payload: JSONValue = .object([:])) -> Bool {
         track("level_start", payload: payload)
     }

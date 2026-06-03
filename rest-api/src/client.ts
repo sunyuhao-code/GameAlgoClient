@@ -330,8 +330,6 @@ export class GameAlgoRestClient {
     }
     this.tracker.setAssignments(config.experiments);
     this.logAssignments(config.experiments, "experiment");
-    this.tracker.trackConfigLoaded();
-    this.log("config_loaded queued");
   }
 
   private async loadPersistedSnapshot(): Promise<void> {
@@ -530,10 +528,6 @@ export class GameAlgoEventTracker {
       merged.sessionDurationMs = this.now() - this.sessionStartMs;
     }
     return this.track("session_end", merged);
-  }
-
-  trackConfigLoaded(): boolean {
-    return this.track("config_loaded", {});
   }
 
   trackLevelStart(payload: JsonValue = {}): boolean {

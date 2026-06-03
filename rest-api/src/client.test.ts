@@ -444,19 +444,18 @@ test("tracker queues and flushes events after start identifies user", async () =
   assert.equal(client.tracker.trackSessionEnd({ reason: "background" }), true);
   const responses = await client.tracker.flush();
 
-  assert.equal(responses[0].accepted, 3);
+  assert.equal(responses[0].accepted, 2);
   assert.equal(requests.length, 2);
   assert.equal(requests[1].url, "https://gamealgo.test/v1/events/batch");
-  assert.equal(uploadedEvents.length, 3);
-  assert.equal(uploadedEvents[0].eventType, "config_loaded");
+  assert.equal(uploadedEvents.length, 2);
+  assert.equal(uploadedEvents[0].userId, "u1");
   assert.equal(uploadedEvents[0].contextId, "ctx-1");
-  assert.equal(uploadedEvents[1].userId, "u1");
-  assert.equal(uploadedEvents[1].sessionId, uploadedEvents[2].sessionId);
-  assert.equal(uploadedEvents[1].eventType, "level_end");
-  assert.equal(uploadedEvents[1].isDebug, true);
-  assert.deepEqual(uploadedEvents[1].payload, { level: 3 });
-  assert.equal(uploadedEvents[2].eventType, "session_end");
-  assert.equal((uploadedEvents[2].payload as Record<string, unknown>).sessionDurationMs, 2000);
+  assert.equal(uploadedEvents[0].sessionId, uploadedEvents[1].sessionId);
+  assert.equal(uploadedEvents[0].eventType, "level_end");
+  assert.equal(uploadedEvents[0].isDebug, true);
+  assert.deepEqual(uploadedEvents[0].payload, { level: 3 });
+  assert.equal(uploadedEvents[1].eventType, "session_end");
+  assert.equal((uploadedEvents[1].payload as Record<string, unknown>).sessionDurationMs, 2000);
   client.tracker.close();
 });
 
@@ -495,8 +494,8 @@ test("custom events preserve payload", async () => {
   assert.equal(client.tracker.trackEvent("custom_action", { button: "start", value: 2 }), true);
   await client.tracker.flush();
 
-  assert.equal(uploadedEvents[1].eventType, "_custom_action");
-  assert.deepEqual(uploadedEvents[1].payload, { button: "start", value: 2 });
+  assert.equal(uploadedEvents[0].eventType, "_custom_action");
+  assert.deepEqual(uploadedEvents[0].payload, { button: "start", value: 2 });
   client.tracker.close();
 });
 
