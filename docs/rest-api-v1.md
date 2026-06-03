@@ -27,7 +27,11 @@ curl -s -X POST "https://gamealgo.example.com/v1/config" \
     "sdkVersion": "1.0.0",
     "appVersion": "1.2.3",
     "timezone": "Asia/Shanghai",
-    "device": {}
+    "device": {
+      "runtime": "rest",
+      "locale": "zh-CN",
+      "deviceId": "debug-device-id"
+    }
   }'
 ```
 
@@ -64,6 +68,7 @@ Client requirements:
 - cache response for `ttlSeconds`
 - keep last successful config
 - use local defaults if the server is unavailable
+- send stable `userId/sessionId` and useful `device` context when calling REST directly; official helpers fill basic device fields automatically
 
 ## 3. Fetch Config File
 

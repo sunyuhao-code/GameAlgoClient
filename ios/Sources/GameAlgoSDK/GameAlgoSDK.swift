@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(UIKit)
+import UIKit
+#endif
 
 public actor GameAlgoSDK {
     public static let defaultSDKVersion = "1.0.0"
@@ -201,7 +204,10 @@ public actor GameAlgoSDK {
         )
         let resolvedSessionId = await tracker.currentSessionId()
         let resolvedTimezone = clean(timezone) ?? TimeZone.current.identifier
-        var resolvedDevice = device
+        var resolvedDevice = defaultDeviceContext()
+        for (key, value) in device {
+            resolvedDevice[key] = value
+        }
         if let deviceId = clean(deviceId) {
             resolvedDevice["deviceId"] = .string(deviceId)
         }
@@ -458,6 +464,26 @@ public actor GameAlgoSDK {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func defaultDeviceContext() -> [String: JSONValue] {
+        var device: [String: JSONValue] = [
+            "runtime": .string("ios"),
+            "locale": .string(Locale.current.identifier),
+        ]
+        #if canImport(UIKit)
+        let currentDevice = UIDevice.current
+        device["osName"] = .string(currentDevice.systemName)
+        device["osVersion"] = .string(currentDevice.systemVersion)
+        device["model"] = .string(currentDevice.model)
+        let screen = UIScreen.main
+        device["screenWidth"] = .number(Double(screen.bounds.size.width))
+        device["screenHeight"] = .number(Double(screen.bounds.size.height))
+        device["screenScale"] = .number(Double(screen.scale))
+        #else
+        device["osName"] = .string(ProcessInfo.processInfo.operatingSystemVersionString)
+        #endif
+        return device
     }
 
 }

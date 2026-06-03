@@ -218,7 +218,7 @@ function execute(input) {
 
 SDK 默认提供 `tracker`，游戏代码只需要调用 `trackSessionStart`、`trackLevelEnd`、`trackEvent` 等方法。tracker 会内存排队、最多 100 条一批上传、30 秒定时 flush、失败时保留上一批等待下次 retry。`uploadEvents` 仍保留为低层接口，只有在接入方自己有队列系统时才需要直接调用。
 
-SDK 拉取配置时会带上 `userId/sessionId/platform/sdkVersion/timezone/device`，服务端生成一条 SDK context 日志并返回 `contextId`。后续事件只引用这个 `contextId`；实验分组保存在 context 里，不再复制到每条事件。
+SDK 拉取配置时会带上 `userId/sessionId/platform/sdkVersion/timezone/device`，服务端生成一条 SDK context 日志并返回 `contextId`。官方 SDK 会自动补基础 `device` 信息，接入方可以额外传入自定义字段覆盖或追加。后续事件只引用这个 `contextId`；实验分组保存在 context 里，不再复制到每条事件。
 
 最小推荐事件：
 

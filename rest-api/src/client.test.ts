@@ -24,6 +24,9 @@ test("fetchConfig sends Protocol v1 headers and caches by ttl", async () => {
       assert.equal(body.sessionId, client.tracker.currentSessionId());
       assert.equal(body.platform, "rest");
       assert.equal(body.sdkVersion, "1.0.0");
+      const device = body.device as Record<string, unknown>;
+      assert.equal(device.runtime, "node");
+      assert.equal(typeof device.nodeVersion, "string");
       return jsonResponse({
         contextId: "ctx-1",
         gameId: "Mahjong",

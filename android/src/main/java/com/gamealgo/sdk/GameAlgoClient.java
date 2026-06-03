@@ -165,7 +165,8 @@ public final class GameAlgoClient {
         String appVersion = request.getAppVersion() == null ? defaultAppVersion : request.getAppVersion();
         String sessionId = isBlank(resolvedRequest.getSessionId()) ? tracker.currentSessionId() : resolvedRequest.getSessionId();
         String timezone = isBlank(request.getTimezone()) ? TimeZone.getDefault().getID() : request.getTimezone();
-        Map<String, Object> device = request.getDevice();
+        Map<String, Object> device = defaultDeviceContext();
+        device.putAll(request.getDevice());
         if (!isBlank(request.getDeviceId())) {
             device.put("deviceId", request.getDeviceId());
         }
@@ -673,6 +674,57 @@ public final class GameAlgoClient {
             result = result.substring(0, result.length() - 1);
         }
         return result;
+    }
+
+    private static Map<String, Object> defaultDeviceContext() {
+        Map<String, Object> device = new LinkedHashMap<>();
+        device.put("locale", Locale.getDefault().toLanguageTag());
+        if (putAndroidDeviceContext(device)) {
+            device.put("runtime", "android");
+            return device;
+        }
+
+        device.put("runtime", "java");
+        putSystemProperty(device, "javaVersion", "java.version");
+        putSystemProperty(device, "osName", "os.name");
+        putSystemProperty(device, "osVersion", "os.version");
+        putSystemProperty(device, "osArch", "os.arch");
+        return device;
+    }
+
+    private static boolean putAndroidDeviceContext(Map<String, Object> device) {
+        try {
+            Class<?> buildClass = Class.forName("android.os.Build");
+            putStaticStringField(device, buildClass, "manufacturer", "MANUFACTURER");
+            putStaticStringField(device, buildClass, "brand", "BRAND");
+            putStaticStringField(device, buildClass, "model", "MODEL");
+            putStaticStringField(device, buildClass, "device", "DEVICE");
+            putStaticStringField(device, buildClass, "product", "PRODUCT");
+
+            Class<?> versionClass = Class.forName("android.os.Build$VERSION");
+            putStaticStringField(device, versionClass, "osVersion", "RELEASE");
+            Object sdkInt = versionClass.getField("SDK_INT").get(null);
+            if (sdkInt instanceof Number) {
+                device.put("sdkInt", ((Number) sdkInt).intValue());
+            }
+            return device.containsKey("model") || device.containsKey("osVersion") || device.containsKey("sdkInt");
+        } catch (Exception | LinkageError error) {
+            return false;
+        }
+    }
+
+    private static void putStaticStringField(Map<String, Object> device, Class<?> source, String key, String fieldName) throws IllegalAccessException, NoSuchFieldException {
+        Object value = source.getField(fieldName).get(null);
+        if (value instanceof String && !isBlank((String) value)) {
+            device.put(key, value);
+        }
+    }
+
+    private static void putSystemProperty(Map<String, Object> device, String key, String propertyName) {
+        String value = System.getProperty(propertyName);
+        if (!isBlank(value)) {
+            device.put(key, value);
+        }
     }
 
     private static boolean isBlank(String value) {

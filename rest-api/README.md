@@ -46,6 +46,8 @@ If an experiment assignment includes `script`, `executor.execute(state)` runs th
 
 `fetchConfig` remains available for lower-level usage and caches the last successful config in memory until `ttlSeconds` expires. Use `forceRefresh: true` to bypass the cache.
 
+The helper sends basic `device` context with `/v1/config` automatically. Pass `device` or `deviceId` to `start`/`fetchConfig` to add app-specific fields or override defaults.
+
 `tracker` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, and keeps the failed batch for the next retry. Payload numbers become `metrics`; strings, booleans, and nulls become `dimensions`. Experiment assignments are stored in the SDK context created by `/v1/config`, not copied onto each event.
 
 ## 1. Auth
@@ -71,7 +73,11 @@ curl -s -X POST "https://gamealgo.example.com/v1/config" \
     "sdkVersion": "1.0.0",
     "appVersion": "1.2.3",
     "timezone": "Asia/Shanghai",
-    "device": {}
+    "device": {
+      "runtime": "rest",
+      "locale": "zh-CN",
+      "deviceId": "debug-device-id"
+    }
   }'
 ```
 

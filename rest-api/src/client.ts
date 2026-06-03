@@ -172,6 +172,11 @@ export class GameAlgoRestClient {
     const sdkVersion = options.sdkVersion ?? this.sdkVersion;
     const appVersion = options.appVersion ?? this.appVersion;
     const sessionId = clean(options.sessionId) ?? this.tracker.currentSessionId();
+    const device = {
+      ...defaultDeviceContext(),
+      ...(options.device ?? {}),
+      ...(options.deviceId ? { deviceId: options.deviceId } : {}),
+    };
     const cacheKey = JSON.stringify({
       userId: identity.userId,
       sessionId,
@@ -180,7 +185,7 @@ export class GameAlgoRestClient {
       appVersion,
       deviceId: options.deviceId,
       timezone: options.timezone ?? this.timezone,
-      device: options.device,
+      device,
     });
 
     if (!options.forceRefresh && this.cachedConfig && this.cachedConfig.cacheKey === cacheKey && this.cachedConfig.expiresAt > this.now()) {
@@ -189,10 +194,6 @@ export class GameAlgoRestClient {
     }
 
     this.log(`fetching config: userId=${identity.userId}, platform=${platform}`);
-    const device = {
-      ...(options.device ?? {}),
-      ...(options.deviceId ? { deviceId: options.deviceId } : {}),
-    };
 
     try {
       const config = await this.requestJson<ConfigResponse>(this.url("/v1/config"), {
@@ -863,6 +864,33 @@ function defaultTimezone(): string {
   } catch {
     return "UTC";
   }
+}
+
+function defaultDeviceContext(): Record<string, JsonValue> {
+  const context: Record<string, JsonValue> = {};
+  const navigatorValue = (globalThis as {
+    navigator?: { language?: string; platform?: string; userAgent?: string };
+  }).navigator;
+  const processValue = (globalThis as {
+    process?: {
+      arch?: string;
+      platform?: string;
+      versions?: { node?: string };
+    };
+  }).process;
+
+  if (processValue?.versions?.node) {
+    context.runtime = "node";
+    context.nodeVersion = processValue.versions.node;
+  } else if (navigatorValue) {
+    context.runtime = "browser";
+  }
+  if (processValue?.platform) context.os = processValue.platform;
+  if (processValue?.arch) context.arch = processValue.arch;
+  if (navigatorValue?.language) context.locale = navigatorValue.language;
+  if (navigatorValue?.platform) context.browserPlatform = navigatorValue.platform;
+  if (navigatorValue?.userAgent) context.userAgent = navigatorValue.userAgent;
+  return context;
 }
 
 function objectPayload(value: JsonValue): Record<string, JsonValue> {
