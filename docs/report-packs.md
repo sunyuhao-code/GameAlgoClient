@@ -35,12 +35,19 @@ In the main `Reports` view you can:
       "fields": {
         "level_id": { "path": "$.level_id", "type": "string" },
         "result": { "path": "$.result", "type": "string" },
+        "level_no": { "path": "$.level_no", "type": "number" },
         "duration_ms": { "path": "$.duration_ms", "type": "number" }
+      }
+    },
+    "ad_revenue": {
+      "fields": {
+        "revenue": { "path": "$.revenue", "type": "number" }
       }
     }
   },
   "datasets": {
     "level_attempts": {
+      "type": "event",
       "fromEvent": "level_end",
       "dimensions": ["level_id", "result"],
       "metrics": {
@@ -53,6 +60,29 @@ In the main `Reports` view you can:
           "denominator": { "op": "all" }
         }
       }
+    },
+    "user_progress": {
+      "type": "rollup",
+      "fromEvent": "level_end",
+      "entity": "userId",
+      "rollupMetrics": {
+        "user_max_level": { "agg": "max", "field": "level_no" }
+      },
+      "metrics": {
+        "avg_max_level": { "agg": "avg", "field": "user_max_level" },
+        "users": { "agg": "count" }
+      }
+    },
+    "new_user_ltv": {
+      "type": "cohort",
+      "fromEvent": "ad_revenue",
+      "cohort": { "dateField": "userCreatedAt" },
+      "windowDays": 14,
+      "metrics": {
+        "cohort_users": { "agg": "count_distinct", "field": "userId" },
+        "revenue": { "agg": "sum", "field": "revenue" },
+        "ltv": { "formula": "revenue / cohort_users" }
+      }
     }
   },
   "reports": [
@@ -62,6 +92,20 @@ In the main `Reports` view you can:
       "dataset": "level_attempts",
       "groupBy": ["dt", "level_id", "experiment.level_generator"],
       "metrics": ["attempts", "users", "avg_duration", "win_rate"]
+    },
+    {
+      "id": "progress_overview",
+      "title": "Progress Overview",
+      "dataset": "user_progress",
+      "groupBy": ["dt", "experiment.level_generator"],
+      "metrics": ["avg_max_level", "users"]
+    },
+    {
+      "id": "ltv_overview",
+      "title": "LTV Overview",
+      "dataset": "new_user_ltv",
+      "groupBy": ["cohort_dt", "day_offset", "experiment.level_generator"],
+      "metrics": ["cohort_users", "revenue", "ltv"]
     }
   ],
   "dashboard": {
@@ -110,10 +154,12 @@ In the main `Reports` view you can:
 - Field ids must be SQL-safe identifiers: letters, numbers, and underscores.
 - `path` uses JSON path syntax such as `$.level_id`.
 - Field `type` is `string`, `number`, or `boolean`.
-- `datasets` define reusable statistical views over one event type.
+- `datasets` define reusable statistical views. `type` defaults to `event`.
 - `dimensions` are fields allowed in report `groupBy`.
 - `metrics` are aggregated values.
 - Supported metric aggregations are `count`, `count_distinct`, `sum`, `avg`, `min`, `max`, and `ratio`.
+- Any non-`ratio` metric can include `filter`.
+- Formula metrics use a safe arithmetic expression over non-formula metrics in the same dataset, for example `"ltv": { "formula": "revenue / cohort_users" }`.
 - `reports` define visible report queries.
 - `groupBy` supports `dt`, dataset dimensions, and `experiment.<strategy_name>`.
 - `dashboard.tabs` defines how the admin console lays out reports.
@@ -132,6 +178,42 @@ sessionId
 ```
 
 Experiment groups are not duplicated in event payloads. The platform joins SDK context data by `contextId` and reads experiment assignments from the SDK context.
+
+## Dataset Types
+
+`event` datasets aggregate event rows directly.
+
+`rollup` datasets first aggregate by an entity, then aggregate those entity-level values. Use this for metrics like average user max level:
+
+```json
+{
+  "type": "rollup",
+  "fromEvent": "level_end",
+  "entity": "userId",
+  "rollupMetrics": {
+    "user_max_level": { "agg": "max", "field": "level_no" }
+  },
+  "metrics": {
+    "avg_max_level": { "agg": "avg", "field": "user_max_level" }
+  }
+}
+```
+
+`cohort` datasets build cohorts from SDK context rows and join later activity events by user. Use this for LTV and retention-style reports:
+
+```json
+{
+  "type": "cohort",
+  "fromEvent": "ad_revenue",
+  "cohort": { "dateField": "userCreatedAt" },
+  "windowDays": 14,
+  "metrics": {
+    "cohort_users": { "agg": "count_distinct", "field": "userId" },
+    "revenue": { "agg": "sum", "field": "revenue" },
+    "ltv": { "formula": "revenue / cohort_users" }
+  }
+}
+```
 
 ## Payload Guidelines
 
