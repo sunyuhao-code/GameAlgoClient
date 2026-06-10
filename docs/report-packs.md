@@ -208,7 +208,7 @@ In the main `Reports` view you can:
 - `reports` define visible report queries.
 - `groupBy` supports `dt`, dataset dimensions, and `experiment.<strategy_name>`.
 - `dashboard.tabs` defines how the admin console lays out reports.
-- A dashboard tab contains multiple `charts`.
+- A dashboard tab can either reference one built-in standard dashboard with `standard.ref` or contain multiple custom `charts`.
 - Chart `type` supports `line`, `pie`, and `table`.
 - Line charts use `x`, `y`, and optional `series` result columns.
 - Pie charts use `label` and `value` result columns.
@@ -223,6 +223,72 @@ sessionId
 ```
 
 Experiment groups are not duplicated in event payloads. The platform joins SDK context data by `contextId` and reads experiment assignments from the SDK context.
+
+## Standard Dashboard References
+
+Standard dashboards are built-in dashboard modules that can be referenced from a game's own report pack. They are not separate packs. A pack can mix standard tabs and custom tabs:
+
+```json
+{
+  "dashboard": {
+    "title": "Game Reports",
+    "tabs": [
+      {
+        "id": "overview",
+        "title": "Overview",
+        "standard": { "ref": "core.overview@1" }
+      },
+      {
+        "id": "custom_progress",
+        "title": "Custom Progress",
+        "charts": []
+      }
+    ]
+  }
+}
+```
+
+Each tab must choose one mode: `standard.ref` or `charts`. A standard tab stores the ref directly, so platform fixes or new query implementations can be applied without rewriting the game pack. The version suffix is part of the contract; use `@1` to keep the first standard definition.
+
+The first reserved standard dashboard refs are:
+
+| Ref | Purpose | Standard data expected |
+| --- | --- | --- |
+| `core.overview@1` | Overall traffic and session health: DAU, new users, sessions, average session duration, sessions per user. | SDK context rows plus `session_end.payload.sessionDurationMs`. |
+| `retention.cohort@1` | New-user retention cohorts by cohort date and day offset. | SDK context rows and activity events carrying `userId`, `sessionId`, and `contextId`. |
+| `revenue.overview@1` | Daily revenue, ARPU, ARPDAU, payer count, and payment rate. | `ad_revenue` or `purchase` revenue events with `revenue` and `currency` fields. |
+| `revenue.ltv@1` | New-user LTV cohorts: cohort users, cumulative revenue, and LTV. | SDK context rows plus revenue events. |
+| `progression.overview@1` | Progression funnel and difficulty health: starts, finishes, success rate, average duration, and drop-off by progression point. | `progression_start` and `progression_end` events with progression identity, order, result, and duration fields. |
+
+Recommended standard event payload fields:
+
+```json
+{
+  "session_end": {
+    "sessionDurationMs": 125000
+  },
+  "ad_revenue": {
+    "revenue": 0.18,
+    "currency": "USD",
+    "network": "admob",
+    "placement": "rewarded_level_end"
+  },
+  "purchase": {
+    "revenue": 4.99,
+    "currency": "USD",
+    "productId": "starter_pack"
+  },
+  "progression_end": {
+    "progressionType": "level",
+    "progressionId": "level_12",
+    "progressionNo": 12,
+    "result": "success",
+    "durationMs": 82000
+  }
+}
+```
+
+The current validator accepts the refs above. Standard dashboard query execution is intentionally separate from custom report queries and should read platform-managed standard aggregates once those aggregate tables are enabled.
 
 ## Dataset Types
 
