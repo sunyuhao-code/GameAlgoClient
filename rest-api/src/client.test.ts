@@ -548,6 +548,48 @@ test("custom events preserve payload", async () => {
   client.tracker.close();
 });
 
+test("trackAd uploads standard ad_view payload", async () => {
+  let uploadedEvents: Array<Record<string, unknown>> = [];
+  const client = createClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    userId: "u1",
+    eventFlushIntervalMs: 0,
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      if (request.url.endsWith("/v1/events/batch")) {
+        const body = await request.json() as { events: Array<Record<string, unknown>> };
+        uploadedEvents = body.events;
+        return jsonResponse({ ok: true, accepted: body.events.length });
+      }
+      return jsonResponse({
+        contextId: "ctx-1",
+        gameId: "Mahjong",
+        environment: "live",
+        configVersion: "v1",
+        ttlSeconds: 60,
+        serverTime: "2026-05-28T10:00:00.000Z",
+        experiments: [],
+        configFiles: [],
+      });
+    },
+  });
+
+  assert.equal(await client.waitForReady(), true);
+  assert.equal(client.tracker.trackAd("rewarded_level_end", 0.018, "USD", "admob", { source: "reward" }), true);
+  await client.tracker.flush();
+
+  assert.equal(uploadedEvents[0].eventType, "ad_view");
+  assert.deepEqual(uploadedEvents[0].payload, {
+    source: "reward",
+    placement: "rewarded_level_end",
+    revenue: 0.018,
+    currency: "USD",
+    network: "admob",
+  });
+  client.tracker.close();
+});
+
 test("throws structured API errors", async () => {
   const client = createClient({
     baseUrl: "https://gamealgo.test",

@@ -40,6 +40,7 @@ let result = levelGenerator.execute(.object(["turn": .number(7)]))
 let adsEnabled = sdk.config.bool("ads.rewarded.enabled", default: true, fileName: "gameplay.json")
 
 await sdk.tracker.trackLevelEnd(payload: .object(["level": .number(3), "result": .string("win")]))
+await sdk.tracker.trackAd(placement: "rewarded_level_end", revenue: 0.018, currency: "USD", network: "admob")
 await sdk.tracker.trackSessionEnd()
 await sdk.tracker.flush()
 ```

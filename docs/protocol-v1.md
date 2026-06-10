@@ -277,8 +277,19 @@ Content-Type: application/json
 | `session_end` | 会话结束 |
 | `level_start` | 关卡开始 |
 | `level_end` | 关卡结束 |
-| `ad_view` | 广告展示 |
+| `ad_view` | 广告展示和收入 |
 | `purchase` | 付费 |
+
+`ad_view` 的标准 payload 必须包含 `placement`、`revenue`、`currency`，可以额外包含 `network`：
+
+```json
+{
+  "placement": "rewarded_level_end",
+  "revenue": 0.018,
+  "currency": "USD",
+  "network": "admob"
+}
+```
 
 自定义事件使用 `_` 前缀，例如 `_button_click`。
 

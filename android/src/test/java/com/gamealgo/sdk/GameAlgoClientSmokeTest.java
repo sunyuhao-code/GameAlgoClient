@@ -21,6 +21,7 @@ public final class GameAlgoClientSmokeTest {
         testTrackerBuffersEventsUntilContextIsReady();
         testTrackerQueuesAndFlushesEvents();
         testCustomEventsPreservePayload();
+        testTrackAdUploadsStandardAdViewPayload();
     }
 
     private static void testFetchConfigSendsHeadersAndCaches() throws Exception {
@@ -469,6 +470,47 @@ public final class GameAlgoClientSmokeTest {
         check("_custom_action".equals(event.get("eventType")), "custom event should be prefixed");
         check("start".equals(eventPayload.get("button")), "custom string payload should be preserved");
         check(((Number) eventPayload.get("value")).doubleValue() == 2.0, "custom numeric payload should be preserved");
+        client.tracker().close();
+    }
+
+    private static void testTrackAdUploadsStandardAdViewPayload() throws Exception {
+        FakeHttpClient httpClient = new FakeHttpClient();
+        httpClient.enqueue(jsonResponse(configJson("v1")));
+        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":1}"));
+        GameAlgoClient client = new GameAlgoClient(
+                "ga_live_test_key_0123456789abcdef",
+                "https://gamealgo.test",
+                "1.0.0",
+                null,
+                "android",
+                httpClient,
+                new FakeScriptRuntime(),
+                null,
+                null,
+                GameAlgoLogger.console(),
+                new GameAlgoFetchConfigRequest("u1")
+        );
+
+        client.ready().get();
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("source", "reward");
+        check(client.tracker().trackAd("rewarded_level_end", 0.018, "USD", "admob", payload), "ad_view should enqueue");
+        client.tracker().flush();
+
+        Map<String, Object> body = GameAlgoJson.asObject(
+                GameAlgoJson.parse(new String(httpClient.requests.get(1).getBody(), StandardCharsets.UTF_8)),
+                "body"
+        );
+        List<Object> events = GameAlgoJson.asArray(body.get("events"), "events");
+        Map<String, Object> event = GameAlgoJson.asObject(events.get(0), "events[]");
+        Map<String, Object> eventPayload = GameAlgoJson.asObject(event.get("payload"), "payload");
+
+        check("ad_view".equals(event.get("eventType")), "trackAd should upload ad_view");
+        check("reward".equals(eventPayload.get("source")), "ad_view should preserve custom payload");
+        check("rewarded_level_end".equals(eventPayload.get("placement")), "ad_view should include placement");
+        check(((Number) eventPayload.get("revenue")).doubleValue() == 0.018, "ad_view should include revenue");
+        check("USD".equals(eventPayload.get("currency")), "ad_view should include currency");
+        check("admob".equals(eventPayload.get("network")), "ad_view should include network");
         client.tracker().close();
     }
 

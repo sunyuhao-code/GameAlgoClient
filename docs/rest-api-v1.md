@@ -142,6 +142,17 @@ ad_view
 purchase
 ```
 
+`ad_view` payload must include `placement`, `revenue`, and `currency`. `network` is optional:
+
+```json
+{
+  "placement": "rewarded_level_end",
+  "revenue": 0.018,
+  "currency": "USD",
+  "network": "admob"
+}
+```
+
 Custom event names must start with `_`, for example:
 
 ```text
@@ -179,6 +190,6 @@ Common errors:
 - Config files can be fetched and cached.
 - `session_end` is uploaded with duration when the session finishes.
 - `level_start` and `level_end` are uploaded if the game has levels.
-- `ad_view` is uploaded if the game has ads.
+- `ad_view` is uploaded with `placement`, `revenue`, and `currency` if the game has ads.
 - QA builds set `isDebug=true`.
 - Production builds use `ga_live_*`, not `ga_test_*`.

@@ -212,11 +212,19 @@ public actor GameAlgoEventTracker {
     }
 
     @discardableResult
-    public func trackAdView(cpm: Double, placement: String? = nil, payload: JSONValue = .object([:])) -> Bool {
+    public func trackAd(
+        placement: String,
+        revenue: Double,
+        currency: String,
+        network: String? = nil,
+        payload: JSONValue = .object([:])
+    ) -> Bool {
         var merged = payload.objectValue ?? [:]
-        merged["cpm"] = .number(cpm)
-        if let placement, !placement.isEmpty {
-            merged["placement"] = .string(placement)
+        merged["placement"] = .string(placement)
+        merged["revenue"] = .number(revenue)
+        merged["currency"] = .string(currency)
+        if let network, !network.isEmpty {
+            merged["network"] = .string(network)
         }
         return track("ad_view", payload: .object(merged))
     }

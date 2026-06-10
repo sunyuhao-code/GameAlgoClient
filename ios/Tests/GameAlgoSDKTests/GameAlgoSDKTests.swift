@@ -531,6 +531,49 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(payload?["value"] as? Double, 2)
     }
 
+    func testTrackAdUploadsStandardAdViewPayload() async throws {
+        let suiteName = "GameAlgoSDKTests.trackAd.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let httpClient = MockHTTPClient()
+        try await httpClient.enqueueJSON(configResponse(version: "v1"))
+        try await httpClient.enqueueJSON(["ok": true, "accepted": 1])
+        let sdk = GameAlgoSDK(
+            gameKey: gameKey,
+            baseURL: URL(string: "https://gamealgo.test")!,
+            httpClient: httpClient,
+            userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
+            userId: "u1",
+            eventFlushInterval: 0
+        )
+
+        let ready = await sdk.waitForReady()
+        XCTAssertTrue(ready)
+        let didTrackAd = await sdk.tracker.trackAd(
+            placement: "rewarded_level_end",
+            revenue: 0.018,
+            currency: "USD",
+            network: "admob",
+            payload: .object(["source": .string("reward")])
+        )
+        XCTAssertTrue(didTrackAd)
+        await sdk.tracker.flush()
+
+        let requests = await httpClient.requests
+        let body = try JSONSerialization.jsonObject(with: requests[1].body ?? Data()) as? [String: Any]
+        let events = body?["events"] as? [[String: Any]]
+        let payload = events?[0]["payload"] as? [String: Any]
+
+        XCTAssertEqual(events?[0]["eventType"] as? String, "ad_view")
+        XCTAssertEqual(payload?["source"] as? String, "reward")
+        XCTAssertEqual(payload?["placement"] as? String, "rewarded_level_end")
+        XCTAssertEqual(payload?["revenue"] as? Double, 0.018)
+        XCTAssertEqual(payload?["currency"] as? String, "USD")
+        XCTAssertEqual(payload?["network"] as? String, "admob")
+    }
+
     func testTrackSessionEndFlushesImmediately() async throws {
         let suiteName = "GameAlgoSDKTests.sessionEnd.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

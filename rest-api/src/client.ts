@@ -546,10 +546,21 @@ export class GameAlgoEventTracker {
     return this.track("level_end", payload);
   }
 
-  trackAdView(cpm: number, placement?: string, payload: JsonValue = {}): boolean {
-    const merged = objectPayload(payload);
-    merged.cpm = cpm;
-    if (placement) merged.placement = placement;
+  trackAd(placement: string, revenue: number, currency: string, payload?: JsonValue): boolean;
+  trackAd(placement: string, revenue: number, currency: string, network?: string, payload?: JsonValue): boolean;
+  trackAd(
+    placement: string,
+    revenue: number,
+    currency: string,
+    networkOrPayload?: string | JsonValue,
+    payload: JsonValue = {},
+  ): boolean {
+    const network = typeof networkOrPayload === "string" ? networkOrPayload : undefined;
+    const merged = objectPayload(typeof networkOrPayload === "string" ? payload : (networkOrPayload ?? payload));
+    merged.placement = placement;
+    merged.revenue = revenue;
+    merged.currency = currency;
+    if (network) merged.network = network;
     return this.track("ad_view", merged);
   }
 
