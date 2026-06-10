@@ -292,7 +292,9 @@ Recommended standard event payload fields:
 }
 ```
 
-The current validator accepts the refs above. Standard dashboard query execution is intentionally separate from custom report queries and should read platform-managed standard aggregates once those aggregate tables are enabled.
+The current validator accepts the refs above. These refs are contracts for platform-provided dashboards. Standard aggregate jobs live in `gamealgo-server/sql/standard_v2_*.sql` and are scheduled in DataWorks by the platform operator. Saving a report pack only records the `standard.ref`; it does not create, backfill, or schedule DataWorks tasks.
+
+Standard dashboard query execution is intentionally separate from custom report queries. Standard tabs should read platform-managed aggregate tables, while custom tabs generate SQL from the pack's `events`, `datasets`, and `reports`.
 
 ## Dataset Types
 
@@ -399,4 +401,8 @@ Server-side local validators should use `validateReportPackForSave(content, vers
 
 ## Current Boundary
 
-The platform currently stores and validates report packs, generates SQL preview, and can run an active report online from the admin console. It does not yet schedule MaxCompute jobs or create materialized result tables.
+The platform currently stores and validates report packs, generates SQL preview for custom reports, and can run active custom reports online from the admin console through the analytics bridge.
+
+Custom report query results are cached by `gameId + version + reportId + startDate + endDate`. The Cloudflare worker refreshes active custom reports for the default dashboard range every two hours when the report cache cron is configured.
+
+Standard dashboards are declared by `standard.ref` and backed by platform DataWorks jobs. DataWorks task scheduling and historical backfill are operational setup steps outside of the report pack save flow.
