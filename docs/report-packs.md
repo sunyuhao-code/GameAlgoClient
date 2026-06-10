@@ -256,9 +256,13 @@ The first reserved standard dashboard refs are:
 | --- | --- | --- |
 | `core.overview@1` | Overall traffic and session health: DAU, new users, sessions, average session duration, sessions per user. | SDK context rows plus `session_end.payload.sessionDurationMs`. |
 | `retention.cohort@1` | New-user retention cohorts by cohort date and day offset. | SDK context rows and activity events carrying `userId`, `sessionId`, and `contextId`. |
+| `retention.activation_time@1` | Retention cohorts grouped by local activation time segment. | SDK context rows with `userCreatedAt` and `timezone`, plus later user activity. |
+| `engagement.cohort@1` | New-user engagement cohorts: cumulative active days, cumulative play time, and sessions per user. | SDK context rows plus `session_end.payload.sessionDurationMs`. |
 | `revenue.overview@1` | Daily revenue, ARPU, ARPDAU, payer count, and payment rate. | `ad_revenue` or `purchase` revenue events with `revenue` and `currency` fields. |
 | `revenue.ltv@1` | New-user LTV cohorts: cohort users, cumulative revenue, and LTV. | SDK context rows plus revenue events. |
+| `revenue.placement@1` | Daily revenue by ad placement/network. | `ad_revenue` or legacy `ad_view` events with placement/network metadata. |
 | `progression.overview@1` | Progression funnel and difficulty health: starts, finishes, success rate, average duration, and drop-off by progression point. | `progression_start` and `progression_end` events with progression identity, order, result, and duration fields. |
+| `events.health@1` | Data quality and event volume: event counts, users, sessions, and debug-event volume by event type. | Any SDK events in `gamealgo_events_payload`. |
 
 Recommended standard event payload fields:
 
