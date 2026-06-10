@@ -280,11 +280,12 @@ Content-Type: application/json
 | `ad_view` | 广告展示和收入 |
 | `purchase` | 付费 |
 
-`ad_view` 的标准 payload 必须包含 `placement`、`revenue`、`currency`，可以额外包含 `network`：
+`ad_view` 的标准 payload 必须包含 `placement`、`adType`、`revenue`、`currency`，可以额外包含 `network`。`adType` 表示广告位类型，例如 `reward`、`banner`、`interstitial`：
 
 ```json
 {
   "placement": "rewarded_level_end",
+  "adType": "reward",
   "revenue": 0.018,
   "currency": "USD",
   "network": "admob"

@@ -21,7 +21,7 @@ val result = levelGenerator.execute(mapOf("turn" to 7))
 val adsEnabled = sdk.config().bool("ads.rewarded.enabled", true, "gameplay.json")
 
 sdk.tracker().trackLevelEnd(mapOf("level" to 3, "result" to "win"))
-sdk.tracker().trackAd("rewarded_level_end", 0.018, "USD", "admob")
+sdk.tracker().trackAd("rewarded_level_end", "reward", 0.018, "USD", "admob")
 sdk.tracker().trackSessionEnd()
 sdk.tracker().flushAsync()
 ```

@@ -553,6 +553,7 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertTrue(ready)
         let didTrackAd = await sdk.tracker.trackAd(
             placement: "rewarded_level_end",
+            adType: "reward",
             revenue: 0.018,
             currency: "USD",
             network: "admob",
@@ -569,6 +570,7 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(events?[0]["eventType"] as? String, "ad_view")
         XCTAssertEqual(payload?["source"] as? String, "reward")
         XCTAssertEqual(payload?["placement"] as? String, "rewarded_level_end")
+        XCTAssertEqual(payload?["adType"] as? String, "reward")
         XCTAssertEqual(payload?["revenue"] as? Double, 0.018)
         XCTAssertEqual(payload?["currency"] as? String, "USD")
         XCTAssertEqual(payload?["network"] as? String, "admob")

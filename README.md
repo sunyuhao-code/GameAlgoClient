@@ -227,11 +227,12 @@ ad_view
 purchase
 ```
 
-广告事件使用 `trackAd`，事件名仍是 `ad_view`。`placement`、`revenue`、`currency` 必填，`network` 可选：
+广告事件使用 `trackAd`，事件名仍是 `ad_view`。`placement`、`adType`、`revenue`、`currency` 必填，`network` 可选：
 
 ```swift
 await sdk.tracker.trackAd(
     placement: "rewarded_level_end",
+    adType: "reward",
     revenue: 0.018,
     currency: "USD",
     network: "admob"

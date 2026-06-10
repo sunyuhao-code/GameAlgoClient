@@ -41,7 +41,11 @@ In the main `Reports` view you can:
     },
     "ad_view": {
       "fields": {
-        "revenue": { "path": "$.revenue", "type": "number" }
+        "placement": { "path": "$.placement", "type": "string" },
+        "ad_type": { "path": "$.adType", "type": "string" },
+        "revenue": { "path": "$.revenue", "type": "number" },
+        "currency": { "path": "$.currency", "type": "string" },
+        "network": { "path": "$.network", "type": "string" }
       }
     },
     "session_end": {
@@ -260,7 +264,7 @@ The first reserved standard dashboard refs are:
 | `engagement.cohort@1` | New-user engagement cohorts: cumulative active days, cumulative play time, and sessions per user. | SDK context rows plus `session_end.payload.sessionDurationMs`. |
 | `revenue.overview@1` | Daily revenue, ARPU, ARPDAU, payer count, and payment rate. | `ad_view` and `purchase` events with `revenue` and `currency` fields. |
 | `revenue.ltv@1` | New-user LTV cohorts: cohort users, cumulative revenue, and LTV. | SDK context rows plus revenue events. |
-| `revenue.placement@1` | Daily revenue by ad placement/network. | `ad_view` events with `placement`, `revenue`, `currency`, and optional `network`. |
+| `revenue.placement@1` | Daily revenue by ad placement/type/network. | `ad_view` events with required `placement`, `adType`, `revenue`, and `currency`, plus optional `network`. |
 | `progression.overview@1` | Progression funnel and difficulty health: starts, finishes, success rate, average duration, and drop-off by progression point. | `progression_start` and `progression_end` events with progression identity, order, result, and duration fields. |
 | `events.health@1` | Data quality and event volume: event counts, users, sessions, and debug-event volume by event type. | Any SDK events in `gamealgo_events_payload`. |
 
@@ -275,6 +279,7 @@ Recommended standard event payload fields:
     "revenue": 0.18,
     "currency": "USD",
     "network": "admob",
+    "adType": "reward",
     "placement": "rewarded_level_end"
   },
   "purchase": {

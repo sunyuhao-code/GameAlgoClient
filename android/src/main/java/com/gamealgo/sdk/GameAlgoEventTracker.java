@@ -155,17 +155,18 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         return track("level_end", payload);
     }
 
-    public boolean trackAd(String placement, double revenue, String currency) {
-        return trackAd(placement, revenue, currency, null, new LinkedHashMap<String, Object>());
+    public boolean trackAd(String placement, String adType, double revenue, String currency) {
+        return trackAd(placement, adType, revenue, currency, null, new LinkedHashMap<String, Object>());
     }
 
-    public boolean trackAd(String placement, double revenue, String currency, String network) {
-        return trackAd(placement, revenue, currency, network, new LinkedHashMap<String, Object>());
+    public boolean trackAd(String placement, String adType, double revenue, String currency, String network) {
+        return trackAd(placement, adType, revenue, currency, network, new LinkedHashMap<String, Object>());
     }
 
-    public boolean trackAd(String placement, double revenue, String currency, String network, Map<String, Object> payload) {
+    public boolean trackAd(String placement, String adType, double revenue, String currency, String network, Map<String, Object> payload) {
         Map<String, Object> merged = copyPayload(payload);
         merged.put("placement", placement);
+        merged.put("adType", adType);
         merged.put("revenue", revenue);
         merged.put("currency", currency);
         if (!isBlank(network)) {

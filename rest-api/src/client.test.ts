@@ -576,13 +576,14 @@ test("trackAd uploads standard ad_view payload", async () => {
   });
 
   assert.equal(await client.waitForReady(), true);
-  assert.equal(client.tracker.trackAd("rewarded_level_end", 0.018, "USD", "admob", { source: "reward" }), true);
+  assert.equal(client.tracker.trackAd("rewarded_level_end", "reward", 0.018, "USD", "admob", { source: "reward" }), true);
   await client.tracker.flush();
 
   assert.equal(uploadedEvents[0].eventType, "ad_view");
   assert.deepEqual(uploadedEvents[0].payload, {
     source: "reward",
     placement: "rewarded_level_end",
+    adType: "reward",
     revenue: 0.018,
     currency: "USD",
     network: "admob",

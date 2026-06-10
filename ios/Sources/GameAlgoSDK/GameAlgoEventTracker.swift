@@ -214,6 +214,7 @@ public actor GameAlgoEventTracker {
     @discardableResult
     public func trackAd(
         placement: String,
+        adType: String,
         revenue: Double,
         currency: String,
         network: String? = nil,
@@ -221,6 +222,7 @@ public actor GameAlgoEventTracker {
     ) -> Bool {
         var merged = payload.objectValue ?? [:]
         merged["placement"] = .string(placement)
+        merged["adType"] = .string(adType)
         merged["revenue"] = .number(revenue)
         merged["currency"] = .string(currency)
         if let network, !network.isEmpty {

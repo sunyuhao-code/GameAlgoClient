@@ -494,7 +494,7 @@ public final class GameAlgoClientSmokeTest {
         client.ready().get();
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("source", "reward");
-        check(client.tracker().trackAd("rewarded_level_end", 0.018, "USD", "admob", payload), "ad_view should enqueue");
+        check(client.tracker().trackAd("rewarded_level_end", "reward", 0.018, "USD", "admob", payload), "ad_view should enqueue");
         client.tracker().flush();
 
         Map<String, Object> body = GameAlgoJson.asObject(
@@ -508,6 +508,7 @@ public final class GameAlgoClientSmokeTest {
         check("ad_view".equals(event.get("eventType")), "trackAd should upload ad_view");
         check("reward".equals(eventPayload.get("source")), "ad_view should preserve custom payload");
         check("rewarded_level_end".equals(eventPayload.get("placement")), "ad_view should include placement");
+        check("reward".equals(eventPayload.get("adType")), "ad_view should include adType");
         check(((Number) eventPayload.get("revenue")).doubleValue() == 0.018, "ad_view should include revenue");
         check("USD".equals(eventPayload.get("currency")), "ad_view should include currency");
         check("admob".equals(eventPayload.get("network")), "ad_view should include network");

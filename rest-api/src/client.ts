@@ -546,10 +546,11 @@ export class GameAlgoEventTracker {
     return this.track("level_end", payload);
   }
 
-  trackAd(placement: string, revenue: number, currency: string, payload?: JsonValue): boolean;
-  trackAd(placement: string, revenue: number, currency: string, network?: string, payload?: JsonValue): boolean;
+  trackAd(placement: string, adType: string, revenue: number, currency: string, payload?: JsonValue): boolean;
+  trackAd(placement: string, adType: string, revenue: number, currency: string, network?: string, payload?: JsonValue): boolean;
   trackAd(
     placement: string,
+    adType: string,
     revenue: number,
     currency: string,
     networkOrPayload?: string | JsonValue,
@@ -558,6 +559,7 @@ export class GameAlgoEventTracker {
     const network = typeof networkOrPayload === "string" ? networkOrPayload : undefined;
     const merged = objectPayload(typeof networkOrPayload === "string" ? payload : (networkOrPayload ?? payload));
     merged.placement = placement;
+    merged.adType = adType;
     merged.revenue = revenue;
     merged.currency = currency;
     if (network) merged.network = network;

@@ -177,10 +177,10 @@ ad_view
 purchase
 ```
 
-Use `trackAd` for ad monetization. It uploads `ad_view` with required `placement`, `revenue`, and `currency`; `network` is optional:
+Use `trackAd` for ad monetization. It uploads `ad_view` with required `placement`, `adType`, `revenue`, and `currency`; `network` is optional:
 
 ```ts
-client.tracker.trackAd("rewarded_level_end", 0.018, "USD", "admob");
+client.tracker.trackAd("rewarded_level_end", "reward", 0.018, "USD", "admob");
 ```
 
 Custom event names must start with `_`, for example:
@@ -218,7 +218,7 @@ Common errors:
 - Config files can be fetched and cached.
 - `session_end` is uploaded with duration when the session finishes.
 - `level_start` and `level_end` are uploaded if the game has levels.
-- `ad_view` is uploaded with `placement`, `revenue`, and `currency` if the game has ads.
+- `ad_view` is uploaded with `placement`, `adType`, `revenue`, and `currency` if the game has ads.
 - QA builds set `isDebug=true`.
 - Production builds use `ga_live_*`, not `ga_test_*`.
 
