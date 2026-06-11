@@ -219,7 +219,7 @@ In the main `Reports` view you can:
 - `groupBy` supports `dt`, dataset dimensions, and `experiment.<strategy_name>`.
 - `dashboard.tabs` defines how the admin console lays out reports.
 - A tab can contain one or more `groups`. A group visually wraps related charts and owns a shared selector list. Not every chart in the group has to use every selector.
-- For backward compatibility, a tab can still define top-level `standard.ref` or `charts`; the admin UI treats that as one generated group.
+- For backward compatibility, a tab can still define top-level `standard.ref` or `charts`; the admin UI treats `standard.ref` as one generated standard group and splits legacy `charts` into custom groups by `chart.report`.
 - Chart `type` supports `line`, `pie`, and `table`.
 - Line charts use `x`, `y`, and optional `series` result columns.
 - Pie charts use `label` and `value` result columns.
