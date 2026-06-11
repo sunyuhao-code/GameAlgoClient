@@ -216,7 +216,7 @@ In the main `Reports` view you can:
 - Any non-`ratio` metric can include `filter`.
 - Formula metrics use a safe arithmetic expression over non-formula metrics in the same dataset, for example `"ltv": { "formula": "revenue / cohort_users" }`.
 - `reports` define visible report queries.
-- `groupBy` supports `dt`, dataset dimensions, and `experiment.<strategy_name>`.
+- `groupBy` supports `dt`, dataset dimensions, `experiment.<strategy_name>`, and `experiment`.
 - `dashboard.tabs` defines how the admin console lays out reports.
 - A tab can contain one or more `groups`. A group visually wraps related charts and owns a shared selector list. Not every chart in the group has to use every selector.
 - For backward compatibility, a tab can still define top-level `standard.ref` or `charts`; the admin UI treats `standard.ref` as one generated standard group and splits legacy `charts` into custom groups by `chart.report`.
@@ -234,6 +234,16 @@ sessionId
 ```
 
 Experiment groups are not duplicated in event payloads. The platform joins SDK context data by `contextId` and reads experiment assignments from the SDK context.
+
+Use `experiment.<strategy_name>` when a report should always split by one known strategy. The result column is named like `experiment_level_generator`.
+
+Use bare `experiment` when the dashboard should let the viewer choose a strategy at runtime. The generated SQL returns global rows plus experiment rows with these result columns:
+
+| Column | Meaning |
+| --- | --- |
+| `scope` | `global` for all users, or `experiment` for strategy/variant rows. |
+| `strategy` | Strategy name for experiment rows, empty for global rows. |
+| `variant` | Variant name for experiment rows, empty for global rows. |
 
 ## Standard Dashboard References
 
@@ -289,6 +299,51 @@ Group selectors are UI controls scoped to one group:
 
 The built-in `retention.cohort@1` and `revenue.ltv@1` groups automatically provide Strategy and Dx selectors. These selectors filter the complete cached report rows in the browser and do not change the report cache key.
 
+Custom groups can use the same experiment selector by declaring `type: "experimentStrategy"` and using a report grouped by bare `experiment`:
+
+```json
+{
+  "reports": [
+    {
+      "id": "ad_revenue_by_variant",
+      "dataset": "ad_revenue",
+      "groupBy": ["dt", "placement", "experiment"],
+      "metrics": ["revenue"]
+    }
+  ],
+  "dashboard": {
+    "tabs": [
+      {
+        "id": "revenue",
+        "title": "Revenue",
+        "groups": [
+          {
+            "id": "ad_revenue",
+            "title": "Ad Revenue",
+            "selectors": [
+              { "id": "experiment", "label": "Experiment", "type": "experimentStrategy" }
+            ],
+            "charts": [
+              {
+                "id": "revenue_trend",
+                "title": "Revenue Trend",
+                "type": "line",
+                "report": "ad_revenue_by_variant",
+                "x": "dt",
+                "y": "revenue",
+                "series": "variant"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The experiment selector only filters rows. `Global` means `scope = global`; selecting a strategy means `scope = experiment AND strategy = selected`. The chart still owns its `x`, `y`, `series`, `label`, and `value` mappings. Runtime selector values do not change the report cache key.
+
 The first reserved standard dashboard refs are:
 
 | Ref | Purpose | Standard data expected |
@@ -334,7 +389,7 @@ Recommended standard event payload fields:
 
 The current validator accepts the refs above. These refs are contracts for platform-provided dashboards. Standard aggregate jobs live in `gamealgo-server/sql/standard_v2_*.sql` and are scheduled in DataWorks by the platform operator. Saving a report pack only records the `standard.ref`; it does not create, backfill, or schedule DataWorks tasks.
 
-Standard dashboard query execution is intentionally separate from custom report SQL generation. Standard groups read platform-managed aggregate tables, while custom groups generate SQL from the pack's `events`, `datasets`, and `reports`. Executable standard queries currently include `standard.core_overview` for `core.overview@1`, `standard.retention_trend` and `standard.retention_matrix` for `retention.cohort@1`, and `standard.ltv_trend` plus `standard.ltv_matrix` for `revenue.ltv@1`. Core overview filters `exp_info = 'glob'` and reads daily rows from `adn.dws_gamealgo_standard_core_daily_di`; retention and LTV cohort reports return both global rows and experiment rows parsed from `strategy:variant` `exp_info`, so Strategy and Dx selectors only filter the complete report result in the UI. LTV queries hide immature cohort/day pairs by requiring `DATE_ADD(cohort_dt, day_offset) <= end_dt`.
+Standard dashboard query execution is intentionally separate from custom report SQL generation. Standard groups read platform-managed aggregate tables, while custom groups generate SQL from the pack's `events`, `datasets`, and `reports`. Executable standard queries currently include `standard.core_overview` for `core.overview@1`, `standard.retention_trend` and `standard.retention_matrix` for `retention.cohort@1`, and `standard.ltv_trend` plus `standard.ltv_matrix` for `revenue.ltv@1`. Core overview filters `exp_info = 'glob'` and reads daily rows from `adn.dws_gamealgo_standard_core_daily_di`; retention, LTV cohort, and custom bare-`experiment` reports return both global rows and experiment rows parsed from `strategy:variant` assignment data, so Strategy and Dx selectors only filter the complete report result in the UI. LTV queries hide immature cohort/day pairs by requiring `DATE_ADD(cohort_dt, day_offset) <= end_dt`.
 
 ## Dataset Types
 
@@ -443,6 +498,6 @@ Server-side local validators should use `validateReportPackForSave(content, vers
 
 The platform currently stores and validates report packs, generates SQL preview for custom reports and supported standard dashboards, and can run active reports online from the admin console through the analytics bridge.
 
-Report query results are cached by `gameId + version + reportId + startDate + endDate`. Runtime selectors such as cohort Strategy and Dx are scoped to their group and do not change this cache key; they filter the cached report rows on the client. The Cloudflare worker refreshes all queryable reports in active report packs for the default dashboard range every two hours when the report cache cron is configured. Queryable reports include custom `reports[]` entries and supported standard reports such as `standard.core_overview`, `standard.retention_trend`, `standard.retention_matrix`, `standard.ltv_trend`, and `standard.ltv_matrix`.
+Report query results are cached by `gameId + version + reportId + startDate + endDate`. Runtime selectors such as Strategy, Dx, and custom `experimentStrategy` selectors are scoped to their group and do not change this cache key; they filter the cached report rows on the client. The Cloudflare worker refreshes all queryable reports in active report packs for the default dashboard range every two hours when the report cache cron is configured. Queryable reports include custom `reports[]` entries and supported standard reports such as `standard.core_overview`, `standard.retention_trend`, `standard.retention_matrix`, `standard.ltv_trend`, and `standard.ltv_matrix`.
 
 Standard dashboards are declared by `standard.ref` and backed by platform DataWorks jobs. DataWorks task scheduling and historical backfill are operational setup steps outside of the report pack save flow.
