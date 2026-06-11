@@ -161,32 +161,38 @@ In the main `Reports` view you can:
       {
         "id": "overview",
         "title": "Overview",
-        "charts": [
+        "groups": [
           {
-            "id": "win_rate_trend",
-            "title": "Win Rate Trend",
-            "type": "line",
-            "report": "level_overview",
-            "x": "dt",
-            "y": "win_rate",
-            "series": "level_id",
-            "format": "percent",
-            "size": "lg"
-          },
-          {
-            "id": "attempt_share",
-            "title": "Attempt Share",
-            "type": "pie",
-            "report": "level_overview",
-            "label": "level_id",
-            "value": "attempts"
-          },
-          {
-            "id": "level_table",
-            "title": "Level Detail",
-            "type": "table",
-            "report": "level_overview",
-            "size": "full"
+            "id": "level_progress",
+            "title": "Level Progress",
+            "charts": [
+              {
+                "id": "win_rate_trend",
+                "title": "Win Rate Trend",
+                "type": "line",
+                "report": "level_overview",
+                "x": "dt",
+                "y": "win_rate",
+                "series": "level_id",
+                "format": "percent",
+                "size": "lg"
+              },
+              {
+                "id": "attempt_share",
+                "title": "Attempt Share",
+                "type": "pie",
+                "report": "level_overview",
+                "label": "level_id",
+                "value": "attempts"
+              },
+              {
+                "id": "level_table",
+                "title": "Level Detail",
+                "type": "table",
+                "report": "level_overview",
+                "size": "full"
+              }
+            ]
           }
         ]
       }
@@ -212,7 +218,8 @@ In the main `Reports` view you can:
 - `reports` define visible report queries.
 - `groupBy` supports `dt`, dataset dimensions, and `experiment.<strategy_name>`.
 - `dashboard.tabs` defines how the admin console lays out reports.
-- A dashboard tab can either reference one built-in standard dashboard with `standard.ref` or contain multiple custom `charts`.
+- A tab can contain one or more `groups`. A group visually wraps related charts and owns a shared selector list. Not every chart in the group has to use every selector.
+- For backward compatibility, a tab can still define top-level `standard.ref` or `charts`; the admin UI treats that as one generated group.
 - Chart `type` supports `line`, `pie`, and `table`.
 - Line charts use `x`, `y`, and optional `series` result columns.
 - Pie charts use `label` and `value` result columns.
@@ -230,7 +237,7 @@ Experiment groups are not duplicated in event payloads. The platform joins SDK c
 
 ## Standard Dashboard References
 
-Standard dashboards are built-in dashboard modules that can be referenced from a game's own report pack. They are not separate packs. A pack can mix standard tabs and custom tabs:
+Standard dashboards are built-in dashboard modules that can be referenced from a game's own report pack. They are not separate packs. A pack can mix standard groups and custom groups:
 
 ```json
 {
@@ -240,19 +247,47 @@ Standard dashboards are built-in dashboard modules that can be referenced from a
       {
         "id": "overview",
         "title": "Overview",
-        "standard": { "ref": "core.overview@1" }
+        "groups": [
+          {
+            "id": "core",
+            "title": "Core Overview",
+            "standard": { "ref": "core.overview@1" }
+          }
+        ]
       },
       {
         "id": "custom_progress",
         "title": "Custom Progress",
-        "charts": []
+        "groups": [
+          {
+            "id": "progression",
+            "title": "Progression",
+            "charts": []
+          }
+        ]
       }
     ]
   }
 }
 ```
 
-Each tab must choose one mode: `standard.ref` or `charts`. A standard tab stores the ref directly, so platform fixes or new query implementations can be applied without rewriting the game pack. The version suffix is part of the contract; use `@1` to keep the first standard definition.
+Each tab should use `groups` for new packs. A group must choose one mode: `standard.ref` or `charts`. A standard group stores the ref directly, so platform fixes or new query implementations can be applied without rewriting the game pack. The version suffix is part of the contract; use `@1` to keep the first standard definition.
+
+Group selectors are UI controls scoped to one group:
+
+```json
+{
+  "id": "retention_cohort",
+  "title": "Retention Cohort",
+  "standard": { "ref": "retention.cohort@1" },
+  "selectors": [
+    { "id": "strategy", "label": "Strategy", "source": "experimentStrategies" },
+    { "id": "dayOffset", "label": "Dx", "options": ["D1", "D2", "D3", "D7"] }
+  ]
+}
+```
+
+The built-in `retention.cohort@1` group automatically provides Strategy and Dx selectors. These selectors filter the complete cached report rows in the browser and do not change the report cache key.
 
 The first reserved standard dashboard refs are:
 
@@ -299,7 +334,7 @@ Recommended standard event payload fields:
 
 The current validator accepts the refs above. These refs are contracts for platform-provided dashboards. Standard aggregate jobs live in `gamealgo-server/sql/standard_v2_*.sql` and are scheduled in DataWorks by the platform operator. Saving a report pack only records the `standard.ref`; it does not create, backfill, or schedule DataWorks tasks.
 
-Standard dashboard query execution is intentionally separate from custom report SQL generation. Standard tabs read platform-managed aggregate tables, while custom tabs generate SQL from the pack's `events`, `datasets`, and `reports`. Executable standard queries currently include `standard.core_overview` for `core.overview@1`, `standard.retention_trend` and `standard.retention_matrix` for `retention.cohort@1`, and `standard.ltv_trend` plus `standard.ltv_matrix` for `revenue.ltv@1`. Core overview filters `exp_info = 'glob'` and reads daily rows from `adn.dws_gamealgo_standard_core_daily_di`; retention reports return both global rows and experiment rows parsed from `strategy:variant` `exp_info`, so Strategy and Dx selectors only filter the complete report result in the UI. LTV queries read the standard cohort table, filter `exp_info = 'glob'`, and hide immature cohort/day pairs by requiring `DATE_ADD(cohort_dt, day_offset) <= end_dt`.
+Standard dashboard query execution is intentionally separate from custom report SQL generation. Standard groups read platform-managed aggregate tables, while custom groups generate SQL from the pack's `events`, `datasets`, and `reports`. Executable standard queries currently include `standard.core_overview` for `core.overview@1`, `standard.retention_trend` and `standard.retention_matrix` for `retention.cohort@1`, and `standard.ltv_trend` plus `standard.ltv_matrix` for `revenue.ltv@1`. Core overview filters `exp_info = 'glob'` and reads daily rows from `adn.dws_gamealgo_standard_core_daily_di`; retention reports return both global rows and experiment rows parsed from `strategy:variant` `exp_info`, so Strategy and Dx selectors only filter the complete report result in the UI. LTV queries read the standard cohort table, filter `exp_info = 'glob'`, and hide immature cohort/day pairs by requiring `DATE_ADD(cohort_dt, day_offset) <= end_dt`.
 
 ## Dataset Types
 
@@ -408,6 +443,6 @@ Server-side local validators should use `validateReportPackForSave(content, vers
 
 The platform currently stores and validates report packs, generates SQL preview for custom reports and supported standard dashboards, and can run active reports online from the admin console through the analytics bridge.
 
-Report query results are cached by `gameId + version + reportId + startDate + endDate`. Runtime selectors such as retention Strategy and Dx do not change this cache key; they filter the cached report rows on the client. The Cloudflare worker refreshes all queryable reports in active report packs for the default dashboard range every two hours when the report cache cron is configured. Queryable reports include custom `reports[]` entries and supported standard reports such as `standard.core_overview`, `standard.retention_trend`, `standard.retention_matrix`, `standard.ltv_trend`, and `standard.ltv_matrix`.
+Report query results are cached by `gameId + version + reportId + startDate + endDate`. Runtime selectors such as retention Strategy and Dx are scoped to their group and do not change this cache key; they filter the cached report rows on the client. The Cloudflare worker refreshes all queryable reports in active report packs for the default dashboard range every two hours when the report cache cron is configured. Queryable reports include custom `reports[]` entries and supported standard reports such as `standard.core_overview`, `standard.retention_trend`, `standard.retention_matrix`, `standard.ltv_trend`, and `standard.ltv_matrix`.
 
 Standard dashboards are declared by `standard.ref` and backed by platform DataWorks jobs. DataWorks task scheduling and historical backfill are operational setup steps outside of the report pack save flow.
