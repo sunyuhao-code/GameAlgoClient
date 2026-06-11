@@ -259,7 +259,7 @@ The first reserved standard dashboard refs are:
 | Ref | Purpose | Standard data expected |
 | --- | --- | --- |
 | `core.overview@1` | Overall traffic and session health. Includes built-in line charts for DAU, new users, sessions, average session duration, sessions per user, plus a detail table. | `adn.dws_gamealgo_standard_core_daily_di`, produced from SDK context rows plus `session_end.payload.sessionDurationMs`. |
-| `retention.cohort@1` | New-user retention cohorts by cohort date and day offset. Includes the built-in `Retention Trend` line chart with `x = cohort_dt`, `y = retention_rate`, and `series = day_offset_label` for D1, D2, D3, and D7. | `adn.dws_gamealgo_standard_cohort_di`, produced from SDK context rows and activity events carrying `userId`, `sessionId`, and `contextId`. |
+| `retention.cohort@1` | New-user retention cohorts by cohort date and day offset. Includes the built-in `Retention Trend` line chart for D1, D2, D3, and D7, plus a `Retention Cohort Matrix` table for D0-D14. | `adn.dws_gamealgo_standard_cohort_di`, produced from SDK context rows and activity events carrying `userId`, `sessionId`, and `contextId`. |
 | `retention.activation_time@1` | Retention cohorts grouped by local activation time segment. | SDK context rows with `userCreatedAt` and `timezone`, plus later user activity. |
 | `engagement.cohort@1` | New-user engagement cohorts: cumulative active days, cumulative play time, and sessions per user. | SDK context rows plus `session_end.payload.sessionDurationMs`. |
 | `revenue.overview@1` | Daily revenue, ARPU, ARPDAU, payer count, and payment rate. | `ad_view` and `purchase` events with `revenue` and `currency` fields. |
@@ -299,7 +299,7 @@ Recommended standard event payload fields:
 
 The current validator accepts the refs above. These refs are contracts for platform-provided dashboards. Standard aggregate jobs live in `gamealgo-server/sql/standard_v2_*.sql` and are scheduled in DataWorks by the platform operator. Saving a report pack only records the `standard.ref`; it does not create, backfill, or schedule DataWorks tasks.
 
-Standard dashboard query execution is intentionally separate from custom report SQL generation. Standard tabs read platform-managed aggregate tables, while custom tabs generate SQL from the pack's `events`, `datasets`, and `reports`. Executable standard queries currently include `standard.core_overview` for `core.overview@1` and `standard.retention_trend` for `retention.cohort@1`. Core overview filters `exp_info = 'glob'` and reads daily rows from `adn.dws_gamealgo_standard_core_daily_di`; retention trend filters `exp_info = 'glob'`, aggregates all activation-time rows for each cohort date, and hides immature cohort/day pairs by requiring `DATE_ADD(cohort_dt, day_offset) <= end_dt`.
+Standard dashboard query execution is intentionally separate from custom report SQL generation. Standard tabs read platform-managed aggregate tables, while custom tabs generate SQL from the pack's `events`, `datasets`, and `reports`. Executable standard queries currently include `standard.core_overview` for `core.overview@1`, plus `standard.retention_trend` and `standard.retention_matrix` for `retention.cohort@1`. Core overview filters `exp_info = 'glob'` and reads daily rows from `adn.dws_gamealgo_standard_core_daily_di`; retention trend filters `exp_info = 'glob'`, aggregates all activation-time rows for each cohort date, and hides immature cohort/day pairs by requiring `DATE_ADD(cohort_dt, day_offset) <= end_dt`. Retention matrix reads the same standard cohort table and returns `cohort_size` plus D0-D14 rates by `cohort_dt`.
 
 ## Dataset Types
 
@@ -408,6 +408,6 @@ Server-side local validators should use `validateReportPackForSave(content, vers
 
 The platform currently stores and validates report packs, generates SQL preview for custom reports and supported standard dashboards, and can run active reports online from the admin console through the analytics bridge.
 
-Report query results are cached by `gameId + version + reportId + startDate + endDate`. The Cloudflare worker refreshes all queryable reports in active report packs for the default dashboard range every two hours when the report cache cron is configured. Queryable reports include custom `reports[]` entries and supported standard reports such as `standard.core_overview` and `standard.retention_trend`.
+Report query results are cached by `gameId + version + reportId + startDate + endDate`. The Cloudflare worker refreshes all queryable reports in active report packs for the default dashboard range every two hours when the report cache cron is configured. Queryable reports include custom `reports[]` entries and supported standard reports such as `standard.core_overview`, `standard.retention_trend`, and `standard.retention_matrix`.
 
 Standard dashboards are declared by `standard.ref` and backed by platform DataWorks jobs. DataWorks task scheduling and historical backfill are operational setup steps outside of the report pack save flow.
