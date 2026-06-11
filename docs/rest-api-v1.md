@@ -154,6 +154,16 @@ purchase
 }
 ```
 
+`purchase` payload should include `productId`, `revenue`, and `currency` when available:
+
+```json
+{
+  "productId": "starter_pack",
+  "revenue": 4.99,
+  "currency": "USD"
+}
+```
+
 Custom event names must start with `_`, for example:
 
 ```text

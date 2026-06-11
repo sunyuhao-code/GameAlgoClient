@@ -53,6 +53,8 @@ ad_view
 purchase
 ```
 
+For IAP, use `trackPurchase` and send `productId`, `revenue`, and `currency` when available. The event type is `purchase`.
+
 ## 5. Acceptance Checklist
 
 - The build contains the correct `gameKey`.

@@ -183,6 +183,12 @@ Use `trackAd` for ad monetization. It uploads `ad_view` with required `placement
 client.tracker.trackAd("rewarded_level_end", "reward", 0.018, "USD", "admob");
 ```
 
+Use `trackPurchase` for IAP or paid orders. It uploads `purchase` with `productId`, `revenue`, and `currency` when provided:
+
+```ts
+client.tracker.trackPurchase("starter_pack", 4.99, "USD");
+```
+
 Custom event names must start with `_`, for example:
 
 ```text

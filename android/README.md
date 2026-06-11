@@ -22,6 +22,7 @@ val adsEnabled = sdk.config().bool("ads.rewarded.enabled", true, "gameplay.json"
 
 sdk.tracker().trackLevelEnd(mapOf("level" to 3, "result" to "win"))
 sdk.tracker().trackAd("rewarded_level_end", "reward", 0.018, "USD", "admob")
+sdk.tracker().trackPurchase("starter_pack", 4.99, "USD", mapOf())
 sdk.tracker().trackSessionEnd()
 sdk.tracker().flushAsync()
 ```

@@ -239,6 +239,16 @@ await sdk.tracker.trackAd(
 )
 ```
 
+付费事件使用 `trackPurchase`，事件名是 `purchase`。`productId`、`revenue`、`currency` 建议都传，字段会原样进入 payload：
+
+```swift
+await sdk.tracker.trackPurchase(
+    productId: "starter_pack",
+    revenue: 4.99,
+    currency: "USD"
+)
+```
+
 自定义事件必须以 `_` 开头，只使用小写字母、数字和下划线，例如：
 
 ```text

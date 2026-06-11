@@ -292,6 +292,16 @@ Content-Type: application/json
 }
 ```
 
+`purchase` 的标准 payload 建议包含 `productId`、`revenue`、`currency`：
+
+```json
+{
+  "productId": "starter_pack",
+  "revenue": 4.99,
+  "currency": "USD"
+}
+```
+
 自定义事件使用 `_` 前缀，例如 `_button_click`。
 
 实验分组不再复制到每条事件里；服务端在 SDK context 日志中保存 `strategy_name -> variant_name`，离线统计通过 `contextId/sessionId` 关联。

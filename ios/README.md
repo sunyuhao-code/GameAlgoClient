@@ -41,6 +41,7 @@ let adsEnabled = sdk.config.bool("ads.rewarded.enabled", default: true, fileName
 
 await sdk.tracker.trackLevelEnd(payload: .object(["level": .number(3), "result": .string("win")]))
 await sdk.tracker.trackAd(placement: "rewarded_level_end", adType: "reward", revenue: 0.018, currency: "USD", network: "admob")
+await sdk.tracker.trackPurchase(productId: "starter_pack", revenue: 4.99, currency: "USD")
 await sdk.tracker.trackSessionEnd()
 await sdk.tracker.flush()
 ```
