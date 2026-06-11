@@ -287,7 +287,7 @@ Group selectors are UI controls scoped to one group:
 }
 ```
 
-The built-in `retention.cohort@1` group automatically provides Strategy and Dx selectors. These selectors filter the complete cached report rows in the browser and do not change the report cache key.
+The built-in `retention.cohort@1` and `revenue.ltv@1` groups automatically provide Strategy and Dx selectors. These selectors filter the complete cached report rows in the browser and do not change the report cache key.
 
 The first reserved standard dashboard refs are:
 
@@ -298,7 +298,7 @@ The first reserved standard dashboard refs are:
 | `retention.activation_time@1` | Retention cohorts grouped by local activation time segment. | SDK context rows with `userCreatedAt` and `timezone`, plus later user activity. |
 | `engagement.cohort@1` | New-user engagement cohorts: cumulative active days, cumulative play time, and sessions per user. | SDK context rows plus `session_end.payload.sessionDurationMs`. |
 | `revenue.overview@1` | Daily revenue, ARPU, ARPDAU, payer count, and payment rate. | `ad_view` and `purchase` events with `revenue` and `currency` fields. |
-| `revenue.ltv@1` | New-user LTV cohorts. Includes the built-in `LTV Trend` line chart for D0, D1, D2, D3, D7, and D14, plus an `LTV Cohort Matrix` table for D0-D14. | `adn.dws_gamealgo_standard_cohort_di`, produced from SDK context rows plus revenue events. |
+| `revenue.ltv@1` | New-user LTV cohorts. Includes the built-in `LTV Trend` line chart for D0, D1, D2, D3, D7, and D14, plus an `LTV Cohort Matrix` table for D0-D14. The admin UI can switch between global LTV and experiment split views with runtime Strategy and Dx selectors. | `adn.dws_gamealgo_standard_cohort_di`, produced from SDK context rows plus revenue events. |
 | `revenue.placement@1` | Daily revenue by ad placement/type/network. | `ad_view` events with required `placement`, `adType`, `revenue`, and `currency`, plus optional `network`. |
 | `progression.overview@1` | Progression funnel and difficulty health: starts, finishes, success rate, average duration, and drop-off by progression point. | `progression_start` and `progression_end` events with progression identity, order, result, and duration fields. |
 | `events.health@1` | Data quality and event volume: event counts, users, sessions, and debug-event volume by event type. | Any SDK events in `gamealgo_events_payload`. |
@@ -334,7 +334,7 @@ Recommended standard event payload fields:
 
 The current validator accepts the refs above. These refs are contracts for platform-provided dashboards. Standard aggregate jobs live in `gamealgo-server/sql/standard_v2_*.sql` and are scheduled in DataWorks by the platform operator. Saving a report pack only records the `standard.ref`; it does not create, backfill, or schedule DataWorks tasks.
 
-Standard dashboard query execution is intentionally separate from custom report SQL generation. Standard groups read platform-managed aggregate tables, while custom groups generate SQL from the pack's `events`, `datasets`, and `reports`. Executable standard queries currently include `standard.core_overview` for `core.overview@1`, `standard.retention_trend` and `standard.retention_matrix` for `retention.cohort@1`, and `standard.ltv_trend` plus `standard.ltv_matrix` for `revenue.ltv@1`. Core overview filters `exp_info = 'glob'` and reads daily rows from `adn.dws_gamealgo_standard_core_daily_di`; retention reports return both global rows and experiment rows parsed from `strategy:variant` `exp_info`, so Strategy and Dx selectors only filter the complete report result in the UI. LTV queries read the standard cohort table, filter `exp_info = 'glob'`, and hide immature cohort/day pairs by requiring `DATE_ADD(cohort_dt, day_offset) <= end_dt`.
+Standard dashboard query execution is intentionally separate from custom report SQL generation. Standard groups read platform-managed aggregate tables, while custom groups generate SQL from the pack's `events`, `datasets`, and `reports`. Executable standard queries currently include `standard.core_overview` for `core.overview@1`, `standard.retention_trend` and `standard.retention_matrix` for `retention.cohort@1`, and `standard.ltv_trend` plus `standard.ltv_matrix` for `revenue.ltv@1`. Core overview filters `exp_info = 'glob'` and reads daily rows from `adn.dws_gamealgo_standard_core_daily_di`; retention and LTV cohort reports return both global rows and experiment rows parsed from `strategy:variant` `exp_info`, so Strategy and Dx selectors only filter the complete report result in the UI. LTV queries hide immature cohort/day pairs by requiring `DATE_ADD(cohort_dt, day_offset) <= end_dt`.
 
 ## Dataset Types
 
@@ -443,6 +443,6 @@ Server-side local validators should use `validateReportPackForSave(content, vers
 
 The platform currently stores and validates report packs, generates SQL preview for custom reports and supported standard dashboards, and can run active reports online from the admin console through the analytics bridge.
 
-Report query results are cached by `gameId + version + reportId + startDate + endDate`. Runtime selectors such as retention Strategy and Dx are scoped to their group and do not change this cache key; they filter the cached report rows on the client. The Cloudflare worker refreshes all queryable reports in active report packs for the default dashboard range every two hours when the report cache cron is configured. Queryable reports include custom `reports[]` entries and supported standard reports such as `standard.core_overview`, `standard.retention_trend`, `standard.retention_matrix`, `standard.ltv_trend`, and `standard.ltv_matrix`.
+Report query results are cached by `gameId + version + reportId + startDate + endDate`. Runtime selectors such as cohort Strategy and Dx are scoped to their group and do not change this cache key; they filter the cached report rows on the client. The Cloudflare worker refreshes all queryable reports in active report packs for the default dashboard range every two hours when the report cache cron is configured. Queryable reports include custom `reports[]` entries and supported standard reports such as `standard.core_overview`, `standard.retention_trend`, `standard.retention_matrix`, `standard.ltv_trend`, and `standard.ltv_matrix`.
 
 Standard dashboards are declared by `standard.ref` and backed by platform DataWorks jobs. DataWorks task scheduling and historical backfill are operational setup steps outside of the report pack save flow.
