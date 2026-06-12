@@ -23,6 +23,7 @@ const elements = {
   startButton: document.getElementById("startButton"),
   adButton: document.getElementById("adButton"),
   purchaseButton: document.getElementById("purchaseButton"),
+  sessionEndButton: document.getElementById("sessionEndButton"),
   flushButton: document.getElementById("flushButton"),
 };
 
@@ -38,6 +39,7 @@ const state = {
   configVersion: "",
   eventQueue: [],
   sessionStartedAt: Date.now(),
+  sessionEnded: false,
   levelNo: 1,
   score: 0,
   moves: 0,
@@ -64,11 +66,11 @@ function init() {
   elements.startButton.addEventListener("click", () => startLevel());
   elements.adButton.addEventListener("click", () => rewardAd());
   elements.purchaseButton.addEventListener("click", () => purchasePack());
+  elements.sessionEndButton.addEventListener("click", () => endSession("manual_button"));
   elements.flushButton.addEventListener("click", () => flushEvents());
   window.addEventListener("beforeunload", () => {
-    if (state.contextId) {
-      queueEvent("session_end", { sessionDurationMs: Date.now() - state.sessionStartedAt, reason: "page_close" });
-      flushEvents(true);
+    if (state.contextId && !state.sessionEnded) {
+      void endSession("page_close", true);
     }
   });
 }
@@ -90,6 +92,9 @@ async function connectSdk() {
   state.gameKey = elements.gameKeyInput.value.trim();
   state.userId = elements.userIdInput.value.trim() || state.userId;
   state.timezone = elements.timezoneInput.value.trim() || state.timezone;
+  if (state.sessionEnded) {
+    state.sessionId = `web-demo-session-${crypto.randomUUID()}`;
+  }
   localStorage.setItem(`${STORAGE_PREFIX}baseUrl`, state.baseUrl);
   localStorage.setItem(`${STORAGE_PREFIX}gameKey`, state.gameKey);
   localStorage.setItem(`${STORAGE_PREFIX}userId`, state.userId);
@@ -123,8 +128,11 @@ async function connectSdk() {
     state.contextId = response.contextId;
     state.gameId = response.gameId;
     state.configVersion = response.configVersion;
+    state.sessionStartedAt = Date.now();
+    state.sessionEnded = false;
     setConnection(`Connected ${response.gameId}`);
     logEvent("config", `context ${shortId(response.contextId)}, version ${response.configVersion}`);
+    logExperiments(response.experiments);
     queueEvent("_demo_open", {
       configVersion: response.configVersion,
       experimentCount: Array.isArray(response.experiments) ? response.experiments.length : 0,
@@ -140,7 +148,7 @@ async function connectSdk() {
 }
 
 function startLevel() {
-  if (!state.contextId || state.running) return;
+  if (!state.contextId || state.running || state.sessionEnded) return;
   state.running = true;
   state.score = 0;
   state.moves = 0;
@@ -232,7 +240,7 @@ function endLevel(success, reason) {
 }
 
 async function rewardAd() {
-  if (!state.contextId) return;
+  if (!state.contextId || state.sessionEnded) return;
   queueEvent("ad_view", {
     placement: "rewarded_after_level",
     adType: "reward",
@@ -246,7 +254,7 @@ async function rewardAd() {
 }
 
 async function purchasePack() {
-  if (!state.contextId) return;
+  if (!state.contextId || state.sessionEnded) return;
   queueEvent("purchase", {
     productId: "demo_starter_pack",
     revenue: 4.99,
@@ -255,6 +263,22 @@ async function purchasePack() {
   });
   logEvent("purchase", "demo_starter_pack");
   await flushEvents();
+}
+
+async function endSession(reason, keepalive = false) {
+  if (!state.contextId || state.sessionEnded) return;
+  if (state.running) {
+    queueCurrentLevelEnd(false, "session_end");
+  }
+  state.sessionEnded = true;
+  queueEvent("session_end", {
+    sessionDurationMs: Date.now() - state.sessionStartedAt,
+    reason,
+    levelNo: state.levelNo,
+    score: state.score,
+  });
+  logEvent("session_end", `${reason}, duration ${Date.now() - state.sessionStartedAt}ms`);
+  await flushEvents(keepalive);
 }
 
 function queueEvent(eventType, payload) {
@@ -269,6 +293,26 @@ function queueEvent(eventType, payload) {
     payload,
   });
   render();
+}
+
+function queueCurrentLevelEnd(success, reason) {
+  state.running = false;
+  if (state.timer) window.clearInterval(state.timer);
+  state.timer = undefined;
+  const durationMs = state.levelStartedAt ? Date.now() - state.levelStartedAt : 0;
+  queueEvent("level_end", {
+    levelId: `demo-level-${state.levelNo}`,
+    levelNo: state.levelNo,
+    success,
+    reason,
+    score: state.score,
+    moves: state.moves,
+    durationMs,
+    targetScore: TARGET_SCORE,
+    remainingSec: state.remainingSeconds,
+  });
+  state.activeTile = -1;
+  state.bonusTile = -1;
 }
 
 async function flushEvents(useBeacon = false) {
@@ -317,9 +361,10 @@ function render() {
   elements.contextIdText.textContent = state.contextId || "-";
   elements.userCreatedAtText.textContent = state.userCreatedAt || "-";
 
-  elements.startButton.disabled = !state.contextId || state.running;
-  elements.adButton.disabled = !state.contextId;
-  elements.purchaseButton.disabled = !state.contextId;
+  elements.startButton.disabled = !state.contextId || state.running || state.sessionEnded;
+  elements.adButton.disabled = !state.contextId || state.sessionEnded;
+  elements.purchaseButton.disabled = !state.contextId || state.sessionEnded;
+  elements.sessionEndButton.disabled = !state.contextId || state.sessionEnded;
   elements.flushButton.disabled = !state.contextId || !state.eventQueue.length;
 
   [...elements.board.children].forEach((tile, index) => {
@@ -328,6 +373,29 @@ function render() {
     if (index === state.bonusTile) tile.classList.add("tile--bonus");
     tile.disabled = !state.running;
   });
+}
+
+function logExperiments(experiments) {
+  const assignments = Array.isArray(experiments) ? experiments.map(normalizeExperiment).filter(Boolean) : [];
+  if (!assignments.length) {
+    console.info("[GameAlgoDemo] experiments fetched", []);
+    logEvent("experiments", "none");
+    return;
+  }
+
+  console.info("[GameAlgoDemo] experiments fetched", assignments);
+  logEvent("experiments", `${assignments.length} assignment(s)`);
+  assignments.forEach((assignment) => {
+    logEvent("experiment", `${assignment.strategyName}:${assignment.variantName}`);
+  });
+}
+
+function normalizeExperiment(experiment) {
+  if (!experiment || typeof experiment !== "object") return undefined;
+  return {
+    strategyName: experiment.strategyName || experiment.strategy_name || experiment.strategy || experiment.name || "-",
+    variantName: experiment.variantName || experiment.variant_name || experiment.variant || experiment.value || "-",
+  };
 }
 
 function logEvent(name, detail) {
