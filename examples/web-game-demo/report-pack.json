@@ -1,0 +1,171 @@
+{
+  "version": "web-demo-1.0.0",
+  "events": {
+    "level_end": {
+      "fields": {
+        "level_no": { "path": "$.levelNo", "type": "number" },
+        "success": { "path": "$.success", "type": "string" },
+        "duration_ms": { "path": "$.durationMs", "type": "number" },
+        "score": { "path": "$.score", "type": "number" }
+      }
+    },
+    "ad_view": {
+      "fields": {
+        "placement": { "path": "$.placement", "type": "string" },
+        "ad_type": { "path": "$.adType", "type": "string" },
+        "revenue": { "path": "$.revenue", "type": "number" },
+        "currency": { "path": "$.currency", "type": "string" }
+      }
+    },
+    "purchase": {
+      "fields": {
+        "product_id": { "path": "$.productId", "type": "string" },
+        "revenue": { "path": "$.revenue", "type": "number" },
+        "currency": { "path": "$.currency", "type": "string" }
+      }
+    },
+    "session_end": {
+      "fields": {
+        "session_duration_ms": { "path": "$.sessionDurationMs", "type": "number" }
+      }
+    }
+  },
+  "datasets": {
+    "level_daily": {
+      "type": "event",
+      "fromEvent": "level_end",
+      "dimensions": [],
+      "metrics": {
+        "attempts": { "agg": "count" },
+        "users": { "agg": "count_distinct", "field": "userId" },
+        "avg_duration_ms": { "agg": "avg", "field": "duration_ms" },
+        "avg_score": { "agg": "avg", "field": "score" },
+        "success_rate": {
+          "agg": "ratio",
+          "numerator": { "field": "success", "op": "eq", "value": "true" },
+          "denominator": { "op": "all" }
+        }
+      }
+    },
+    "ad_placement_daily": {
+      "type": "event",
+      "fromEvent": "ad_view",
+      "dimensions": ["placement", "ad_type"],
+      "metrics": {
+        "impressions": { "agg": "count" },
+        "users": { "agg": "count_distinct", "field": "userId" },
+        "revenue": { "agg": "sum", "field": "revenue" }
+      }
+    },
+    "purchase_daily": {
+      "type": "event",
+      "fromEvent": "purchase",
+      "dimensions": ["product_id"],
+      "metrics": {
+        "purchases": { "agg": "count" },
+        "buyers": { "agg": "count_distinct", "field": "userId" },
+        "revenue": { "agg": "sum", "field": "revenue" }
+      }
+    },
+    "session_daily": {
+      "type": "event",
+      "fromEvent": "session_end",
+      "dimensions": [],
+      "metrics": {
+        "sessions": { "agg": "count" },
+        "users": { "agg": "count_distinct", "field": "userId" },
+        "avg_session_duration_ms": { "agg": "avg", "field": "session_duration_ms" }
+      }
+    }
+  },
+  "reports": [
+    {
+      "id": "level_daily",
+      "title": "Level Daily",
+      "dataset": "level_daily",
+      "groupBy": ["dt"],
+      "metrics": ["attempts", "users", "avg_duration_ms", "avg_score", "success_rate"]
+    },
+    {
+      "id": "ad_placement_daily",
+      "title": "Ad Placement Daily",
+      "dataset": "ad_placement_daily",
+      "groupBy": ["dt", "placement", "ad_type"],
+      "metrics": ["impressions", "users", "revenue"]
+    },
+    {
+      "id": "purchase_daily",
+      "title": "Purchase Daily",
+      "dataset": "purchase_daily",
+      "groupBy": ["dt", "product_id"],
+      "metrics": ["purchases", "buyers", "revenue"]
+    },
+    {
+      "id": "session_daily",
+      "title": "Session Daily",
+      "dataset": "session_daily",
+      "groupBy": ["dt"],
+      "metrics": ["sessions", "users", "avg_session_duration_ms"]
+    }
+  ],
+  "dashboard": {
+    "title": "Web Demo Reports",
+    "tabs": [
+      {
+        "id": "overview",
+        "label": "Overview",
+        "groups": [
+          {
+            "id": "gameplay",
+            "title": "Gameplay",
+            "charts": [
+              {
+                "id": "level_attempts",
+                "title": "Level Attempts",
+                "type": "line",
+                "report": "level_daily",
+                "x": "dt",
+                "y": "attempts"
+              },
+              {
+                "id": "success_rate",
+                "title": "Success Rate",
+                "type": "line",
+                "report": "level_daily",
+                "x": "dt",
+                "y": "success_rate",
+                "format": "percent"
+              },
+              {
+                "id": "session_duration",
+                "title": "Avg Session Duration",
+                "type": "line",
+                "report": "session_daily",
+                "x": "dt",
+                "y": "avg_session_duration_ms"
+              }
+            ]
+          },
+          {
+            "id": "monetization",
+            "title": "Monetization",
+            "charts": [
+              {
+                "id": "ad_revenue_by_placement",
+                "title": "Ad Revenue By Placement",
+                "type": "table",
+                "report": "ad_placement_daily"
+              },
+              {
+                "id": "purchase_revenue",
+                "title": "Purchase Revenue",
+                "type": "table",
+                "report": "purchase_daily"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

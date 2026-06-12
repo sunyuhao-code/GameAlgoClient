@@ -15,6 +15,7 @@ uploads these event types while playing:
 - `purchase`
 - `_tile_tap`
 - `_demo_open`
+- `session_end`
 
 ## Run
 
@@ -39,3 +40,9 @@ Game Key: your game key from the admin console
 
 The game key is stored only in browser `localStorage`; it is not committed in
 this repository.
+
+## Report Pack
+
+`report-pack.json` is a matching report pack for this demo. Import it into the
+admin Reports page for the demo game, then run the generated reports to verify
+the data bridge query path.
