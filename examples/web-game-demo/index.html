@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GameAlgo SDK Web Game Demo</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="game-panel" aria-label="Tap grid game">
+        <header class="topbar">
+          <div>
+            <h1>Tap Forge</h1>
+            <p id="connectionText">Not connected</p>
+          </div>
+          <div class="score-strip" aria-label="Game counters">
+            <div>
+              <span>Level</span>
+              <strong id="levelText">1</strong>
+            </div>
+            <div>
+              <span>Score</span>
+              <strong id="scoreText">0</strong>
+            </div>
+            <div>
+              <span>Time</span>
+              <strong id="timeText">30</strong>
+            </div>
+          </div>
+        </header>
+
+        <div id="board" class="board" aria-label="Game board"></div>
+
+        <footer class="actionbar">
+          <button id="connectButton" type="button">Connect SDK</button>
+          <button id="startButton" type="button" disabled>Start Level</button>
+          <button id="adButton" type="button" disabled>Reward Ad</button>
+          <button id="purchaseButton" type="button" disabled>Purchase</button>
+          <button id="flushButton" type="button" disabled>Flush</button>
+        </footer>
+      </section>
+
+      <aside class="side-panel" aria-label="SDK state">
+        <section class="box">
+          <h2>SDK</h2>
+          <label>
+            <span>Base URL</span>
+            <input id="baseUrlInput" autocomplete="off" spellcheck="false" />
+          </label>
+          <label>
+            <span>Game Key</span>
+            <input id="gameKeyInput" type="password" autocomplete="off" spellcheck="false" />
+          </label>
+          <label>
+            <span>User ID</span>
+            <input id="userIdInput" autocomplete="off" spellcheck="false" />
+          </label>
+          <label>
+            <span>Timezone</span>
+            <input id="timezoneInput" autocomplete="off" spellcheck="false" />
+          </label>
+        </section>
+
+        <section class="box">
+          <h2>Context</h2>
+          <dl class="kv">
+            <div>
+              <dt>gameId</dt>
+              <dd id="gameIdText">-</dd>
+            </div>
+            <div>
+              <dt>contextId</dt>
+              <dd id="contextIdText">-</dd>
+            </div>
+            <div>
+              <dt>userCreatedAt</dt>
+              <dd id="userCreatedAtText">-</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section class="box log-box">
+          <h2>Events</h2>
+          <div id="eventLog" class="event-log" aria-live="polite"></div>
+        </section>
+      </aside>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

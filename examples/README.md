@@ -14,4 +14,5 @@ Examples must use only public SDK APIs and `/v1/*` endpoints.
 Current examples:
 
 - `../rest-api/examples/node/basic.ts`
+- `web-game-demo/`
 - `curl/`

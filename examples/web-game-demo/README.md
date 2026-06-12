@@ -1,0 +1,41 @@
+# Web Game Demo
+
+`web-game-demo` is a static browser game for end-to-end SDK telemetry checks. It
+uses the public Protocol v1 REST endpoints:
+
+- `POST /v1/config`
+- `POST /v1/events/batch`
+
+The demo sends SDK context fields including `userCreatedAt` and `timezone`, then
+uploads these event types while playing:
+
+- `level_start`
+- `level_end`
+- `ad_view`
+- `purchase`
+- `_tile_tap`
+- `_demo_open`
+
+## Run
+
+Open `index.html` in a browser, or serve this directory:
+
+```bash
+python3 -m http.server 8088
+```
+
+Then visit:
+
+```text
+http://127.0.0.1:8088
+```
+
+Use:
+
+```text
+Base URL: https://game-algo-sdk.dictapis.cn
+Game Key: your game key from the admin console
+```
+
+The game key is stored only in browser `localStorage`; it is not committed in
+this repository.
