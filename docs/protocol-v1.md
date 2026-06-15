@@ -38,7 +38,7 @@ X-GameAlgo-Key: ga_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 - 状态：`active` / `revoked`
 - 所属区域：`cn` / `global`
 
-客户端请求里的 `gameId` 不能作为可信来源。若兼容旧接口必须传 `gameId`，服务端也必须校验它和 key 对应的游戏一致。
+客户端请求里的 `gameId` 不能作为可信来源。如果某些集成额外传了 `gameId`，服务端也必须校验它和 key 对应的游戏一致。
 
 建议服务端只保存 key hash：
 
@@ -257,14 +257,14 @@ Content-Type: application/json
 - 单批事件建议最多 100 条。
 - 重复 `eventId` 后续可用于去重，v1 可先不强制。
 - `payload` 是 flat object；字段值只允许 string / number / boolean / null。
-- 服务端写入时不解释 `payload` 字段含义，只把它保存为 `payload_json`。
-- 报表配置文件负责声明哪些 payload 字段是维度、哪些是指标，离线任务只展开报表声明过的字段。
+- 服务端写入时不要求提前定义所有 `payload` 字段。
+- 报表配置文件负责声明哪些 payload 字段是维度、哪些是指标。
 
 ### `payload` 和报表配置
 
 `payload` 是事件上的原始业务属性，用来描述“这条事件发生时游戏侧知道的状态”。SDK 和服务端不会在上报链路里提前区分维度和指标，也不会把所有 payload key/value 展开成宽表或明细维度。
 
-平台落库时会把 `payload` 原样保存为 `payload_json`。后续每个游戏可以提交 report pack，声明某个报表需要读取哪些事件、哪些 payload 字段、字段类型、聚合方式和图表展示方式。离线任务只解析 report pack 里声明过的字段，避免把所有自定义字段都展开导致数据膨胀。
+GameAlgo 会把 `payload` 作为事件业务数据保存。后续每个游戏可以提交 report pack，声明某个报表需要读取哪些事件、哪些 payload 字段、字段类型、聚合方式和图表展示方式。
 
 第一版 `payload` 建议保持 flat object。复杂对象或数组如果确实需要保留，官方 SDK 会序列化成字符串，但这类字段不适合作为稳定报表字段。不要把密钥、手机号、邮箱等敏感信息放进 `payload`。`gameId`、`userId`、`sessionId`、实验分组、设备信息已经由协议字段或 SDK context 提供，不要重复塞进 `payload`。
 
@@ -331,75 +331,10 @@ GameAlgo.init(
 
 没有官方 SDK 的团队直接按 HTTP 协议接入，必须传 `X-GameAlgo-Key`。
 
-## 8. 服务端部署配置
+## 8. 部署差异
 
-服务端需要通过配置切换国内 / 国外基础设施。
+GameAlgo 可以提供不同区域的服务地址。接入方只需要使用平台分配的 `baseUrl` 和 `gameKey`：
 
-```json
-{
-  "server": {
-    "region": "cn",
-    "environment": "prod",
-    "publicBaseUrl": "https://gamealgo.example.com"
-  },
-  "storage": {
-    "provider": "d1"
-  },
-  "analytics": {
-    "provider": "maxcompute",
-    "endpoint": "https://service.cn-hangzhou.maxcompute.aliyun.com/api",
-    "project": "adn"
-  },
-  "eventIngest": {
-    "provider": "maxcompute",
-    "bufferFlushSeconds": 30
-  }
-}
-```
-
-约定：
-
-- `cn` 部署优先使用国内域名和阿里云服务。
-- `global` 部署可以使用 Cloudflare Worker / D1 / Analytics Engine。
+- 客户端接口始终使用 `/v1/*`。
 - 客户端协议不因部署区域变化。
-
-## 9. 兼容策略
-
-当前只兼容老 iOS SDK 的 `Mahjong` 游戏。
-
-兼容接口：
-
-```http
-GET /config?gameId=Mahjong&userId={userId}
-GET /config?gameId=Mahjong&userId={userId}&strategy={strategy}
-GET /scripts/Mahjong/{scriptName}
-POST /events/batch
-```
-
-兼容层只做字段转换：
-
-- `/config` 内部复用 v1 实验分桶，返回老 SDK 需要的 `descriptors` / `descriptor`。
-- `/scripts/Mahjong/{scriptName}` 内部读取 v1 config file。
-- 老 `/events/batch` 写入同一个事件 sink；老事件类型如果不是 v1 标准事件，会自动加 `_` 前缀作为自定义事件。
-- 非 `Mahjong` 的 legacy `gameId` 会返回 404。
-
-接口映射：
-
-| 旧接口 | v1 接口 |
-|--------|---------|
-| `GET /config` | `GET /v1/config` |
-| `GET /scripts/Mahjong/{scriptName}` | `GET /v1/config-files/{fileName}` |
-| `POST /events/batch` | `POST /v1/events/batch` |
-
-新增客户端只允许使用 `/v1/*`。
-
-## 10. P0 实现清单
-
-1. 服务端新增 `game_api_keys` 表。
-2. Dashboard 支持生成、禁用、查看 key prefix。
-3. Worker / Server 新增 `/v1/config`。
-4. Worker / Server 新增 `/v1/config-files/{fileName}`。
-5. Worker / Server 新增 `/v1/events/batch`。
-6. iOS SDK 改为 `gameKey` 初始化。
-7. Android SDK 按同一协议实现。
-8. 写 REST API 接入文档。
+- 不同区域的 `gameKey` 不应混用。

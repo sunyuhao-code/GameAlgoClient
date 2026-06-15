@@ -2,19 +2,19 @@
 
 Report packs define how a game turns raw SDK event payloads into analytics reports.
 
-The SDK sends business fields as event `payload`. GameAlgo stores that payload as raw JSON first; it does not expand every custom field during ingestion. A report pack tells the platform which payload fields matter, how to aggregate them, and which report views should be generated.
+The SDK sends business fields as event `payload`. A report pack tells GameAlgo which payload fields matter, how to aggregate them, and which report views should be generated.
 
 ## Where To Submit
 
-In the admin console, select a game, then open the `Reports` tab.
+In the GameAlgo console, select a game, then open the `Reports` tab.
 
-Use the `Reports` tab to view the active dashboard. Use `Manage Pack` when you need to edit the report pack JSON, validate SQL preview, or save a new version.
+Use the `Reports` tab to view the active dashboard. Use `Manage Pack` when you need to edit the report pack JSON, validate it, or save a new version.
 
 In `Manage Pack` you can:
 
 - create a version such as `1.0.0`
 - paste or edit the report pack JSON
-- click `Validate` to preview validation results and generated SQL
+- click `Validate` to preview validation results
 - choose `draft`, `active`, or `disabled`
 - click `Save`
 
@@ -204,7 +204,7 @@ In the main `Reports` view you can:
 ## Semantics
 
 - `events` declares fields inside each event type's `payload`.
-- Field ids must be SQL-safe identifiers: letters, numbers, and underscores.
+- Field ids must use letters, numbers, and underscores.
 - `path` uses JSON path syntax such as `$.level_id`.
 - Field `type` is `string`, `number`, or `boolean`.
 - `datasets` define reusable statistical views. `type` defaults to `event`.
@@ -218,9 +218,9 @@ In the main `Reports` view you can:
 - `penetration` computes distinct entity penetration for event datasets. The default entity is `userId`; `denominator` can be `event_users`, `active_users`, or `new_users`. `active_users` and `new_users` use SDK context rows as the denominator, so reports using them can only group by `dt`, experiment fields, or SDK context fields such as `platform` and `appVersion`.
 - `reports` define visible report queries.
 - `groupBy` supports `dt`, dataset dimensions, `experiment.<strategy_name>`, and `experiment`.
-- `dashboard.tabs` defines how the admin console lays out reports.
+- `dashboard.tabs` defines how the GameAlgo console lays out reports.
 - A tab can contain one or more `groups`. A group visually wraps related charts and owns a shared selector list. Not every chart in the group has to use every selector.
-- For backward compatibility, a tab can still define top-level `standard.ref` or `charts`; the admin UI treats `standard.ref` as one generated standard group and splits legacy `charts` into custom groups by `chart.report`.
+- Older packs can still define top-level `standard.ref` or `charts`; the console treats `standard.ref` as one generated standard group and splits top-level `charts` into custom groups by `chart.report`.
 - Chart `type` supports `line`, `pie`, and `table`.
 - Line charts use `x`, `y`, and optional `series` result columns.
 - Pie charts use `label` and `value` result columns.
@@ -239,7 +239,7 @@ Experiment groups are not duplicated in event payloads. The platform joins SDK c
 
 Use `experiment.<strategy_name>` when a report should always split by one known strategy. The result column is named like `experiment_level_generator`.
 
-Use bare `experiment` when the dashboard should let the viewer choose a strategy at runtime. The generated SQL returns global rows plus experiment rows with these result columns:
+Use bare `experiment` when the dashboard should let the viewer choose a strategy at runtime. The report returns global rows plus experiment rows with these result columns:
 
 | Column | Meaning |
 | --- | --- |
@@ -299,7 +299,7 @@ Group selectors are UI controls scoped to one group:
 }
 ```
 
-The built-in `retention.cohort@1` and `revenue.ltv@1` groups automatically provide Strategy and Dx selectors. These selectors filter the complete cached report rows in the browser and do not change the report cache key.
+The built-in `retention.cohort@1` and `revenue.ltv@1` groups automatically provide Strategy and Dx selectors. These selectors only affect the charts in their own group.
 
 Custom groups can use the same experiment selector by declaring `type: "experimentStrategy"` and using a report grouped by bare `experiment`:
 
@@ -344,21 +344,21 @@ Custom groups can use the same experiment selector by declaring `type: "experime
 }
 ```
 
-The experiment selector only filters rows. `Global` means `scope = global`; selecting a strategy means `scope = experiment AND strategy = selected`. The chart still owns its `x`, `y`, `series`, `label`, and `value` mappings. Runtime selector values do not change the report cache key.
+The experiment selector only filters rows. `Global` means `scope = global`; selecting a strategy means `scope = experiment AND strategy = selected`. The chart still owns its `x`, `y`, `series`, `label`, and `value` mappings.
 
 The first reserved standard dashboard refs are:
 
-| Ref | Purpose | Standard data expected |
+| Ref | Purpose | Required data |
 | --- | --- | --- |
-| `core.overview@1` | Overall traffic and session health. Includes built-in line charts for DAU, new users, sessions, average session duration, sessions per user, plus a detail table. | `adn.dws_gamealgo_standard_core_daily_di`, produced from SDK context rows plus `session_end.payload.sessionDurationMs`. |
-| `retention.cohort@1` | New-user retention cohorts by cohort date and day offset. Includes the built-in `Retention Trend` line chart for D1, D2, D3, and D7, plus a `Retention Cohort Matrix` table for D0-D14. The admin UI can switch between global retention and experiment split views with runtime Strategy and Dx selectors. | `adn.dws_gamealgo_standard_cohort_di`, produced from SDK context rows and activity events carrying `userId`, `sessionId`, and `contextId`. |
+| `core.overview@1` | Overall traffic and session health. Includes built-in line charts for DAU, new users, sessions, average session duration, sessions per user, plus a detail table. | SDK context rows plus `session_end.payload.sessionDurationMs`. |
+| `retention.cohort@1` | New-user retention cohorts by cohort date and day offset. Includes the built-in `Retention Trend` line chart for D1, D2, D3, and D7, plus a `Retention Cohort Matrix` table for D0-D14. The console can switch between global retention and experiment split views with runtime Strategy and Dx selectors. | SDK context rows and later user activity events. |
 | `retention.activation_time@1` | Retention cohorts grouped by local activation time segment. | SDK context rows with `userCreatedAt` and `timezone`, plus later user activity. |
 | `engagement.cohort@1` | New-user engagement cohorts: cumulative active days, cumulative play time, and sessions per user. | SDK context rows plus `session_end.payload.sessionDurationMs`. |
 | `revenue.overview@1` | Daily revenue, ARPU, ARPDAU, payer count, and payment rate. | `ad_view` and `purchase` events with `revenue` and `currency` fields. |
-| `revenue.ltv@1` | New-user LTV cohorts. Includes the built-in `LTV Trend` line chart for D0, D1, D2, D3, D7, and D14, plus an `LTV Cohort Matrix` table for D0-D14. The admin UI can switch between global LTV and experiment split views with runtime Strategy and Dx selectors. | `adn.dws_gamealgo_standard_cohort_di`, produced from SDK context rows plus revenue events. |
+| `revenue.ltv@1` | New-user LTV cohorts. Includes the built-in `LTV Trend` line chart for D0, D1, D2, D3, D7, and D14, plus an `LTV Cohort Matrix` table for D0-D14. The console can switch between global LTV and experiment split views with runtime Strategy and Dx selectors. | SDK context rows plus revenue events. |
 | `revenue.placement@1` | Daily revenue by ad placement/type/network. | `ad_view` events with required `placement`, `adType`, `revenue`, and `currency`, plus optional `network`. |
 | `progression.overview@1` | Progression funnel and difficulty health: starts, finishes, success rate, average duration, and drop-off by progression point. | `progression_start` and `progression_end` events with progression identity, order, result, and duration fields. |
-| `events.health@1` | Data quality and event volume: event counts, users, sessions, and debug-event volume by event type. | Any SDK events in `gamealgo_events_payload`. |
+| `events.health@1` | Data quality and event volume: event counts, users, sessions, and debug-event volume by event type. | Any SDK events. |
 
 Recommended standard event payload fields:
 
@@ -389,9 +389,7 @@ Recommended standard event payload fields:
 }
 ```
 
-The current validator accepts the refs above. These refs are contracts for platform-provided dashboards. Standard aggregate jobs live in `gamealgo-server/sql/standard_v2_*.sql` and are scheduled in DataWorks by the platform operator. Saving a report pack only records the `standard.ref`; it does not create, backfill, or schedule DataWorks tasks.
-
-Standard dashboard query execution is intentionally separate from custom report SQL generation. Standard groups read platform-managed aggregate tables, while custom groups generate SQL from the pack's `events`, `datasets`, and `reports`. Executable standard queries currently include `standard.core_overview` for `core.overview@1`, `standard.retention_trend` and `standard.retention_matrix` for `retention.cohort@1`, and `standard.ltv_trend` plus `standard.ltv_matrix` for `revenue.ltv@1`. Core overview filters `exp_info = 'glob'` and reads daily rows from `adn.dws_gamealgo_standard_core_daily_di`; retention, LTV cohort, and custom bare-`experiment` reports return both global rows and experiment rows parsed from `strategy:variant` assignment data, so Strategy and Dx selectors only filter the complete report result in the UI. LTV queries hide immature cohort/day pairs by requiring `DATE_ADD(cohort_dt, day_offset) <= end_dt`.
+The current validator accepts the refs above. These refs are contracts for platform-provided dashboards. Saving a report pack records the selected `standard.ref`; the platform prepares the data behind standard dashboards separately. LTV and retention dashboards hide immature cohort/day pairs, so a D7 value appears only after that cohort has had enough time to reach day 7.
 
 ## Dataset Types
 
@@ -515,26 +513,6 @@ Do not put secrets, phone numbers, emails, full account identifiers, device meta
 
 ## Validation
 
-For AI or local validation before saving, call the admin preview endpoint with the same fields the save flow uses:
+Use `Validate` in `Manage Pack` before saving. Validation checks the JSON shape, report references, chart mappings, dataset definitions, standard dashboard refs, and that the top-level `version` matches the version being saved.
 
-```json
-{
-  "version": "1.0.0",
-  "status": "active",
-  "content": {
-    "version": "1.0.0"
-  }
-}
-```
-
-When `version` is provided, preview also verifies `content.version` matches the save version. It still does not write to the management database.
-
-Server-side local validators should use `validateReportPackForSave(content, version)`, not the lower-level content-only validator, when they need save-equivalent validation.
-
-## Current Boundary
-
-The platform currently stores and validates report packs, generates SQL preview for custom reports and supported standard dashboards, and can run active reports online from the admin console through the analytics bridge.
-
-Report query results are cached by `gameId + version + reportId + startDate + endDate`. Runtime selectors such as Strategy, Dx, and custom `experimentStrategy` selectors are scoped to their group and do not change this cache key; they filter the cached report rows on the client. The Cloudflare worker refreshes all queryable reports in active report packs for the default dashboard range every two hours when the report cache cron is configured. Queryable reports include custom `reports[]` entries and supported standard reports such as `standard.core_overview`, `standard.retention_trend`, `standard.retention_matrix`, `standard.ltv_trend`, and `standard.ltv_matrix`.
-
-Standard dashboards are declared by `standard.ref` and backed by platform DataWorks jobs. DataWorks task scheduling and historical backfill are operational setup steps outside of the report pack save flow.
+After saving an `active` pack, return to the main `Reports` view, choose a date range, and click `Run` to load the configured dashboard.

@@ -7,7 +7,7 @@ Swift Package implementation for Protocol v1.
 For remote SwiftPM integration, add the client repository and select the `GameAlgoSDK` product:
 
 ```text
-https://github.com/dirichlet-ai/GameAlgoClient.git
+https://github.com/sunyuhao-code/GameAlgoClient.git
 ```
 
 During pre-release integration, use the `main` branch. After release tags are available, use an `Up to Next Major Version` rule.
@@ -46,9 +46,9 @@ await sdk.tracker.trackSessionEnd()
 await sdk.tracker.flush()
 ```
 
-`GameAlgoSDK(...)` refreshes `/v1/config` and preloads config files in the background. It also creates or reuses the SDK anonymous `userId`; iOS uses the same `gamealgo_user_id` key as the old SDK, so existing players keep stable experiment assignments after updating. `executor` and `config` read the latest local snapshot, so gameplay code does not need to call remote APIs when checking variants or tuning values.
+`GameAlgoSDK(...)` refreshes `/v1/config` and preloads config files in the background. It also creates or reuses the SDK anonymous `userId` in persistent local storage, so returning players keep stable experiment assignments after updating. `executor` and `config` read the latest local snapshot, so gameplay code does not need to call remote APIs when checking variants or tuning values.
 
-Files created under the admin Configs page can be fetched directly when needed:
+Files created in the GameAlgo console Configs page can be fetched directly when needed:
 
 ```swift
 let gameplay = try await sdk.fetchConfigFile("gameplay.json")
@@ -62,7 +62,7 @@ If an experiment assignment includes `script`, `executor.execute(state)` runs th
 
 The SDK sends `userCreatedAt` and basic `device` context with `/v1/config` automatically. Pass `device` or `deviceId` to `GameAlgoSDK(...)` or `fetchConfig` to add app-specific fields or override defaults.
 
-Event payload fields are sent as `payload` and stored raw. Analytics does not interpret payload fields during ingestion; a game-specific report pack later declares which fields become report dimensions or metrics. Experiment assignments are stored in the SDK context created by `/v1/config`, not copied onto each event.
+Event payload fields are sent as `payload`. A game-specific report pack later declares which payload fields become report dimensions or metrics. Experiment assignments are stored in the SDK context created by `/v1/config`, not copied onto each event.
 
 Lower-level methods are still available when needed:
 

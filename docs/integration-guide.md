@@ -24,10 +24,10 @@ All integrations call the same `/v1/*` endpoints and send `X-GameAlgo-Key` on ev
 ## 3. Required Runtime Behavior
 
 - Fetch `/v1/config` at startup or before config-dependent gameplay starts.
-- Use the SDK-generated anonymous `userId` by default. iOS reuses the old SDK's `gamealgo_user_id`, so existing players keep stable assignments after updating. Android core and REST helper need `cacheStorage` / `storage` configured to persist that ID across launches.
+- Use the SDK-generated anonymous `userId` by default. Keep it in persistent local storage so returning players keep stable experiment assignments across launches and updates. Android core and REST helper need `cacheStorage` / `storage` configured to persist that ID.
 - Cache config for `ttlSeconds`.
 - Cache config files by hash or `ETag`.
-- SDK users can manually fetch an admin Configs file when needed:
+- SDK users can manually fetch a file from the GameAlgo console Configs page when needed:
   - iOS: `try await sdk.fetchConfigFile("gameplay.json")`
   - Android: `sdk.fetchConfigFile("gameplay.json")`
   - REST: `await client.fetchConfigFile("gameplay.json")`

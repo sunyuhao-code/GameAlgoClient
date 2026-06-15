@@ -29,7 +29,7 @@ sdk.tracker().flushAsync()
 
 `GameAlgo.init(...)` refreshes `/v1/config` and preloads config files on a background executor. It also creates or reuses the SDK anonymous `userId`; pass a `GameAlgoCacheStorage` when initializing if the app wants the dependency-free core to persist that ID. `executor` and `config()` read the latest local snapshot, so gameplay code does not need to call remote APIs when checking variants or tuning values.
 
-Files created under the admin Configs page can be fetched directly when needed:
+Files created in the GameAlgo console Configs page can be fetched directly when needed:
 
 ```kotlin
 val gameplay = sdk.fetchConfigFile("gameplay.json")
@@ -52,7 +52,7 @@ The SDK sends `userCreatedAt` and basic `device` context with `/v1/config` autom
 
 `tracker()` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, and keeps the failed batch for the next retry. If config context is not ready yet, queued events stay local and `flush` fills the current `contextId` before upload. `fetchConfig`, `fetchConfigFile`, and `uploadEvents` are blocking in this core package; Android apps should call those lower-level methods from their own background executor/coroutine layer.
 
-Event payload fields are sent as `payload` and stored raw. Analytics does not interpret payload fields during ingestion; a game-specific report pack later declares which fields become report dimensions or metrics. Experiment assignments are stored in the SDK context created by `/v1/config`, not copied onto each event.
+Event payload fields are sent as `payload`. A game-specific report pack later declares which payload fields become report dimensions or metrics. Experiment assignments are stored in the SDK context created by `/v1/config`, not copied onto each event.
 
 ## Check
 

@@ -35,7 +35,7 @@ Use:
 
 ```text
 Base URL: https://game-algo-sdk.dictapis.cn
-Game Key: your game key from the admin console
+Game Key: your game key from the GameAlgo console
 ```
 
 The game key is stored only in browser `localStorage`; it is not committed in
@@ -44,5 +44,5 @@ this repository.
 ## Report Pack
 
 `report-pack.json` is a matching report pack for this demo. Import it into the
-admin Reports page for the demo game, then run the generated reports to verify
-the data bridge query path.
+GameAlgo console Reports page for the demo game, then run the reports to verify
+that events are visible in dashboards.

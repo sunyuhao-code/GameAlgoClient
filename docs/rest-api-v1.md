@@ -124,7 +124,7 @@ Batch requirements:
 - send `contextId` from the latest `/v1/config` response
 - send business fields in a flat `payload` object
 
-The platform stores `payload` as `payload_json` and does not interpret fields at ingestion time. A game-specific report pack later declares which payload fields should be parsed as report dimensions or metrics.
+GameAlgo stores `payload` as the event's business data and does not require every custom field to be predefined before ingestion. A game-specific report pack later declares which payload fields should be parsed as report dimensions or metrics.
 
 Keep first-version payloads flat, with string, number, boolean, or null values. Do not put secrets, email, phone, device context, experiment assignments, or duplicated identity fields in `payload`.
 

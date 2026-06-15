@@ -32,7 +32,7 @@ await client.tracker.flush();
 
 `new GameAlgoRestClient(...)` refreshes `/v1/config` and preloads config files in the background. It also creates or reuses the SDK anonymous `userId`; pass `storage` when initializing if the helper should persist that ID across app launches. `executor` and `config` read the latest local snapshot, so game logic does not need to call remote APIs when checking variants or tuning values.
 
-Files created under the admin Configs page can be fetched directly when needed:
+Files created in the GameAlgo console Configs page can be fetched directly when needed:
 
 ```ts
 const gameplay = await client.fetchConfigFile("gameplay.json");
@@ -46,7 +46,7 @@ If an experiment assignment includes `script`, `executor.execute(state)` runs th
 
 The helper sends `userCreatedAt` and basic `device` context with `/v1/config` automatically. Pass `device` or `deviceId` to `new GameAlgoRestClient(...)` or `fetchConfig` to add app-specific fields or override defaults.
 
-`tracker` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, and keeps the failed batch for the next retry. If config context is not ready yet, queued events stay local and `flush` fills the current `contextId` before upload. Event payload fields are sent as `payload` and stored raw. Analytics does not interpret payload fields during ingestion; a game-specific report pack later declares which fields become report dimensions or metrics. Experiment assignments are stored in the SDK context created by `/v1/config`, not copied onto each event.
+`tracker` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, and keeps the failed batch for the next retry. If config context is not ready yet, queued events stay local and `flush` fills the current `contextId` before upload. Event payload fields are sent as `payload`. A game-specific report pack later declares which fields become report dimensions or metrics. Experiment assignments are stored in the SDK context created by `/v1/config`, not copied onto each event.
 
 ## 1. Auth
 
