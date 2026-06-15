@@ -210,11 +210,12 @@ In the main `Reports` view you can:
 - `datasets` define reusable statistical views. `type` defaults to `event`.
 - `dimensions` are fields allowed in report `groupBy`.
 - `metrics` are aggregated values.
-- Supported metric aggregations are `count`, `count_distinct`, `sum`, `avg`, `min`, `max`, and `ratio`.
+- Supported metric aggregations are `count`, `count_distinct`, `sum`, `avg`, `min`, `max`, `ratio`, and `penetration`.
 - `stages` define multi-step aggregation. Each stage groups by `entity` and emits stage metrics that the next stage or final `metrics` can use.
 - Top-level `entity` and `rollupMetrics` are not supported; use `stages[].entity` and `stages[].metrics`.
 - Any non-`ratio` metric can include `filter`.
 - Formula metrics use a safe arithmetic expression over non-formula metrics in the same dataset, for example `"ltv": { "formula": "revenue / cohort_users" }`.
+- `penetration` computes distinct entity penetration for event datasets. The default entity is `userId`; `denominator` can be `event_users`, `active_users`, or `new_users`. `active_users` and `new_users` use SDK context rows as the denominator, so reports using them can only group by `dt`, experiment fields, or SDK context fields such as `platform` and `appVersion`.
 - `reports` define visible report queries.
 - `groupBy` supports `dt`, dataset dimensions, `experiment.<strategy_name>`, and `experiment`.
 - `dashboard.tabs` defines how the admin console lays out reports.
@@ -394,7 +395,42 @@ Standard dashboard query execution is intentionally separate from custom report 
 
 ## Dataset Types
 
-`event` datasets aggregate event rows directly.
+`event` datasets aggregate event rows directly. Use `penetration` when the numerator is users who triggered an event and the denominator is a user base:
+
+```json
+{
+  "events": {
+    "feature_use": {
+      "fields": {
+        "feature": { "path": "$.feature", "type": "string" }
+      }
+    }
+  },
+  "datasets": {
+    "feature_penetration": {
+      "fromEvent": "feature_use",
+      "metrics": {
+        "daily_bonus_penetration": {
+          "agg": "penetration",
+          "entity": "userId",
+          "numerator": { "field": "feature", "op": "eq", "value": "daily_bonus" },
+          "denominator": "active_users"
+        }
+      }
+    }
+  },
+  "reports": [
+    {
+      "id": "feature_penetration_overview",
+      "dataset": "feature_penetration",
+      "groupBy": ["dt", "experiment"],
+      "metrics": ["daily_bonus_penetration"]
+    }
+  ]
+}
+```
+
+For `denominator: "event_users"`, the denominator is distinct users in the same event dataset and can use event dimensions. For `active_users` and `new_users`, the denominator comes from SDK context rows; keep `groupBy` to context-level fields. In dashboard charts, add `"format": "percent"` when the penetration value should render as a percentage.
 
 `rollup` datasets aggregate rows through one or more `stages`, then aggregate the final stage rows. Use this for metrics like average user max level:
 
