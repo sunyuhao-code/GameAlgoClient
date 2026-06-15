@@ -1,20 +1,20 @@
 # GameAlgo REST API v1
 
-This guide is for teams that cannot use the official iOS or Android SDK.
+这份文档面向无法使用官方 iOS / Android SDK 的团队。
 
-All REST requests use the same Protocol v1 endpoints as SDKs.
+REST 请求和 SDK 使用同一套 Protocol v1 接口。
 
-## 1. Auth
+## 1. 鉴权
 
-Every request must include:
+每个请求都必须带上：
 
 ```http
 X-GameAlgo-Key: ga_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-The server resolves `gameId` from this key. Do not send `gameId` as a trusted identity field.
+服务端会通过这个 key 解析 `gameId`。不要把客户端传入的 `gameId` 当作可信身份字段。
 
-## 2. Fetch Config
+## 2. 拉取配置
 
 ```bash
 curl -s -X POST "https://gamealgo.example.com/v1/config" \
@@ -36,7 +36,7 @@ curl -s -X POST "https://gamealgo.example.com/v1/config" \
   }'
 ```
 
-Response:
+响应：
 
 ```json
 {
@@ -64,23 +64,23 @@ Response:
 }
 ```
 
-Client requirements:
+客户端要求：
 
-- cache response for `ttlSeconds`
-- keep last successful config
-- use local defaults if the server is unavailable
-- send stable `userId/sessionId`, persisted `userCreatedAt`, and useful `device` context when calling REST directly; official helpers fill these automatically
+- 按 `ttlSeconds` 缓存响应
+- 保留上一次成功配置
+- 服务不可用时使用本地默认值
+- 直接调用 REST 时，需要发送稳定的 `userId/sessionId`、持久化的 `userCreatedAt` 和有排查价值的 `device` context；官方 helper 会自动补这些字段
 
-## 3. Fetch Config File
+## 3. 拉取配置文件
 
 ```bash
 curl -s "https://gamealgo.example.com/v1/config-files/gameplay.json" \
   -H "X-GameAlgo-Key: ga_live_xxx"
 ```
 
-Config files are usually JSON. Cache them by `ETag` or hash when available.
+配置文件通常是 JSON。服务端返回 `ETag` 或 hash 时，客户端应该按它们缓存。
 
-## 4. Upload Events
+## 4. 上传事件
 
 ```bash
 curl -s -X POST "https://gamealgo.example.com/v1/events/batch" \
@@ -106,7 +106,7 @@ curl -s -X POST "https://gamealgo.example.com/v1/events/batch" \
   }'
 ```
 
-Response:
+响应：
 
 ```json
 {
@@ -115,24 +115,24 @@ Response:
 }
 ```
 
-Batch requirements:
+批量上传要求：
 
-- send at most 100 events per request
-- retry with backoff on network failure
-- do not block gameplay on upload
-- set `isDebug=true` for test devices or QA builds
-- send `contextId` from the latest `/v1/config` response
-- send business fields in a flat `payload` object
+- 每个请求最多发送 100 条事件
+- 网络失败时使用退避重试
+- 上传不能阻塞游戏主流程
+- 测试设备或 QA 包设置 `isDebug=true`
+- 使用最近一次 `/v1/config` 响应里的 `contextId`
+- 业务字段放在扁平的 `payload` object 中
 
-GameAlgo stores `payload` as the event's business data and does not require every custom field to be predefined before ingestion. A game-specific report pack later declares which payload fields should be parsed as report dimensions or metrics.
+GameAlgo 会把 `payload` 作为事件业务数据保存，不要求所有自定义字段在写入前预定义。后续由游戏自己的 report pack 声明哪些 payload 字段会被解析成报表维度或指标。
 
-Keep first-version payloads flat, with string, number, boolean, or null values. Do not put secrets, email, phone, device context, experiment assignments, or duplicated identity fields in `payload`.
+第一版建议 payload 保持扁平结构，字段值只使用 string、number、boolean 或 null。不要把密钥、邮箱、手机号、设备 context、实验分组或重复身份字段放进 `payload`。
 
-The TypeScript helper exposes `client.tracker` for this behavior. Direct `uploadEvents` is intended for teams that already have their own event queue and retry layer.
+TypeScript helper 提供 `client.tracker` 来处理这些行为。只有已经有自研事件队列和重试层的团队，才建议直接调用 `uploadEvents`。
 
-## 5. Standard Events
+## 5. 标准事件
 
-Recommended event types:
+推荐事件类型：
 
 ```text
 session_end
@@ -142,7 +142,7 @@ ad_view
 purchase
 ```
 
-`ad_view` payload must include `placement`, `adType`, `revenue`, and `currency`. `adType` is the ad placement type, such as `reward`, `banner`, or `interstitial`. `network` is optional:
+`ad_view` payload 必须包含 `placement`、`adType`、`revenue` 和 `currency`。`adType` 表示广告位类型，例如 `reward`、`banner` 或 `interstitial`。`network` 可选：
 
 ```json
 {
@@ -154,7 +154,7 @@ purchase
 }
 ```
 
-`purchase` payload should include `productId`, `revenue`, and `currency` when available:
+`purchase` payload 建议在有条件时包含 `productId`、`revenue` 和 `currency`：
 
 ```json
 {
@@ -164,16 +164,16 @@ purchase
 }
 ```
 
-Custom event names must start with `_`, for example:
+自定义事件名必须以 `_` 开头，例如：
 
 ```text
 _button_click
 _tutorial_skip
 ```
 
-SDK trackers do not attach experiment variants to custom events by default. Opt in per event when attribution is needed.
+SDK tracker 默认不会给自定义事件附加实验分组。需要做实验归因时，可以按事件显式开启。
 
-## 6. Error Response
+## 6. 错误响应
 
 ```json
 {
@@ -182,7 +182,7 @@ SDK trackers do not attach experiment variants to custom events by default. Opt 
 }
 ```
 
-Common errors:
+常见错误：
 
 | HTTP | error |
 |------|-------|
@@ -193,14 +193,14 @@ Common errors:
 | 429 | `rate_limited` |
 | 500 | `server_error` |
 
-## 7. Integration Checklist
+## 7. 接入检查清单
 
-- A valid `gameKey` is configured.
-- `/v1/config` returns experiments and config files.
-- Config response is cached locally.
-- Config files can be fetched and cached.
-- `session_end` is uploaded with duration when the session finishes.
-- `level_start` and `level_end` are uploaded if the game has levels.
-- `ad_view` is uploaded with `placement`, `adType`, `revenue`, and `currency` if the game has ads.
-- QA builds set `isDebug=true`.
-- Production builds use `ga_live_*`, not `ga_test_*`.
+- 已配置有效 `gameKey`。
+- `/v1/config` 能返回实验和配置文件。
+- 配置响应会缓存在本地。
+- 配置文件可以拉取并缓存。
+- 会话结束时会上报带时长的 `session_end`。
+- 有关卡的游戏会上报 `level_start` 和 `level_end`。
+- 有广告的游戏会上报带 `placement`、`adType`、`revenue` 和 `currency` 的 `ad_view`。
+- QA 包设置 `isDebug=true`。
+- 生产包使用 `ga_live_*`，不要使用 `ga_test_*`。

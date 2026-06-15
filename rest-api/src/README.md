@@ -1,8 +1,8 @@
-# GameAlgo REST Client Source
+# GameAlgo REST Client 源码
 
-Dependency-free TypeScript helper for Protocol v1.
+这是符合 Protocol v1 的无第三方依赖 TypeScript helper。
 
-Exports:
+导出内容：
 
 - `GameAlgoRestClient`
 - `GameAlgoApiError`
@@ -10,8 +10,8 @@ Exports:
 - `GameAlgoExperimentExecutor`
 - `GameAlgoConfigReader`
 - `createEvent`
-- Protocol v1 TypeScript types
+- Protocol v1 TypeScript 类型
 
-The helper keeps an in-memory snapshot after constructor auto-initialization or `fetchConfig`. Game logic should prefer local reads through `client.executor(key)` and `client.config`.
+helper 会在构造函数自动初始化或调用 `fetchConfig` 后保留一份内存快照。游戏逻辑应优先通过 `client.executor(key)` 和 `client.config` 读取本地快照。
 
-`client.tracker` owns an in-memory event queue, periodic flush, and one-batch retry. It does not own durable event storage or process lifecycle; server-side integrators that require guaranteed delivery should wrap it with their own persistence policy.
+`client.tracker` 负责内存事件队列、周期 flush 和单批次重试。它不负责持久化事件存储或进程生命周期；如果服务端接入方需要保证送达，应在外层增加自己的持久化策略。

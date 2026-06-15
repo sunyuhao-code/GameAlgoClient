@@ -1,20 +1,20 @@
-# GameAlgo Lua SDK for TapTap Mini Games
+# GameAlgo TapTap 小游戏 Lua SDK
 
-TapTap mini game clients run in a sandbox and cannot call GameAlgo HTTP APIs directly. Use this layout:
+TapTap 小游戏客户端运行在沙盒中，不能直接调用 GameAlgo HTTP API。推荐使用下面的代理结构：
 
 ```text
 Client
-  GameAlgo.lua          SDK facade: config / experiment / track
-  ProxyTransport.lua    RemoteEvent transport
+  GameAlgo.lua          SDK 业务层：config / experiment / track
+  ProxyTransport.lua    RemoteEvent 传输层
 
 Server
-  ProxyServer.lua       RemoteEvent -> real HTTP proxy
-  server_main.lua       proxy startup and service-side config
+  ProxyServer.lua       RemoteEvent -> 真实 HTTP 代理
+  server_main.lua       代理启动和服务端配置
 ```
 
-## Server Setup
+## 服务端配置
 
-Put `ProxyServer.lua` and `server_main.lua` on the TapTap game server side. Configure the real GameAlgo key on the server:
+把 `ProxyServer.lua` 和 `server_main.lua` 放在 TapTap 游戏服务端。真实 GameAlgo key 只配置在服务端：
 
 ```lua
 ProxyServer.Start({
@@ -27,11 +27,11 @@ ProxyServer.Start({
 })
 ```
 
-Do not put `X-GameAlgo-Key` in the mini game client package. `ProxyServer` adds `defaultHeaders` after client headers, so server-side headers win and cannot be overridden by the client.
+不要把 `X-GameAlgo-Key` 放进小游戏客户端包。`ProxyServer` 会在客户端 headers 后追加 `defaultHeaders`，因此服务端 headers 优先，客户端无法覆盖。
 
-## Client Setup
+## 客户端配置
 
-Put `GameAlgo.lua` and `ProxyTransport.lua` on the mini game client side:
+把 `GameAlgo.lua` 和 `ProxyTransport.lua` 放在小游戏客户端：
 
 ```lua
 local GameAlgo = require("GameAlgo")
@@ -45,13 +45,11 @@ GameAlgo.Init({
 })
 ```
 
-`Init` starts a non-blocking `/v1/config` request. Game logic should keep local defaults and read remote values only when available.
+`Init` 会发起非阻塞的 `/v1/config` 请求。游戏逻辑应该保留本地默认值，只在远端配置可用时读取远端值。
 
-In persistent world mode, the client may call `Init` before the server
-connection is ready. `ProxyTransport` queues outbound requests until
-`ServerConnected` fires, then flushes the queue automatically.
+persistent world 模式下，客户端可能在服务端连接完成前调用 `Init`。`ProxyTransport` 会先把待发送请求放入队列，等 `ServerConnected` 触发后自动 flush 队列。
 
-## Experiments
+## 实验
 
 ```lua
 local levelGenerator = GameAlgo.Executor("level_generator")
@@ -61,11 +59,11 @@ local difficulty = levelGenerator.Value("difficulty", "normal")
 local result = levelGenerator.Execute({ turn = 7 })
 ```
 
-Lua SDK currently returns config-only execution results. It does not execute JavaScript experiment scripts on the client.
+Lua SDK 当前只返回 config-only 执行结果，不会在客户端执行 JavaScript 实验脚本。
 
-## Config Files
+## 配置文件
 
-Config files listed by `/v1/config` are preloaded after config fetch succeeds.
+`/v1/config` 返回的配置文件会在配置拉取成功后预加载。
 
 ```lua
 GameAlgo.FetchConfigFile("gameplay.json", function(err, file)
@@ -77,9 +75,9 @@ end)
 local enabled = GameAlgo.ConfigValue("ads.rewarded.enabled", true, "gameplay.json")
 ```
 
-## Events
+## 事件
 
-Events are queued in memory. If config is not ready yet, `Flush` waits until a `contextId` exists.
+事件会先进入内存队列。如果配置还没准备好，`Flush` 会等待拿到 `contextId` 后再上传。
 
 ```lua
 GameAlgo.TrackLevelEnd({
@@ -93,9 +91,7 @@ GameAlgo.TrackSessionEnd()
 GameAlgo.Flush()
 ```
 
-If the game has an update loop, call `GameAlgo.Update()` periodically so proxy request timeouts can be cleaned up:
-It also gives the transport another chance to flush queued requests if the
-SDK was initialized after the connection event had already fired.
+如果游戏有 update loop，建议周期调用 `GameAlgo.Update()`，用于清理代理请求超时。如果 SDK 初始化发生在连接事件之后，它也会给 transport 一次补 flush 队列的机会。
 
 ```lua
 function Update(timeStep)
@@ -103,13 +99,13 @@ function Update(timeStep)
 end
 ```
 
-## Remote Events
+## RemoteEvent
 
-The client transport uses:
+客户端传输层使用：
 
 ```text
 HttpProxy_Request
 HttpProxy_Response
 ```
 
-Use the same `eventPrefix` on both sides if you customize these names.
+如果自定义这些事件名，客户端和服务端必须使用同一个 `eventPrefix`。

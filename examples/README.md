@@ -1,17 +1,17 @@
-# GameAlgo Client Examples
+# GameAlgo 客户端示例
 
-Runnable examples for game teams.
+这里放游戏团队可直接运行的接入示例。
 
-Planned examples:
+计划示例：
 
 - iOS demo
 - Android demo
-- REST API curl examples
-- REST API minimal backend example
+- REST API curl 示例
+- REST API 最小后端示例
 
-Examples must use only public SDK APIs and `/v1/*` endpoints.
+示例只能使用公开 SDK API 和 `/v1/*` 接口。
 
-Current examples:
+当前已有示例：
 
 - `../rest-api/examples/node/basic.ts`
 - `web-game-demo/`

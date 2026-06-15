@@ -1,12 +1,12 @@
 # GameAlgo REST API v1
 
-This guide is for teams that cannot use the official iOS or Android SDK.
+这份文档面向无法使用官方 iOS / Android SDK 的团队。
 
-All REST requests use the same Protocol v1 endpoints as SDKs.
+REST 请求和 SDK 使用同一套 Protocol v1 接口。
 
 ## TypeScript Helper
 
-This repository includes a small dependency-free REST helper:
+仓库内提供了一个无第三方依赖的 REST helper：
 
 ```ts
 import { GameAlgoRestClient } from "./src/index.ts";
@@ -30,35 +30,35 @@ client.tracker.trackSessionEnd();
 await client.tracker.flush();
 ```
 
-`new GameAlgoRestClient(...)` refreshes `/v1/config` and preloads config files in the background. It also creates or reuses the SDK anonymous `userId`; pass `storage` when initializing if the helper should persist that ID across app launches. `executor` and `config` read the latest local snapshot, so game logic does not need to call remote APIs when checking variants or tuning values.
+`new GameAlgoRestClient(...)` 会在后台刷新 `/v1/config` 并预加载配置文件。它也会创建或复用 SDK 匿名 `userId`；如果希望 helper 跨启动持久化这个 ID，初始化时需要传入 `storage`。`executor` 和 `config` 读取的是最新本地快照，所以玩法逻辑读取实验分组或调参值时不需要直接调用远端 API。
 
-Files created in the GameAlgo console Configs page can be fetched directly when needed:
+GameAlgo 控制台 Configs 页面创建的文件也可以在需要时直接拉取：
 
 ```ts
 const gameplay = await client.fetchConfigFile("gameplay.json");
 ```
 
-The helper logs user id, config fetch, experiment assignment, config file, and script preload status to `console.log` by default. Pass `logger: false` to silence logs, or provide a custom logger function.
+helper 默认会把 user id、配置拉取、实验分组、配置文件和脚本预加载状态输出到 `console.log`。传入 `logger: false` 可以关闭日志，也可以传入自定义 logger 函数。
 
-If an experiment assignment includes `script`, `executor.execute(state)` runs the preloaded script. Config-only experiments return their config as the execution payload.
+如果实验分组包含 `script`，`executor.execute(state)` 会执行预加载脚本。只有 config 的实验会直接把 config 作为 execution payload 返回。
 
-`fetchConfig` remains available for lower-level usage and caches the last successful config in memory until `ttlSeconds` expires. Use `forceRefresh: true` to bypass the cache.
+`fetchConfig` 仍可用于底层调用，并会在内存里缓存上一次成功配置直到 `ttlSeconds` 过期。传入 `forceRefresh: true` 可以绕过缓存。
 
-The helper sends `userCreatedAt` and basic `device` context with `/v1/config` automatically. Pass `device` or `deviceId` to `new GameAlgoRestClient(...)` or `fetchConfig` to add app-specific fields or override defaults.
+helper 会在 `/v1/config` 请求里自动带上 `userCreatedAt` 和基础 `device` context。接入方可以在 `new GameAlgoRestClient(...)` 或 `fetchConfig` 中传入 `device` / `deviceId`，用于追加 App 自定义字段或覆盖默认值。
 
-`tracker` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, and keeps the failed batch for the next retry. If config context is not ready yet, queued events stay local and `flush` fills the current `contextId` before upload. Event payload fields are sent as `payload`. A game-specific report pack later declares which fields become report dimensions or metrics. Experiment assignments are stored in the SDK context created by `/v1/config`, not copied onto each event.
+`tracker` 会把事件排入内存队列，每批最多上传 100 条，每 30 秒 flush 一次，并保留失败批次等待下次重试。如果配置 context 还没准备好，事件会继续留在本地，`flush` 会在上传前填入当前 `contextId`。事件业务字段通过 `payload` 发送。后续由游戏自己的 report pack 声明哪些字段会成为报表维度或指标。实验分组存储在 `/v1/config` 创建的 SDK context 中，不会复制到每条事件。
 
-## 1. Auth
+## 1. 鉴权
 
-Every request must include:
+每个请求都必须带上：
 
 ```http
 X-GameAlgo-Key: ga_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-The server resolves `gameId` from this key. Do not send `gameId` as a trusted identity field.
+服务端会通过这个 key 解析 `gameId`。不要把客户端传入的 `gameId` 当作可信身份字段。
 
-## 2. Fetch Config
+## 2. 拉取配置
 
 ```bash
 curl -s -X POST "https://gamealgo.example.com/v1/config" \
@@ -79,7 +79,7 @@ curl -s -X POST "https://gamealgo.example.com/v1/config" \
   }'
 ```
 
-Response:
+响应：
 
 ```json
 {
@@ -107,22 +107,22 @@ Response:
 }
 ```
 
-Client requirements:
+客户端要求：
 
-- cache response for `ttlSeconds`
-- keep last successful config
-- use local defaults if the server is unavailable
+- 按 `ttlSeconds` 缓存响应
+- 保留上一次成功配置
+- 服务不可用时使用本地默认值
 
-## 3. Fetch Config File
+## 3. 拉取配置文件
 
 ```bash
 curl -s "https://gamealgo.example.com/v1/config-files/gameplay.json" \
   -H "X-GameAlgo-Key: ga_live_xxx"
 ```
 
-Config files are usually JSON. Cache them by `ETag` or hash when available.
+配置文件通常是 JSON。服务端返回 `ETag` 或 hash 时，客户端应该按它们缓存。
 
-## 4. Upload Events
+## 4. 上传事件
 
 ```bash
 curl -s -X POST "https://gamealgo.example.com/v1/events/batch" \
@@ -148,7 +148,7 @@ curl -s -X POST "https://gamealgo.example.com/v1/events/batch" \
   }'
 ```
 
-Response:
+响应：
 
 ```json
 {
@@ -157,17 +157,17 @@ Response:
 }
 ```
 
-Batch requirements:
+批量上传要求：
 
-- send at most 100 events per request
-- retry with backoff on network failure
-- do not block gameplay on upload
-- set `isDebug=true` for test devices or QA builds
-- send business fields in a flat `payload` object
+- 每个请求最多发送 100 条事件
+- 网络失败时使用退避重试
+- 上传不能阻塞游戏主流程
+- 测试设备或 QA 包设置 `isDebug=true`
+- 业务字段放在扁平的 `payload` object 中
 
-## 5. Standard Events
+## 5. 标准事件
 
-Recommended event types:
+推荐事件类型：
 
 ```text
 session_end
@@ -177,26 +177,26 @@ ad_view
 purchase
 ```
 
-Use `trackAd` for ad monetization. It uploads `ad_view` with required `placement`, `adType`, `revenue`, and `currency`; `network` is optional:
+广告变现使用 `trackAd`。它会上报 `ad_view`，必填字段为 `placement`、`adType`、`revenue` 和 `currency`；`network` 可选：
 
 ```ts
 client.tracker.trackAd("rewarded_level_end", "reward", 0.018, "USD", "admob");
 ```
 
-Use `trackPurchase` for IAP or paid orders. It uploads `purchase` with `productId`, `revenue`, and `currency` when provided:
+内购或付费订单使用 `trackPurchase`。有条件时它会上报带 `productId`、`revenue` 和 `currency` 的 `purchase`：
 
 ```ts
 client.tracker.trackPurchase("starter_pack", 4.99, "USD");
 ```
 
-Custom event names must start with `_`, for example:
+自定义事件名必须以 `_` 开头，例如：
 
 ```text
 _button_click
 _tutorial_skip
 ```
 
-## 6. Error Response
+## 6. 错误响应
 
 ```json
 {
@@ -205,7 +205,7 @@ _tutorial_skip
 }
 ```
 
-Common errors:
+常见错误：
 
 | HTTP | error |
 |------|-------|
@@ -216,19 +216,19 @@ Common errors:
 | 429 | `rate_limited` |
 | 500 | `server_error` |
 
-## 7. Integration Checklist
+## 7. 接入检查清单
 
-- A valid `gameKey` is configured.
-- `/v1/config` returns experiments and config files.
-- Config response is cached locally.
-- Config files can be fetched and cached.
-- `session_end` is uploaded with duration when the session finishes.
-- `level_start` and `level_end` are uploaded if the game has levels.
-- `ad_view` is uploaded with `placement`, `adType`, `revenue`, and `currency` if the game has ads.
-- QA builds set `isDebug=true`.
-- Production builds use `ga_live_*`, not `ga_test_*`.
+- 已配置有效 `gameKey`。
+- `/v1/config` 能返回实验和配置文件。
+- 配置响应会缓存在本地。
+- 配置文件可以拉取并缓存。
+- 会话结束时会上报带时长的 `session_end`。
+- 有关卡的游戏会上报 `level_start` 和 `level_end`。
+- 有广告的游戏会上报带 `placement`、`adType`、`revenue` 和 `currency` 的 `ad_view`。
+- QA 包设置 `isDebug=true`。
+- 生产包使用 `ga_live_*`，不要使用 `ga_test_*`。
 
-## 8. Node Example
+## 8. Node 示例
 
 ```bash
 GAMEALGO_BASE_URL=https://gamealgo.example.com \

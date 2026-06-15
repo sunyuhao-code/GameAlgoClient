@@ -1,26 +1,26 @@
 # GameAlgo iOS SDK
 
-Swift Package implementation for Protocol v1.
+这是符合 Protocol v1 的 Swift Package SDK。
 
-## Install
+## 安装
 
-For remote SwiftPM integration, add the client repository and select the `GameAlgoSDK` product:
+通过 SwiftPM remote package 接入时，添加客户端仓库并选择 `GameAlgoSDK` product：
 
 ```text
 https://github.com/sunyuhao-code/GameAlgoClient.git
 ```
 
-During pre-release integration, use the `main` branch. After release tags are available, use an `Up to Next Major Version` rule.
+预发布阶段可以使用 `main` branch；后续发布 tag 后再切到 `Up to Next Major Version` 规则。
 
-If you are developing this package locally, this `ios/` directory can also be opened directly as a Swift package.
+如果要本地开发这个 package，也可以直接把 `ios/` 目录作为 Swift package 打开。
 
-Then import the library product:
+接入后导入库：
 
 ```swift
 import GameAlgoSDK
 ```
 
-## Minimum API
+## 最小 API
 
 ```swift
 let sdk = GameAlgoSDK(
@@ -29,7 +29,7 @@ let sdk = GameAlgoSDK(
 )
 ```
 
-## Usage
+## 使用方式
 
 ```swift
 let levelGenerator = sdk.executor("level_generator")
@@ -46,25 +46,25 @@ await sdk.tracker.trackSessionEnd()
 await sdk.tracker.flush()
 ```
 
-`GameAlgoSDK(...)` refreshes `/v1/config` and preloads config files in the background. It also creates or reuses the SDK anonymous `userId` in persistent local storage, so returning players keep stable experiment assignments after updating. `executor` and `config` read the latest local snapshot, so gameplay code does not need to call remote APIs when checking variants or tuning values.
+`GameAlgoSDK(...)` 会在后台刷新 `/v1/config` 并预加载配置文件。它也会在本地持久化存储中创建或复用 SDK 匿名 `userId`，因此老玩家更新后仍能保持稳定实验分组。`executor` 和 `config` 读取的是最新本地快照，所以玩法代码读取实验分组或调参值时不需要直接调用远端 API。
 
-Files created in the GameAlgo console Configs page can be fetched directly when needed:
+GameAlgo 控制台 Configs 页面创建的文件也可以在需要时直接拉取：
 
 ```swift
 let gameplay = try await sdk.fetchConfigFile("gameplay.json")
 ```
 
-The SDK logs user id, config fetch, experiment assignment, config file, and script preload status to the console by default. Pass `logger: nil` to silence logs, or provide a custom `GameAlgoLogHandler`.
+SDK 默认会把 user id、配置拉取、实验分组、配置文件和脚本预加载状态输出到控制台。传入 `logger: nil` 可以关闭日志，也可以传入自定义 `GameAlgoLogHandler`。
 
-If an experiment assignment includes `script`, `executor.execute(state)` runs the preloaded JavaScript file through JSCore. Config-only experiments return their config as the execution payload.
+如果实验分组包含 `script`，`executor.execute(state)` 会通过 JSCore 执行预加载 JavaScript 文件。只有 config 的实验会直接把 config 作为 execution payload 返回。
 
-`tracker` queues events in memory, uploads at most 100 events per batch, flushes every 30 seconds, flushes when the app enters background or terminates, and keeps the failed batch for the next retry. If config context is not ready yet, queued events stay local and `flush` fills the current `contextId` before upload. Call `await sdk.tracker.flush()` to manually flush critical events; `trackSessionEnd` also triggers an immediate flush after enqueueing `session_end`.
+`tracker` 会把事件排入内存队列，每批最多上传 100 条，每 30 秒 flush 一次，并在 App 进入后台或退出时主动 flush；失败批次会保留到下次重试。如果配置 context 还没准备好，事件会继续留在本地，`flush` 会在上传前填入当前 `contextId`。关键事件后可以调用 `await sdk.tracker.flush()` 手动 flush；`trackSessionEnd` 入队 `session_end` 后也会立即触发一次 flush。
 
-The SDK sends `userCreatedAt` and basic `device` context with `/v1/config` automatically. Pass `device` or `deviceId` to `GameAlgoSDK(...)` or `fetchConfig` to add app-specific fields or override defaults.
+SDK 会在 `/v1/config` 请求里自动带上 `userCreatedAt` 和基础 `device` context。接入方可以在 `GameAlgoSDK(...)` 或 `fetchConfig` 中传入 `device` / `deviceId`，用于追加 App 自定义字段或覆盖默认值。
 
-Event payload fields are sent as `payload`. A game-specific report pack later declares which payload fields become report dimensions or metrics. Experiment assignments are stored in the SDK context created by `/v1/config`, not copied onto each event.
+事件业务字段通过 `payload` 发送。后续由游戏自己的 report pack 声明哪些 payload 字段会成为报表维度或指标。实验分组存储在 `/v1/config` 创建的 SDK context 中，不会复制到每条事件。
 
-Lower-level methods are still available when needed:
+需要底层能力时，也可以直接使用这些方法：
 
 ```swift
 let config = try await sdk.fetchConfig()
@@ -74,9 +74,9 @@ let response = try await sdk.uploadEvents([
 ])
 ```
 
-The SDK sends `X-GameAlgo-Key` on every request, caches `/v1/config` by `ttlSeconds`, and fills default event fields for `eventId`, `timestamp`, and `isDebug`.
+SDK 会在每个请求里发送 `X-GameAlgo-Key`，按 `ttlSeconds` 缓存 `/v1/config`，并自动补充事件默认字段 `eventId`、`timestamp` 和 `isDebug`。
 
-## Check
+## 检查
 
 ```bash
 swift test

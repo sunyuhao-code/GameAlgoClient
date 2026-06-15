@@ -1,44 +1,44 @@
-# GameAlgo Client Integration Guide
+# GameAlgo 客户端接入指南
 
-This guide is the minimum integration path for game teams.
+这份文档描述游戏团队接入 GameAlgo 的最小路径。
 
-## 1. Get A Game Key
+## 1. 获取 Game Key
 
-The GameAlgo platform team provides one key per game environment:
+GameAlgo 平台会为每个游戏环境提供一个 key：
 
 ```text
 ga_test_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ga_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-Use `ga_test_*` for QA builds and `ga_live_*` for production builds.
+QA 包使用 `ga_test_*`，生产包使用 `ga_live_*`。
 
-## 2. Choose An Integration
+## 2. 选择接入方式
 
-- iOS SDK: use `../ios/`.
-- Android SDK: use `../android/`.
-- REST API: use `../rest-api/` when a native SDK cannot be used.
+- iOS SDK：使用 `../ios/`。
+- Android SDK：使用 `../android/`。
+- REST API：无法使用原生 SDK 时使用 `../rest-api/`。
 
-All integrations call the same `/v1/*` endpoints and send `X-GameAlgo-Key` on every request.
+所有接入方式都调用同一套 `/v1/*` 接口，并在每个请求中发送 `X-GameAlgo-Key`。
 
-## 3. Required Runtime Behavior
+## 3. 运行时要求
 
-- Fetch `/v1/config` at startup or before config-dependent gameplay starts.
-- Use the SDK-generated anonymous `userId` by default. Keep it in persistent local storage so returning players keep stable experiment assignments across launches and updates. Android core and REST helper need `cacheStorage` / `storage` configured to persist that ID.
-- Cache config for `ttlSeconds`.
-- Cache config files by hash or `ETag`.
-- SDK users can manually fetch a file from the GameAlgo console Configs page when needed:
+- 在启动时，或依赖远端配置的玩法开始前，拉取 `/v1/config`。
+- 默认使用 SDK 生成的匿名 `userId`。该 ID 需要持久化到本地，让老玩家在多次启动和版本更新后保持稳定实验分组。Android core 和 REST helper 需要配置 `cacheStorage` / `storage` 才能持久化这个 ID。
+- 按 `ttlSeconds` 缓存配置。
+- 按 hash 或 `ETag` 缓存配置文件。
+- 需要时可以手动拉取 GameAlgo 控制台 Configs 页面里的文件：
   - iOS: `try await sdk.fetchConfigFile("gameplay.json")`
   - Android: `sdk.fetchConfigFile("gameplay.json")`
   - REST: `await client.fetchConfigFile("gameplay.json")`
-- Use the SDK tracker for events. It batches in memory, flushes periodically, and retries the failed batch.
-- Experiment assignments are stored in the SDK context created during config fetch; events do not copy experiment fields.
-- Do not block gameplay on GameAlgo network calls.
-- Fall back to local defaults when GameAlgo is unavailable.
+- 事件上报优先使用 SDK tracker。tracker 会内存批量队列、周期 flush，并重试失败批次。
+- 实验分组保存在配置拉取时创建的 SDK context 中，事件里不需要复制实验字段。
+- 不要让 GameAlgo 网络请求阻塞游戏主流程。
+- GameAlgo 不可用时走本地默认逻辑。
 
-## 4. Required Events
+## 4. 推荐事件
 
-Minimum recommended events:
+最小推荐事件：
 
 ```text
 session_end
@@ -46,22 +46,22 @@ level_start
 level_end
 ```
 
-Games with ads or IAP should also send:
+有广告或内购的游戏还应上报：
 
 ```text
 ad_view
 purchase
 ```
 
-For IAP, use `trackPurchase` and send `productId`, `revenue`, and `currency` when available. The event type is `purchase`.
+内购使用 `trackPurchase`，有条件时传入 `productId`、`revenue` 和 `currency`。事件类型为 `purchase`。
 
-## 5. Acceptance Checklist
+## 5. 验收清单
 
-- The build contains the correct `gameKey`.
-- `/v1/config` succeeds with the configured key.
-- Config is cached locally.
-- Config files are fetched and cached.
-- Reinstall/update behavior keeps the same SDK anonymous `userId` where platform storage is preserved.
-- Debug or QA events set `isDebug=true`.
-- Production builds use `ga_live_*`.
-- Events continue retrying after temporary network failures.
+- 包内使用正确的 `gameKey`。
+- 配置好的 key 能成功请求 `/v1/config`。
+- 配置会缓存在本地。
+- 配置文件可以成功拉取并缓存。
+- 只要平台本地存储未被清空，重装/更新后 SDK 匿名 `userId` 能保持稳定。
+- Debug 或 QA 事件设置 `isDebug=true`。
+- 生产包使用 `ga_live_*`。
+- 临时网络失败后，事件会继续重试。

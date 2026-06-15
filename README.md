@@ -1,6 +1,6 @@
 # GameAlgo Client
 
-GameAlgo Client is the public integration repository for game teams. It contains the iOS SDK, Android SDK, REST helper, public Protocol v1 docs, and runnable examples.
+GameAlgo Client 是面向游戏接入方的公开客户端仓库，包含 iOS SDK、Android SDK、REST helper、Protocol v1 文档和可运行示例。
 
 ## 接入前准备
 
@@ -12,16 +12,16 @@ GameAlgo Client is the public integration repository for game teams. It contains
 
 核心原则：**不要让 GameAlgo 网络请求阻塞游戏主流程**。SDK 会后台拉取配置并写入本地快照；配置未就绪、网络失败或脚本执行失败时，游戏应走本地默认逻辑。
 
-## Layout
+## 目录结构
 
 ```text
-protocol/   Public copy of Protocol v1
+protocol/   Protocol v1 文档
 ios/        iOS Swift Package SDK
 android/    Android Java SDK core
-rest-api/   REST API helper and examples
-lua/        TapTap mini game Lua SDK and server proxy transport
-examples/   Runnable integration examples
-docs/       Client-facing docs
+rest-api/   REST API helper 和示例
+lua/        TapTap 小游戏 Lua SDK 和服务端代理传输
+examples/   可运行接入示例
+docs/       接入文档
 ```
 
 ## 快速接入
@@ -94,7 +94,7 @@ await sdk.tracker.flush()
 
 ### Android
 
-Android SDK 当前是 dependency-free Java core，后续可以封装成 AAR/Kotlin facade。
+Android SDK 当前是无第三方依赖的 Java core，后续可以封装成 AAR 或 Kotlin facade。
 
 ```java
 import com.gamealgo.sdk.*;

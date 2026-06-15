@@ -1,8 +1,8 @@
-# GameAlgo Curl Examples
+# GameAlgo Curl 示例
 
-Replace `https://gamealgo.example.com` and `ga_live_xxx` before running.
+运行前请把 `https://gamealgo.example.com` 和 `ga_live_xxx` 替换成实际服务地址和游戏 key。
 
-## Fetch Config
+## 拉取配置
 
 ```bash
 curl -s -X POST "https://gamealgo.example.com/v1/config" \
@@ -19,14 +19,14 @@ curl -s -X POST "https://gamealgo.example.com/v1/config" \
   }'
 ```
 
-## Fetch Config File
+## 拉取配置文件
 
 ```bash
 curl -s "https://gamealgo.example.com/v1/config-files/gameplay.json" \
   -H "X-GameAlgo-Key: ga_live_xxx"
 ```
 
-## Upload Events
+## 上传事件
 
 ```bash
 curl -s -X POST "https://gamealgo.example.com/v1/events/batch" \

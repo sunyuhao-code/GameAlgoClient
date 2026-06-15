@@ -1,31 +1,31 @@
-# Report Packs
+# Report Packs 报表配置
 
-Report packs define how a game turns raw SDK event payloads into analytics reports.
+Report pack 用来定义一个游戏如何把 SDK 上报的事件 `payload` 转成分析报表。
 
-The SDK sends business fields as event `payload`. A report pack tells GameAlgo which payload fields matter, how to aggregate them, and which report views should be generated.
+SDK 会把业务字段放在事件 `payload` 中。Report pack 告诉 GameAlgo 哪些 payload 字段需要用于报表、如何聚合，以及最终生成哪些报表视图。
 
-## Where To Submit
+## 提交位置
 
-In the GameAlgo console, select a game, then open the `Reports` tab.
+在 GameAlgo 控制台选择游戏，然后打开 `Reports` tab。
 
-Use the `Reports` tab to view the active dashboard. Use `Manage Pack` when you need to edit the report pack JSON, validate it, or save a new version.
+`Reports` tab 用于查看当前生效的看板。需要编辑 report pack JSON、校验或保存新版本时，点击 `Manage Pack`。
 
-In `Manage Pack` you can:
+在 `Manage Pack` 中可以：
 
-- create a version such as `1.0.0`
-- paste or edit the report pack JSON
-- click `Validate` to preview validation results
-- choose `draft`, `active`, or `disabled`
-- click `Save`
+- 创建版本，例如 `1.0.0`
+- 粘贴或编辑 report pack JSON
+- 点击 `Validate` 查看校验结果
+- 选择 `draft`、`active` 或 `disabled`
+- 点击 `Save`
 
-In the main `Reports` view you can:
+在主 `Reports` 页面中可以：
 
-- choose an active report pack version
-- choose a date range
-- switch configured report tabs
-- click `Run` to execute the charts in the active tab
+- 选择一个 active 的 report pack 版本
+- 选择日期范围
+- 切换配置好的报表 tab
+- 点击 `Run` 运行当前 tab 下的图表
 
-## Example
+## 示例
 
 ```json
 {
@@ -201,33 +201,33 @@ In the main `Reports` view you can:
 }
 ```
 
-## Semantics
+## 字段语义
 
-- `events` declares fields inside each event type's `payload`.
-- Field ids must use letters, numbers, and underscores.
-- `path` uses JSON path syntax such as `$.level_id`.
-- Field `type` is `string`, `number`, or `boolean`.
-- `datasets` define reusable statistical views. `type` defaults to `event`.
-- `dimensions` are fields allowed in report `groupBy`.
-- `metrics` are aggregated values.
-- Supported metric aggregations are `count`, `count_distinct`, `sum`, `avg`, `min`, `max`, `ratio`, and `penetration`.
-- `stages` define multi-step aggregation. Each stage groups by `entity` and emits stage metrics that the next stage or final `metrics` can use.
-- Top-level `entity` and `rollupMetrics` are not supported; use `stages[].entity` and `stages[].metrics`.
-- Any non-`ratio` metric can include `filter`.
-- Formula metrics use a safe arithmetic expression over non-formula metrics in the same dataset, for example `"ltv": { "formula": "revenue / cohort_users" }`.
-- `penetration` computes distinct entity penetration for event datasets. The default entity is `userId`; `denominator` can be `event_users`, `active_users`, or `new_users`. `active_users` and `new_users` use SDK context rows as the denominator, so reports using them can only group by `dt`, experiment fields, or SDK context fields such as `platform` and `appVersion`.
-- `reports` define visible report queries.
-- `groupBy` supports `dt`, dataset dimensions, `experiment.<strategy_name>`, and `experiment`.
-- `dashboard.tabs` defines how the GameAlgo console lays out reports.
-- A tab can contain one or more `groups`. A group visually wraps related charts and owns a shared selector list. Not every chart in the group has to use every selector.
-- Older packs can still define top-level `standard.ref` or `charts`; the console treats `standard.ref` as one generated standard group and splits top-level `charts` into custom groups by `chart.report`.
-- Chart `type` supports `line`, `pie`, and `table`.
-- Line charts use `x`, `y`, and optional `series` result columns.
-- Pie charts use `label` and `value` result columns.
-- Tables render the full report result.
-- Use `"format": "percent"` explicitly for custom ratio metrics that should render as percentages. Otherwise decimal values render as plain numbers, except platform standard retention columns such as `retention_rate` and `d1_rate`.
+- `events` 声明每种事件 `payload` 里的字段。
+- 字段 id 只能使用字母、数字和下划线。
+- `path` 使用 JSON path 语法，例如 `$.level_id`。
+- 字段 `type` 支持 `string`、`number` 或 `boolean`。
+- `datasets` 定义可复用的统计视图。`type` 默认是 `event`。
+- `dimensions` 是允许在报表 `groupBy` 中使用的字段。
+- `metrics` 是聚合指标。
+- 支持的指标聚合方式包括 `count`、`count_distinct`、`sum`、`avg`、`min`、`max`、`ratio` 和 `penetration`。
+- `stages` 定义多步聚合。每个 stage 按 `entity` 分组，并输出 stage metrics，供下一个 stage 或最终 `metrics` 使用。
+- 不支持顶层 `entity` 和 `rollupMetrics`；请使用 `stages[].entity` 和 `stages[].metrics`。
+- 除 `ratio` 外，其他 metric 都可以包含 `filter`。
+- formula metric 使用同一个 dataset 中非 formula metric 的安全算术表达式，例如 `"ltv": { "formula": "revenue / cohort_users" }`。
+- `penetration` 用于计算事件 dataset 的去重实体渗透率。默认实体是 `userId`；`denominator` 可以是 `event_users`、`active_users` 或 `new_users`。`active_users` 和 `new_users` 使用 SDK context 作为分母，因此使用它们的报表只能按 `dt`、实验字段或 `platform`、`appVersion` 等 SDK context 字段分组。
+- `reports` 定义可见报表查询。
+- `groupBy` 支持 `dt`、dataset dimensions、`experiment.<strategy_name>` 和 `experiment`。
+- `dashboard.tabs` 定义 GameAlgo 控制台如何布局报表。
+- 一个 tab 可以包含一个或多个 `groups`。group 会在 UI 上包裹一组相关图表，并拥有一组共享 selector。group 内的图表不一定都要使用每个 selector。
+- 老版本 pack 仍可以定义顶层 `standard.ref` 或 `charts`；控制台会把 `standard.ref` 视为一个生成的标准 group，并按 `chart.report` 把顶层 `charts` 拆成自定义 group。
+- 图表 `type` 支持 `line`、`pie` 和 `table`。
+- 折线图使用结果列里的 `x`、`y` 和可选 `series`。
+- 饼图使用结果列里的 `label` 和 `value`。
+- 表格会渲染完整报表结果。
+- 自定义 ratio metric 如果要按百分比展示，需要显式设置 `"format": "percent"`。否则小数会按普通数值展示，平台标准留存列如 `retention_rate`、`d1_rate` 除外。
 
-Identity fields available to metrics are:
+metrics 可使用的身份字段：
 
 ```text
 contextId
@@ -235,21 +235,21 @@ userId
 sessionId
 ```
 
-Experiment groups are not duplicated in event payloads. The platform joins SDK context data by `contextId` and reads experiment assignments from the SDK context.
+实验分组不会复制到事件 payload 中。平台会通过 `contextId` 关联 SDK context，并从 SDK context 读取实验分组。
 
-Use `experiment.<strategy_name>` when a report should always split by one known strategy. The result column is named like `experiment_level_generator`.
+如果一个报表总是按某个已知 strategy 拆分，可以使用 `experiment.<strategy_name>`。结果列名形如 `experiment_level_generator`。
 
-Use bare `experiment` when the dashboard should let the viewer choose a strategy at runtime. The report returns global rows plus experiment rows with these result columns:
+如果希望看板查看者在运行时选择 strategy，可以使用裸 `experiment`。报表会返回 global 行和 experiment 行，包含这些结果列：
 
-| Column | Meaning |
+| 列 | 含义 |
 | --- | --- |
-| `scope` | `global` for all users, or `experiment` for strategy/variant rows. |
-| `strategy` | Strategy name for experiment rows, empty for global rows. |
-| `variant` | Variant name for experiment rows, empty for global rows. |
+| `scope` | `global` 表示全量用户，`experiment` 表示 strategy/variant 行。 |
+| `strategy` | experiment 行中的 strategy 名称；global 行为空。 |
+| `variant` | experiment 行中的 variant 名称；global 行为空。 |
 
-## Standard Dashboard References
+## 标准看板引用
 
-Standard dashboards are built-in dashboard modules that can be referenced from a game's own report pack. They are not separate packs. A pack can mix standard groups and custom groups:
+标准看板是平台内置的看板模块，可以在游戏自己的 report pack 里引用。它们不是独立 pack。一个 pack 可以同时包含标准 group 和自定义 group：
 
 ```json
 {
@@ -283,9 +283,9 @@ Standard dashboards are built-in dashboard modules that can be referenced from a
 }
 ```
 
-Each tab should use `groups` for new packs. A group must choose one mode: `standard.ref` or `charts`. A standard group stores the ref directly, so platform fixes or new query implementations can be applied without rewriting the game pack. The version suffix is part of the contract; use `@1` to keep the first standard definition.
+新 pack 建议每个 tab 都使用 `groups`。一个 group 只能选择一种模式：`standard.ref` 或 `charts`。标准 group 直接保存 ref，因此平台修复或升级查询实现时，不需要重写游戏 pack。版本后缀是契约的一部分；使用 `@1` 表示使用第一版标准定义。
 
-Group selectors are UI controls scoped to one group:
+Group selector 是只作用于当前 group 的 UI 控件：
 
 ```json
 {
@@ -299,9 +299,9 @@ Group selectors are UI controls scoped to one group:
 }
 ```
 
-The built-in `retention.cohort@1` and `revenue.ltv@1` groups automatically provide Strategy and Dx selectors. These selectors only affect the charts in their own group.
+内置的 `retention.cohort@1` 和 `revenue.ltv@1` group 会自动提供 Strategy 和 Dx selector。这些 selector 只影响所在 group 内的图表。
 
-Custom groups can use the same experiment selector by declaring `type: "experimentStrategy"` and using a report grouped by bare `experiment`:
+自定义 group 也可以使用同样的实验 selector：声明 `type: "experimentStrategy"`，并让对应 report 使用裸 `experiment` 分组：
 
 ```json
 {
@@ -344,23 +344,23 @@ Custom groups can use the same experiment selector by declaring `type: "experime
 }
 ```
 
-The experiment selector only filters rows. `Global` means `scope = global`; selecting a strategy means `scope = experiment AND strategy = selected`. The chart still owns its `x`, `y`, `series`, `label`, and `value` mappings.
+实验 selector 只负责过滤行。`Global` 表示 `scope = global`；选择某个 strategy 表示 `scope = experiment AND strategy = selected`。图表仍然通过自己的 `x`、`y`、`series`、`label` 和 `value` 字段决定如何渲染。
 
-The first reserved standard dashboard refs are:
+当前预留的标准看板 ref：
 
-| Ref | Purpose | Required data |
+| Ref | 用途 | 所需数据 |
 | --- | --- | --- |
-| `core.overview@1` | Overall traffic and session health. Includes built-in line charts for DAU, new users, sessions, average session duration, sessions per user, plus a detail table. | SDK context rows plus `session_end.payload.sessionDurationMs`. |
-| `retention.cohort@1` | New-user retention cohorts by cohort date and day offset. Includes the built-in `Retention Trend` line chart for D1, D2, D3, and D7, plus a `Retention Cohort Matrix` table for D0-D14. The console can switch between global retention and experiment split views with runtime Strategy and Dx selectors. | SDK context rows and later user activity events. |
-| `retention.activation_time@1` | Retention cohorts grouped by local activation time segment. | SDK context rows with `userCreatedAt` and `timezone`, plus later user activity. |
-| `engagement.cohort@1` | New-user engagement cohorts: cumulative active days, cumulative play time, and sessions per user. | SDK context rows plus `session_end.payload.sessionDurationMs`. |
-| `revenue.overview@1` | Daily revenue, ARPU, ARPDAU, payer count, and payment rate. | `ad_view` and `purchase` events with `revenue` and `currency` fields. |
-| `revenue.ltv@1` | New-user LTV cohorts. Includes the built-in `LTV Trend` line chart for D0, D1, D2, D3, D7, and D14, plus an `LTV Cohort Matrix` table for D0-D14. The console can switch between global LTV and experiment split views with runtime Strategy and Dx selectors. | SDK context rows plus revenue events. |
-| `revenue.placement@1` | Daily revenue by ad placement/type/network. | `ad_view` events with required `placement`, `adType`, `revenue`, and `currency`, plus optional `network`. |
-| `progression.overview@1` | Progression funnel and difficulty health: starts, finishes, success rate, average duration, and drop-off by progression point. | `progression_start` and `progression_end` events with progression identity, order, result, and duration fields. |
-| `events.health@1` | Data quality and event volume: event counts, users, sessions, and debug-event volume by event type. | Any SDK events. |
+| `core.overview@1` | 总览流量和会话健康度。包含 DAU、新用户、会话数、平均会话时长、用户会话数的内置折线图，以及明细表。 | SDK context 行，以及 `session_end.payload.sessionDurationMs`。 |
+| `retention.cohort@1` | 按 cohort date 和 day offset 计算新用户留存。包含内置 `Retention Trend` 折线图（D1、D2、D3、D7）和 `Retention Cohort Matrix` 表格（D0-D14）。控制台可通过运行时 Strategy 和 Dx selector 在全局留存和分实验留存之间切换。 | SDK context 行，以及后续用户活跃事件。 |
+| `retention.activation_time@1` | 按本地激活时间段分组的留存 cohort。 | 带 `userCreatedAt` 和 `timezone` 的 SDK context 行，以及后续用户活跃事件。 |
+| `engagement.cohort@1` | 新用户互动 cohort：累计活跃天数、累计游戏时长、用户会话数。 | SDK context 行，以及 `session_end.payload.sessionDurationMs`。 |
+| `revenue.overview@1` | 每日收入、ARPU、ARPDAU、付费人数和付费率。 | 带 `revenue` 和 `currency` 字段的 `ad_view`、`purchase` 事件。 |
+| `revenue.ltv@1` | 新用户 LTV cohort。包含内置 `LTV Trend` 折线图（D0、D1、D2、D3、D7、D14）和 `LTV Cohort Matrix` 表格（D0-D14）。控制台可通过运行时 Strategy 和 Dx selector 在全局 LTV 和分实验 LTV 之间切换。 | SDK context 行，以及收入事件。 |
+| `revenue.placement@1` | 按广告 placement/type/network 拆分的每日收入。 | `ad_view` 事件，必填 `placement`、`adType`、`revenue`、`currency`，可选 `network`。 |
+| `progression.overview@1` | 进度漏斗和难度健康度：开始、完成、成功率、平均时长、按进度点流失。 | `progression_start` 和 `progression_end` 事件，包含进度标识、顺序、结果和时长字段。 |
+| `events.health@1` | 数据质量和事件量：按事件类型统计事件数、用户数、会话数和 debug 事件量。 | 任意 SDK 事件。 |
 
-Recommended standard event payload fields:
+推荐标准事件 payload 字段：
 
 ```json
 {
@@ -389,11 +389,11 @@ Recommended standard event payload fields:
 }
 ```
 
-The current validator accepts the refs above. These refs are contracts for platform-provided dashboards. Saving a report pack records the selected `standard.ref`; the platform prepares the data behind standard dashboards separately. LTV and retention dashboards hide immature cohort/day pairs, so a D7 value appears only after that cohort has had enough time to reach day 7.
+当前校验器接受上表中的 ref。这些 ref 是平台提供标准看板的契约。保存 report pack 时只会记录选择的 `standard.ref`；标准看板背后的数据由平台准备。LTV 和留存看板会隐藏尚未成熟的 cohort/day 组合，例如 D7 只有在对应 cohort 已经过了 7 天后才会出现。
 
-## Dataset Types
+## Dataset 类型
 
-`event` datasets aggregate event rows directly. Use `penetration` when the numerator is users who triggered an event and the denominator is a user base:
+`event` dataset 会直接聚合事件行。当分子是触发某个事件的用户，分母是某个用户基数时，可以使用 `penetration`：
 
 ```json
 {
@@ -428,9 +428,9 @@ The current validator accepts the refs above. These refs are contracts for platf
 }
 ```
 
-For `denominator: "event_users"`, the denominator is distinct users in the same event dataset and can use event dimensions. For `active_users` and `new_users`, the denominator comes from SDK context rows; keep `groupBy` to context-level fields. In dashboard charts, add `"format": "percent"` when the penetration value should render as a percentage.
+当 `denominator: "event_users"` 时，分母是同一个事件 dataset 中的去重用户，可以使用事件维度。当 denominator 是 `active_users` 或 `new_users` 时，分母来自 SDK context 行；此时 `groupBy` 应限制为 context 级字段。看板图表需要按百分比展示渗透率时，添加 `"format": "percent"`。
 
-`rollup` datasets aggregate rows through one or more `stages`, then aggregate the final stage rows. Use this for metrics like average user max level:
+`rollup` dataset 会先经过一个或多个 `stages` 聚合，再对最终 stage 行继续聚合。适合“用户最大关卡均值”这类指标：
 
 ```json
 {
@@ -451,7 +451,7 @@ For `denominator: "event_users"`, the denominator is distinct users in the same 
 }
 ```
 
-`cohort` datasets build cohorts from SDK context rows and join later activity events by user. Use this for LTV and retention-style reports:
+`cohort` dataset 会从 SDK context 行构建 cohort，并按用户关联后续活跃或收入事件。适合 LTV、留存这类报表：
 
 ```json
 {
@@ -467,7 +467,7 @@ For `denominator: "event_users"`, the denominator is distinct users in the same 
 }
 ```
 
-`cohort` datasets can also use `stages`. For example, average new-user lifetime duration through each cohort day is session max duration by `sessionId`, then user total duration by `userId`, then final average across users:
+`cohort` dataset 也可以使用 `stages`。例如“新用户生命周期平均时长”可以先按 `sessionId` 取 session 最大时长，再按 `userId` 汇总用户总时长，最后对用户求平均：
 
 ```json
 {
@@ -497,9 +497,9 @@ For `denominator: "event_users"`, the denominator is distinct users in the same 
 }
 ```
 
-## Payload Guidelines
+## Payload 建议
 
-Keep event payloads flat for the first version:
+第一版建议事件 payload 保持扁平结构：
 
 ```json
 {
@@ -509,10 +509,10 @@ Keep event payloads flat for the first version:
 }
 ```
 
-Do not put secrets, phone numbers, emails, full account identifiers, device metadata, or experiment assignments in payload. SDK context already carries identity, device, app, and experiment metadata.
+不要把密钥、手机号、邮箱、完整账号标识、设备元数据或实验分组放进 payload。SDK context 已经携带身份、设备、App 和实验元数据。
 
-## Validation
+## 校验
 
-Use `Validate` in `Manage Pack` before saving. Validation checks the JSON shape, report references, chart mappings, dataset definitions, standard dashboard refs, and that the top-level `version` matches the version being saved.
+保存前请在 `Manage Pack` 中点击 `Validate`。校验会检查 JSON 结构、report 引用、chart 映射、dataset 定义、标准看板 ref，以及顶层 `version` 是否和要保存的版本一致。
 
-After saving an `active` pack, return to the main `Reports` view, choose a date range, and click `Run` to load the configured dashboard.
+保存 `active` pack 后，回到主 `Reports` 页面，选择日期范围并点击 `Run`，即可加载配置好的看板。
