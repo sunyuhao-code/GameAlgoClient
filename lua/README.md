@@ -47,6 +47,10 @@ GameAlgo.Init({
 
 `Init` starts a non-blocking `/v1/config` request. Game logic should keep local defaults and read remote values only when available.
 
+In persistent world mode, the client may call `Init` before the server
+connection is ready. `ProxyTransport` queues outbound requests until
+`ServerConnected` fires, then flushes the queue automatically.
+
 ## Experiments
 
 ```lua
@@ -90,6 +94,8 @@ GameAlgo.Flush()
 ```
 
 If the game has an update loop, call `GameAlgo.Update()` periodically so proxy request timeouts can be cleaned up:
+It also gives the transport another chance to flush queued requests if the
+SDK was initialized after the connection event had already fired.
 
 ```lua
 function Update(timeStep)

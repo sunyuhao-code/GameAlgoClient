@@ -19,7 +19,9 @@ local EVENT_RESPONSE = "HttpProxy_Response"
 
 local nextId_ = 1
 local pending_ = {}
+local outbox_ = {}
 local started_ = false
+local connected_ = false
 
 local function nowMs()
     return math.floor(os.time() * 1000)
@@ -37,10 +39,71 @@ local function safeDecode(value)
     return nil
 end
 
-local function sendRemoteEvent(eventName, payload)
+local function canSendRemoteEvent()
+    if not network then return false end
+    local ok, method = pcall(function() return network.SendRemoteEvent end)
+    return ok and type(method) == "function"
+end
+
+local function trySendRemoteEvent(eventName, payload)
     local eventData = VariantMap()
     eventData["Payload"] = Variant(payload)
-    network:SendRemoteEvent(eventName, true, eventData)
+    local ok, err = pcall(function()
+        network:SendRemoteEvent(eventName, true, eventData)
+    end)
+    if ok then return true end
+    return false, tostring(err)
+end
+
+local function drainOutbox()
+    if #outbox_ == 0 or not canSendRemoteEvent() then return end
+
+    connected_ = true
+    local queue = outbox_
+    outbox_ = {}
+
+    for index, item in ipairs(queue) do
+        local shouldSend = true
+        if item.requestId then
+            local pending = pending_[item.requestId]
+            if not pending then
+                shouldSend = false
+            elseif pending.expiresAt <= nowMs() then
+                pending_[item.requestId] = nil
+                pending.callback("proxy timeout", nil)
+                shouldSend = false
+            end
+        end
+
+        if shouldSend then
+            local sent, err = trySendRemoteEvent(item.eventName, item.payload)
+            if not sent then
+                connected_ = false
+                table.insert(outbox_, item)
+                for rest = index + 1, #queue do
+                    table.insert(outbox_, queue[rest])
+                end
+                print("[GameAlgoSDK] proxy transport waiting for connection: " .. tostring(err))
+                return
+            end
+        end
+    end
+end
+
+local function sendRemoteEvent(eventName, payload, requestId)
+    if canSendRemoteEvent() then
+        connected_ = true
+        local sent, err = trySendRemoteEvent(eventName, payload)
+        if sent then return end
+        connected_ = false
+        print("[GameAlgoSDK] proxy send deferred: " .. tostring(err))
+    end
+
+    table.insert(outbox_, {
+        eventName = eventName,
+        payload = payload,
+        requestId = requestId,
+    })
 end
 
 function ProxyTransport.HandleResponse(eventType, eventData)
@@ -79,7 +142,13 @@ function ProxyTransport.Start(cfg)
     _G.HandleGameAlgoProxyResponse = function(eventType, eventData)
         ProxyTransport.HandleResponse(eventType, eventData)
     end
+    _G.HandleGameAlgoServerConnected = function()
+        connected_ = true
+        drainOutbox()
+    end
     SubscribeToEvent(EVENT_RESPONSE, "HandleGameAlgoProxyResponse")
+    SubscribeToEvent("ServerConnected", "HandleGameAlgoServerConnected")
+    drainOutbox()
 end
 
 ---@param request table
@@ -102,12 +171,14 @@ function ProxyTransport.Request(request, callback)
         callback = callback,
         expiresAt = nowMs() + timeoutMs,
     }
-    sendRemoteEvent(EVENT_REQUEST, payload)
+    sendRemoteEvent(EVENT_REQUEST, payload, id)
+    drainOutbox()
     return id
 end
 
 --- 如果游戏有 tick/update，可以周期调用用于清理超时请求。
 function ProxyTransport.Update()
+    drainOutbox()
     local now = nowMs()
     for id, item in pairs(pending_) do
         if item.expiresAt <= now then
@@ -121,6 +192,10 @@ function ProxyTransport.PendingCount()
     local count = 0
     for _, _ in pairs(pending_) do count = count + 1 end
     return count
+end
+
+function ProxyTransport.OutboxCount()
+    return #outbox_
 end
 
 return ProxyTransport

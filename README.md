@@ -188,6 +188,8 @@ Server: ProxyServer.lua + server_main.lua
 
 客户端只通过 `HttpProxy_Request` / `HttpProxy_Response` RemoteEvent 和游戏服务端通信；服务端 `ProxyServer` 再转发到 `game-algo-sdk.dictapis.cn`。推荐把 `X-GameAlgo-Key` 配在 `server_main.lua` 的服务端 `defaultHeaders` 里，不要放进小游戏客户端包。
 
+persistent world 模式下，客户端可能在服务端连接建立前调用 `GameAlgo.Init()`。Lua transport 会先把 `/v1/config` 等请求放进队列，收到 `ServerConnected` 后再通过 RemoteEvent 发出；有 update loop 的游戏继续周期调用 `GameAlgo.Update()`，用于清理超时请求并补触发队列发送。
+
 最小客户端调用：
 
 ```lua
