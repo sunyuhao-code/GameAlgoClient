@@ -19,6 +19,7 @@ protocol/   Public copy of Protocol v1
 ios/        iOS Swift Package SDK
 android/    Android Java SDK core
 rest-api/   REST API helper and examples
+lua/        TapTap mini game Lua SDK and server proxy transport
 examples/   Runnable integration examples
 docs/       Client-facing docs
 ```
@@ -175,6 +176,38 @@ POST /v1/config
 GET  /v1/config-files/{fileName}
 POST /v1/events/batch
 ```
+
+### TapTap 小游戏 / Lua
+
+TapTap 小游戏客户端在沙盒里不能直接访问 GameAlgo HTTP API，可以使用 `lua/` 下的代理方案：
+
+```text
+Client: GameAlgo.lua + ProxyTransport.lua
+Server: ProxyServer.lua + server_main.lua
+```
+
+客户端只通过 `HttpProxy_Request` / `HttpProxy_Response` RemoteEvent 和游戏服务端通信；服务端 `ProxyServer` 再转发到 `game-algo-sdk.dictapis.cn`。推荐把 `X-GameAlgo-Key` 配在 `server_main.lua` 的服务端 `defaultHeaders` 里，不要放进小游戏客户端包。
+
+最小客户端调用：
+
+```lua
+local GameAlgo = require("GameAlgo")
+
+GameAlgo.Init({
+    baseUrl = "https://game-algo-sdk.dictapis.cn",
+    appVersion = "1.0.0",
+    device = { runtime = "taptap_mini_game" },
+})
+
+local levelGenerator = GameAlgo.Executor("level_generator")
+local variant = levelGenerator.Variant("control")
+
+GameAlgo.TrackLevelEnd({ level = 3, result = "win" })
+GameAlgo.TrackSessionEnd()
+GameAlgo.Flush()
+```
+
+完整说明见 `lua/README.md`。
 
 ## 实验、配置和脚本
 
