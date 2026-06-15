@@ -224,6 +224,7 @@ In the main `Reports` view you can:
 - Line charts use `x`, `y`, and optional `series` result columns.
 - Pie charts use `label` and `value` result columns.
 - Tables render the full report result.
+- Use `"format": "percent"` explicitly for custom ratio metrics that should render as percentages. Otherwise decimal values render as plain numbers, except platform standard retention columns such as `retention_rate` and `d1_rate`.
 
 Identity fields available to metrics are:
 
