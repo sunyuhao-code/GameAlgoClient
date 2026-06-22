@@ -217,11 +217,12 @@ GameAlgo.Flush()
 `cli/` 提供面向游戏开发 Agent 的自动化工具，用于维护实验、脚本、配置、Report Pack，并拉取报表结果。CLI 使用游戏维度的 Game Admin Key，不使用客户端 `gameKey`。
 
 ```bash
-npm install
-npm run cli -- login --host https://game-algo-admin.example.com --admin-key ga_admin_xxx
-npm run cli -- experiment pull --out experiment.yaml
-npm run cli -- report result --from 2026-06-14 --to 2026-06-21 --group "Daily ARPU"
+gamealgo login --host https://game-algo-admin.example.com --admin-key ga_admin_xxx
+gamealgo experiment pull --out experiment.yaml
+gamealgo report result --from 2026-06-14 --to 2026-06-21 --group "Daily ARPU" --timeout 60
 ```
+
+源码仓库内调试可用 `npm --silent run cli -- ...`。
 
 完整说明见 [Agent CLI guide](./docs/agent-cli.md)。
 

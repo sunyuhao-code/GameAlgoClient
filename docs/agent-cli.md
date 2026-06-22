@@ -2,11 +2,18 @@
 
 GameAlgo CLI 用于开发期自动化，不是游戏运行时 SDK。推荐给游戏开发 Agent 使用，用来维护实验、脚本、配置、Report Pack，并拉取报表结果形成自迭代闭环。
 
-CLI 实现在 [../cli](../cli/README.md)。当前仓库内运行方式：
+CLI 实现在 [../cli](../cli/README.md)。推荐安装后直接使用：
+
+```bash
+gamealgo help
+```
+
+源码仓库内调试可以用 npm script；如果命令带 `--json`，必须使用 `npm --silent`：
 
 ```bash
 npm install
-npm run cli -- help
+npm --silent run cli -- help
+npm --silent run cli -- report manifest --json
 ```
 
 核心流程：
@@ -22,12 +29,14 @@ npm run cli -- help
 最常用命令：
 
 ```bash
-npm run cli -- login --host https://game-algo-admin.example.com --admin-key ga_admin_xxx
-npm run cli -- experiment pull --out experiment.yaml
-npm run cli -- experiment diff experiment.yaml
-npm run cli -- experiment publish experiment.yaml --message "update experiment" --yes
-npm run cli -- report manifest --json
-npm run cli -- report result --from 2026-06-14 --to 2026-06-21 --group "Daily ARPU" --selector experiment=ad_frequency --out reports/daily-arpu.json
+gamealgo login --host https://game-algo-admin.example.com --admin-key ga_admin_xxx
+gamealgo experiment pull --out experiment.yaml
+gamealgo experiment diff experiment.yaml
+gamealgo experiment publish experiment.yaml --message "update experiment" --yes
+gamealgo report manifest --json
+gamealgo report result --from 2026-06-14 --to 2026-06-21 --group "Daily ARPU" --selector experiment=ad_frequency --timeout 60 --out reports/daily-arpu.json
 ```
+
+`experiment publish` 和 `experiment rollback` 在 `--json` / CI / 非交互环境下也必须显式传 `--yes`。`report result` 的进度和耗时输出到 stderr，不会污染 JSON stdout。
 
 完整命令说明见 [CLI README](../cli/README.md)。

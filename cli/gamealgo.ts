@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import { homedir } from "node:os";
 
@@ -27,6 +27,7 @@ type ExperimentConfigFile = {
 
 const CONFIG_PATH = join(homedir(), ".gamealgo", "cli.json");
 const SCRIPT_EXTENSIONS = new Set([".js", ".lua"]);
+const FILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -173,7 +174,13 @@ async function handleExperiment(client: GameAlgoAdminClient, args: string[], glo
     const before = await stringifyConfigFile({ gameId: current.gameId, latestCommitId: current.latestCommitId, strategies: current.strategies }, filePath);
     const after = await stringifyConfigFile(normalizeExperimentConfigForPublish(next), filePath);
     const diff = diffText(before.trimEnd(), after.trimEnd());
-    if (!flags.yes && !global.json) {
+    if (!flags.yes && global.json) {
+      throw new Error("experiment publish requires --yes in --json mode");
+    }
+    if (!flags.yes && !isInteractive()) {
+      throw new Error("experiment publish requires --yes in non-interactive mode");
+    }
+    if (!flags.yes) {
       console.log(diff || "No changes.");
       const ok = await confirm("Publish this experiment config?");
       if (!ok) throw new Error("publish cancelled");
@@ -196,7 +203,13 @@ async function handleExperiment(client: GameAlgoAdminClient, args: string[], glo
     const flags = parseFlags(args);
     const commitId = String(flags.commit || args.shift() || "");
     if (!commitId) throw new Error("usage: gamealgo experiment rollback --commit <commitId>");
-    if (!flags.yes && !global.json) {
+    if (!flags.yes && global.json) {
+      throw new Error("experiment rollback requires --yes in --json mode");
+    }
+    if (!flags.yes && !isInteractive()) {
+      throw new Error("experiment rollback requires --yes in non-interactive mode");
+    }
+    if (!flags.yes) {
       const ok = await confirm(`Rollback experiment config to commit ${commitId}?`);
       if (!ok) throw new Error("rollback cancelled");
     }
@@ -231,8 +244,9 @@ async function handleFileResource(
       : names;
     const pulled: string[] = [];
     for (const name of list) {
-      const file = await client.getConfigFile(name);
-      const target = join(outDir, file.configFile.name);
+      const file = await client.getConfigFile(sanitizeRemoteFileName(name));
+      const fileName = sanitizeRemoteFileName(file.configFile.name);
+      const target = join(outDir, fileName);
       await writeTextFile(target, file.configFile.content);
       pulled.push(target);
     }
@@ -243,10 +257,16 @@ async function handleFileResource(
     const flags = parseFlags(args);
     const files = args;
     if (files.length === 0) throw new Error(`usage: gamealgo ${resource} publish <file...>`);
+    if (flags.name && files.length > 1) {
+      throw new Error("--name can only be used when publishing one file");
+    }
     const published = [];
     for (const filePath of files) {
-      const name = String(flags.name || basename(filePath));
+      const name = sanitizeRemoteFileName(String(flags.name || basename(filePath)));
       const content = await readFile(filePath, "utf8");
+      if (!isScript && (name.toLowerCase().endsWith(".json") || filePath.toLowerCase().endsWith(".json"))) {
+        validateJsonText(content, filePath);
+      }
       const result = await client.putConfigFile(name, content, contentTypeForFileName(name));
       published.push(result.configFile);
     }
@@ -272,7 +292,8 @@ async function handleReport(client: GameAlgoAdminClient, args: string[], global:
   if (sub === "validate") {
     const filePath = args.shift();
     if (!filePath) throw new Error("usage: gamealgo report validate <report-pack.json>");
-    await printResult(await client.previewReportPack(await readJsonFile(filePath)), global);
+    const content = await readJsonFile(filePath);
+    await printResult(await client.previewReportPack(content), global);
     return;
   }
   if (sub === "publish") {
@@ -297,25 +318,41 @@ async function handleReport(client: GameAlgoAdminClient, args: string[], global:
     const startDate = String(flags.from || flags.start || flags.startDate || "");
     const endDate = String(flags.to || flags.end || flags.endDate || "");
     if (!startDate || !endDate) throw new Error("usage: gamealgo report result --from YYYY-MM-DD --to YYYY-MM-DD [--tab name] [--group name] [--chart name] [--selector k=v]");
-    const response = await client.queryReportDashboard({
-      version: optionalString(flags.version),
-      startDate,
-      endDate,
-      tab: optionalString(flags.tab),
-      tabId: optionalString(flags["tab-id"]),
-      group: optionalString(flags.group),
-      groupId: optionalString(flags["group-id"]),
-      chart: optionalString(flags.chart),
-      chartId: optionalString(flags["chart-id"]),
-      selectors,
-      refresh: Boolean(flags.refresh),
-    });
+    const timeoutMs = reportTimeoutMs(flags);
+    const startedAt = Date.now();
+    const stopProgress = startProgress("Querying report results", timeoutMs);
+    let response: unknown;
+    try {
+      response = await client.queryReportDashboard({
+        version: optionalString(flags.version),
+        startDate,
+        endDate,
+        tab: optionalString(flags.tab),
+        tabId: optionalString(flags["tab-id"]),
+        group: optionalString(flags.group),
+        groupId: optionalString(flags["group-id"]),
+        chart: optionalString(flags.chart),
+        chartId: optionalString(flags["chart-id"]),
+        selectors,
+        refresh: Boolean(flags.refresh),
+      }, { timeoutMs });
+    } finally {
+      stopProgress();
+    }
+    const elapsedMs = Date.now() - startedAt;
+    const outputValue = withCliMeta(response, { elapsedMs, timeoutMs });
+    process.stderr.write(`Report query finished in ${formatDuration(elapsedMs)}.\n`);
     if (flags.out) {
-      await writeTextFile(String(flags.out), JSON.stringify(response, null, 2) + "\n");
-      await printResult({ ok: true, out: String(flags.out), results: Array.isArray((response as { results?: unknown[] }).results) ? (response as { results: unknown[] }).results.length : 0 }, global);
+      await writeTextFile(String(flags.out), JSON.stringify(outputValue, null, 2) + "\n");
+      await printResult({
+        ok: true,
+        out: String(flags.out),
+        results: Array.isArray((outputValue as { results?: unknown[] }).results) ? (outputValue as { results: unknown[] }).results.length : 0,
+        elapsedMs,
+      }, global);
       return;
     }
-    await printResult(response, global);
+    await printResult(outputValue, global);
     return;
   }
   throw new Error("usage: gamealgo report <pull|validate|publish|manifest|result>");
@@ -412,19 +449,20 @@ class GameAlgoAdminClient {
     return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/reports/manifest${query}`);
   }
 
-  async queryReportDashboard(body: Record<string, unknown>) {
-    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/reports/query`, body);
+  async queryReportDashboard(body: Record<string, unknown>, options: { timeoutMs?: number } = {}) {
+    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/reports/query`, body, options);
   }
 
   async get(path: string) {
     return await requestJson(this.host, path, { headers: this.headers() });
   }
 
-  async post(path: string, body: unknown) {
+  async post(path: string, body: unknown, options: { timeoutMs?: number } = {}) {
     return await requestJson(this.host, path, {
       method: "POST",
       headers: this.headers({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
+      timeoutMs: options.timeoutMs,
     });
   }
 
@@ -444,15 +482,31 @@ class GameAlgoAdminClient {
   }
 }
 
-async function requestJson(host: string, path: string, init: RequestInit): Promise<unknown> {
-  const response = await fetch(`${normalizeHost(host)}${path}`, init);
-  const text = await response.text();
-  const json = text ? JSON.parse(text) as unknown : null;
-  if (!response.ok) {
-    const body = json && typeof json === "object" ? json as Record<string, unknown> : {};
-    throw new Error(String(body.message || body.error || `HTTP ${response.status}`));
+type CliRequestInit = RequestInit & { timeoutMs?: number };
+
+async function requestJson(host: string, path: string, init: CliRequestInit): Promise<unknown> {
+  const { timeoutMs, ...requestInit } = init;
+  let response: Response;
+  try {
+    response = await fetch(`${normalizeHost(host)}${path}`, {
+      ...requestInit,
+      signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : requestInit.signal,
+    });
+  } catch (error) {
+    if (isTimeoutError(error)) {
+      throw new Error(`HTTP request timed out after ${formatDuration(timeoutMs ?? 0)}`);
+    }
+    throw error;
   }
-  return json;
+  const text = await response.text();
+  const json = parseJsonResponse(text);
+  if (!response.ok) {
+    throw new Error(formatHttpError(response.status, response.statusText, text, json));
+  }
+  if (text && json === undefined) {
+    throw new Error(`Invalid JSON response from ${path}: ${truncateBody(text)}`);
+  }
+  return json ?? null;
 }
 
 function parseFlags(args: string[]): Record<string, string | boolean> {
@@ -510,8 +564,10 @@ async function loadConfig(): Promise<CliConfig | null> {
 }
 
 async function saveConfig(config: CliConfig): Promise<void> {
-  await mkdir(dirname(CONFIG_PATH), { recursive: true });
-  await writeFile(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n", "utf8");
+  await mkdir(dirname(CONFIG_PATH), { recursive: true, mode: 0o700 });
+  await chmod(dirname(CONFIG_PATH), 0o700).catch(() => undefined);
+  await writeFile(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+  await chmod(CONFIG_PATH, 0o600).catch(() => undefined);
 }
 
 async function readExperimentConfigFile(filePath: string): Promise<ExperimentConfigFile> {
@@ -558,6 +614,96 @@ async function readJsonFile(filePath: string): Promise<unknown> {
 async function writeTextFile(path: string, content: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, content, "utf8");
+}
+
+function sanitizeRemoteFileName(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed || trimmed !== basename(trimmed) || trimmed.includes("/") || trimmed.includes("\\") || trimmed.includes("..")) {
+    throw new Error(`invalid remote file name: ${name}`);
+  }
+  if (!FILE_NAME_PATTERN.test(trimmed)) {
+    throw new Error(`invalid remote file name: ${name}`);
+  }
+  return trimmed;
+}
+
+function validateJsonText(content: string, filePath: string): void {
+  try {
+    JSON.parse(content);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`invalid JSON in ${filePath}: ${message}`);
+  }
+}
+
+function parseJsonResponse(text: string): unknown | undefined {
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function formatHttpError(status: number, statusText: string, text: string, json: unknown): string {
+  if (json && typeof json === "object") {
+    const body = json as Record<string, unknown>;
+    const message = body.message || body.error;
+    if (message) return `HTTP ${status}: ${String(message)}`;
+  }
+  const bodyText = truncateBody(text);
+  return bodyText ? `HTTP ${status} ${statusText}: ${bodyText}` : `HTTP ${status} ${statusText}`;
+}
+
+function truncateBody(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return normalized.length > 500 ? `${normalized.slice(0, 500)}...` : normalized;
+}
+
+function isTimeoutError(error: unknown): boolean {
+  return error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+}
+
+function isInteractive(): boolean {
+  return Boolean(input.isTTY && output.isTTY);
+}
+
+function reportTimeoutMs(flags: Record<string, string | boolean>): number | undefined {
+  if (flags["timeout-ms"] !== undefined) return Math.ceil(positiveNumberFlag(flags["timeout-ms"], "--timeout-ms"));
+  if (flags.timeout !== undefined) return Math.ceil(positiveNumberFlag(flags.timeout, "--timeout") * 1000);
+  return undefined;
+}
+
+function positiveNumberFlag(value: string | boolean, flag: string): number {
+  if (typeof value === "boolean") throw new Error(`${flag} requires a value`);
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) throw new Error(`${flag} must be a positive number`);
+  return parsed;
+}
+
+function startProgress(label: string, timeoutMs?: number): () => void {
+  const startedAt = Date.now();
+  process.stderr.write(`${label}${timeoutMs ? `, timeout ${formatDuration(timeoutMs)}` : ""}...\n`);
+  const timer = setInterval(() => {
+    process.stderr.write(`${label} still running, elapsed ${formatDuration(Date.now() - startedAt)}...\n`);
+  }, 5000);
+  return () => clearInterval(timer);
+}
+
+function withCliMeta(value: unknown, meta: { elapsedMs: number; timeoutMs?: number }): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  return {
+    ...(value as Record<string, unknown>),
+    cli: {
+      elapsedMs: meta.elapsedMs,
+      ...(meta.timeoutMs ? { timeoutMs: meta.timeoutMs } : {}),
+    },
+  };
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
 }
 
 async function printResult(value: unknown, global: { json: boolean }): Promise<void> {
@@ -665,7 +811,7 @@ Usage:
   gamealgo report validate gamealgo-report-pack-v1.json
   gamealgo report publish gamealgo-report-pack-v1.json
   gamealgo report manifest
-  gamealgo report result --from 2026-06-14 --to 2026-06-21 --tab Revenue --group "Daily ARPU" --selector experiment=ad_frequency --out report-result.json
+  gamealgo report result --from 2026-06-14 --to 2026-06-21 --tab Revenue --group "Daily ARPU" --selector experiment=ad_frequency --timeout 60 --out report-result.json
 `.trim());
 }
 
