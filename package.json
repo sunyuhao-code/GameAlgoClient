@@ -2,10 +2,17 @@
   "name": "gamealgo-client",
   "private": true,
   "type": "module",
+  "bin": {
+    "gamealgo": "./cli/gamealgo.ts"
+  },
   "scripts": {
-    "check": "node --test rest-api/src/*.test.ts"
+    "check": "node --test rest-api/src/*.test.ts",
+    "cli": "node cli/gamealgo.ts"
   },
   "engines": {
     "node": ">=24"
+  },
+  "dependencies": {
+    "yaml": "^2.9.0"
   }
 }
