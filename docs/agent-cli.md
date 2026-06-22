@@ -39,4 +39,6 @@ gamealgo report result --from 2026-06-14 --to 2026-06-21 --group "Daily ARPU" --
 
 `experiment publish` 和 `experiment rollback` 在 `--json` / CI / 非交互环境下也必须显式传 `--yes`。`report result` 的进度和耗时输出到 stderr，不会污染 JSON stdout。
 
+如果新游戏的 `experiment pull` 返回空的 `latestCommitId`，表示还没有实验版本 commit。首次发布时保留为空或 `null` 即可，服务端会创建第一个 commit；发布成功后再 pull 会拿到新的 `exp_c_...`。
+
 完整命令说明见 [CLI README](../cli/README.md)。
