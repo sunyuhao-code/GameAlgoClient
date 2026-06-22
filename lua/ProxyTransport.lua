@@ -41,15 +41,17 @@ end
 
 local function canSendRemoteEvent()
     if not network then return false end
-    local ok, method = pcall(function() return network.SendRemoteEvent end)
-    return ok and type(method) == "function"
+    return network.serverConnection ~= nil
 end
 
 local function trySendRemoteEvent(eventName, payload)
+    local conn = network.serverConnection
+    if not conn then return false, "no serverConnection" end
+
     local eventData = VariantMap()
     eventData["Payload"] = Variant(payload)
     local ok, err = pcall(function()
-        network:SendRemoteEvent(eventName, true, eventData)
+        conn:SendRemoteEvent(eventName, true, eventData)
     end)
     if ok then return true end
     return false, tostring(err)
