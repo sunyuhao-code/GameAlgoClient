@@ -55,7 +55,42 @@ purchase
 
 内购使用 `trackPurchase`，有条件时传入 `productId`、`revenue` 和 `currency`。事件类型为 `purchase`。
 
-## 5. 验收清单
+## 5. 接入测试时验证事件上报
+
+接入测试时可以用 GameAlgo CLI 的事件统计命令确认事件是否已经进入数据表。这个命令使用游戏维度的 Game Admin Key，不使用客户端 Game Key。
+
+先登录 CLI：
+
+```bash
+gamealgo login \
+  --host https://game-algo-admin.example.com \
+  --admin-key ga_admin_xxx
+```
+
+启动游戏并触发一批测试事件后，查询当天事件数：
+
+```bash
+gamealgo events count \
+  --from 2026-06-23 \
+  --to 2026-06-23 \
+  --json
+```
+
+只验证某个事件类型：
+
+```bash
+gamealgo events count \
+  --from 2026-06-23 \
+  --to 2026-06-23 \
+  --event-type level_end \
+  --json
+```
+
+如果返回结果里的 `total` 增加，并且 `eventTypes` 中包含目标事件名，说明事件已经被服务端接收并进入平台事件明细。这个命令只验证上报链路是否成功；如果 Report Pack 看板仍然没有数据，需要继续检查事件字段、日期范围和报表配置。
+
+事件上报可能有批量 flush 和数据同步延迟。测试时建议先停留几秒或手动触发 SDK flush，再等待数据链路同步后查询。
+
+## 6. 验收清单
 
 - 包内使用正确的 `gameKey`。
 - 配置好的 key 能成功请求 `/v1/config`。
@@ -65,3 +100,4 @@ purchase
 - Debug 或 QA 事件设置 `isDebug=true`。
 - 生产包使用 `ga_live_*`。
 - 临时网络失败后，事件会继续重试。
+- 可以通过 `gamealgo events count` 查到测试事件。
