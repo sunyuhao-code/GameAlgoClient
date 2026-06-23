@@ -22,6 +22,8 @@ local pending_ = {}
 local outbox_ = {}
 local started_ = false
 local connected_ = false
+local ready_ = false
+local waitForServerReady_ = true
 
 local function nowMs()
     return math.floor(os.time() * 1000)
@@ -39,21 +41,34 @@ local function safeDecode(value)
     return nil
 end
 
+local function getServerConnection()
+    if not network then return nil end
+    local ok, conn = pcall(function()
+        return network:GetServerConnection()
+    end)
+    if ok and conn then return conn end
+    return network.serverConnection
+end
+
 local function canSendRemoteEvent()
-    if not network then return false end
-    return network.serverConnection ~= nil
+    if not ready_ or not network then return false end
+    return getServerConnection() ~= nil
 end
 
 local function trySendRemoteEvent(eventName, payload)
-    local conn = network.serverConnection
-    if not conn then return false, "no serverConnection" end
+    if not ready_ then return false, "server not ready" end
+    local conn = getServerConnection()
+    if not conn then return false, "no server connection" end
 
     local eventData = VariantMap()
     eventData["Payload"] = Variant(payload)
     local ok, err = pcall(function()
         conn:SendRemoteEvent(eventName, true, eventData)
     end)
-    if ok then return true end
+    if ok then
+        print("[GameAlgoSDK] sent remote event=" .. tostring(eventName))
+        return true
+    end
     return false, tostring(err)
 end
 
@@ -132,11 +147,14 @@ end
 ---@param cfg? table
 function ProxyTransport.Start(cfg)
     cfg = cfg or {}
+    if started_ then return end
+
     local prefix = cfg.eventPrefix or "HttpProxy"
     EVENT_REQUEST = prefix .. "_Request"
     EVENT_RESPONSE = prefix .. "_Response"
+    waitForServerReady_ = cfg.waitForServerReady ~= false
+    ready_ = not waitForServerReady_
 
-    if started_ then return end
     started_ = true
 
     network:RegisterRemoteEvent(EVENT_REQUEST)
@@ -146,10 +164,21 @@ function ProxyTransport.Start(cfg)
     end
     _G.HandleGameAlgoServerConnected = function()
         connected_ = true
+        if waitForServerReady_ then
+            print("[GameAlgoSDK] ServerConnected received; waiting ServerReady before draining outbox")
+            return
+        end
+        drainOutbox()
+    end
+    _G.HandleGameAlgoServerReady = function()
+        connected_ = true
+        ready_ = true
+        print("[GameAlgoSDK] ServerReady received; draining outbox=" .. tostring(#outbox_))
         drainOutbox()
     end
     SubscribeToEvent(EVENT_RESPONSE, "HandleGameAlgoProxyResponse")
     SubscribeToEvent("ServerConnected", "HandleGameAlgoServerConnected")
+    SubscribeToEvent("ServerReady", "HandleGameAlgoServerReady")
     drainOutbox()
 end
 

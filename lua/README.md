@@ -47,7 +47,9 @@ GameAlgo.Init({
 
 `Init` 会发起非阻塞的 `/v1/config` 请求。游戏逻辑应该保留本地默认值，只在远端配置可用时读取远端值。
 
-persistent world 模式下，客户端可能在服务端连接完成前调用 `Init`。`ProxyTransport` 会先把待发送请求放入队列，等 `ServerConnected` 触发后自动 flush 队列。
+persistent world / background match 模式下，客户端可能在服务端脚本 ready 前调用 `Init`。`ProxyTransport` 会先把待发送请求放入队列；`ServerConnected` 只记录连接状态，不发送队列；等 `ServerReady` 触发后才会 flush 队列。这样可以避免 RemoteEvent 在服务端 Proxy 尚未 ready 时被过早发送。
+
+默认会等待 `ServerReady`。如果自定义运行时没有这个事件，可以在 `GameAlgo.Init` 中传 `waitForServerReady = false` 回到连接可用后立即发送的旧行为。
 
 ## 实验
 

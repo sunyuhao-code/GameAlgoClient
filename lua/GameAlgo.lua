@@ -207,7 +207,10 @@ function GameAlgo.Init(options)
     state_.sessionId = options.sessionId or randomId("ga_session")
     state_.sessionStartMs = nowMs()
     ensureIdentity(options.userId)
-    ProxyTransport.Start({ eventPrefix = options.eventPrefix or "HttpProxy" })
+    ProxyTransport.Start({
+        eventPrefix = options.eventPrefix or "HttpProxy",
+        waitForServerReady = options.waitForServerReady,
+    })
     log("initialized: userId=" .. state_.userId .. ", sessionId=" .. state_.sessionId)
     if options.autoFetch ~= false then
         GameAlgo.FetchConfig(nil)
