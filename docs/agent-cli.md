@@ -47,6 +47,19 @@ gamealgo events count --from 2026-06-23 --to 2026-06-23 --event-type level_end -
 
 `events count` 用于 SDK 接入调试：它只查询当前游戏的固定事件计数，不需要传 `contextId`，也不接受自定义 SQL。先确认目标日期有事件，再继续看 Report Pack 计算结果。
 
+TapTap Maker / TapTap 小游戏 / Lua SDK 这类通过服务端 Proxy 或 REST 协议接入的环境，`platform` 使用 `rest`。不要扩展成 `tapmaker` 之类的新枚举；具体运行环境写到 `device` 中，例如：
+
+```json
+{
+  "platform": "rest",
+  "device": {
+    "runtime": "tapmaker",
+    "engine": "lua",
+    "channel": "taptap_mini_game"
+  }
+}
+```
+
 Report Pack JSON 里的 chart id 可以是裸 id，例如 `max_level_distribution`；服务端 manifest 会规范化成 `groupId__chartId`，例如 `max_levels__max_level_distribution`。`--chart-id` 查询参数建议使用 manifest 返回的规范化 id；如果不确定，优先用 `--chart "Max Level Distribution"` 或先跑 `report manifest`。`preview` 使用本地 pack，但 selector/group/chart lookup 仍走服务端 normalized dashboard model。
 
 如果新游戏的 `experiment pull` 返回空的 `latestCommitId`，表示还没有实验版本 commit。首次发布时保留为空或 `null` 即可，服务端会创建第一个 commit；发布成功后再 pull 会拿到新的 `exp_c_...`。
