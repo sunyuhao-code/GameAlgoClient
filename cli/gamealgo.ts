@@ -65,6 +65,10 @@ async function main(): Promise<void> {
       await handleReport(client, args, global);
       return;
     }
+    if (command === "events") {
+      await handleEvents(client, args, global);
+      return;
+    }
     throw new Error(`Unknown command: ${command}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -405,6 +409,34 @@ async function handleReport(client: GameAlgoAdminClient, args: string[], global:
   throw new Error("usage: gamealgo report <pull|validate|publish|manifest|result|preview>");
 }
 
+async function handleEvents(client: GameAlgoAdminClient, args: string[], global: ReturnType<typeof parseGlobalFlags>): Promise<void> {
+  const sub = args.shift();
+  if (sub !== "count") throw new Error("usage: gamealgo events count [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--event-type level_end]");
+  const flags = parseFlags(args);
+  const timeoutMs = reportTimeoutMs(flags);
+  const startedAt = Date.now();
+  const stopProgress = startProgress("Querying event counts", timeoutMs);
+  let response: unknown;
+  try {
+    response = await client.countEvents({
+      startDate: optionalString(flags.from || flags.start || flags.startDate),
+      endDate: optionalString(flags.to || flags.end || flags.endDate),
+      eventType: optionalString(flags["event-type"] || flags.eventType),
+    }, { timeoutMs });
+  } finally {
+    stopProgress();
+  }
+  const elapsedMs = Date.now() - startedAt;
+  const outputValue = withCliMeta(response, { elapsedMs, timeoutMs });
+  process.stderr.write(`Event count query finished in ${formatDuration(elapsedMs)}.\n`);
+  if (flags.out) {
+    await writeTextFile(String(flags.out), JSON.stringify(outputValue, null, 2) + "\n");
+    await printResult({ ok: true, out: String(flags.out), elapsedMs }, global);
+    return;
+  }
+  await printResult(outputValue, global);
+}
+
 class GameAlgoAdminClient {
   readonly host: string;
   readonly adminKey: string;
@@ -502,6 +534,10 @@ class GameAlgoAdminClient {
 
   async previewReportDashboard(body: Record<string, unknown>, options: { timeoutMs?: number } = {}) {
     return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/reports/preview`, body, options);
+  }
+
+  async countEvents(body: Record<string, unknown>, options: { timeoutMs?: number } = {}) {
+    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/events/count`, body, options);
   }
 
   async get(path: string) {
@@ -864,6 +900,9 @@ Usage:
   gamealgo report manifest
   gamealgo report result --from 2026-06-14 --to 2026-06-21 --tab Revenue --group "Daily ARPU" --selector experiment=ad_frequency --timeout 60 --out report-result.json
   gamealgo report preview --pack gamealgo-report-pack-v1.json --from 2026-06-14 --to 2026-06-21 --group "Daily ARPU" --timeout 60 --out preview-result.json
+
+  gamealgo events count --from 2026-06-23 --to 2026-06-23
+  gamealgo events count --from 2026-06-23 --to 2026-06-23 --event-type level_end
 `.trim());
 }
 

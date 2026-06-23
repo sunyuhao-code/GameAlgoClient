@@ -79,6 +79,17 @@ gamealgo report result \
   --out reports/daily-arpu.json
 ```
 
+确认 SDK 事件已经进入数据表：
+
+```bash
+gamealgo events count \
+  --from 2026-06-23 \
+  --to 2026-06-23 \
+  --event-type level_end \
+  --timeout 60 \
+  --json
+```
+
 本地修改 Report Pack 后，可以先预览查询结果，不必马上发布：
 
 ```bash

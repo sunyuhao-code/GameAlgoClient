@@ -166,3 +166,27 @@ gamealgo report preview \
 - `report preview --pack <file>`：指定本地 Report Pack 文件，适合发布前调试。
 
 查询进度和耗时会输出到 stderr，不会污染 `--json` 的 stdout。返回结果包含 `columns`、`rows`、`rowCount`、chart 元信息、date range、selector、缓存信息和 `cli.elapsedMs`，适合 Agent 直接分析。
+
+## 事件上报调试
+
+接入 SDK 后，Agent 可以用 `events count` 检查某天事件是否已经进入数据表：
+
+```bash
+gamealgo events count \
+  --from 2026-06-23 \
+  --to 2026-06-23 \
+  --timeout 60 \
+  --json
+```
+
+只看某个事件类型：
+
+```bash
+gamealgo events count \
+  --from 2026-06-23 \
+  --to 2026-06-23 \
+  --event-type level_end \
+  --json
+```
+
+这个命令只按当前 Game Admin Key 绑定的游戏查询固定事件计数 SQL，不接受自定义 SQL。未传 `--from/--to` 时默认查询当天；只传一边时会把另一边补成同一天。结果里的 `total` 是总事件数，`eventTypes` 是按事件名聚合的数量。
