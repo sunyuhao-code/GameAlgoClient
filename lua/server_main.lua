@@ -39,7 +39,8 @@ function Start()
         },
 
         -- 所有转发请求附加的公共 header（可选）
-        -- 推荐在服务端注入 GameAlgo Key，不要把 key 放进小游戏客户端包里。
+        -- 推荐在服务端 Proxy 注入 GameAlgo Key，用于拉配置和事件上报。
+        -- 不要把 key 放进小游戏客户端包，也不要让客户端自己传事件上报 key。
         defaultHeaders = {
             ["X-Proxy-Source"] = "maker-server",
             ["X-GameAlgo-Key"] = GAMEALGO_KEY,

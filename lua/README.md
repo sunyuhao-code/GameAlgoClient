@@ -14,7 +14,7 @@ Server
 
 ## 服务端配置
 
-把 `ProxyServer.lua` 和 `server_main.lua` 放在 TapTap 游戏服务端。真实 GameAlgo key 只配置在服务端：
+把 `ProxyServer.lua` 和 `server_main.lua` 放在 TapTap 游戏服务端。真实 GameAlgo key 只配置在服务端 Proxy，用来给拉配置、拉配置文件和事件上报请求统一注入 `X-GameAlgo-Key`：
 
 ```lua
 ProxyServer.Start({
@@ -27,7 +27,7 @@ ProxyServer.Start({
 })
 ```
 
-不要把 `X-GameAlgo-Key` 放进小游戏客户端包。`ProxyServer` 会在客户端 headers 后追加 `defaultHeaders`，因此服务端 headers 优先，客户端无法覆盖。
+不要把 `X-GameAlgo-Key` 放进小游戏客户端包，也不要让客户端自己传事件上报 key。`ProxyServer` 会在客户端 headers 后追加 `defaultHeaders`，因此服务端 headers 优先，客户端无法覆盖。
 
 ## 客户端配置
 
