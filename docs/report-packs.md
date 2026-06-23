@@ -600,14 +600,14 @@ Group selector 是只作用于当前 group 的 UI 控件：
   },
   "ad_view": {
     "revenue": 0.18,
-    "currency": "USD",
+    "currency": "CNY",
     "network": "admob",
     "adType": "reward",
     "placement": "rewarded_level_end"
   },
   "purchase": {
     "revenue": 4.99,
-    "currency": "USD",
+    "currency": "CNY",
     "productId": "starter_pack"
   },
   "progression_end": {

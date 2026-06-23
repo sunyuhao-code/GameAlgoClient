@@ -281,12 +281,14 @@ purchase
 
 广告事件使用 `trackAd`，事件名仍是 `ad_view`。`ad_view` 只表示广告已经成功曝光并产生一次有效展示；广告加载失败、未填充、播放失败、用户取消或关闭但没有完成有效曝光时，不要上报到 `ad_view`。`placement`、`adType`、`revenue`、`currency` 必填，`network` 可选：
 
+国内游戏、TapTap Maker / TapTap 小游戏接入时，广告和付费事件的 `currency` 统一使用 `CNY`。不要默认使用 `USD`。
+
 ```swift
 await sdk.tracker.trackAd(
     placement: "rewarded_level_end",
     adType: "reward",
     revenue: 0.018,
-    currency: "USD",
+    currency: "CNY",
     network: "admob"
 )
 ```
@@ -297,7 +299,7 @@ await sdk.tracker.trackAd(
 await sdk.tracker.trackPurchase(
     productId: "starter_pack",
     revenue: 4.99,
-    currency: "USD"
+    currency: "CNY"
 )
 ```
 

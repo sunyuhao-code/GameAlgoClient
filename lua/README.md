@@ -87,13 +87,15 @@ GameAlgo.TrackLevelEnd({
     result = "win",
 })
 
-GameAlgo.TrackAd("rewarded_level_end", "reward", 0.018, "USD", "admob")
+GameAlgo.TrackAd("rewarded_level_end", "reward", 0.018, "CNY", "admob")
 
 GameAlgo.TrackSessionEnd()
 GameAlgo.Flush()
 ```
 
 `GameAlgo.TrackAd` 上报的是 `ad_view`，只用于广告成功曝光并产生一次有效展示。广告加载失败、未填充、播放失败、用户取消或关闭但没有完成有效曝光时，不要调用 `TrackAd`。
+
+TapTap Maker / TapTap 小游戏接入时，广告和付费事件的 `currency` 统一使用 `CNY`。不要默认使用 `USD`。
 
 如果游戏有 update loop，建议周期调用 `GameAlgo.Update()`，用于清理代理请求超时。如果 SDK 初始化发生在连接事件之后，它也会给 transport 一次补 flush 队列的机会。
 

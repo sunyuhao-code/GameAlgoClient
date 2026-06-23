@@ -177,16 +177,16 @@ ad_view
 purchase
 ```
 
-广告变现使用 `trackAd`。它会上报 `ad_view`。`ad_view` 只表示广告已经成功曝光并产生一次有效展示；广告加载失败、未填充、播放失败、用户取消或关闭但没有完成有效曝光时，不要上报到 `ad_view`。必填字段为 `placement`、`adType`、`revenue` 和 `currency`；`network` 可选：
+广告变现使用 `trackAd`。它会上报 `ad_view`。`ad_view` 只表示广告已经成功曝光并产生一次有效展示；广告加载失败、未填充、播放失败、用户取消或关闭但没有完成有效曝光时，不要上报到 `ad_view`。必填字段为 `placement`、`adType`、`revenue` 和 `currency`；`network` 可选。国内游戏、TapTap Maker / TapTap 小游戏接入时，`currency` 统一使用 `CNY`，不要默认使用 `USD`：
 
 ```ts
-client.tracker.trackAd("rewarded_level_end", "reward", 0.018, "USD", "admob");
+client.tracker.trackAd("rewarded_level_end", "reward", 0.018, "CNY", "admob");
 ```
 
-内购或付费订单使用 `trackPurchase`。有条件时它会上报带 `productId`、`revenue` 和 `currency` 的 `purchase`：
+内购或付费订单使用 `trackPurchase`。有条件时它会上报带 `productId`、`revenue` 和 `currency` 的 `purchase`。国内游戏同样使用 `CNY`：
 
 ```ts
-client.tracker.trackPurchase("starter_pack", 4.99, "USD");
+client.tracker.trackPurchase("starter_pack", 4.99, "CNY");
 ```
 
 自定义事件名必须以 `_` 开头，例如：

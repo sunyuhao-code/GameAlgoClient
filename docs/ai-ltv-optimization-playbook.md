@@ -92,6 +92,8 @@ gamealgo events count \
 
 接入 TapTap Maker / TapTap 小游戏 / Lua SDK 时，`platform` 填 `rest`。这类环境通过服务端 Proxy 或 REST 协议接入，不属于原生 `ios` / `android`。如果需要在报表或排查中识别 TapMaker，把运行环境写入 `device`，例如 `device.runtime = "tapmaker"`、`device.engine = "lua"`、`device.channel = "taptap_mini_game"`。
 
+国内游戏、TapTap Maker / TapTap 小游戏接入时，广告和付费事件的 `currency` 统一使用 `CNY`。不要默认使用 `USD`。
+
 本地修改 Report Pack 后，可以先预览查询结果，不必马上发布：
 
 ```bash

@@ -130,6 +130,7 @@ AI Agent 应该做的事：
 - 使用你创建的 Client Game Key：`ga_test_*` 或 `ga_live_*`
 - 初始化 SDK，确保匿名 `userId` 能持久化
 - 在关键点位补充事件上报
+- 国内游戏、TapTap Maker / TapTap 小游戏的 `ad_view` 和 `purchase` 事件统一使用 `currency = "CNY"`，不要默认使用 `USD`
 - 如果是 TapTap 小游戏这类沙盒环境，改成通过游戏服务端 Proxy 转发请求
 
 开发者需要确认：

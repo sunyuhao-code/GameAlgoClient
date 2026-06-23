@@ -282,25 +282,25 @@ GameAlgo 会把 `payload` 作为事件业务数据保存。后续每个游戏可
 
 `ad_view` 只表示广告已经成功曝光并产生一次有效展示；广告加载失败、未填充、播放失败、用户取消或关闭但没有完成有效曝光时，不要上报到 `ad_view`。
 
-`ad_view` 的标准 payload 必须包含 `placement`、`adType`、`revenue`、`currency`，可以额外包含 `network`。`adType` 表示广告位类型，例如 `reward`、`banner`、`interstitial`：
+`ad_view` 的标准 payload 必须包含 `placement`、`adType`、`revenue`、`currency`，可以额外包含 `network`。`adType` 表示广告位类型，例如 `reward`、`banner`、`interstitial`。国内游戏、TapTap Maker / TapTap 小游戏接入时，`currency` 统一使用 `CNY`，不要默认使用 `USD`：
 
 ```json
 {
   "placement": "rewarded_level_end",
   "adType": "reward",
   "revenue": 0.018,
-  "currency": "USD",
+  "currency": "CNY",
   "network": "admob"
 }
 ```
 
-`purchase` 的标准 payload 建议包含 `productId`、`revenue`、`currency`：
+`purchase` 的标准 payload 建议包含 `productId`、`revenue`、`currency`。国内游戏同样使用 `CNY`：
 
 ```json
 {
   "productId": "starter_pack",
   "revenue": 4.99,
-  "currency": "USD"
+  "currency": "CNY"
 }
 ```
 
