@@ -29,7 +29,7 @@ npm --silent run cli -- report manifest --json
 最常用命令：
 
 ```bash
-gamealgo login --host https://game-algo-admin.example.com --admin-key ga_admin_xxx
+gamealgo login --host https://game-algo-admin.dictapis.cn --admin-key ga_admin_xxx
 gamealgo experiment pull --out experiment.yaml
 gamealgo experiment diff experiment.yaml
 gamealgo experiment publish experiment.yaml --message "update experiment" --yes

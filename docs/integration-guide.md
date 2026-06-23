@@ -13,7 +13,18 @@ ga_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 QA 包使用 `ga_test_*`，生产包使用 `ga_live_*`。
 
-## 2. 选择接入方式
+## 2. 国内环境地址
+
+国内接入使用下面两个 host：
+
+| 用途 | Host | 说明 |
+| --- | --- | --- |
+| SDK / REST API | `https://game-algo-sdk.dictapis.cn` | 游戏运行时访问 `/v1/config`、`/v1/config-files/*`、`/v1/events/batch` |
+| Admin / CLI | `https://game-algo-admin.dictapis.cn` | 开发者控制台和 `gamealgo login --host` 使用 |
+
+客户端 SDK 的 `baseURL` / `baseUrl` 配置为 SDK host；CLI 和浏览器控制台使用 Admin host。不要把 Admin host 配到游戏客户端里。
+
+## 3. 选择接入方式
 
 - iOS SDK：使用 `../ios/`。
 - Android SDK：使用 `../android/`。
@@ -21,7 +32,7 @@ QA 包使用 `ga_test_*`，生产包使用 `ga_live_*`。
 
 所有接入方式都调用同一套 `/v1/*` 接口，并在每个请求中发送 `X-GameAlgo-Key`。
 
-## 3. 运行时要求
+## 4. 运行时要求
 
 - 在启动时，或依赖远端配置的玩法开始前，拉取 `/v1/config`。
 - 默认使用 SDK 生成的匿名 `userId`。该 ID 需要持久化到本地，让老玩家在多次启动和版本更新后保持稳定实验分组。Android core 和 REST helper 需要配置 `cacheStorage` / `storage` 才能持久化这个 ID。
@@ -36,7 +47,7 @@ QA 包使用 `ga_test_*`，生产包使用 `ga_live_*`。
 - 不要让 GameAlgo 网络请求阻塞游戏主流程。
 - GameAlgo 不可用时走本地默认逻辑。
 
-## 4. 推荐事件
+## 5. 推荐事件
 
 最小推荐事件：
 
@@ -55,7 +66,7 @@ purchase
 
 内购使用 `trackPurchase`，有条件时传入 `productId`、`revenue` 和 `currency`。事件类型为 `purchase`。
 
-## 5. 接入测试时验证事件上报
+## 6. 接入测试时验证事件上报
 
 接入测试时可以用 GameAlgo CLI 的事件统计命令确认事件是否已经进入数据表。这个命令使用游戏维度的 Game Admin Key，不使用客户端 Game Key。
 
@@ -63,7 +74,7 @@ purchase
 
 ```bash
 gamealgo login \
-  --host https://game-algo-admin.example.com \
+  --host https://game-algo-admin.dictapis.cn \
   --admin-key ga_admin_xxx
 ```
 
@@ -90,7 +101,7 @@ gamealgo events count \
 
 事件上报可能有批量 flush 和数据同步延迟。测试时建议先停留几秒或手动触发 SDK flush，再等待数据链路同步后查询。
 
-## 6. 验收清单
+## 7. 验收清单
 
 - 包内使用正确的 `gameKey`。
 - 配置好的 key 能成功请求 `/v1/config`。

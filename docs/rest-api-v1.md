@@ -4,6 +4,12 @@
 
 REST 请求和 SDK 使用同一套 Protocol v1 接口。
 
+国内正式 SDK Host：
+
+```text
+https://game-algo-sdk.dictapis.cn
+```
+
 ## 1. 鉴权
 
 每个请求都必须带上：
@@ -17,7 +23,7 @@ X-GameAlgo-Key: ga_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ## 2. 拉取配置
 
 ```bash
-curl -s -X POST "https://gamealgo.example.com/v1/config" \
+curl -s -X POST "https://game-algo-sdk.dictapis.cn/v1/config" \
   -H "X-GameAlgo-Key: ga_live_xxx" \
   -H "Content-Type: application/json" \
   -d '{
@@ -57,7 +63,7 @@ curl -s -X POST "https://gamealgo.example.com/v1/config" \
   "configFiles": [
     {
       "name": "gameplay.json",
-      "url": "https://gamealgo.example.com/v1/config-files/gameplay.json",
+      "url": "https://game-algo-sdk.dictapis.cn/v1/config-files/gameplay.json",
       "hash": "sha256:..."
     }
   ]
@@ -74,7 +80,7 @@ curl -s -X POST "https://gamealgo.example.com/v1/config" \
 ## 3. 拉取配置文件
 
 ```bash
-curl -s "https://gamealgo.example.com/v1/config-files/gameplay.json" \
+curl -s "https://game-algo-sdk.dictapis.cn/v1/config-files/gameplay.json" \
   -H "X-GameAlgo-Key: ga_live_xxx"
 ```
 
@@ -83,7 +89,7 @@ curl -s "https://gamealgo.example.com/v1/config-files/gameplay.json" \
 ## 4. 上传事件
 
 ```bash
-curl -s -X POST "https://gamealgo.example.com/v1/events/batch" \
+curl -s -X POST "https://game-algo-sdk.dictapis.cn/v1/events/batch" \
   -H "X-GameAlgo-Key: ga_live_xxx" \
   -H "Content-Type: application/json" \
   -d '{

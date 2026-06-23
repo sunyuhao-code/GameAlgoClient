@@ -26,14 +26,14 @@ npm --silent run cli -- report manifest --json
 
 ```bash
 gamealgo login \
-  --host https://game-algo-admin.example.com \
+  --host https://game-algo-admin.dictapis.cn \
   --admin-key ga_admin_xxx
 ```
 
 登录信息会写入本机 `~/.gamealgo/cli.json`，CLI 会把文件权限设置为 `600`。也可以通过环境变量临时传入：
 
 ```bash
-GAMEALGO_ADMIN_HOST=https://game-algo-admin.example.com
+GAMEALGO_ADMIN_HOST=https://game-algo-admin.dictapis.cn
 GAMEALGO_GAME_ADMIN_KEY=ga_admin_xxx
 ```
 

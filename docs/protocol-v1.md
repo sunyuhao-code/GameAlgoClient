@@ -61,7 +61,7 @@ game_api_keys
 Base URL 由部署环境决定：
 
 ```text
-https://gamealgo.example.com
+https://game-algo-sdk.dictapis.cn
 ```
 
 所有客户端接口使用 `/v1` 前缀。
@@ -155,7 +155,7 @@ Content-Type: application/json
       "config": {},
       "script": {
         "name": "level-generator.js",
-        "url": "https://gamealgo.example.com/v1/config-files/level-generator.js",
+        "url": "https://game-algo-sdk.dictapis.cn/v1/config-files/level-generator.js",
         "hash": "sha256:..."
       }
     }
@@ -163,7 +163,7 @@ Content-Type: application/json
   "configFiles": [
     {
       "name": "gameplay.json",
-      "url": "https://gamealgo.example.com/v1/config-files/gameplay.json",
+      "url": "https://game-algo-sdk.dictapis.cn/v1/config-files/gameplay.json",
       "hash": "sha256:..."
     }
   ]
@@ -315,7 +315,7 @@ GameAlgo 会把 `payload` 作为事件业务数据保存。后续每个游戏可
 ```swift
 let sdk = GameAlgoSDK(
     gameKey: "ga_live_xxx",
-    baseURL: URL(string: "https://gamealgo.example.com")!
+    baseURL: URL(string: "https://game-algo-sdk.dictapis.cn")!
 )
 ```
 
@@ -325,7 +325,7 @@ let sdk = GameAlgoSDK(
 GameAlgo.init(
     context = context,
     gameKey = "ga_live_xxx",
-    baseUrl = "https://gamealgo.example.com"
+    baseUrl = "https://game-algo-sdk.dictapis.cn"
 )
 ```
 
