@@ -4,6 +4,7 @@
 
 当前文档：
 
+- [Developer quickstart](./developer-quickstart.md)
 - [Integration guide](./integration-guide.md)
 - [Agent CLI guide](./agent-cli.md)
 - [AI LTV optimization playbook](./ai-ltv-optimization-playbook.md)
