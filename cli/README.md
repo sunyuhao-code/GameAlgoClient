@@ -131,6 +131,21 @@ gamealgo report result \
   --out reports/daily-arpu.json
 ```
 
+本地修改 Report Pack 后，可以先用 `preview` 直接跑查询结果，不需要发布到线上：
+
+```bash
+gamealgo report preview \
+  --pack gamealgo-report-pack-v1.json \
+  --from 2026-06-14 \
+  --to 2026-06-21 \
+  --group "Daily ARPU" \
+  --selector experiment=ad_frequency \
+  --timeout 60 \
+  --out reports/daily-arpu-preview.json
+```
+
+`preview` 会把本地 pack 发到服务端，用和线上查询相同的校验、SQL 生成和执行逻辑跑一次，但不会保存 pack，也不会写入正式报表缓存。
+
 常用参数：
 
 - `--version <version>`：指定 Report Pack 版本，默认使用 active 版本。
@@ -141,5 +156,6 @@ gamealgo report result \
 - `--refresh`：绕过服务端缓存，重新计算并刷新缓存。
 - `--timeout <seconds>` / `--timeout-ms <ms>`：限制 HTTP 查询最长等待时间。
 - `--out <file>`：把 JSON 结果写入文件。
+- `report preview --pack <file>`：指定本地 Report Pack 文件，适合发布前调试。
 
 查询进度和耗时会输出到 stderr，不会污染 `--json` 的 stdout。返回结果包含 `columns`、`rows`、`rowCount`、chart 元信息、date range、selector、缓存信息和 `cli.elapsedMs`，适合 Agent 直接分析。

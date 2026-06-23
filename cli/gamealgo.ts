@@ -355,7 +355,54 @@ async function handleReport(client: GameAlgoAdminClient, args: string[], global:
     await printResult(outputValue, global);
     return;
   }
-  throw new Error("usage: gamealgo report <pull|validate|publish|manifest|result>");
+  if (sub === "preview") {
+    const selectors = parseSelectorFlags(args);
+    const flags = parseFlags(args);
+    const filePath = String(flags.pack || flags.file || args.shift() || "");
+    const startDate = String(flags.from || flags.start || flags.startDate || "");
+    const endDate = String(flags.to || flags.end || flags.endDate || "");
+    if (!filePath || !startDate || !endDate) {
+      throw new Error("usage: gamealgo report preview --pack report-pack.json --from YYYY-MM-DD --to YYYY-MM-DD [--tab name] [--group name] [--chart name] [--selector k=v]");
+    }
+    const content = await readJsonFile(filePath);
+    const timeoutMs = reportTimeoutMs(flags);
+    const startedAt = Date.now();
+    const stopProgress = startProgress("Previewing report results", timeoutMs);
+    let response: unknown;
+    try {
+      response = await client.previewReportDashboard({
+        content,
+        version: optionalString(flags.version),
+        startDate,
+        endDate,
+        tab: optionalString(flags.tab),
+        tabId: optionalString(flags["tab-id"]),
+        group: optionalString(flags.group),
+        groupId: optionalString(flags["group-id"]),
+        chart: optionalString(flags.chart),
+        chartId: optionalString(flags["chart-id"]),
+        selectors,
+      }, { timeoutMs });
+    } finally {
+      stopProgress();
+    }
+    const elapsedMs = Date.now() - startedAt;
+    const outputValue = withCliMeta(response, { elapsedMs, timeoutMs });
+    process.stderr.write(`Report preview finished in ${formatDuration(elapsedMs)}.\n`);
+    if (flags.out) {
+      await writeTextFile(String(flags.out), JSON.stringify(outputValue, null, 2) + "\n");
+      await printResult({
+        ok: true,
+        out: String(flags.out),
+        results: Array.isArray((outputValue as { results?: unknown[] }).results) ? (outputValue as { results: unknown[] }).results.length : 0,
+        elapsedMs,
+      }, global);
+      return;
+    }
+    await printResult(outputValue, global);
+    return;
+  }
+  throw new Error("usage: gamealgo report <pull|validate|publish|manifest|result|preview>");
 }
 
 class GameAlgoAdminClient {
@@ -451,6 +498,10 @@ class GameAlgoAdminClient {
 
   async queryReportDashboard(body: Record<string, unknown>, options: { timeoutMs?: number } = {}) {
     return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/reports/query`, body, options);
+  }
+
+  async previewReportDashboard(body: Record<string, unknown>, options: { timeoutMs?: number } = {}) {
+    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/reports/preview`, body, options);
   }
 
   async get(path: string) {
@@ -812,6 +863,7 @@ Usage:
   gamealgo report publish gamealgo-report-pack-v1.json
   gamealgo report manifest
   gamealgo report result --from 2026-06-14 --to 2026-06-21 --tab Revenue --group "Daily ARPU" --selector experiment=ad_frequency --timeout 60 --out report-result.json
+  gamealgo report preview --pack gamealgo-report-pack-v1.json --from 2026-06-14 --to 2026-06-21 --group "Daily ARPU" --timeout 60 --out preview-result.json
 `.trim());
 }
 

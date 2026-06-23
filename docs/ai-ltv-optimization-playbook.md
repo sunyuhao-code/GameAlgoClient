@@ -79,6 +79,19 @@ gamealgo report result \
   --out reports/daily-arpu.json
 ```
 
+本地修改 Report Pack 后，可以先预览查询结果，不必马上发布：
+
+```bash
+gamealgo report preview \
+  --pack gamealgo-report-pack-v1.json \
+  --from 2026-06-14 \
+  --to 2026-06-21 \
+  --group "Daily ARPU" \
+  --selector experiment=ad_frequency \
+  --timeout 60 \
+  --out reports/daily-arpu-preview.json
+```
+
 如果命令输出给其他程序读取，使用 `--json`，并确保 stdout 不被日志污染。源码仓库内通过 npm script 调试时使用：
 
 ```bash

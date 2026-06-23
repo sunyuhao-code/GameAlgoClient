@@ -35,9 +35,12 @@ gamealgo experiment diff experiment.yaml
 gamealgo experiment publish experiment.yaml --message "update experiment" --yes
 gamealgo report manifest --json
 gamealgo report result --from 2026-06-14 --to 2026-06-21 --group "Daily ARPU" --selector experiment=ad_frequency --timeout 60 --out reports/daily-arpu.json
+gamealgo report preview --pack gamealgo-report-pack-v1.json --from 2026-06-14 --to 2026-06-21 --group "Daily ARPU" --timeout 60 --out reports/daily-arpu-preview.json
 ```
 
-`experiment publish` 和 `experiment rollback` 在 `--json` / CI / 非交互环境下也必须显式传 `--yes`。`report result` 的进度和耗时输出到 stderr，不会污染 JSON stdout。
+`experiment publish` 和 `experiment rollback` 在 `--json` / CI / 非交互环境下也必须显式传 `--yes`。`report result` 和 `report preview` 的进度和耗时输出到 stderr，不会污染 JSON stdout。
+
+`report preview` 用于本地 Report Pack 调试：CLI 会把本地 JSON 发给服务端执行一次查询，但不会保存 pack，也不会影响线上看板和正式缓存。
 
 如果新游戏的 `experiment pull` 返回空的 `latestCommitId`，表示还没有实验版本 commit。首次发布时保留为空或 `null` 即可，服务端会创建第一个 commit；发布成功后再 pull 会拿到新的 `exp_c_...`。
 
