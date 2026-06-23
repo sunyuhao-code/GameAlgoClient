@@ -226,6 +226,8 @@ gamealgo report result --from 2026-06-14 --to 2026-06-21 --group "Daily ARPU" --
 
 完整说明见 [Agent CLI guide](./docs/agent-cli.md)。
 
+Agent 在接入后可以参考 [AI LTV 优化 Playbook](./docs/ai-ltv-optimization-playbook.md)，按“观察数据 -> 提出假设 -> 发布实验 -> 回收报表”的流程持续优化留存、广告收入、玩法进度和整体 LTV。
+
 ## 实验、配置和脚本
 
 客户端推荐只读本地快照：

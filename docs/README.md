@@ -6,6 +6,7 @@
 
 - [Integration guide](./integration-guide.md)
 - [Agent CLI guide](./agent-cli.md)
+- [AI LTV optimization playbook](./ai-ltv-optimization-playbook.md)
 - [Protocol v1 guide](./protocol-v1.md)
 - [REST API v1 guide](./rest-api-v1.md)
 - [Report packs](./report-packs.md)
