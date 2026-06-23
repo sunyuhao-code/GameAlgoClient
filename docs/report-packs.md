@@ -766,6 +766,45 @@ Group selector 是只作用于当前 group 的 UI 控件：
 
 不要把密钥、手机号、邮箱、完整账号标识、设备元数据或实验分组放进 payload。SDK context 已经携带身份、设备、App 和实验元数据。
 
+## Chart ID 和查询
+
+Dashboard JSON 里的 chart `id` 可以写裸 id：
+
+```json
+{
+  "id": "max_level_distribution",
+  "title": "Max Level Distribution",
+  "type": "bar",
+  "report": "max_level_distribution"
+}
+```
+
+服务端生成 manifest 时会把 chart id 规范化成 `groupId__chartId`，例如：
+
+```text
+max_levels__max_level_distribution
+```
+
+CLI 的 `--chart-id` 和 Admin API 的 `chartId` 建议使用 manifest 返回的规范化 id。如果不确定，先跑：
+
+```bash
+gamealgo report manifest --json
+```
+
+或者用 chart 标题查询：
+
+```bash
+gamealgo report preview --pack gamealgo-report-pack-v1.json --from 2026-06-14 --to 2026-06-21 --chart "Max Level Distribution"
+```
+
+为了方便本地调试，如果已经指定了 `--group-id max_levels`，也可以使用裸 chart id：
+
+```bash
+gamealgo report preview --pack gamealgo-report-pack-v1.json --from 2026-06-14 --to 2026-06-21 --group-id max_levels --chart-id max_level_distribution
+```
+
+`report preview` 使用本地 pack 内容，但 selector、group、chart lookup 仍然走服务端 normalized dashboard model，不是直接按原始 JSON 查找。
+
 ## 校验
 
 保存前请在 `Manage Pack` 中点击 `Validate`。校验会检查 JSON 结构、report 引用、chart 映射、dataset 定义、标准看板 ref，以及顶层 `version` 是否和要保存的版本一致。

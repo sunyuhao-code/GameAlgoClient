@@ -35,12 +35,14 @@ gamealgo experiment diff experiment.yaml
 gamealgo experiment publish experiment.yaml --message "update experiment" --yes
 gamealgo report manifest --json
 gamealgo report result --from 2026-06-14 --to 2026-06-21 --group "Daily ARPU" --selector experiment=ad_frequency --timeout 60 --out reports/daily-arpu.json
-gamealgo report preview --pack gamealgo-report-pack-v1.json --from 2026-06-14 --to 2026-06-21 --group "Daily ARPU" --timeout 60 --out reports/daily-arpu-preview.json
+gamealgo report preview --pack gamealgo-report-pack-v1.json --from 2026-06-14 --to 2026-06-21 --tab-id levels --group-id max_levels --chart-id max_levels__max_level_distribution --timeout 60 --out reports/max-level-distribution-preview.json
 ```
 
 `experiment publish` 和 `experiment rollback` 在 `--json` / CI / 非交互环境下也必须显式传 `--yes`。`report result` 和 `report preview` 的进度和耗时输出到 stderr，不会污染 JSON stdout。
 
 `report preview` 用于本地 Report Pack 调试：CLI 会把本地 JSON 发给服务端执行一次查询，但不会保存 pack，也不会影响线上看板和正式缓存。
+
+Report Pack JSON 里的 chart id 可以是裸 id，例如 `max_level_distribution`；服务端 manifest 会规范化成 `groupId__chartId`，例如 `max_levels__max_level_distribution`。`--chart-id` 查询参数建议使用 manifest 返回的规范化 id；如果不确定，优先用 `--chart "Max Level Distribution"` 或先跑 `report manifest`。`preview` 使用本地 pack，但 selector/group/chart lookup 仍走服务端 normalized dashboard model。
 
 如果新游戏的 `experiment pull` 返回空的 `latestCommitId`，表示还没有实验版本 commit。首次发布时保留为空或 `null` 即可，服务端会创建第一个 commit；发布成功后再 pull 会拿到新的 `exp_c_...`。
 

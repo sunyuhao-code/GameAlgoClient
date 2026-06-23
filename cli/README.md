@@ -134,24 +134,31 @@ gamealgo report result \
 本地修改 Report Pack 后，可以先用 `preview` 直接跑查询结果，不需要发布到线上：
 
 ```bash
+gamealgo report manifest --json
+
 gamealgo report preview \
   --pack gamealgo-report-pack-v1.json \
   --from 2026-06-14 \
   --to 2026-06-21 \
-  --group "Daily ARPU" \
-  --selector experiment=ad_frequency \
+  --tab-id levels \
+  --group-id max_levels \
+  --chart-id max_levels__max_level_distribution \
   --timeout 60 \
-  --out reports/daily-arpu-preview.json
+  --out reports/max-level-distribution-preview.json
 ```
 
 `preview` 会把本地 pack 发到服务端，用和线上查询相同的校验、SQL 生成和执行逻辑跑一次，但不会保存 pack，也不会写入正式报表缓存。
+
+注意 chart id 会被服务端 manifest 规范化。Report Pack 原始 JSON 里可以写裸 id，例如 `max_level_distribution`；manifest 返回的查询 id 会带上 group 前缀，例如 `max_levels__max_level_distribution`。`--chart-id` 优先使用 manifest 返回的规范化 id。如果不确定，先跑 `gamealgo report manifest --json`，或者使用 `--chart "Max Level Distribution"` 按标题查询。为了方便本地调试，已经指定 `--group-id max_levels` 时，也可以用裸 chart id：`--chart-id max_level_distribution`。
+
+`preview` 使用本地 pack 内容，但 selector、group 和 chart 查找仍然走服务端规范化后的 dashboard model，不是直接按原始 JSON 查找。
 
 常用参数：
 
 - `--version <version>`：指定 Report Pack 版本，默认使用 active 版本。
 - `--tab <title>` / `--tab-id <id>`：选择 tab。
 - `--group <title>` / `--group-id <id>`：选择 group。
-- `--chart <title>` / `--chart-id <id>`：选择单个 chart。
+- `--chart <title>` / `--chart-id <id>`：选择单个 chart。`--chart-id` 建议使用 manifest 返回的规范化 id。
 - `--selector key=value`：传入 group selector，可重复。
 - `--refresh`：绕过服务端缓存，重新计算并刷新缓存。
 - `--timeout <seconds>` / `--timeout-ms <ms>`：限制 HTTP 查询最长等待时间。

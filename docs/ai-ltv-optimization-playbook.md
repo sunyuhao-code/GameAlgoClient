@@ -86,11 +86,14 @@ gamealgo report preview \
   --pack gamealgo-report-pack-v1.json \
   --from 2026-06-14 \
   --to 2026-06-21 \
-  --group "Daily ARPU" \
-  --selector experiment=ad_frequency \
+  --tab-id levels \
+  --group-id max_levels \
+  --chart-id max_levels__max_level_distribution \
   --timeout 60 \
-  --out reports/daily-arpu-preview.json
+  --out reports/max-level-distribution-preview.json
 ```
+
+如果要指定 `--chart-id`，优先使用 `report manifest` 返回的规范化 id。Report Pack 原始 JSON 里可以写 `max_level_distribution`，服务端会在 manifest 中规范化为 `max_levels__max_level_distribution`。已经指定 `--group-id max_levels` 时，CLI 也支持用裸 id `--chart-id max_level_distribution` 做本地调试。
 
 如果命令输出给其他程序读取，使用 `--json`，并确保 stdout 不被日志污染。源码仓库内通过 npm script 调试时使用：
 
