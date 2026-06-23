@@ -280,6 +280,8 @@ GameAlgo 会把 `payload` 作为事件业务数据保存。后续每个游戏可
 | `ad_view` | 广告展示和收入 |
 | `purchase` | 付费 |
 
+`ad_view` 只表示广告已经成功曝光并产生一次有效展示；广告加载失败、未填充、播放失败、用户取消或关闭但没有完成有效曝光时，不要上报到 `ad_view`。
+
 `ad_view` 的标准 payload 必须包含 `placement`、`adType`、`revenue`、`currency`，可以额外包含 `network`。`adType` 表示广告位类型，例如 `reward`、`banner`、`interstitial`：
 
 ```json

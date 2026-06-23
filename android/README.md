@@ -52,6 +52,8 @@ SDK 会在 `/v1/config` 请求里自动带上 `userCreatedAt` 和基础 `device`
 
 `tracker()` 会把事件排入内存队列，每批最多上传 100 条，每 30 秒 flush 一次，并保留失败批次等待下次重试。如果配置 context 还没准备好，事件会继续留在本地，`flush` 会在上传前填入当前 `contextId`。`fetchConfig`、`fetchConfigFile` 和 `uploadEvents` 在这个 core 包里是阻塞方法；Android App 应该在自己的后台 executor 或 coroutine 层调用这些底层方法。
 
+`trackAd` 上报的是 `ad_view`，只用于广告成功曝光并产生一次有效展示。广告加载失败、未填充、播放失败、用户取消或关闭但没有完成有效曝光时，不要调用 `trackAd`。
+
 事件业务字段通过 `payload` 发送。后续由游戏自己的 report pack 声明哪些 payload 字段会成为报表维度或指标。实验分组存储在 `/v1/config` 创建的 SDK context 中，不会复制到每条事件。
 
 ## 检查

@@ -279,7 +279,7 @@ ad_view
 purchase
 ```
 
-广告事件使用 `trackAd`，事件名仍是 `ad_view`。`placement`、`adType`、`revenue`、`currency` 必填，`network` 可选：
+广告事件使用 `trackAd`，事件名仍是 `ad_view`。`ad_view` 只表示广告已经成功曝光并产生一次有效展示；广告加载失败、未填充、播放失败、用户取消或关闭但没有完成有效曝光时，不要上报到 `ad_view`。`placement`、`adType`、`revenue`、`currency` 必填，`network` 可选：
 
 ```swift
 await sdk.tracker.trackAd(

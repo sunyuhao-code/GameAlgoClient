@@ -177,7 +177,7 @@ ad_view
 purchase
 ```
 
-广告变现使用 `trackAd`。它会上报 `ad_view`，必填字段为 `placement`、`adType`、`revenue` 和 `currency`；`network` 可选：
+广告变现使用 `trackAd`。它会上报 `ad_view`。`ad_view` 只表示广告已经成功曝光并产生一次有效展示；广告加载失败、未填充、播放失败、用户取消或关闭但没有完成有效曝光时，不要上报到 `ad_view`。必填字段为 `placement`、`adType`、`revenue` 和 `currency`；`network` 可选：
 
 ```ts
 client.tracker.trackAd("rewarded_level_end", "reward", 0.018, "USD", "admob");

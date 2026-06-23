@@ -549,7 +549,7 @@ Group selector 是只作用于当前 group 的 UI 控件：
 | `engagement.cohort@1` | 新用户互动 cohort：累计活跃天数、累计游戏时长、用户会话数。 | SDK context 行，以及 `session_end.payload.sessionDurationMs`。 |
 | `revenue.overview@1` | 每日收入、ARPU、ARPDAU、付费人数和付费率。 | 带 `revenue` 和 `currency` 字段的 `ad_view`、`purchase` 事件。 |
 | `revenue.ltv@1` | 新用户 LTV cohort。包含内置 `LTV Trend` 折线图（D0、D1、D2、D3、D7、D14）和 `LTV Cohort Matrix` 表格（D0-D14）。控制台可通过运行时 Strategy 和 Dx selector 在全局 LTV 和分实验 LTV 之间切换。 | SDK context 行，以及收入事件。 |
-| `revenue.placement@1` | 按广告 placement/type/network 拆分的每日收入。 | `ad_view` 事件，必填 `placement`、`adType`、`revenue`、`currency`，可选 `network`。 |
+| `revenue.placement@1` | 按广告 placement/type/network 拆分的每日收入。 | 成功曝光的 `ad_view` 事件，必填 `placement`、`adType`、`revenue`、`currency`，可选 `network`。广告失败、未填充、取消或未完成有效曝光时不要上报到 `ad_view`。 |
 | `progression.overview@1` | 进度漏斗和难度健康度：开始、完成、成功率、平均时长、按进度点流失。 | `progression_start` 和 `progression_end` 事件，包含进度标识、顺序、结果和时长字段。 |
 | `events.health@1` | 数据质量和事件量：按事件类型统计事件数、用户数、会话数和 debug 事件量。 | 任意 SDK 事件。 |
 
