@@ -45,7 +45,7 @@ gamealgo events count --from 2026-06-23 --to 2026-06-23 --event-type level_end -
 
 `report preview` 用于本地 Report Pack 调试：CLI 会把本地 JSON 发给服务端执行一次查询，但不会保存 pack，也不会影响线上看板和正式缓存。
 
-`events count` 用于 SDK 接入调试：它只查询当前游戏的固定事件计数，不需要传 `contextId`，也不接受自定义 SQL。先确认目标日期有事件，再继续看 Report Pack 计算结果。
+`events count` 用于 SDK 接入调试：它只查询当前游戏原始事件表里的固定事件计数，不需要传 `contextId`，也不接受自定义 SQL，不依赖 Report Pack 或标准中间表。先确认目标日期有事件，再继续看 Report Pack 计算结果。
 
 TapTap Maker / TapTap 小游戏 / Lua SDK 这类通过服务端 Proxy 或 REST 协议接入的环境，`platform` 使用 `rest`。不要扩展成 `tapmaker` 之类的新枚举；具体运行环境写到 `device` 中，例如：
 
