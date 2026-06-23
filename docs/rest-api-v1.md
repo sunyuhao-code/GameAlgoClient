@@ -20,6 +20,8 @@ X-GameAlgo-Key: ga_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 服务端会通过这个 key 解析 `gameId`。不要把客户端传入的 `gameId` 当作可信身份字段。
 
+REST API 使用的是 Client Game Key，也就是 `ga_test_*` 或 `ga_live_*`。不要在 REST 请求里使用 `ga_admin_*`；`ga_admin_*` 只给 CLI/Admin 管理操作使用。
+
 ## 2. 拉取配置
 
 ```bash

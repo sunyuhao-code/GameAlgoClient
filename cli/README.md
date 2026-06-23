@@ -4,6 +4,13 @@ GameAlgo CLI 是给游戏开发 Agent 使用的自动化工具。它不运行在
 
 CLI 使用游戏维度的 Game Admin Key 鉴权。这个 key 只绑定一个游戏，所以命令不需要 `--game`。
 
+注意区分两类 key：
+
+- `ga_test_*` / `ga_live_*` 是 Client Game Key，只给游戏客户端 SDK 或 REST API 使用，用来拉配置和上报事件。
+- `ga_admin_*` 是 Game Admin Key，只给 CLI、开发者 Agent 或 CI 使用，用来管理实验、脚本、配置、Report Pack，并读取报表和事件统计。
+
+不要把 `ga_admin_*` 放进客户端包，也不要用 `ga_test_*` / `ga_live_*` 执行 CLI 命令。
+
 ## 安装与运行
 
 推荐安装后直接使用 `gamealgo` 命令：

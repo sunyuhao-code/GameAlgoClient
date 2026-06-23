@@ -2,6 +2,8 @@
 
 GameAlgo CLI 用于开发期自动化，不是游戏运行时 SDK。推荐给游戏开发 Agent 使用，用来维护实验、脚本、配置、Report Pack，并拉取报表结果形成自迭代闭环。
 
+CLI 必须使用 `ga_admin_*` 形式的 Game Admin Key。`ga_test_*` / `ga_live_*` 是游戏客户端运行时使用的 Client Game Key，不能用于 `gamealgo login`。
+
 CLI 实现在 [../cli](../cli/README.md)。推荐安装后直接使用：
 
 ```bash

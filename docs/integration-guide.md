@@ -2,16 +2,36 @@
 
 这份文档描述游戏团队接入 GameAlgo 的最小路径。
 
-## 1. 获取 Game Key
+## 1. 先区分两种 key
 
-GameAlgo 平台会为每个游戏环境提供一个 key：
+GameAlgo 有两类 key，名字接近但用途完全不同。接入时不要混用。
+
+| Key | 示例 | 谁使用 | 放在哪里 | 主要用途 |
+| --- | --- | --- | --- | --- |
+| Client Game Key | `ga_test_*` / `ga_live_*` | 游戏客户端 SDK / REST API | 游戏客户端包或服务端代理里 | 拉取配置、拉取配置文件、上报事件 |
+| Game Admin Key | `ga_admin_*` | 开发者、AI Agent、CI、CLI | 开发机器、CI Secret、Agent Secret | 管理实验、脚本、配置、Report Pack，拉取报表和事件统计 |
+
+Client Game Key 是运行时 key。游戏启动后，SDK 会用它访问 SDK host 下的 `/v1/config`、`/v1/config-files/*` 和 `/v1/events/batch`，请求头是：
+
+```http
+X-GameAlgo-Key: ga_live_xxx
+```
+
+Game Admin Key 是管理 key。它只给 CLI/Admin 使用，不能放进客户端包，也不能用于 `/v1/*` 运行时接口。CLI 登录时会用它访问 Admin host，请求头是：
+
+```http
+X-GameAlgo-Game-Admin-Key: ga_admin_xxx
+```
+
+平台通常会为一个游戏生成：
 
 ```text
 ga_test_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ga_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ga_admin_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-QA 包使用 `ga_test_*`，生产包使用 `ga_live_*`。
+QA 包使用 `ga_test_*`，生产包使用 `ga_live_*`。`ga_admin_*` 只用于开发期自动化和控制台操作。
 
 ## 2. 国内环境地址
 
