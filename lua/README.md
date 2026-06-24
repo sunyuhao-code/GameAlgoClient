@@ -14,6 +14,8 @@ Server
 
 ## 服务端配置
 
+TapTap Maker 接入时需要开启多人模式，也就是启用 Maker 自带的服务端能力。这个服务端由 Maker 平台部署和运行，不需要为 GameAlgo 额外部署独立后端。SDK 已提供服务端代理代码，直接使用本目录下的 `ProxyServer.lua` 和 `server_main.lua`。
+
 把 `ProxyServer.lua` 和 `server_main.lua` 放在 TapTap 游戏服务端。真实 GameAlgo key 只配置在服务端 Proxy，用来给拉配置、拉配置文件和事件上报请求统一注入 `X-GameAlgo-Key`：
 
 ```lua
@@ -28,6 +30,8 @@ ProxyServer.Start({
 ```
 
 不要把 `X-GameAlgo-Key` 放进小游戏客户端包，也不要让客户端自己传事件上报 key。`ProxyServer` 会在客户端 headers 后追加 `defaultHeaders`，因此服务端 headers 优先，客户端无法覆盖。
+
+开启 Maker 服务端后，Maker 的数据默认会保存在服务端；但客户端已有本地数据和存档仍然可以继续读取。已有单机存档的游戏接入时，要么继续使用原来的本地存储，要么实现从本地存档到服务端存储的无缝迁移，不要直接丢弃旧存档。
 
 ## 客户端配置
 
