@@ -77,6 +77,7 @@ gameKey = ga_live_xxx
 
 - iOS：使用 `ios/`
 - Android：使用 `android/`
+- TapTap Maker / TapTap 小游戏：使用 `lua/`，客户端接入 `GameAlgo.lua` 和 `ProxyTransport.lua`，服务端代理使用 `ProxyServer.lua` 和 `server_main.lua`
 - 其他环境：使用 REST API
 
 TapTap 小游戏这类沙盒环境通常不能直接访问外部服务，推荐走服务端代理：
