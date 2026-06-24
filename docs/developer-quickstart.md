@@ -21,7 +21,7 @@
 - 开发者账号
 - 初始密码
 
-管理员不直接提供游戏密钥。开发者登录控制台后，自己创建游戏和密钥。
+管理员不直接提供游戏密钥。开发者登录控制台后，自己创建游戏，并为这个游戏创建一个 Game Admin Key。后续 Client Game Key 的创建、查看和维护，推荐交给 AI Agent 通过 CLI 自动完成。
 
 ## 3. 登录控制台并创建游戏
 
@@ -35,7 +35,7 @@
 3. 创建或选择你的游戏。
 4. 打开 `密钥 / Keys` 页面。
 
-## 4. 创建两类密钥
+## 4. 创建 Game Admin Key
 
 GameAlgo 有两类 key，名字接近但用途不同。
 
@@ -44,21 +44,25 @@ GameAlgo 有两类 key，名字接近但用途不同。
 | Client Game Key | `ga_test_*` / `ga_live_*` | 游戏运行时拉取配置、拉取配置文件、上报事件 | 游戏客户端包，或小游戏的服务端代理 |
 | Game Admin Key | `ga_admin_*` | CLI / AI Agent / CI 管理实验、脚本、配置、Report Pack，拉取报表和事件统计 | 开发机器、CI Secret、Agent Secret |
 
-创建 `Client Game Key`：
-
-- 在 `客户端密钥` 区域点击创建。
-- QA 包使用 `ga_test_*`。
-- 生产包使用 `ga_live_*`。
-- SDK / REST 请求会通过 `X-GameAlgo-Key` 携带它。
-
-创建 `Game Admin Key`：
+推荐流程是：开发者只手工创建 `Game Admin Key`，然后把它交给 AI Agent。AI Agent 会用 CLI 检查当前游戏是否已有可用的 Client Game Key；没有时自动创建；需要写入 SDK 或 TapTap Maker 服务端 Proxy 时，再通过 CLI 读取明文。
 
 - 在 `Game Admin Key` 区域点击创建。
 - 用于 `gamealgo login`、AI Agent 和 CI。
 - CLI 请求会通过 `X-GameAlgo-Game-Admin-Key` 携带它。
 - 不要把 `ga_admin_*` 放进游戏客户端包。
 
-新 key 创建后页面会显示完整明文。请立即复制并保存到安全位置。后续页面通常只显示前缀；如果完整 key 丢失，建议吊销旧 key 后重新创建。
+AI Agent 维护 Client Game Key 时会使用这些命令：
+
+```bash
+gamealgo key list --json
+gamealgo key create --name <用途名> --json
+gamealgo key reveal --name <用途名> --json
+gamealgo key revoke --name <用途名> --yes --json
+```
+
+QA 包使用 `ga_test_*`，生产包使用 `ga_live_*`。SDK / REST 请求会通过 `X-GameAlgo-Key` 携带 Client Game Key。
+
+如果团队暂时不用 AI Agent，也可以在控制台的 `客户端密钥` 区域手工创建 Client Game Key。但常规接入建议只把 Game Admin Key 提供给 AI，让 AI 负责运行时 key 的创建和维护，开发者负责审核 AI 写入项目配置的位置是否正确。
 
 ## 5. 客户端接入最小路径
 
@@ -123,7 +127,8 @@ Game Admin Key: ga_admin_xxx
 你给 AI Agent 的目标：
 
 ```text
-请把 GameAlgo SDK 接入到游戏里，使用 SDK host 和 Client Game Key。
+请把 GameAlgo SDK 接入到游戏里，使用 SDK host。
+Client Game Key 请通过 GameAlgo CLI 创建或复用，不要让我手工维护。
 先接入最小事件：session_end、level_start、level_end。
 如果游戏有广告或内购，也接入 ad_view 和 purchase。
 ```

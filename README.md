@@ -4,10 +4,11 @@ GameAlgo Client 是面向游戏接入方的公开客户端仓库，包含 iOS SD
 
 ## 接入前准备
 
-向 GameAlgo 平台团队确认三件事：
+向 GameAlgo 平台团队确认或准备下面几件事：
 
 - `baseUrl`: 服务地址，例如 `https://gamealgo.example.com`。
-- `gameKey`: 游戏鉴权 key，在 GameAlgo 控制台的游戏下创建。客户端请求会通过 `X-GameAlgo-Key` 识别游戏，不需要自己传可信的 `gameId`。
+- `adminKey`: 游戏维度的 Game Admin Key，格式为 `ga_admin_*`。推荐开发者在控制台创建这个 key 后交给 AI Agent / CLI，后续 Client Game Key 的创建、查看和吊销都由 AI 完成。
+- `gameKey`: 游戏运行时鉴权 key，格式为 `ga_live_*` 或 `ga_test_*`。客户端请求会通过 `X-GameAlgo-Key` 识别游戏，不需要自己传可信的 `gameId`。手工接入时可以在控制台创建；推荐接入时由 AI 使用 `gamealgo key create/reveal` 生成并写入 SDK 或服务端 Proxy 配置。
 - 配置项: 实验 key、配置文件名、脚本名。例如 `level_generator`、`gameplay.json`、`level-generator.js`。
 
 核心原则：**不要让 GameAlgo 网络请求阻塞游戏主流程**。SDK 会后台拉取配置并写入本地快照；配置未就绪、网络失败或脚本执行失败时，游戏应走本地默认逻辑。
