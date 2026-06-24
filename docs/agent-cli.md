@@ -22,16 +22,20 @@ npm --silent run cli -- report manifest --json
 
 1. 平台为当前游戏生成 Game Admin Key。
 2. Agent 用 `gamealgo login` 登录，key 只绑定一个游戏。
-3. Agent 拉取实验、脚本、配置和 Report Pack。
-4. Agent 修改文件并通过 diff 检查变更。
-5. Agent 发布配置，服务端生成实验版本记录。
-6. 数据沉淀后，Agent 用 `report manifest` 和 `report result` 回收看板结果。
-7. Agent 根据报表继续调整实验或配置。
+3. Agent 用 `key list/create/reveal` 获取当前游戏的 Client Game Key，用于 SDK 或 TapTap Maker 服务端 Proxy。
+4. Agent 拉取实验、脚本、配置和 Report Pack。
+5. Agent 修改文件并通过 diff 检查变更。
+6. Agent 发布配置，服务端生成实验版本记录。
+7. 数据沉淀后，Agent 用 `report manifest` 和 `report result` 回收看板结果。
+8. Agent 根据报表继续调整实验或配置。
 
 最常用命令：
 
 ```bash
 gamealgo login --host https://game-algo-admin.dictapis.cn --admin-key ga_admin_xxx
+gamealgo key list --json
+gamealgo key create --name tapmaker-proxy --json
+gamealgo key reveal --name tapmaker-proxy --json
 gamealgo experiment pull --out experiment.yaml
 gamealgo experiment diff experiment.yaml
 gamealgo experiment publish experiment.yaml --message "update experiment" --yes
@@ -40,6 +44,8 @@ gamealgo report result --from 2026-06-14 --to 2026-06-21 --group "Daily ARPU" --
 gamealgo report preview --pack gamealgo-report-pack-v1.json --from 2026-06-14 --to 2026-06-21 --tab-id levels --group-id max_levels --chart-id max_levels__max_level_distribution --timeout 60 --out reports/max-level-distribution-preview.json
 gamealgo events count --from 2026-06-23 --to 2026-06-23 --event-type level_end --timeout 60 --json
 ```
+
+`key list` 只返回 key 名称、前缀和状态，不返回明文。需要把 key 写入 SDK 或 TapTap Maker 服务端 Proxy 配置时，使用 `key create --name ...` 或 `key reveal --name ...` 获取明文。
 
 `experiment publish` 和 `experiment rollback` 在 `--json` / CI / 非交互环境下也必须显式传 `--yes`。`report result` 和 `report preview` 的进度和耗时输出到 stderr，不会污染 JSON stdout。
 

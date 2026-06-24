@@ -33,6 +33,16 @@ ga_admin_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 QA 包使用 `ga_test_*`，生产包使用 `ga_live_*`。`ga_admin_*` 只用于开发期自动化和控制台操作。
 
+如果由 AI Agent 接入，开发者只需要提供 Game Admin Key。Agent 可以通过 CLI 获取当前游戏的 Client Game Key：
+
+```bash
+gamealgo key list --json
+gamealgo key create --name tapmaker-proxy --json
+gamealgo key reveal --name tapmaker-proxy --json
+```
+
+`key list` 只返回名称、前缀和状态；`key create` 和 `key reveal` 会返回明文，用于写入 SDK 或 TapTap Maker 服务端 Proxy 配置。
+
 ## 2. 国内环境地址
 
 国内接入使用下面两个 host：

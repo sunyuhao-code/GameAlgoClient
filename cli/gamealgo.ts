@@ -25,6 +25,21 @@ type ExperimentConfigFile = {
   strategies: unknown[];
 };
 
+type CliGameKey = {
+  id: string;
+  name: string;
+  keyPrefix: string;
+  rawKey?: string | null;
+  status: string;
+  createdAt?: string;
+};
+
+type KeySelector = {
+  id?: string;
+  name?: string;
+  prefix?: string;
+};
+
 const CONFIG_PATH = join(homedir(), ".gamealgo", "cli.json");
 const SCRIPT_EXTENSIONS = new Set([".js", ".lua"]);
 const FILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
@@ -63,6 +78,10 @@ async function main(): Promise<void> {
     }
     if (command === "report") {
       await handleReport(client, args, global);
+      return;
+    }
+    if (command === "key") {
+      await handleGameKey(client, args, global);
       return;
     }
     if (command === "events") {
@@ -437,6 +456,113 @@ async function handleEvents(client: GameAlgoAdminClient, args: string[], global:
   await printResult(outputValue, global);
 }
 
+async function handleGameKey(client: GameAlgoAdminClient, args: string[], global: ReturnType<typeof parseGlobalFlags>): Promise<void> {
+  const sub = args.shift();
+  if (sub === "list") {
+    const keys = (await client.listGameKeys()).keys
+      .filter((key) => key.status === "active")
+      .map(publicGameKeyForCli);
+    await printResult({ keys }, global);
+    return;
+  }
+  if (sub === "create") {
+    const flags = parseFlags(args);
+    const name = optionalString(flags.name) || optionalString(args.shift());
+    if (!name) throw new Error("usage: gamealgo key create --name <key-name>");
+    const response = await client.createGameKey(name);
+    await printResult({
+      ok: true,
+      created: response.created !== false,
+      name: response.key.name,
+      key: response.rawKey,
+      prefix: response.key.keyPrefix,
+      keyPrefix: response.key.keyPrefix,
+      status: response.key.status,
+      createdAt: response.key.createdAt,
+    }, global);
+    return;
+  }
+  if (sub === "reveal") {
+    const selector = keySelectorFromArgs(args, "gamealgo key reveal --name <key-name>");
+    const response = await client.revealGameKey(selector);
+    await printResult({
+      ok: true,
+      name: response.key.name,
+      key: response.rawKey,
+      prefix: response.key.keyPrefix,
+      keyPrefix: response.key.keyPrefix,
+      status: response.key.status,
+      createdAt: response.key.createdAt,
+    }, global);
+    return;
+  }
+  if (sub === "revoke") {
+    const flags = parseFlags(args);
+    if (!flags.yes && global.json) {
+      throw new Error("key revoke requires --yes in --json mode");
+    }
+    if (!flags.yes && !isInteractive()) {
+      throw new Error("key revoke requires --yes in non-interactive mode");
+    }
+    const selector = keySelectorFromFlags(flags, args, "gamealgo key revoke --name <key-name> --yes");
+    const key = await resolveGameKey(client, selector);
+    if (!flags.yes) {
+      const ok = await confirm(`Revoke client game key ${key.name} (${key.keyPrefix})?`);
+      if (!ok) throw new Error("revoke cancelled");
+    }
+    const response = await client.revokeGameKey(key.id);
+    await printResult({ ok: true, key: publicGameKeyForCli(response.key) }, global);
+    return;
+  }
+  throw new Error("usage: gamealgo key <list|create|reveal|revoke>");
+}
+
+function publicGameKeyForCli(key: CliGameKey) {
+  return {
+    id: key.id,
+    name: key.name,
+    prefix: key.keyPrefix,
+    keyPrefix: key.keyPrefix,
+    status: key.status,
+    createdAt: key.createdAt,
+  };
+}
+
+function keySelectorFromArgs(args: string[], usage: string): KeySelector {
+  const flags = parseFlags(args);
+  return keySelectorFromFlags(flags, args, usage);
+}
+
+function keySelectorFromFlags(flags: Record<string, string | boolean>, args: string[], usage: string): KeySelector {
+  const id = optionalString(flags.id);
+  const name = optionalString(flags.name);
+  const prefix = optionalString(flags.prefix) || optionalString(flags["key-prefix"]);
+  const positionalName = !id && !name && !prefix ? optionalString(args.find((arg) => !arg.startsWith("--"))) : undefined;
+  const selector = {
+    id,
+    name: name || positionalName,
+    prefix,
+  };
+  if (!selector.id && !selector.name && !selector.prefix) throw new Error(`usage: ${usage}`);
+  return selector;
+}
+
+async function resolveGameKey(client: GameAlgoAdminClient, selector: KeySelector): Promise<CliGameKey> {
+  if (selector.id) {
+    const key = (await client.listGameKeys()).keys.find((item) => item.status === "active" && item.id === selector.id);
+    if (!key) throw new Error(`client game key not found: ${selector.id}`);
+    return key;
+  }
+  if (selector.name) {
+    const key = (await client.listGameKeys()).keys.find((item) => item.status === "active" && item.name === selector.name);
+    if (!key) throw new Error(`client game key not found: ${selector.name}`);
+    return key;
+  }
+  const key = (await client.listGameKeys()).keys.find((item) => item.status === "active" && item.keyPrefix === selector.prefix);
+  if (!key) throw new Error(`client game key not found: ${selector.prefix}`);
+  return key;
+}
+
 class GameAlgoAdminClient {
   readonly host: string;
   readonly adminKey: string;
@@ -538,6 +664,31 @@ class GameAlgoAdminClient {
 
   async countEvents(body: Record<string, unknown>, options: { timeoutMs?: number } = {}) {
     return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/events/count`, body, options);
+  }
+
+  async listGameKeys() {
+    return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/keys`) as { keys: CliGameKey[] };
+  }
+
+  async createGameKey(name: string) {
+    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/keys`, { name }) as {
+      created?: boolean;
+      rawKey: string;
+      key: CliGameKey;
+    };
+  }
+
+  async revealGameKey(selector: KeySelector) {
+    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/keys/reveal`, selector) as {
+      rawKey: string;
+      key: CliGameKey;
+    };
+  }
+
+  async revokeGameKey(id: string) {
+    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/keys/${encodeURIComponent(id)}/revoke`, {}) as {
+      key: CliGameKey;
+    };
   }
 
   async get(path: string) {
@@ -883,6 +1034,11 @@ Usage:
   gamealgo experiment publish experiment.yaml --message "..." --yes
   gamealgo experiment commits
   gamealgo experiment rollback --commit exp_c_xxxxxxxxxxxxxxxx --yes
+
+  gamealgo key list
+  gamealgo key create --name tapmaker-proxy
+  gamealgo key reveal --name tapmaker-proxy
+  gamealgo key revoke --name tapmaker-proxy --yes
 
   gamealgo script list
   gamealgo script pull level-generator.js --out scripts/

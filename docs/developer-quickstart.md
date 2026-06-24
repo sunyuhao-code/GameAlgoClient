@@ -109,7 +109,7 @@ AI Agent 负责：
 
 ## 7. 推荐推进流程
 
-拿到账号并创建 key 之后，不建议一上来就做复杂实验。推荐按下面顺序推进，每一步都让 AI Agent 帮你完成具体配置和代码改动。
+拿到账号和 Game Admin Key 之后，不建议一上来就做复杂实验。推荐按下面顺序推进，每一步都让 AI Agent 帮你完成具体配置和代码改动。
 
 开始前，把 Admin 地址和你创建的 Game Admin Key 提供给 AI Agent：
 
@@ -131,7 +131,9 @@ Game Admin Key: ga_admin_xxx
 AI Agent 应该做的事：
 
 - 在游戏工程里配置 SDK host：`https://game-algo-sdk.dictapis.cn`
-- 使用你创建的 Client Game Key：`ga_test_*` 或 `ga_live_*`
+- 先用 `gamealgo key list --json` 检查当前游戏是否已有可用 Client Game Key
+- 没有合适的 key 时，用 `gamealgo key create --name <用途名> --json` 创建；已有 key 但需要明文时，用 `gamealgo key reveal --name <用途名> --json`
+- 把 Client Game Key 配到 SDK 或 TapTap Maker 服务端 Proxy 中
 - 初始化 SDK，确保匿名 `userId` 能持久化
 - 在关键点位补充事件上报
 - 国内游戏、TapTap Maker / TapTap 小游戏的 `ad_view` 和 `purchase` 事件统一使用 `currency = "CNY"`，不要默认使用 `USD`

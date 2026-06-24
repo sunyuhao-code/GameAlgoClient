@@ -50,6 +50,32 @@ GAMEALGO_GAME_ADMIN_KEY=ga_admin_xxx
 gamealgo whoami
 ```
 
+## Client Game Key
+
+Agent 可以用 Game Admin Key 管理当前游戏的 Client Game Key。`key list` 只返回名称、前缀和状态，不返回明文：
+
+```bash
+gamealgo key list --json
+```
+
+创建给 SDK 或 TapTap Maker 服务端 Proxy 使用的 key：
+
+```bash
+gamealgo key create --name tapmaker-proxy --json
+```
+
+如果同名 active key 已存在，`create` 会复用已有 key 并返回它的明文；如果需要单独查看明文，用：
+
+```bash
+gamealgo key reveal --name tapmaker-proxy --json
+```
+
+吊销 key 必须显式确认：
+
+```bash
+gamealgo key revoke --name tapmaker-proxy --yes
+```
+
 ## 实验闭环
 
 拉取当前完整实验配置：
