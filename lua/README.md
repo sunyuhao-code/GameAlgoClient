@@ -40,14 +40,24 @@ ProxyServer.Start({
 ```lua
 local GameAlgo = require("GameAlgo")
 
+local tapUserId = nil
+if lobby and lobby.GetMyUserId then
+    tapUserId = tostring(lobby:GetMyUserId())
+end
+
 GameAlgo.Init({
     baseUrl = "https://game-algo-sdk.dictapis.cn",
     appVersion = "1.0.0",
+    platform = "rest",
+    userId = tapUserId,
     device = {
         runtime = "taptap_mini_game",
+        game = "your_game_id",
     },
 })
 ```
+
+TapTap Maker 接入时推荐优先使用 Maker 环境提供的稳定用户 ID，例如 `lobby:GetMyUserId()`。这样同一个玩家跨会话、跨版本的实验分组和报表归因更稳定。不要使用昵称、头像、手机号等可识别信息作为 `userId`；如果当前运行时拿不到 Maker 用户 ID，可以传 `nil`，SDK 会退回到本地匿名 ID。
 
 `Init` 会发起非阻塞的 `/v1/config` 请求。游戏逻辑应该保留本地默认值，只在远端配置可用时读取远端值。
 

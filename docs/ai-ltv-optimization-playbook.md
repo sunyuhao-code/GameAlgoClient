@@ -94,6 +94,8 @@ gamealgo events count \
 
 TapTap Maker 接入需要开启多人模式服务端。服务端部署能力是 Maker 自带的，GameAlgo SDK 里已经提供 `lua/ProxyServer.lua` 和 `lua/server_main.lua`，不需要为 GameAlgo 额外开发或部署独立后端。
 
+TapTap Maker 初始化时优先使用 Maker 环境提供的稳定用户 ID，例如 `lobby:GetMyUserId()`，并传给 `GameAlgo.Init({ userId = tapUserId })`。拿不到时可以传 `nil`，SDK 会退回到本地匿名 ID。不要使用昵称、头像、手机号等可识别信息作为 `userId`。
+
 开启服务端后，Maker 数据默认会落在服务端；但客户端已有本地数据和存档仍然可以继续读取。优化或接入时不要破坏旧单机存档：要么继续使用本地存储，要么设计从本地存档到服务端存储的无缝迁移。
 
 国内游戏、TapTap Maker / TapTap 小游戏接入时，广告和付费事件的 `currency` 统一使用 `CNY`。不要默认使用 `USD`。
