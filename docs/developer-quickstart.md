@@ -125,6 +125,8 @@ Game Admin Key: ga_admin_xxx
 
 ### 第一步：让 AI 接入 SDK 和基础事件
 
+不同类型游戏的点位和字段设计建议见 [Tracking Recommendations](./tracking-recommendations.md)。接入前先让 AI Agent 判断游戏属于关卡/对局、run、模拟经营、剧情分支等哪类玩法，再选择最小事件集。
+
 你给 AI Agent 的目标：
 
 ```text

@@ -6,6 +6,7 @@
 
 - [Developer quickstart](./developer-quickstart.md)
 - [Integration guide](./integration-guide.md)
+- [Tracking recommendations](./tracking-recommendations.md)
 - [Agent CLI guide](./agent-cli.md)
 - [AI LTV optimization playbook](./ai-ltv-optimization-playbook.md)
 - [Protocol v1 guide](./protocol-v1.md)
