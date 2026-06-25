@@ -17,6 +17,8 @@
 | 事件 | 什么时候上报 | 关键字段 |
 | --- | --- | --- |
 | `session_end` | 一次 App / 游戏会话结束，或切后台前可以安全 flush 时 | `sessionDurationMs` |
+| `game_start` | 一局、一次对局、一次 run 或一次核心玩法开始 | `mode`, `progressionType`, `runId` 或 `gameId` |
+| `game_over` | 一局、一次对局、一次 run 或一次核心玩法结束 | `mode`, `result`, `durationMs`, `progressionNo` |
 | `ad_view` | 广告完成有效曝光并产生收入时 | `placement`, `adType`, `revenue`, `currency` |
 | `purchase` | 内购或付费成功时 | `productId`, `revenue`, `currency` |
 
@@ -84,13 +86,16 @@
 
 适用游戏：单次 run 有开始、结束、成长、掉落、死亡结算的游戏。
 
+这类游戏不要为 run 再发明一套 `_run_start` / `_run_end` 标准点位。一次 run 本质上就是一局核心玩法，优先复用 `game_start` / `game_over`；如果 run 内还有清晰的关卡、波次、房间、章节，也可以在这些子阶段复用 `level_start` / `level_end`，并用 `progressionType`、`progressionNo`、`wave`、`room` 等字段表达具体进度。
+
 推荐事件：
 
 | 事件 | 什么时候上报 | 推荐字段 |
 | --- | --- | --- |
-| `_run_start` | 一次 run 开始 | `mode`, `runId`, `character`, `build_seed`, `difficulty` |
-| `_run_end` | run 结束 | `mode`, `runId`, `result`, `durationMs`, `survivalSeconds`, `stageReached` |
-| `_build_choice` | 选择技能、装备、天赋 | `runId`, `choiceType`, `choiceId`, `level`, `options_count` |
+| `game_start` | 一次 run 开始 | `mode`, `runId`, `character`, `build_seed`, `difficulty` |
+| `game_over` | run 结束 | `mode`, `runId`, `result`, `durationMs`, `survivalSeconds`, `stageReached` |
+| `level_start` / `level_end` | run 内有明确阶段、波次、房间或章节时 | `mode`, `runId`, `progressionType`, `progressionNo`, `wave`, `room`, `result`, `durationMs` |
+| `_build_choice` | 关键构筑节点，例如游戏中期、Boss 前、游戏结束结算时记录技能、装备、天赋选择 | `runId`, `choiceType`, `choiceId`, `choiceName`, `nodeType`, `nodeNo`, `survivalSeconds`, `stageReached`, `options_count` |
 
 可选字段：
 
@@ -102,8 +107,14 @@
 
 - run 完成率、平均存活时长、死亡波次分布。
 - 技能/角色选择率和胜率。
+- 不同构筑在关键节点的使用率、成功率、平均存活时长和收入表现。
 - 按 `stageReached` 或 `survivalSeconds` 的进度分布。
 - 实验对新手 run 时长、广告收入、付费转化的影响。
+
+注意：
+
+- `_build_choice` 不建议在每次普通升级、每次掉落或每个微小选择都上报。第一版更适合在少量关键节点上报，例如 `nodeType = mid_game`、`pre_boss`、`game_over`。
+- `_build_choice` 必须带上游戏节点信息，例如 `nodeType`、`nodeNo`、`survivalSeconds`、`stageReached`。这样报表才能比较“某个阶段选择某个 build 后”的成功率和使用率，而不是只看到全局选择次数。
 
 ## 模拟经营 / 放置 / 养成类
 
