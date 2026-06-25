@@ -32,7 +32,7 @@
 | 进度类型 | `progressionType` | 例如 `level`、`chapter`、`match`、`run`、`story_node`。 |
 | 进度 ID | `progressionId` | 稳定字符串 ID，例如 `chapter_10_stage_3`。 |
 | 连续进度序号 | `progressionNo` 或 `level_index` | 用于 max / avg / bucket 的数字，必须是连续可比较口径。 |
-| 展示编码 | `stage_code` | 如果游戏内部用 `1001` 表示第 10 章第 1 小关，不要叫 `level`。 |
+| 展示编码 | `stage_code` | 如果游戏内部用 `1001` 表示第 10 章第 1 小关，不要叫 `level`；这类编码默认只用于定位和排查，不建议用于正式报表聚合。 |
 | 结果 | `result` | 建议用 `win`、`lose`、`quit`、`timeout`、`fail`。 |
 | 是否成功 | `success` 或 `passed` | 布尔值，适合简单通过率。 |
 | 时长 | `durationMs` 或 `duration_ms` | 建议同一游戏内统一一种命名风格。 |
@@ -69,13 +69,13 @@
 注意：
 
 - 如果游戏有 `chapter` 和 `stage`，建议额外上报 `level_index = (chapter - 1) * stages_per_chapter + stage`。
-- 如果只能上报编码值，例如 `chapter * 100 + stage`，字段应命名为 `stage_code`，报表不要直接用它算平均最大关卡。
+- 如果只能上报编码值，例如 `chapter * 100 + stage`，字段应命名为 `stage_code`。这类字段尽量不要用于报表聚合、趋势、排序或分桶，正式报表优先使用 `chapter`、`stage` 或连续的 `level_index`。
 
 多层次关卡的卡点分析建议从粗到细设计报表。第一层先用 `chapter` 看最大通关章节、章节通过率和章节流失，快速判断用户主要卡在哪些大章节；第二层再针对异常章节展开 `stage` 或 `level_index`，看章内第几小关流失、失败或耗时异常。这样比一开始就把所有 `chapter + stage` 小关全铺成一张图更容易观察，也能减少报表噪音。
 
 例如一个游戏用 `23005` 表示第 230 章第 5 小关：
 
-- `stage_code = 23005`：适合定位具体小关，不适合直接算平均最大关卡。
+- `stage_code = 23005`：只适合定位具体小关和排查单点问题，尽量不要作为正式报表指标或维度。
 - `chapter = 230`：适合第一层分析最大通关章节和章节流失。
 - `stage = 5`：适合在选中某个章节后分析章内卡点。
 - `level_index = (chapter - 1) * 5 + stage`：适合需要连续进度、分桶和最大进度分布时使用。
