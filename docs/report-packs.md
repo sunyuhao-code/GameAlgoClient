@@ -264,10 +264,10 @@ Report Pack 的 dashboard 建议按“业务问题”拆分，而不是按事件
 - 不支持顶层 `entity` 和 `rollupMetrics`；请使用 `stages[].entity` 和 `stages[].metrics`。
 - 除 `ratio` 外，其他 metric 都可以包含 `filter`。
 - formula metric 使用同一个 dataset 中非 formula metric 的安全算术表达式，例如 `"ltv": { "formula": "revenue / cohort_users" }`。
-- `penetration` 用于计算事件 dataset 的去重实体渗透率。默认实体是 `userId`；`denominator` 可以是 `event_users`、`active_users` 或 `new_users`。`active_users` 和 `new_users` 使用 SDK context 作为分母，因此使用它们的报表只能按 `dt`、实验字段或 `platform`、`appVersion` 等 SDK context 字段分组。
+- `penetration` 用于计算事件 dataset 的去重实体渗透率。默认实体是 `userId`；`denominator` 可以是 `event_users`、`active_users` 或 `new_users`。`active_users` 和 `new_users` 使用 SDK context 作为分母，因此使用它们的报表只能按 `dt`、`user_segment`、实验字段或 `platform`、`appVersion` 等 SDK context 字段分组。
 - `calculations` 可以声明平台预置的计算模板。常见问题可以优先用模板配置，少写一层 dataset/report，也更不容易写错。
 - `reports` 定义可见报表查询。
-- `groupBy` 支持 `dt`、dataset dimensions、`experiment.<strategy_name>` 和 `experiment`。
+- `groupBy` 支持 `dt`、`user_segment`、dataset dimensions、`experiment.<strategy_name>` 和 `experiment`。`user_segment` 是平台内置用户类型，适用于 event/rollup 自定义报表，值为 `all`、`new`、`returning`；cohort 报表本身已经是新用户 cohort，不支持再按 `user_segment` 分组。
 - `dashboard.tabs` 定义 GameAlgo 控制台如何布局报表。
 - 一个 tab 可以包含一个或多个 `groups`。group 会在 UI 上包裹一组相关图表，并拥有一组共享 selector。group 内的图表不一定都要使用每个 selector。
 - 老版本 pack 仍可以定义顶层 `standard.ref` 或 `charts`；控制台会把 `standard.ref` 视为一个生成的标准 group，并按 `chart.report` 把顶层 `charts` 拆成自定义 group。
@@ -508,6 +508,51 @@ Group selector 是只作用于当前 group 的 UI 控件：
 
 实验 selector 默认只负责过滤行。`Global` 表示 `scope = global`；选择某个 strategy 表示 `scope = experiment AND strategy = selected`。Dimension selector 可以用 `"type": "dimension"` 声明，按结果列过滤当前 group 的图表。多个 selector 会按 AND 叠加。图表仍然通过自己的 `x`、`y`、`series`、`label` 和 `value` 字段决定如何渲染。
 
+如果很多图都要看新用户/老用户，可以在 report 的 `groupBy` 里加入 `user_segment`，并在 group selector 中使用内置用户类型 selector：
+
+```json
+{
+  "reports": [
+    {
+      "id": "daily_revenue_by_user_segment",
+      "dataset": "ad_revenue",
+      "groupBy": ["dt", "user_segment"],
+      "metrics": ["revenue"]
+    }
+  ],
+  "dashboard": {
+    "tabs": [
+      {
+        "id": "revenue",
+        "title": "Revenue",
+        "groups": [
+          {
+            "id": "revenue_segments",
+            "title": "Revenue by User Segment",
+            "selectors": [
+              { "id": "user_segment", "label": "用户类型", "type": "segment" }
+            ],
+            "charts": [
+              {
+                "id": "daily_revenue",
+                "title": "Daily Revenue",
+                "type": "line",
+                "report": "daily_revenue_by_user_segment",
+                "x": "dt",
+                "y": "revenue",
+                "series": "user_segment"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+`user_segment = "all"` 是服务端 SQL 直接生成的完整用户行，不是控制台把 `new` 和 `returning` 简单相加。比例、ARPU、渗透率这类指标要优先使用 `all` 行或具体 segment 行，不要在前端二次拼比例。
+
 如果一个图表在「未选实验」和「选中实验」时需要不同的数据粒度，可以配置 `views.global` 和 `views.experiment`。控制台会在 group 的 experiment selector 选中具体 strategy 时使用 `views.experiment`，否则使用 `views.global` 或 chart 本身的配置。`requiredSelectors` 用来要求某个 dimension selector 必须选具体值，不能是 `all`，避免前端把不同粒度的行错误聚合：
 
 ```json
@@ -589,7 +634,7 @@ Group selector 是只作用于当前 group 的 UI 控件：
 | `revenue.ltv@1` | 新用户 LTV cohort。包含内置 `LTV Trend` 折线图（D0、D1、D2、D3、D7、D14）和 `LTV Cohort Matrix` 表格（D0-D14）。控制台可通过运行时 Strategy 和 Dx selector 在全局 LTV 和分实验 LTV 之间切换。 | SDK context 行，以及收入事件。 |
 | `revenue.placement@1` | 按广告 placement/type/network 拆分的每日收入。 | 成功曝光的 `ad_view` 事件，必填 `placement`、`adType`、`revenue`、`currency`，可选 `network`。广告失败、未填充、取消或未完成有效曝光时不要上报到 `ad_view`。 |
 | `progression.overview@1` | 进度漏斗和难度健康度：开始、完成、成功率、平均时长、按进度点流失。 | `progression_start` 和 `progression_end` 事件，包含进度标识、顺序、结果和时长字段。 |
-| `events.health@1` | 数据质量和事件量：按事件类型统计事件数、用户数、会话数和 debug 事件量。 | 任意 SDK 事件。 |
+| `events.health@1` | 数据质量和事件量：按事件类型统计正式事件数、用户数和会话数。 | 任意 SDK 事件。 |
 
 推荐标准事件 payload 字段：
 
@@ -659,7 +704,7 @@ Group selector 是只作用于当前 group 的 UI 控件：
 }
 ```
 
-当 `denominator: "event_users"` 时，分母是同一个事件 dataset 中的去重用户，可以使用事件维度。当 denominator 是 `active_users` 或 `new_users` 时，分母来自 SDK context 行；此时 `groupBy` 应限制为 context 级字段。看板图表需要按百分比展示渗透率时，添加 `"format": "percent"`。
+当 `denominator: "event_users"` 时，分母是同一个事件 dataset 中的去重用户，可以使用事件维度。当 denominator 是 `active_users` 或 `new_users` 时，分母来自 SDK context 行；此时 `groupBy` 应限制为 context 级字段，例如 `dt`、`user_segment`、实验字段、`platform`、`appVersion`。看板图表需要按百分比展示渗透率时，添加 `"format": "percent"`。
 
 `rollup` dataset 会先经过一个或多个 `stages` 聚合，再对最终 stage 行继续聚合。适合“用户最大关卡均值”这类指标：
 
