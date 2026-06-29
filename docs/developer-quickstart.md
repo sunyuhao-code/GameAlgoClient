@@ -41,7 +41,7 @@ GameAlgo 有两类 key，名字接近但用途不同。
 
 | Key | 示例 | 用途 | 放在哪里 |
 | --- | --- | --- | --- |
-| Client Game Key | `ga_test_*` / `ga_live_*` | 游戏运行时拉取配置、拉取配置文件、上报事件 | 游戏客户端包，或小游戏的服务端代理 |
+| Client Game Key | `ga_live_*` | 游戏运行时拉取配置、拉取配置文件、上报事件 | 游戏客户端包，或小游戏的服务端代理 |
 | Game Admin Key | `ga_admin_*` | CLI / AI Agent / CI 管理实验、脚本、配置、Report Pack，拉取报表和事件统计 | 开发机器、CI Secret、Agent Secret |
 
 推荐流程是：开发者只手工创建 `Game Admin Key`，然后把它交给 AI Agent。AI Agent 会用 CLI 检查当前游戏是否已有可用的 Client Game Key；没有时自动创建；需要写入 SDK 或 TapTap Maker 服务端 Proxy 时，再通过 CLI 读取明文。
@@ -60,7 +60,7 @@ gamealgo key reveal --name <用途名> --json
 gamealgo key revoke --name <用途名> --yes --json
 ```
 
-QA 包使用 `ga_test_*`，生产包使用 `ga_live_*`。SDK / REST 请求会通过 `X-GameAlgo-Key` 携带 Client Game Key。
+Client Game Key 统一使用 `ga_live_*` 前缀。QA/测试环境如需区分，可以创建单独命名的 key，并通过 `isDebug=true` 标记测试事件。SDK / REST 请求会通过 `X-GameAlgo-Key` 携带 Client Game Key。
 
 如果团队暂时不用 AI Agent，也可以在控制台的 `客户端密钥` 区域手工创建 Client Game Key。但常规接入建议只把 Game Admin Key 提供给 AI，让 AI 负责运行时 key 的创建和维护，开发者负责审核 AI 写入项目配置的位置是否正确。
 
@@ -155,7 +155,7 @@ AI Agent 应该做的事：
 
 - 游戏能正常启动，不被 GameAlgo 网络请求阻塞
 - 配置拉取失败时，游戏仍然走本地默认逻辑
-- Debug / QA 包不要误用生产 key
+- Debug / QA 包设置 `isDebug=true`，如需隔离环境则使用单独命名的 Client Game Key
 
 ### 第二步：验证事件上报链路
 

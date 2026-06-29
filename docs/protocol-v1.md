@@ -21,7 +21,6 @@ v1 不做复杂权限、审批流、外部 SaaS、多租户计费或高级防刷
 示例：
 
 ```text
-ga_test_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ga_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 

@@ -8,7 +8,7 @@ GameAlgo Client 是面向游戏接入方的公开客户端仓库，包含 iOS SD
 
 - `baseUrl`: 服务地址，例如 `https://gamealgo.example.com`。
 - `adminKey`: 游戏维度的 Game Admin Key，格式为 `ga_admin_*`。推荐开发者在控制台创建这个 key 后交给 AI Agent / CLI，后续 Client Game Key 的创建、查看和吊销都由 AI 完成。
-- `gameKey`: 游戏运行时鉴权 key，格式为 `ga_live_*` 或 `ga_test_*`。客户端请求会通过 `X-GameAlgo-Key` 识别游戏，不需要自己传可信的 `gameId`。手工接入时可以在控制台创建；推荐接入时由 AI 使用 `gamealgo key create/reveal` 生成并写入 SDK 或服务端 Proxy 配置。
+- `gameKey`: 游戏运行时鉴权 key，格式为 `ga_live_*`。客户端请求会通过 `X-GameAlgo-Key` 识别游戏，不需要自己传可信的 `gameId`。手工接入时可以在控制台创建；推荐接入时由 AI 使用 `gamealgo key create/reveal` 生成并写入 SDK 或服务端 Proxy 配置。QA/测试环境如需区分，可以创建单独命名的 Client Game Key，并通过 `isDebug=true` 标记测试事件。
 - 配置项: 实验 key、配置文件名、脚本名。例如 `level_generator`、`gameplay.json`、`level-generator.js`。
 
 核心原则：**不要让 GameAlgo 网络请求阻塞游戏主流程**。SDK 会后台拉取配置并写入本地快照；配置未就绪、网络失败或脚本执行失败时，游戏应走本地默认逻辑。
@@ -346,5 +346,5 @@ _tutorial_skip
 - `executor(key).variant(...)` 能读到实验分组。
 - `config` 能读到 `gameplay.json` 等配置文件。
 - `session_end` 和核心玩法事件能上传成功。
-- QA 包设置 `isDebug=true`，生产包使用正式 key。
+- QA 包设置 `isDebug=true`；如需区分 QA/生产环境，使用不同名称的 Client Game Key。
 - key 不写入日志、截图、崩溃上报或公开仓库。

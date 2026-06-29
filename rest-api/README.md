@@ -226,7 +226,7 @@ _tutorial_skip
 - 有关卡的游戏会上报 `level_start` 和 `level_end`。
 - 有广告的游戏会上报带 `placement`、`adType`、`revenue` 和 `currency` 的 `ad_view`。
 - QA 包设置 `isDebug=true`。
-- 生产包使用 `ga_live_*`，不要使用 `ga_test_*`。
+- 客户端运行时只使用 `ga_live_*`。QA/测试环境如需区分，可以创建单独命名的 Client Game Key，并设置 `isDebug=true`。
 
 ## 8. Node 示例
 
