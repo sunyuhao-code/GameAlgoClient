@@ -332,6 +332,8 @@ value_per_actor = measure_value / denominator_count
 
 分子全局按 `dt + breakdown` 聚合，实验态按 `dt + breakdown + strategy + variant` 聚合。分母全局按 `dt` 聚合，实验态按 `dt + strategy + variant` 聚合。分母不会包含 breakdown 维度。比如分模式 ARPU 算的是 `normal 模式收入 / 该 variant 下全部活跃用户`，不是 `normal 模式收入 / normal 模式用户`。
 
+如果同一个模板看板还需要支持全部/新用户/老用户视角，配置 `"userSegment": true`。开启后，分子会按 `dt + user_segment + breakdown` 聚合，分母会按 `dt + user_segment` 聚合；实验态两边都会继续加上 `strategy + variant`。控制台会自动在 breakdown selector 前增加“用户类型” selector。
+
 ```json
 {
   "calculations": [
@@ -339,6 +341,7 @@ value_per_actor = measure_value / denominator_count
       "id": "mode_arpu",
       "title": "Mode ARPU",
       "template": "breakdown_experiment_line@1",
+      "userSegment": true,
       "breakdown": {
         "id": "mode",
         "label": "Mode",
@@ -371,10 +374,10 @@ value_per_actor = measure_value / denominator_count
 
 | Report id | 行粒度 |
 | --- | --- |
-| `mode_arpu_global` | 按 `dt` 和 `mode` 聚合 |
-| `mode_arpu_experiment` | 按 `dt`、`mode`、`scope`、`strategy`、`variant` 聚合 |
+| `mode_arpu_global` | 开启 `userSegment` 时按 `dt`、`user_segment`、`mode` 聚合；否则按 `dt`、`mode` 聚合 |
+| `mode_arpu_experiment` | 按 `dt`、可选 `user_segment`、`mode`、`scope`、`strategy`、`variant` 聚合 |
 
-两个报表都会返回 `measure_value`、`denominator_count` 和 `value_per_actor`。控制台会自动创建一个 group，里面带 Experiment selector 和 breakdown selector。没有选择实验时，折线图按 `mode` 出多条线；选择实验后，需要再选择一个具体 mode，然后折线图按 variant 出多条线。
+两个报表都会返回 `measure_value`、`denominator_count` 和 `value_per_actor`。控制台会自动创建一个 group，里面带 Experiment selector、可选用户类型 selector 和 breakdown selector。没有选择实验时，折线图按 `mode` 出多条线；选择实验后，需要再选择一个具体 mode，然后折线图按 variant 出多条线。
 
 如果要配置渗透率，可以把分子写成 `count_distinct`：
 
