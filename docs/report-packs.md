@@ -35,7 +35,7 @@ Report Pack 的 dashboard 建议按“业务问题”拆分，而不是按事件
 | --- | --- | --- |
 | `Overview` / 核心概览 | DAU、新用户、Session 数、平均 Session 时长、人均 Session、核心明细表 | 优先引用 `core.overview@1` |
 | `Retention` / 留存 | D1/D2/D3/D7 留存趋势、Cohort matrix、按实验 variant 的留存对比 | 优先引用 `retention.cohort@1`，默认 Dx 建议 D1 |
-| `Revenue` / 收入 | 本地日期广告收入、广告位收入趋势、广告位收入/曝光占比、广告类型收入/曝光占比、ARPU/ARPDAU | 优先引用 `revenue.placement@1`，自定义收入分析可补在同一 tab |
+| `Revenue` / 收入 | 本地日期广告收入、按广告类型的人均看广告数、ARPU、广告位收入趋势、广告位收入/曝光占比、广告类型收入/曝光占比 | 优先引用 `revenue.placement@1`，自定义收入分析可补在同一 tab |
 | `LTV` / 新用户价值 | LTV 趋势、LTV cohort matrix、按实验 variant 的 LTV 对比、新用户生命周期时长 | 可引用 `revenue.ltv@1`；如果 Revenue 页面不拥挤，也可以把 LTV 放在 Revenue 里 |
 | `Progression` / 进度 | 关卡/章节/对局通过率、最大进度均值、最大进度分布柱状图、失败率、重试次数、平均耗时 | 用自定义 dataset/report；非关卡游戏也可以用 Progression 表示用户推进深度 |
 | `Modes` / 玩法模式 | 模式渗透率、模式收入、模式 ARPU、模式完成率、模式流失 | 适合配置 `mode` dimension selector，也适合和实验 selector 组合 |
@@ -62,6 +62,12 @@ Report Pack 的 dashboard 建议按“业务问题”拆分，而不是按事件
 - 如果一个图回答“为什么用户卡住/流失”，放在 `Progression` 或 `Modes`。
 - 如果一个图回答“哪个配置更好”，优先放在对应业务 tab 的实验 group，而不是单独放到 `Experiments`。
 - 如果一个图是给 Agent 优化策略用的，标题和字段要直接表达可行动指标，例如 `First Ad Level LTV`、`Max Level Distribution`、`Mode ARPU by Variant`。
+
+## 展示文案和中文标题
+
+Report Pack 的展示文案可以直接使用中文，包括 `dashboard.title`、`tabs[].title`、`groups[].title`、`groups[].description`、`charts[].title`、`selectors[].label` 和 `options[].label`。如果游戏团队、控制台页面或需求文档使用中文标题，建议让 AI Agent 也生成中文的 tab、group、chart 和 selector 文案，避免 Admin 页面中英文混杂。
+
+系统识别字段仍然要保持英文安全字符：`id`、`version`、事件名、dataset/report/chart/selector id、`field`、`x`、`y`、`series`、`label`、`value`、`sort` 以及 SQL 结果列名都不要写中文。这些字段会参与校验、SQL 生成、缓存和 CLI 查询。
 
 ## 示例
 
@@ -419,22 +425,22 @@ value_per_actor = measure_value / denominator_count
 ```json
 {
   "dashboard": {
-    "title": "Game Reports",
+    "title": "游戏数据看板",
     "tabs": [
       {
         "id": "overview",
-        "title": "Overview",
+        "title": "概览",
         "groups": [
           {
             "id": "core",
-            "title": "Core Overview",
+            "title": "核心概览",
             "standard": { "ref": "core.overview@1" }
           }
         ]
       },
       {
         "id": "custom_progress",
-        "title": "Custom Progress",
+        "title": "自定义进度",
         "groups": [
           {
             "id": "progression",
@@ -554,7 +560,7 @@ Group selector 是只作用于当前 group 的 UI 控件：
 }
 ```
 
-`user_segment = "all"` 是服务端 SQL 直接生成的完整用户行，不是控制台把 `new` 和 `returning` 简单相加。比例、ARPU、渗透率这类指标要优先使用 `all` 行或具体 segment 行，不要在前端二次拼比例。
+`user_segment = "all"` 是服务端 SQL 直接生成的完整用户行，不是控制台把 `new` 和 `returning` 简单相加。比例、ARPU、渗透率这类指标要优先使用 `all` 行或具体 segment 行，不要在前端二次拼比例。内置 `{ "type": "segment" }` selector 会把 `all` 当成具体的 `user_segment = "all"` 行过滤；普通 dimension selector 里的 `all` 仍表示不过滤。
 
 如果一个图表在「未选实验」和「选中实验」时需要不同的数据粒度，可以配置 `views.global` 和 `views.experiment`。控制台会在 group 的 experiment selector 选中具体 strategy 时使用 `views.experiment`，否则使用 `views.global` 或 chart 本身的配置。`requiredSelectors` 用来要求某个 dimension selector 必须选具体值，不能是 `all`，避免前端把不同粒度的行错误聚合：
 
@@ -630,12 +636,12 @@ Group selector 是只作用于当前 group 的 UI 控件：
 | Ref | 用途 | 所需数据 |
 | --- | --- | --- |
 | `core.overview@1` | 总览流量和会话健康度。包含 DAU、新用户、会话数、平均会话时长、用户会话数的内置折线图，以及明细表。 | SDK context 行，以及 `session_end.payload.sessionDurationMs`。 |
-| `retention.cohort@1` | 按 cohort date 和 day offset 计算新用户留存。包含内置 `Retention Trend` 折线图（D1、D2、D3、D7）和 `Retention Cohort Matrix` 表格（D0-D14）。控制台可通过运行时 Strategy 和 Dx selector 在全局留存和分实验留存之间切换。 | SDK context 行，以及后续用户活跃事件。 |
+| `retention.cohort@1` | 按 cohort date 和 day offset 计算新用户留存。包含内置 `留存趋势` 折线图（D1、D2、D3、D7）和 `留存同期群矩阵` 表格（D0-D14）。控制台可通过运行时 Strategy 和 Dx selector 在全局留存和分实验留存之间切换。 | SDK context 行，以及后续用户活跃事件。 |
 | `retention.activation_time@1` | 按本地激活时间段分组的留存 cohort。 | 带 `userCreatedAt` 和 `timezone` 的 SDK context 行，以及后续用户活跃事件。 |
 | `engagement.cohort@1` | 新用户互动 cohort：累计活跃天数、累计游戏时长、用户会话数。 | SDK context 行，以及 `session_end.payload.sessionDurationMs`。 |
 | `revenue.overview@1` | 每日收入、ARPU、ARPDAU、付费人数和付费率。 | 带 `revenue` 和 `currency` 字段的 `ad_view`、`purchase` 事件。 |
-| `revenue.ltv@1` | 新用户 LTV cohort。包含内置 `LTV Trend` 折线图（D0、D1、D2、D3、D7、D14）和 `LTV Cohort Matrix` 表格（D0-D14）。控制台可通过运行时 Strategy 和 Dx selector 在全局 LTV 和分实验 LTV 之间切换。 | SDK context 行，以及收入事件。 |
-| `revenue.placement@1` | 按广告 placement/type/network 拆分的每日收入。 | 成功曝光的 `ad_view` 事件，必填 `placement`、`adType`、`revenue`、`currency`，可选 `network`。广告失败、未填充、取消或未完成有效曝光时不要上报到 `ad_view`。 |
+| `revenue.ltv@1` | 新用户 LTV cohort。包含内置 `LTV 趋势` 折线图（D0、D1、D2、D3、D7、D14）和 `LTV 同期群矩阵` 表格（D0-D14）。控制台可通过运行时 Strategy 和 Dx selector 在全局 LTV 和分实验 LTV 之间切换。 | SDK context 行，以及收入事件。 |
+| `revenue.placement@1` | 广告变现和收入指标标准看板。会生成两个 group：`广告变现` 包含本地日期广告收入、广告位收入趋势、广告位收入/曝光占比、广告类型收入/曝光占比，所有图都支持用户类型 selector（全部/新用户/老用户）；`收入指标` 包含按广告类型的人均看广告数和整体 ARPU，并支持实验、用户类型、广告类型 selector。未选实验时，人均看广告数按 `ad_type` 拆线，ARPU 是一条总线；选中实验后，人均看广告数需要选择一个广告类型并按 variant 拆线，ARPU 也按 variant 拆线。 | 成功曝光的 `ad_view` 事件，必填 `placement`、`adType`、`revenue`、`currency`，可选 `network` 和 `mode`。广告失败、未填充、取消或未完成有效曝光时不要上报到 `ad_view`。 |
 | `progression.overview@1` | 进度漏斗和难度健康度：开始、完成、成功率、平均时长、按进度点流失。 | `progression_start` 和 `progression_end` 事件，包含进度标识、顺序、结果和时长字段。 |
 | `events.health@1` | 数据质量和事件量：按事件类型统计正式事件数、用户数和会话数。 | 任意 SDK 事件。 |
 
@@ -669,6 +675,8 @@ Group selector 是只作用于当前 group 的 UI 控件：
 ```
 
 当前校验器接受上表中的 ref。这些 ref 是平台提供标准看板的契约。保存 report pack 时只会记录选择的 `standard.ref`；标准看板背后的数据由平台准备。LTV 和留存看板会隐藏尚未成熟的 cohort/day 组合，例如 D7 只有在对应 cohort 已经过了 7 天后才会出现。
+
+Reports 页面有 tab 级别的平台筛选器。看板查询会按选中的 `platform`（`ios`、`android`、`rest`）过滤，并把平台写入报表缓存 key。平台内置的标准聚合表需要包含 `platform` 字段；如果是已有部署，需要先给标准表补这个字段并重跑标准任务。
 
 ## Dataset 类型
 
