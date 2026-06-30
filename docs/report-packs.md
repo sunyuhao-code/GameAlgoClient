@@ -433,7 +433,7 @@ value_per_actor = measure_value / denominator_count
 | --- | --- |
 | `{id}_cohort` | `cohort_dt`、`day_offset`、`scope`、`strategy`、`variant` |
 
-控制台会自动创建一个 group，里面带 Experiment selector、Dx selector、一张趋势折线图、一张 cohort 矩阵和一张明细表。`metric.value` 用来指定趋势图和矩阵单元格的指标。矩阵不会被 Dx selector 过滤；它会展示所有 D0 到 Dn 列。
+控制台会自动创建一个 group，里面带 Experiment selector、Dx selector、一张趋势折线图和一张 cohort 矩阵。`metric.value` 用来指定趋势图和矩阵单元格的指标。矩阵不会被 Dx selector 过滤；它会展示已成熟的 D0 到 Dn 列，未达到 `cohort_dt + day_offset <= endDate` 的列不会提前展示。
 
 例如，新用户最大通关关卡 cohort：
 
