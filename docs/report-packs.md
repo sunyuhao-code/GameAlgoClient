@@ -34,7 +34,7 @@ Report Pack 的 dashboard 建议按“业务问题”拆分，而不是按事件
 | Tab | 适合放的看板 | 推荐实现 |
 | --- | --- | --- |
 | `Overview` / 核心概览 | DAU、新用户、Session 数、平均 Session 时长、人均 Session、核心明细表 | 优先引用 `core.overview@1` |
-| `Retention` / 留存 | D1/D2/D3/D7 留存趋势、Cohort matrix、按实验 variant 的留存对比 | 优先引用 `retention.cohort@1`，默认 Dx 建议 D1 |
+| `Retention` / 留存 | D1/D2/D3/D7 留存趋势、Cohort matrix、流失用户趋势、按实验 variant 的留存/流失对比 | 优先引用 `retention.cohort@1` 和 `churn.overview@1`，默认 Dx 建议 D1 |
 | `Revenue` / 收入 | 本地日期广告收入、按广告类型的人均看广告数、ARPU、广告位收入趋势、广告位收入/曝光占比、广告类型收入/曝光占比 | 优先引用 `revenue.placement@1`，自定义收入分析可补在同一 tab |
 | `LTV` / 新用户价值 | LTV 趋势、LTV cohort matrix、按实验 variant 的 LTV 对比、新用户生命周期时长 | 可引用 `revenue.ltv@1`；如果 Revenue 页面不拥挤，也可以把 LTV 放在 Revenue 里 |
 | `Progression` / 进度 | 关卡/章节/对局通过率、最大进度均值、最大进度分布柱状图、失败率、重试次数、平均耗时 | 用自定义 dataset/report；非关卡游戏也可以用 Progression 表示用户推进深度 |
@@ -719,6 +719,7 @@ Group selector 是只作用于当前 group 的 UI 控件：
 | --- | --- | --- |
 | `core.overview@1` | 总览流量和会话健康度。包含 DAU、新用户、会话数、平均会话时长、用户会话数的内置折线图，以及明细表。 | SDK context 行，以及 `session_end.payload.sessionDurationMs`。 |
 | `retention.cohort@1` | 按 cohort date 和 day offset 计算新用户留存。包含内置 `留存趋势` 折线图（D1、D2、D3、D7）和 `新用户留存矩阵` 表格（D0-D14）。控制台可通过运行时 Strategy 和 Dx selector 在全局留存和分实验留存之间切换。 | SDK context 行，以及后续用户活跃事件。 |
+| `churn.overview@1` | 流失用户趋势。x 轴是用户最后一次活跃日期；全局态 series 是截至报表结束日期已经至少沉默 D3 / D7 / D14 的用户数。支持 Strategy 和 Dx selector；选中实验后用 Dx 选择 D3 / D7 / D14，并按 variant 拆线。 | `adn.dws_gamealgo_user_activity_df` 用户活跃快照。流失窗口由 `days_since_last_open` 计算。 |
 | `retention.activation_time@1` | 按本地激活时间段分组的留存 cohort。 | 带 `userCreatedAt` 和 `timezone` 的 SDK context 行，以及后续用户活跃事件。 |
 | `engagement.cohort@1` | 新用户互动 cohort：累计活跃天数、累计游戏时长、用户会话数。 | SDK context 行，以及 `session_end.payload.sessionDurationMs`。 |
 | `revenue.overview@1` | 每日收入、ARPU、ARPDAU、付费人数和付费率。 | 带 `revenue` 和 `currency` 字段的 `ad_view`、`purchase` 事件。 |
