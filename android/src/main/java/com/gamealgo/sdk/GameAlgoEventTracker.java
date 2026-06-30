@@ -128,11 +128,6 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         return trackInternal(eventType, payload);
     }
 
-    public boolean trackSessionStart() {
-        markSessionStarted();
-        return true;
-    }
-
     public boolean trackSessionEnd() {
         return trackSessionEnd(new LinkedHashMap<String, Object>());
     }

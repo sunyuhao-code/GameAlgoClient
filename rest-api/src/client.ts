@@ -524,12 +524,6 @@ export class GameAlgoEventTracker {
     return this.track(type.startsWith("_") ? type : `_${type}`, payload, options);
   }
 
-  trackSessionStart(payload: JsonValue = {}): boolean {
-    void payload;
-    this.markSessionStarted();
-    return true;
-  }
-
   trackSessionEnd(payload: JsonValue = {}): boolean {
     const merged = objectPayload(payload);
     if (this.sessionStartMs !== undefined) {

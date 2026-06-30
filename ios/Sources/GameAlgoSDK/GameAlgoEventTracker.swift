@@ -181,13 +181,6 @@ public actor GameAlgoEventTracker {
     }
 
     @discardableResult
-    public func trackSessionStart(payload: JSONValue = .object([:])) -> Bool {
-        _ = payload
-        markSessionStarted()
-        return true
-    }
-
-    @discardableResult
     public func trackSessionEnd(payload: JSONValue = .object([:])) async -> Bool {
         var merged = payload.objectValue ?? [:]
         if let sessionStartDate {
