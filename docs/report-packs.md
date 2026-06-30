@@ -418,6 +418,86 @@ value_per_actor = measure_value / denominator_count
 }
 ```
 
+`cohort_metric@1` 用来标准化“新用户 cohort + 任意指标”的看板。它适合配置新用户 LTV、新用户生命周期总时长、新用户最大关卡、新用户 Dn 进度等需要按 `cohort_dt + day_offset` 观察的指标。
+
+这个模板底层会生成一个 cohort dataset，不需要再手写 `datasets` 和 `reports`。UI 有两种状态：
+
+- 未选择实验：折线图按 `day_offset` 出多条线，例如 D0/D1/D3/D7。
+- 选择实验后：查看者需要选择一个 Dx，然后折线图按 `variant` 出多条线。
+
+模板会自动生成一个可查询报表：
+
+| Report id | 行粒度 |
+| --- | --- |
+| `{id}_cohort` | `cohort_dt`、`day_offset`、`scope`、`strategy`、`variant` |
+
+控制台会自动创建一个 group，里面带 Experiment selector、Dx selector、一张趋势折线图和一张明细表。`metric.value` 用来指定趋势图的 y 轴指标。
+
+例如，新用户最大通关关卡 cohort：
+
+```json
+{
+  "calculations": [
+    {
+      "id": "new_user_max_level",
+      "title": "新用户最大关卡 Cohort",
+      "template": "cohort_metric@1",
+      "cohort": {
+        "dateField": "userCreatedAt",
+        "windowDays": 14
+      },
+      "metric": {
+        "event": "level_end",
+        "stages": [
+          {
+            "id": "user_rollup",
+            "entity": "userId",
+            "metrics": {
+              "user_max_level": { "agg": "max", "field": "level_no" }
+            }
+          }
+        ],
+        "metrics": {
+          "cohort_users": { "agg": "count_distinct", "field": "userId" },
+          "avg_max_level": { "agg": "avg", "field": "user_max_level" }
+        },
+        "value": "avg_max_level"
+      },
+      "dashboard": {
+        "tab": "关卡",
+        "group": "新用户进度 Cohort",
+        "format": "number"
+      }
+    }
+  ]
+}
+```
+
+如果只是 LTV 这种不需要 rollup 的指标，可以不写 `stages`，直接在 `metrics` 里用普通聚合和公式：
+
+```json
+{
+  "id": "new_user_ltv",
+  "title": "新用户 LTV",
+  "template": "cohort_metric@1",
+  "cohort": { "dateField": "userCreatedAt", "windowDays": 14 },
+  "metric": {
+    "event": "ad_view",
+    "metrics": {
+      "cohort_users": { "agg": "count_distinct", "field": "userId" },
+      "revenue": { "agg": "sum", "field": "revenue" },
+      "ltv": { "formula": "revenue / cohort_users" }
+    },
+    "value": "ltv"
+  },
+  "dashboard": {
+    "tab": "收入",
+    "group": "新用户 LTV",
+    "format": "currency"
+  }
+}
+```
+
 ## 标准看板引用
 
 标准看板是平台内置的看板模块，可以在游戏自己的 report pack 里引用。它们不是独立 pack。一个 pack 可以同时包含标准 group 和自定义 group：
