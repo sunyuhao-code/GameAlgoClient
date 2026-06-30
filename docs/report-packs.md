@@ -713,20 +713,17 @@ Group selector 是只作用于当前 group 的 UI 控件：
 }
 ```
 
-当前预留的标准看板 ref：
+当前已实现的标准看板 ref：
 
 | Ref | 用途 | 所需数据 |
 | --- | --- | --- |
 | `core.overview@1` | 总览流量和会话健康度。包含 DAU、新用户、会话数、平均会话时长、用户会话数的内置折线图，以及明细表。 | SDK context 行，以及 `session_end.payload.sessionDurationMs`。 |
 | `retention.cohort@1` | 按 cohort date 和 day offset 计算新用户留存。包含内置 `留存趋势` 折线图（D1、D2、D3、D7）和 `新用户留存矩阵` 表格（D0-D14）。控制台可通过运行时 Strategy 和 Dx selector 在全局留存和分实验留存之间切换。 | SDK context 行，以及后续用户活跃事件。 |
 | `churn.overview@1` | 流失用户趋势。x 轴是用户最后一次活跃日期；全局态 series 是截至报表结束日期已经至少沉默 D3 / D7 / D14 的用户数。支持 Strategy 和 Dx selector；选中实验后用 Dx 选择 D3 / D7 / D14，并按 variant 拆线。 | `adn.dws_gamealgo_user_activity_df` 用户活跃快照。流失窗口由 `days_since_last_open` 计算。 |
-| `retention.activation_time@1` | 按本地激活时间段分组的留存 cohort。 | 带 `userCreatedAt` 和 `timezone` 的 SDK context 行，以及后续用户活跃事件。 |
-| `engagement.cohort@1` | 新用户互动 cohort：累计活跃天数、累计游戏时长、用户会话数。 | SDK context 行，以及 `session_end.payload.sessionDurationMs`。 |
-| `revenue.overview@1` | 每日收入、ARPU、ARPDAU、付费人数和付费率。 | 带 `revenue` 和 `currency` 字段的 `ad_view`、`purchase` 事件。 |
 | `revenue.ltv@1` | 新用户 LTV cohort。包含内置 `LTV 趋势` 折线图（D0、D1、D2、D3、D7、D14）和 `新用户 LTV 矩阵` 表格（D0-D14）。控制台可通过运行时 Strategy 和 Dx selector 在全局 LTV 和分实验 LTV 之间切换。 | SDK context 行，以及收入事件。 |
 | `revenue.placement@1` | 广告变现和收入指标标准看板。会生成两个 group：`广告变现` 包含本地日期广告收入、广告位收入趋势、广告位收入/曝光占比、广告类型收入/曝光占比，所有图都支持用户类型 selector（全部/新用户/老用户）；`收入指标` 包含按广告类型的人均看广告数和整体 ARPU，并支持实验、用户类型、广告类型 selector。未选实验时，人均看广告数按 `ad_type` 拆线，ARPU 是一条总线；选中实验后，人均看广告数需要选择一个广告类型并按 variant 拆线，ARPU 也按 variant 拆线。 | 成功曝光的 `ad_view` 事件，必填 `placement`、`adType`、`revenue`、`currency`，可选 `network` 和 `mode`。广告失败、未填充、取消或未完成有效曝光时不要上报到 `ad_view`。 |
-| `progression.overview@1` | 进度漏斗和难度健康度：开始、完成、成功率、平均时长、按进度点流失。 | `progression_start` 和 `progression_end` 事件，包含进度标识、顺序、结果和时长字段。 |
-| `events.health@1` | 数据质量和事件量：按事件类型统计正式事件数、用户数和会话数。 | 任意 SDK 事件。 |
+
+不要引用未在上表出现的 `standard.ref`。没有在上表列出的历史保留 ref 会被校验拒绝，避免页面生成没有 chart 的空 group。
 
 推荐标准事件 payload 字段：
 
@@ -757,7 +754,7 @@ Group selector 是只作用于当前 group 的 UI 控件：
 }
 ```
 
-当前校验器接受上表中的 ref。这些 ref 是平台提供标准看板的契约。保存 report pack 时只会记录选择的 `standard.ref`；标准看板背后的数据由平台准备。LTV 和留存看板会隐藏尚未成熟的 cohort/day 组合，例如 D7 只有在对应 cohort 已经过了 7 天后才会出现。
+当前只推荐引用上表中的 ref。这些 ref 是平台已经实现的标准看板契约。保存 report pack 时只会记录选择的 `standard.ref`；标准看板背后的数据由平台准备。LTV 和留存看板会隐藏尚未成熟的 cohort/day 组合，例如 D7 只有在对应 cohort 已经过了 7 天后才会出现。
 
 Reports 页面有 tab 级别的平台筛选器。看板查询会按选中的 `platform`（`ios`、`android`、`rest`）过滤，并把平台写入报表缓存 key。平台内置的标准聚合表需要包含 `platform` 字段；如果是已有部署，需要先给标准表补这个字段并重跑标准任务。
 
