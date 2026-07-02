@@ -23,11 +23,16 @@ import GameAlgoSDK
 ## 最小 API
 
 ```swift
+let country = Locale.current.region?.identifier
+
 let sdk = GameAlgoSDK(
     gameKey: "ga_live_xxx",
-    baseURL: URL(string: "https://gamealgo.example.com")!
+    baseURL: URL(string: "https://gamealgo.example.com")!,
+    device: country.map { ["country": .string($0)] } ?? [:]
 )
 ```
+
+如果需要使用按国家拆分的标准留存看板，iOS 推荐用 `Locale.current.region` 取得 ISO 国家码并写入 `device.country`。
 
 ## 使用方式
 

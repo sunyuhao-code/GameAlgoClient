@@ -55,11 +55,14 @@ https://github.com/sunyuhao-code/GameAlgoClient.git
 ```swift
 import GameAlgoSDK
 
+let country = Locale.current.region?.identifier
+
 let sdk = GameAlgoSDK(
     gameKey: "ga_live_xxx",
     baseURL: URL(string: "https://gamealgo.example.com")!,
     sdkVersion: "1.0.0",
-    appVersion: "1.2.3"
+    appVersion: "1.2.3",
+    device: country.map { ["country": .string($0)] } ?? [:]
 )
 
 let levelGenerator = sdk.executor("level_generator")
@@ -69,6 +72,8 @@ let difficulty = levelGenerator.string("difficulty", default: "normal")
 let result = levelGenerator.execute(.object(["turn": .number(7)]))
 let adsEnabled = sdk.config.bool("ads.rewarded.enabled", default: true, fileName: "gameplay.json")
 ```
+
+iOS 如需使用国家留存看板，推荐用 `Locale.current.region` 取得 ISO 国家码，并写入 `device.country`。
 
 初始化 `GameAlgoSDK` 时会自动生成并持久化匿名 `userId`，后台刷新 `/v1/config`，并预加载 GameAlgo 控制台 Configs 页面下发的配置文件。需要手动立刻拉某个文件时，可以直接调用：
 

@@ -768,6 +768,18 @@ Group selector 是只作用于当前 group 的 UI 控件：
 }
 ```
 
+iOS SDK 接入时推荐使用 `Locale.current.region`：
+
+```swift
+let country = Locale.current.region?.identifier
+
+let sdk = GameAlgoSDK(
+    gameKey: "ga_live_xxx",
+    baseURL: URL(string: "https://gamealgo.example.com")!,
+    device: country.map { ["country": .string($0)] } ?? [:]
+)
+```
+
 Reports 页面有 tab 级别的平台筛选器。看板查询会按选中的 `platform`（`ios`、`android`、`rest`）过滤，并把平台写入报表缓存 key。平台内置的标准聚合表需要包含 `platform` 字段；如果是已有部署，需要先给标准表补这个字段并重跑标准任务。
 
 ## Dataset 类型
