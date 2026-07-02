@@ -184,6 +184,8 @@ npm --silent run cli -- report manifest --json
 - 对不同用户分层尝试不同生成策略。
 - 比较不同关卡组合对留存和收入的影响。
 
+如果要做系统化动态难度调整，参考 [关卡类游戏 DDA 实验框架](./dda-level-framework.md)。GameAlgo 建议把 DDA 作为实验系统上的标准用法：游戏提供 Adapter 和少量可调 knobs，平台通过实验比较不同 knobs 组合对 DAU ARPU、成熟日期平均 D1-D4 留存和 LTV proxy 的影响。
+
 ### 玩法模式
 
 先看 mode penetration、mode revenue、mode retention 和 mode completion。模式参与率低不一定是模式不好，也可能是入口、奖励或解锁时机问题。

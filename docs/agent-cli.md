@@ -39,6 +39,9 @@ gamealgo key reveal --name tapmaker-proxy --json
 gamealgo experiment pull --out experiment.yaml
 gamealgo experiment diff experiment.yaml
 gamealgo experiment publish experiment.yaml --message "update experiment" --yes
+gamealgo experiment managed create managed-experiment.yaml --yes --json
+gamealgo experiment managed status mxt_xxx --json
+gamealgo experiment managed report mxt_xxx --round 1 --json
 gamealgo report manifest --json
 gamealgo report result --from 2026-06-14 --to 2026-06-21 --group "Daily ARPU" --selector experiment=ad_frequency --timeout 60 --out reports/daily-arpu.json
 gamealgo report preview --pack gamealgo-report-pack-v1.json --from 2026-06-14 --to 2026-06-21 --tab-id levels --group-id max_levels --chart-id max_levels__max_level_distribution --timeout 60 --out reports/max-level-distribution-preview.json
@@ -48,6 +51,52 @@ gamealgo events count --from 2026-06-23 --to 2026-06-23 --event-type level_end -
 `key list` 只返回 key 名称、前缀和状态，不返回明文。需要把 key 写入 SDK 或 TapTap Maker 服务端 Proxy 配置时，使用 `key create --name ...` 或 `key reveal --name ...` 获取明文。
 
 `experiment publish` 和 `experiment rollback` 在 `--json` / CI / 非交互环境下也必须显式传 `--yes`。`report result` 和 `report preview` 的进度和耗时输出到 stderr，不会污染 JSON stdout。
+
+托管实验用于让平台自动跑多轮 variant 对比。先确保普通实验里已经存在对应 strategy，游戏侧也已经读取这个 strategy；然后让 Agent 生成托管任务文件：
+
+```yaml
+strategyName: ad_frequency
+cycleDays: 7
+maxVariantsPerRound: 3
+candidates:
+  - candidateId: alpha
+    config:
+      firstAdLevel: 4
+      interval: 30
+  - candidateId: bravo
+    config:
+      firstAdLevel: 5
+      interval: 30
+  - candidateId: charlie
+    config:
+      firstAdLevel: 4
+      interval: 45
+```
+
+提交任务：
+
+```bash
+gamealgo experiment managed create managed-experiment.yaml --yes --json
+```
+
+创建成功后响应里的 `summary.estimate` 会返回预计轮数、实验周期、预计总天数；`summary.currentRound` 会返回当前轮的统计 dt、实验完成时间和报告生成时间。查看和取消任务：
+
+托管实验报告里的 `LTV Proxy` 口径是：
+
+```text
+LTV Proxy = DAU_ARPU * (1 + D1_RET + D2_RET + D3_RET + D4_RET)
+```
+
+`DAU_ARPU` 是实验窗口内收入 / 活跃用户天数；`D1_RET` 到 `D4_RET` 使用实验窗口内已经成熟的日期平均估算。平台不会为了等待 D5 额外拖长托管周期。
+
+```bash
+gamealgo experiment managed list --json
+gamealgo experiment managed status mxt_xxx --json
+gamealgo experiment managed report mxt_xxx --round 1 --json
+gamealgo experiment managed cancel mxt_xxx --yes
+```
+
+`status` 只用于看任务和轮次轻量状态，不返回完整报告。需要分析某轮实验结果时，用 `managed report` 拉指定轮次；`--round 1` 表示页面上的第 1 轮，也可以用 `--round-id mxr_xxx` 精确指定。
 
 `report preview` 用于本地 Report Pack 调试：CLI 会把本地 JSON 发给服务端执行一次查询，但不会保存 pack，也不会影响线上看板和正式缓存。
 
@@ -84,6 +133,7 @@ GameAlgo.Init({
     device = {
         runtime = "taptap_mini_game",
         game = "your_game_id",
+        -- country = "CN", -- 如果 Maker 环境能提供可靠国家码再填写，用于国家留存看板
     },
 })
 ```

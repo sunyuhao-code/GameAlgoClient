@@ -39,7 +39,8 @@ curl -s -X POST "https://game-algo-sdk.dictapis.cn/v1/config" \
     "device": {
       "runtime": "rest",
       "locale": "zh-CN",
-      "deviceId": "debug-device-id"
+      "deviceId": "debug-device-id",
+      "country": "CN"
     }
   }'
 ```
