@@ -95,6 +95,32 @@ paths:
         "500":
           $ref: "#/components/responses/ServerError"
 
+  /v1/attribution:
+    post:
+      summary: Sync user attribution returned by attribution SDKs such as Adjust.
+      operationId: syncUserAttribution
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserAttributionRequest"
+      responses:
+        "200":
+          description: Accepted attribution update.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserAttributionResponse"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/MissingGameKey"
+        "403":
+          $ref: "#/components/responses/InvalidGameKey"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
 components:
   securitySchemes:
     gameKey:
@@ -313,6 +339,59 @@ components:
         - type: number
         - type: boolean
         - type: "null"
+
+    UserAttributionRequest:
+      type: object
+      required:
+        - userId
+        - platform
+        - provider
+        - attribution
+      properties:
+        userId:
+          type: string
+          minLength: 1
+        userCreatedAt:
+          type: string
+          format: date-time
+        sessionId:
+          type: string
+        contextId:
+          type: string
+        platform:
+          type: string
+          enum: [ios, android, rest]
+        provider:
+          type: string
+          example: adjust
+        status:
+          type: string
+          default: attributed
+        attribution:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/JsonValue"
+        attributedAt:
+          type: string
+          format: date-time
+        attributionHash:
+          type: string
+          pattern: "^sha256:[a-f0-9]{64}$"
+
+    UserAttributionResponse:
+      type: object
+      required:
+        - ok
+        - accepted
+        - attributionHash
+      properties:
+        ok:
+          type: boolean
+        accepted:
+          type: integer
+          minimum: 0
+        attributionHash:
+          type: string
 
     ErrorResponse:
       type: object

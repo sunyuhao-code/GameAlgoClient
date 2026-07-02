@@ -69,6 +69,27 @@ export type EventBatchResponse = {
   accepted: number;
 };
 
+export type AttributionStatus = "attributed" | "organic" | "unknown" | string;
+
+export type UserAttributionInput = {
+  userId?: string;
+  userCreatedAt?: string;
+  sessionId?: string;
+  contextId?: string;
+  platform?: Platform;
+  provider: string;
+  status?: AttributionStatus;
+  attribution: Record<string, JsonValue>;
+  attributedAt?: string;
+  attributionHash?: string;
+};
+
+export type UserAttributionResponse = {
+  ok: boolean;
+  accepted: number;
+  attributionHash: string;
+};
+
 export type GameAlgoRestClientOptions = {
   baseUrl: string;
   gameKey: string;

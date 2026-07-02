@@ -18,6 +18,7 @@ public final class GameAlgoClientSmokeTest {
         testConstructorGeneratesAndReusesAnonymousUserId();
         testConstructorBackfillsCreatedAtForPersistedLegacyUserId();
         testUploadEventsFillsDefaults();
+        testSetAttributionPostsOnceUntilItChanges();
         testTrackerBuffersEventsUntilContextIsReady();
         testTrackerQueuesAndFlushesEvents();
         testCustomEventsPreservePayload();
@@ -316,6 +317,54 @@ public final class GameAlgoClientSmokeTest {
         check(Boolean.FALSE.equals(event.get("isDebug")), "isDebug should default false");
         check(event.get("timestamp") instanceof String, "timestamp should default");
         check(GameAlgoJson.asObject(event.get("payload"), "payload").isEmpty(), "payload should default empty");
+    }
+
+    private static void testSetAttributionPostsOnceUntilItChanges() throws Exception {
+        String expectedHash = sha256("{\"attributedAt\":\"2026-05-28T09:59:00.000Z\",\"attribution\":{\"campaign\":\"launch\",\"network\":\"facebook\"},\"platform\":\"android\",\"provider\":\"adjust\",\"status\":\"attributed\"}");
+        FakeHttpClient httpClient = new FakeHttpClient();
+        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":1,\"attributionHash\":\"" + expectedHash + "\"}"));
+        MemoryCacheStorage cache = new MemoryCacheStorage();
+        GameAlgoClient client = new GameAlgoClient(
+                "ga_live_test_key_0123456789abcdef",
+                "https://gamealgo.test",
+                "1.0.0",
+                null,
+                "android",
+                httpClient,
+                new FakeScriptRuntime(),
+                cache,
+                null,
+                GameAlgoLogger.console(),
+                false
+        );
+        Map<String, Object> attribution = new LinkedHashMap<>();
+        attribution.put("network", "facebook");
+        attribution.put("campaign", "launch");
+
+        GameAlgoUserAttributionResponse first = client.setAttribution(
+                new GameAlgoUserAttribution("adjust", attribution)
+                        .userId("u1")
+                        .attributedAt("2026-05-28T09:59:00.000Z")
+        );
+        Map<String, Object> attributionSame = new LinkedHashMap<>();
+        attributionSame.put("campaign", "launch");
+        attributionSame.put("network", "facebook");
+        GameAlgoUserAttributionResponse second = client.setAttribution(
+                new GameAlgoUserAttribution("adjust", attributionSame)
+                        .userId("u1")
+                        .attributedAt("2026-05-28T09:59:00.000Z")
+        );
+
+        Map<String, Object> body = requestBody(httpClient.requests.get(0));
+        check(first.getAccepted() == 1, "first attribution sync should upload");
+        check(second.getAccepted() == 0, "second attribution sync should be ack cache hit");
+        check(expectedHash.equals(first.getAttributionHash()), "attribution hash should decode");
+        check(httpClient.requests.size() == 1, "attribution should not upload twice");
+        check("https://gamealgo.test/v1/attribution".equals(httpClient.requests.get(0).getUrl().toString()), "attribution URL should match Protocol v1");
+        check("u1".equals(body.get("userId")), "attribution body should include userId");
+        check("android".equals(body.get("platform")), "attribution body should include platform");
+        check("adjust".equals(body.get("provider")), "attribution body should include provider");
+        check("facebook".equals(GameAlgoJson.asObject(body.get("attribution"), "attribution").get("network")), "attribution body should include fields");
     }
 
     private static void testTrackerBuffersEventsUntilContextIsReady() throws Exception {

@@ -16,6 +16,7 @@ public actor GameAlgoSDK {
     private let cacheStorage: (any GameAlgoCacheStorage)?
     private let userIdentityStore: GameAlgoUserIdentityStore
     private let snapshotCacheKey: String
+    private let attributionAckCacheKey: String
     private let now: @Sendable () -> Date
     private let logger: GameAlgoLogHandler?
     private let snapshotStore: GameAlgoSnapshotStore
@@ -127,6 +128,7 @@ public actor GameAlgoSDK {
         self.cacheStorage = cacheStorage
         self.userIdentityStore = userIdentityStore
         self.snapshotCacheKey = cacheKey ?? "gamealgo:v1:snapshot:\(baseURL.absoluteString):\(gameKey.prefix(16))"
+        self.attributionAckCacheKey = "gamealgo:v1:attribution:\(baseURL.absoluteString):\(gameKey.prefix(16))"
         self.now = now
         self.logger = logger
         self.snapshotStore = snapshotStore
@@ -376,6 +378,59 @@ public actor GameAlgoSDK {
         try await eventUploader.uploadEvents(events)
     }
 
+    public func setAttribution(_ attribution: GameAlgoUserAttribution) async throws -> GameAlgoUserAttributionResponse {
+        guard let provider = clean(attribution.provider) else {
+            throw GameAlgoError.encodingFailed("provider is required")
+        }
+        let identity = userIdentityStore.identity(userId: attribution.userId, now: now())
+        let status = clean(attribution.status) ?? "attributed"
+        let platform = attribution.platform ?? defaultPlatform
+        let attributedAt = clean(attribution.attributedAt)
+        let attributionHash = clean(attribution.attributionHash) ?? stableAttributionHash(
+            platform: platform,
+            provider: provider,
+            status: status,
+            attribution: attribution.attribution,
+            attributedAt: attributedAt
+        )
+        let ackKey = "\(attributionAckCacheKey):\(provider)"
+        if userIdentityStore.string(forKey: ackKey) == attributionHash {
+            log("attribution already synced: provider=\(provider)")
+            return GameAlgoUserAttributionResponse(ok: true, accepted: 0, attributionHash: attributionHash)
+        }
+
+        let resolvedSessionId: String
+        if let sessionId = clean(attribution.sessionId) {
+            resolvedSessionId = sessionId
+        } else {
+            resolvedSessionId = await tracker.currentSessionId()
+        }
+
+        let requestBody = AttributionRequest(
+            userId: identity.userId,
+            userCreatedAt: clean(attribution.userCreatedAt) ?? identity.userCreatedAt,
+            sessionId: resolvedSessionId,
+            contextId: clean(attribution.contextId) ?? snapshotStore.snapshot().config?.contextId,
+            platform: platform,
+            provider: provider,
+            status: status,
+            attribution: attribution.attribution,
+            attributedAt: attributedAt,
+            attributionHash: attributionHash
+        )
+        let response: GameAlgoUserAttributionResponse = try await requestJSON(
+            GameAlgoHTTPRequest(
+                url: try endpoint("/v1/attribution"),
+                method: .post,
+                headers: ["content-type": "application/json"],
+                body: try encode(requestBody)
+            )
+        )
+        userIdentityStore.setString(response.attributionHash, forKey: ackKey)
+        log("attribution synced: provider=\(provider), accepted=\(response.accepted)")
+        return response
+    }
+
     public func clearConfigCache() {
         cachedConfig = nil
     }
@@ -580,6 +635,19 @@ private struct ConfigRequest: Encodable {
     let device: [String: JSONValue]
 }
 
+private struct AttributionRequest: Encodable {
+    let userId: String
+    let userCreatedAt: String
+    let sessionId: String
+    let contextId: String?
+    let platform: GameAlgoPlatform
+    let provider: String
+    let status: String
+    let attribution: [String: JSONValue]
+    let attributedAt: String?
+    let attributionHash: String
+}
+
 private struct CachedConfig: Sendable {
     let key: ConfigCacheKey
     let value: GameAlgoConfigResponse
@@ -606,4 +674,31 @@ private final class GameAlgoReadyTaskStore: @unchecked Sendable {
 private struct APIErrorPayload: Decodable {
     let error: String?
     let message: String?
+}
+
+private func stableAttributionHash(
+    platform: GameAlgoPlatform,
+    provider: String,
+    status: String,
+    attribution: [String: JSONValue],
+    attributedAt: String?
+) -> String {
+    struct AttributionHashPayload: Encodable {
+        let platform: GameAlgoPlatform
+        let provider: String
+        let status: String
+        let attribution: [String: JSONValue]
+        let attributedAt: String
+    }
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let payload = AttributionHashPayload(
+        platform: platform,
+        provider: provider,
+        status: status,
+        attribution: attribution,
+        attributedAt: attributedAt ?? ""
+    )
+    let data = (try? encoder.encode(payload)) ?? Data()
+    return GameAlgoSHA256.hash(String(data: data, encoding: .utf8) ?? "")
 }

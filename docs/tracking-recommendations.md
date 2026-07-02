@@ -220,6 +220,35 @@
 
 广告加载失败、无填充、播放中断、用户关闭但没有形成有效曝光时，不要上报 `ad_view`。这些可以作为自定义诊断事件，例如 `_ad_load_failed`，但不要混入收入报表口径。
 
+## 用户归因
+
+如果游戏接入 Adjust 等三方归因 SDK，不要把归因作为 `_attribution` 普通事件上报。归因是用户属性，应该在归因 SDK 异步返回结果后调用 GameAlgo 的 attribution API：
+
+| SDK | 推荐调用 |
+| --- | --- |
+| iOS | `try await sdk.setAttribution(GameAlgoUserAttribution(provider: "adjust", attribution: [...]))` |
+| Android | `sdk.setAttribution("adjust", attributionMap)` |
+| REST | `await client.setAttribution({ provider: "adjust", attribution })` |
+
+上报时机：
+
+- 第一次拿到归因结果时上报。
+- 归因内容变化时上报。
+- 上次上传失败或没有拿到服务端 `attributionHash` ack 时，下次启动后重试。
+- 不需要每次 App 打开都重复上报同一份归因。
+
+建议字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `network` | 渠道或广告网络。 |
+| `campaign` | Campaign 名或 ID。 |
+| `adgroup` | Ad group 名或 ID。 |
+| `creative` | 素材名或 ID。 |
+| `clickLabel` | 如果业务确实需要，放非敏感 label。 |
+
+不要上传手机号、邮箱、OAID、IDFA、TapID 等强身份字段。归因字段用于后续分渠道留存、收入、LTV 和实验效果分析。
+
 ## 给 AI Agent 的接入流程
 
 建议让 AI Agent 按下面顺序接入：

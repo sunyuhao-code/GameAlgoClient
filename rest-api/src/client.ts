@@ -18,6 +18,8 @@ import type {
   JsonValue,
   Platform,
   TrackEventOptions,
+  UserAttributionInput,
+  UserAttributionResponse,
 } from "./types.ts";
 
 type RefreshOptions = FetchConfigOptions & {
@@ -52,6 +54,7 @@ export class GameAlgoRestClient {
   private readonly scriptRuntime: GameAlgoScriptRuntime;
   private readonly logger?: (message: string) => void;
   private readonly snapshotCacheKey: string;
+  private readonly attributionAckCacheKey: string;
   private readonly userIdKey = "gamealgo_user_id";
   private readonly userCreatedAtKey = "gamealgo_user_created_at";
   private cachedConfig: { value: ConfigResponse; expiresAt: number; cacheKey: string } | null = null;
@@ -78,6 +81,7 @@ export class GameAlgoRestClient {
     this.scriptRuntime = options.scriptRuntime ?? new FunctionScriptRuntime();
     this.logger = resolveLogger(options.logger);
     this.snapshotCacheKey = options.cacheKey ?? `gamealgo:v1:snapshot:${this.baseUrl.origin}:${this.gameKey.slice(0, 16)}`;
+    this.attributionAckCacheKey = `gamealgo:v1:attribution:${this.baseUrl.origin}:${this.gameKey.slice(0, 16)}`;
     this.config = new GameAlgoConfigReader(() => this.snapshot);
     this.tracker = new GameAlgoEventTracker({
       uploadEvents: (events) => this.uploadEvents(events),
@@ -275,6 +279,52 @@ export class GameAlgoRestClient {
       },
       body: JSON.stringify({ events: normalizedEvents }),
     });
+  }
+
+  async setAttribution(input: UserAttributionInput): Promise<UserAttributionResponse> {
+    const provider = clean(input.provider);
+    if (!provider) throw new Error("provider is required");
+    const identity = await this.userIdentity(input.userId);
+    const status = clean(input.status) ?? "attributed";
+    const platform = input.platform ?? this.platform;
+    const attribution = normalizeAttribution(input.attribution);
+    const attributedAt = clean(input.attributedAt);
+    const attributionHash = clean(input.attributionHash) ?? await sha256(stableStringify({
+      platform,
+      provider,
+      status,
+      attribution,
+      attributedAt: attributedAt ?? "",
+    }));
+    const ackKey = `${this.attributionAckCacheKey}:${provider}`;
+    if (attributionHash && await this.storage?.getItem(ackKey) === attributionHash) {
+      this.log(`attribution already synced: provider=${provider}`);
+      return { ok: true, accepted: 0, attributionHash };
+    }
+
+    const response = await this.requestJson<UserAttributionResponse>(this.url("/v1/attribution"), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        userId: identity.userId,
+        userCreatedAt: clean(input.userCreatedAt) ?? identity.userCreatedAt,
+        sessionId: clean(input.sessionId) ?? this.tracker.currentSessionId(),
+        contextId: clean(input.contextId) ?? this.snapshot.config?.contextId,
+        platform,
+        provider,
+        status,
+        attribution,
+        attributedAt,
+        attributionHash,
+      }),
+    });
+    if (response.attributionHash) {
+      await this.storage?.setItem(ackKey, response.attributionHash);
+    }
+    this.log(`attribution synced: provider=${provider}, accepted=${response.accepted}`);
+    return response;
   }
 
   clearConfigCache(): void {
@@ -954,6 +1004,24 @@ async function sha256(content: string): Promise<string | undefined> {
 
 function normalizeJsonValue(value: unknown): JsonValue {
   return JSON.parse(JSON.stringify(value)) as JsonValue;
+}
+
+function normalizeAttribution(value: Record<string, JsonValue>): Record<string, JsonValue> {
+  const normalized = normalizeJsonValue(value);
+  if (!normalized || typeof normalized !== "object" || Array.isArray(normalized)) {
+    throw new Error("attribution must be an object");
+  }
+  return normalized as Record<string, JsonValue>;
+}
+
+function stableStringify(value: JsonValue): string {
+  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  }
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
 }
 
 const undefinedJson = undefined as unknown as JsonValue;

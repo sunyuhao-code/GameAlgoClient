@@ -146,6 +146,55 @@ public struct GameAlgoEventBatchResponse: Sendable, Equatable, Codable {
     }
 }
 
+public struct GameAlgoUserAttribution: Sendable, Equatable, Codable {
+    public var userId: String?
+    public var userCreatedAt: String?
+    public var sessionId: String?
+    public var contextId: String?
+    public var platform: GameAlgoPlatform?
+    public var provider: String
+    public var status: String
+    public var attribution: [String: JSONValue]
+    public var attributedAt: String?
+    public var attributionHash: String?
+
+    public init(
+        provider: String,
+        status: String = "attributed",
+        attribution: [String: JSONValue],
+        userId: String? = nil,
+        userCreatedAt: String? = nil,
+        sessionId: String? = nil,
+        contextId: String? = nil,
+        platform: GameAlgoPlatform? = nil,
+        attributedAt: String? = nil,
+        attributionHash: String? = nil
+    ) {
+        self.userId = userId
+        self.userCreatedAt = userCreatedAt
+        self.sessionId = sessionId
+        self.contextId = contextId
+        self.platform = platform
+        self.provider = provider
+        self.status = status
+        self.attribution = attribution
+        self.attributedAt = attributedAt
+        self.attributionHash = attributionHash
+    }
+}
+
+public struct GameAlgoUserAttributionResponse: Sendable, Equatable, Codable {
+    public let ok: Bool
+    public let accepted: Int
+    public let attributionHash: String
+
+    public init(ok: Bool, accepted: Int, attributionHash: String) {
+        self.ok = ok
+        self.accepted = accepted
+        self.attributionHash = attributionHash
+    }
+}
+
 public struct GameAlgoExecutionResult: Sendable, Equatable {
     public let payload: JSONValue
     public let diagnostics: JSONValue

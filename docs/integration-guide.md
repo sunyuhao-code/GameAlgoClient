@@ -66,6 +66,7 @@ gamealgo key revoke --name tapmaker-proxy --yes --json
   - REST: `await client.fetchConfigFile("gameplay.json")`
 - 事件上报优先使用 SDK tracker。tracker 会内存批量队列、周期 flush，并重试失败批次。
 - 实验分组保存在配置拉取时创建的 SDK context 中，事件里不需要复制实验字段。
+- 如果接入 Adjust 等归因 SDK，归因结果异步返回后调用 SDK 的 `setAttribution` / REST `/v1/attribution`。同一份归因成功 ack 后 SDK 会跳过重复上报；归因变化或上次失败时会重试。
 - 不要让 GameAlgo 网络请求阻塞游戏主流程。
 - GameAlgo 不可用时走本地默认逻辑。
 
@@ -89,6 +90,14 @@ purchase
 内购使用 `trackPurchase`，有条件时传入 `productId`、`revenue` 和 `currency`。事件类型为 `purchase`。
 
 国内游戏、TapTap Maker / TapTap 小游戏接入时，广告和付费事件的 `currency` 统一使用 `CNY`。不要默认使用 `USD`。
+
+归因信息不是普通事件。开发者如果使用 Adjust，可以让 AI Agent 在 Adjust attribution callback 里调用：
+
+- iOS: `try await sdk.setAttribution(GameAlgoUserAttribution(provider: "adjust", attribution: [...]))`
+- Android: `sdk.setAttribution("adjust", attributionMap)`
+- REST: `await client.setAttribution({ provider: "adjust", attribution })`
+
+`attribution` 里只放渠道、campaign、adgroup、creative 等非敏感字段。不要上传手机号、邮箱、OAID、IDFA、TapID 等强身份字段。
 
 ## 6. 接入测试时验证事件上报
 
@@ -136,3 +145,4 @@ gamealgo events count \
 - 客户端运行时使用 `ga_live_*`；如需区分 QA/生产环境，使用不同名称的 Client Game Key。
 - 临时网络失败后，事件会继续重试。
 - 可以通过 `gamealgo events count` 查到测试事件。
+- 如接入归因，首次拿到归因后能调用 `/v1/attribution`，并收到 `attributionHash`。

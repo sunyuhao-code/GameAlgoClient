@@ -25,6 +25,15 @@ sdk.tracker().trackAd("rewarded_level_end", "reward", 0.018, "CNY", "admob")
 sdk.tracker().trackPurchase("starter_pack", 4.99, "CNY", mapOf())
 sdk.tracker().trackSessionEnd()
 sdk.tracker().flushAsync()
+
+sdk.setAttribution(
+    "adjust",
+    mapOf(
+        "network" to "facebook",
+        "campaign" to "launch_us",
+        "adgroup" to "creative_a"
+    )
+)
 ```
 
 `GameAlgo.init(...)` 会在后台 executor 里刷新 `/v1/config` 并预加载配置文件。它也会创建或复用 SDK 匿名 `userId`；如果 App 希望无依赖 core 持久化这个 ID，初始化时需要传入 `GameAlgoCacheStorage`。`executor` 和 `config()` 读取的是最新本地快照，所以玩法代码读取实验分组或调参值时不需要直接调用远端 API。
@@ -55,6 +64,8 @@ SDK 会在 `/v1/config` 请求里自动带上 `userCreatedAt` 和基础 `device`
 `trackAd` 上报的是 `ad_view`，只用于广告成功曝光并产生一次有效展示。广告加载失败、未填充、播放失败、用户取消或关闭但没有完成有效曝光时，不要调用 `trackAd`。
 
 国内游戏接入时，广告和付费事件的 `currency` 统一使用 `CNY`。不要默认使用 `USD`。
+
+如果接入 Adjust 等归因 SDK，在归因 callback 返回后调用 `setAttribution`。SDK 会自动带上 `platform=android`，并保存服务端返回的 `attributionHash`；同一份归因已经成功 ack 后不会重复上传，归因变化或上次失败时会重试。
 
 事件业务字段通过 `payload` 发送。后续由游戏自己的 report pack 声明哪些 payload 字段会成为报表维度或指标。实验分组存储在 `/v1/config` 创建的 SDK context 中，不会复制到每条事件。
 

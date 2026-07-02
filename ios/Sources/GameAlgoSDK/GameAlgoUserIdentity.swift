@@ -62,6 +62,18 @@ public final class GameAlgoUserIdentityStore: @unchecked Sendable {
         return GameAlgoUserIdentity(userId: newId, userCreatedAt: createdAt)
     }
 
+    func string(forKey key: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return clean(userDefaults.string(forKey: key))
+    }
+
+    func setString(_ value: String, forKey key: String) {
+        lock.lock()
+        userDefaults.set(value, forKey: key)
+        lock.unlock()
+    }
+
     private func clean(_ value: String?) -> String? {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)

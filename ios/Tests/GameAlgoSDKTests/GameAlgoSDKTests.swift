@@ -434,6 +434,59 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual((events?.first?["payload"] as? [String: Any])?.count, 0)
     }
 
+    func testSetAttributionPostsOnceUntilItChanges() async throws {
+        let suiteName = "GameAlgoSDKTests.attribution.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let expectedHash = GameAlgoSHA256.hash("{\"attributedAt\":\"2026-05-28T09:59:00.000Z\",\"attribution\":{\"campaign\":\"launch\",\"network\":\"facebook\"},\"platform\":\"ios\",\"provider\":\"adjust\",\"status\":\"attributed\"}")
+        let httpClient = MockHTTPClient()
+        try await httpClient.enqueueJSON(["ok": true, "accepted": 1, "attributionHash": expectedHash])
+        let sdk = GameAlgoSDK(
+            gameKey: gameKey,
+            baseURL: URL(string: "https://gamealgo.test")!,
+            httpClient: httpClient,
+            userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
+            userId: "u1",
+            _autoStart: false,
+            now: { Date(timeIntervalSince1970: 1_779_962_400) }
+        )
+
+        let first = try await sdk.setAttribution(GameAlgoUserAttribution(
+            provider: "adjust",
+            attribution: [
+                "network": .string("facebook"),
+                "campaign": .string("launch"),
+            ],
+            userId: "u1",
+            attributedAt: "2026-05-28T09:59:00.000Z"
+        ))
+        let second = try await sdk.setAttribution(GameAlgoUserAttribution(
+            provider: "adjust",
+            attribution: [
+                "campaign": .string("launch"),
+                "network": .string("facebook"),
+            ],
+            userId: "u1",
+            attributedAt: "2026-05-28T09:59:00.000Z"
+        ))
+
+        let requests = await httpClient.requests
+        let body = try requestBody(requests[0])
+
+        XCTAssertEqual(first.accepted, 1)
+        XCTAssertEqual(second.accepted, 0)
+        XCTAssertEqual(first.attributionHash, second.attributionHash)
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(requests[0].url.absoluteString, "https://gamealgo.test/v1/attribution")
+        XCTAssertEqual(body["userId"] as? String, "u1")
+        XCTAssertEqual(body["userCreatedAt"] as? String, "2026-05-28T10:00:00.000Z")
+        XCTAssertEqual(body["platform"] as? String, "ios")
+        XCTAssertEqual(body["provider"] as? String, "adjust")
+        XCTAssertEqual((body["attribution"] as? [String: Any])?["network"] as? String, "facebook")
+    }
+
     func testTrackerQueuesAndFlushesEventsAfterReadyIdentifiesUser() async throws {
         let suiteName = "GameAlgoSDKTests.tracker.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

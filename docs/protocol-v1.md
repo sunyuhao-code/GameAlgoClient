@@ -10,6 +10,7 @@ v1 只解决最核心的接入问题：
 - 配置和实验拉取
 - 配置文件拉取
 - 事件批量上报
+- 用户归因同步
 - 国内 / 国外服务端部署差异抽象
 
 v1 不做复杂权限、审批流、外部 SaaS、多租户计费或高级防刷。
@@ -308,7 +309,71 @@ GameAlgo 会把 `payload` 作为事件业务数据保存。后续每个游戏可
 
 实验分组不再复制到每条事件里；服务端在 SDK context 日志中保存 `strategy_name -> variant_name`，离线统计通过 `contextId/sessionId` 关联。
 
-## 7. 客户端 API 形态
+## 7. 上报用户归因
+
+归因信息来自 Adjust 等三方归因 SDK，通常是异步返回的用户属性，不适合塞进普通事件队列。GameAlgo 用单独接口同步用户归因：
+
+```http
+POST /v1/attribution
+X-GameAlgo-Key: ga_live_xxx
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "userId": "user-001",
+  "userCreatedAt": "2026-05-27T12:23:10Z",
+  "sessionId": "session-001",
+  "contextId": "ctx-001",
+  "platform": "ios",
+  "provider": "adjust",
+  "status": "attributed",
+  "attribution": {
+    "network": "facebook",
+    "campaign": "launch_us",
+    "adgroup": "creative_a",
+    "creative": "video_01"
+  },
+  "attributedAt": "2026-05-28T09:59:00Z",
+  "attributionHash": "sha256:..."
+}
+```
+
+字段说明：
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `userId` | 是 | 与 `/v1/config` 和事件上报一致的用户 ID |
+| `userCreatedAt` | 否 | SDK 持久化的用户创建时间 |
+| `sessionId` | 否 | 当前 session ID；官方 SDK 会自动补 |
+| `contextId` | 否 | 最近一次 `/v1/config` 返回的 contextId；有就传 |
+| `platform` | 是 | 客户端平台：`ios` / `android` / `rest`；官方 SDK 会自动补 |
+| `provider` | 是 | 归因来源，例如 `adjust` |
+| `status` | 否 | `attributed` / `organic` / `unknown` 等，默认 `attributed` |
+| `attribution` | 是 | 归因字段 object；只放渠道、campaign、adgroup、creative 等非敏感字段 |
+| `attributedAt` | 否 | 归因 SDK 返回归因结果的时间 |
+| `attributionHash` | 否 | 客户端可传稳定 hash；不传时服务端会计算并返回 |
+
+响应：
+
+```json
+{
+  "ok": true,
+  "accepted": 1,
+  "attributionHash": "sha256:..."
+}
+```
+
+客户端行为：
+
+- 不要求每次 App 打开都上传归因。
+- 当归因 SDK 第一次返回归因、归因内容变化、或上次上传没有拿到服务端 ack 时再上传。
+- 官方 SDK 会把服务端返回的 `attributionHash` 持久化；相同 provider 和相同归因内容已 ack 时跳过重复请求。
+- 归因数据用于后续用户归因快照表和分渠道报表，不作为普通 `eventType` 事件参与事件数统计。
+
+## 8. 客户端 API 形态
 
 ### iOS
 
@@ -333,7 +398,7 @@ GameAlgo.init(
 
 没有官方 SDK 的团队直接按 HTTP 协议接入，必须传 `X-GameAlgo-Key`。
 
-## 8. 部署差异
+## 9. 部署差异
 
 GameAlgo 可以提供不同区域的服务地址。接入方只需要使用平台分配的 `baseUrl` 和 `gameKey`：
 

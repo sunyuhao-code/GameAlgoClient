@@ -416,6 +416,50 @@ test("uploadEvents fills timestamp and preserves payload fields", async () => {
   assert.equal(result.accepted, 1);
 });
 
+test("setAttribution posts user attribution once until it changes", async () => {
+  const storage = new MapStorage();
+  const requests: Request[] = [];
+  const client = createClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    userId: "u1",
+    storage,
+    autoStart: false,
+    now: () => Date.parse("2026-05-28T10:00:00.000Z"),
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      requests.push(request.clone());
+      assert.equal(request.headers.get("X-GameAlgo-Key"), gameKey);
+      assert.equal(request.url, "https://gamealgo.test/v1/attribution");
+      const body = await request.json() as Record<string, unknown>;
+      assert.equal(body.userId, "u1");
+      assert.equal(body.userCreatedAt, "2026-05-28T10:00:00.000Z");
+      assert.equal(body.platform, "rest");
+      assert.equal(body.provider, "adjust");
+      assert.equal((body.attribution as Record<string, unknown>).network, "facebook");
+      return jsonResponse({ ok: true, accepted: 1, attributionHash: body.attributionHash });
+    },
+  });
+
+  const first = await client.setAttribution({
+    userId: "u1",
+    provider: "adjust",
+    attribution: { network: "facebook", campaign: "launch" },
+    attributedAt: "2026-05-28T09:59:00.000Z",
+  });
+  const second = await client.setAttribution({
+    userId: "u1",
+    provider: "adjust",
+    attribution: { campaign: "launch", network: "facebook" },
+    attributedAt: "2026-05-28T09:59:00.000Z",
+  });
+
+  assert.equal(first.accepted, 1);
+  assert.equal(second.accepted, 0);
+  assert.equal(first.attributionHash, second.attributionHash);
+  assert.equal(requests.length, 1);
+});
+
 test("tracker buffers events until context is ready", async () => {
   let uploadedEvents: Array<Record<string, unknown>> = [];
   const client = createClient({

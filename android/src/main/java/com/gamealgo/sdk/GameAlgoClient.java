@@ -6,6 +6,7 @@ import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -14,6 +15,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.TimeZone;
+import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
@@ -32,6 +34,7 @@ public final class GameAlgoClient {
     private final GameAlgoScriptRuntime scriptRuntime;
     private final GameAlgoCacheStorage cacheStorage;
     private final String snapshotCacheKey;
+    private final String attributionAckCacheKey;
     private final GameAlgoLogger logger;
     private final GameAlgoSnapshotStore snapshotStore;
     private final GameAlgoConfigReader configReader;
@@ -140,6 +143,7 @@ public final class GameAlgoClient {
         this.scriptRuntime = scriptRuntime == null ? new JavaxScriptGameAlgoRuntime() : scriptRuntime;
         this.cacheStorage = cacheStorage;
         this.snapshotCacheKey = cacheKey == null ? "gamealgo:v1:snapshot:" + this.baseUrl + ":" + gameKey.substring(0, Math.min(16, gameKey.length())) : cacheKey;
+        this.attributionAckCacheKey = "gamealgo:v1:attribution:" + this.baseUrl + ":" + gameKey.substring(0, Math.min(16, gameKey.length()));
         this.logger = logger;
         this.snapshotStore = new GameAlgoSnapshotStore();
         this.configReader = new GameAlgoConfigReader(snapshotStore);
@@ -334,6 +338,80 @@ public final class GameAlgoClient {
                 GameAlgoJson.stringify(body).getBytes(StandardCharsets.UTF_8)
         );
         return parseEventBatchResponse(parseJsonObject(response));
+    }
+
+    public synchronized GameAlgoUserAttributionResponse setAttribution(String provider, Map<String, Object> attribution) throws GameAlgoException {
+        return setAttribution(new GameAlgoUserAttribution(provider, attribution));
+    }
+
+    public synchronized GameAlgoUserAttributionResponse setAttribution(GameAlgoUserAttribution attribution) throws GameAlgoException {
+        if (attribution == null) {
+            throw new GameAlgoException("attribution is required");
+        }
+        String provider = clean(attribution.getProvider());
+        if (provider == null) {
+            throw new GameAlgoException("provider is required");
+        }
+        GameAlgoUserIdentity identity = userIdentity(attribution.getUserId());
+        String status = clean(attribution.getStatus());
+        if (status == null) {
+            status = "attributed";
+        }
+        String platform = clean(attribution.getPlatform());
+        if (platform == null) {
+            platform = defaultPlatform;
+        }
+        Map<String, Object> attributionPayload = new LinkedHashMap<>(attribution.getAttribution());
+        String attributedAt = clean(attribution.getAttributedAt());
+        String attributionHash = clean(attribution.getAttributionHash());
+        if (attributionHash == null) {
+            Map<String, Object> hashPayload = new LinkedHashMap<>();
+            hashPayload.put("platform", platform);
+            hashPayload.put("provider", provider);
+            hashPayload.put("status", status);
+            hashPayload.put("attribution", attributionPayload);
+            hashPayload.put("attributedAt", attributedAt == null ? "" : attributedAt);
+            attributionHash = sha256(GameAlgoJson.stringify(stableJsonValue(hashPayload)));
+        }
+
+        String ackKey = attributionAckCacheKey + ":" + provider;
+        if (cacheStorage != null && attributionHash.equals(cacheStorage.getItem(ackKey))) {
+            log("attribution already synced: provider=" + provider);
+            return new GameAlgoUserAttributionResponse(true, 0, attributionHash);
+        }
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("userId", identity.getUserId());
+        String userCreatedAt = clean(attribution.getUserCreatedAt());
+        body.put("userCreatedAt", userCreatedAt == null ? identity.getUserCreatedAt() : userCreatedAt);
+        String sessionId = clean(attribution.getSessionId());
+        body.put("sessionId", sessionId == null ? tracker.currentSessionId() : sessionId);
+        String contextId = clean(attribution.getContextId());
+        if (contextId == null && snapshotStore.snapshot().getConfig() != null) {
+            contextId = snapshotStore.snapshot().getConfig().getContextId();
+        }
+        if (contextId != null) {
+            body.put("contextId", contextId);
+        }
+        body.put("platform", platform);
+        body.put("provider", provider);
+        body.put("status", status);
+        body.put("attribution", attributionPayload);
+        if (attributedAt != null) {
+            body.put("attributedAt", attributedAt);
+        }
+        body.put("attributionHash", attributionHash);
+
+        GameAlgoUserAttributionResponse response = parseUserAttributionResponse(parseJsonObject(request(
+                endpoint("/v1/attribution", null),
+                GameAlgoHttpMethod.POST,
+                GameAlgoJson.stringify(body).getBytes(StandardCharsets.UTF_8)
+        )));
+        if (cacheStorage != null) {
+            cacheStorage.setItem(ackKey, response.getAttributionHash());
+        }
+        log("attribution synced: provider=" + provider + ", accepted=" + response.getAccepted());
+        return response;
     }
 
     public synchronized void clearConfigCache() {
@@ -562,6 +640,14 @@ public final class GameAlgoClient {
         );
     }
 
+    private GameAlgoUserAttributionResponse parseUserAttributionResponse(Map<String, Object> object) throws GameAlgoException {
+        return new GameAlgoUserAttributionResponse(
+                GameAlgoJson.boolValue(object, "ok", false),
+                GameAlgoJson.intValue(object, "accepted", true),
+                GameAlgoJson.stringValue(object, "attributionHash", true)
+        );
+    }
+
     private Map<String, Object> snapshotToJson(GameAlgoSnapshot snapshot) {
         Map<String, Object> object = new LinkedHashMap<>();
         object.put("updatedAt", snapshot.getUpdatedAtMillis());
@@ -785,6 +871,49 @@ public final class GameAlgoClient {
 
     private static boolean isBlank(String value) {
         return value == null || value.trim().length() == 0;
+    }
+
+    private static String clean(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.length() == 0 ? null : trimmed;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Object stableJsonValue(Object value) {
+        if (value instanceof Map) {
+            Map<String, Object> sorted = new TreeMap<>();
+            for (Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
+                if (entry.getKey() instanceof String) {
+                    sorted.put((String) entry.getKey(), stableJsonValue(entry.getValue()));
+                }
+            }
+            return new LinkedHashMap<>(sorted);
+        }
+        if (value instanceof List) {
+            List<Object> result = new ArrayList<>();
+            for (Object item : (List<Object>) value) {
+                result.add(stableJsonValue(item));
+            }
+            return result;
+        }
+        return value;
+    }
+
+    private static String sha256(String input) throws GameAlgoException {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest(input.getBytes(StandardCharsets.UTF_8));
+            StringBuilder builder = new StringBuilder("sha256:");
+            for (byte value : bytes) {
+                builder.append(String.format("%02x", value));
+            }
+            return builder.toString();
+        } catch (Exception error) {
+            throw new GameAlgoException("SHA-256 is unavailable", error);
+        }
     }
 
     private void logUserId(String userId) {
