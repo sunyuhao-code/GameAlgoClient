@@ -142,6 +142,37 @@ gamealgo report publish gamealgo-report-pack-v1.json
 
 `report validate` 和 Admin 控制台保存时使用同一套服务端校验逻辑。
 
+## Adjust 投放花费
+
+如果游戏接入了 Adjust 归因，并希望在 GameAlgo 里看 ROAS、ROI 和获客用户 LTV，Agent 可以用 Game Admin Key 配置当前游戏的 Adjust App Token 和 API Token：
+
+```bash
+gamealgo marketing adjust configure \
+  --api-token "$ADJUST_API_TOKEN" \
+  --app-token "$ADJUST_APP_TOKEN" \
+  --platform ios \
+  --currency USD \
+  --json
+```
+
+查看配置状态不会返回 API Token 明文，只会返回是否已配置：
+
+```bash
+gamealgo marketing adjust get --json
+```
+
+手动同步某个日期区间的花费：
+
+```bash
+gamealgo marketing adjust sync \
+  --from 2026-06-01 \
+  --to 2026-06-07 \
+  --timeout 60 \
+  --json
+```
+
+花费使用 Adjust 报表里的 `network_cost` 字段，并按 campaign / country 粒度写入平台。Report Pack 里引用 `marketing.roi@1` 即可使用标准 ROI 看板。
+
 ## 回收报表结果
 
 Agent 应先拉 manifest，了解有哪些 tab、group、chart 和 selector：

@@ -46,6 +46,8 @@ gamealgo report manifest --json
 gamealgo report result --from 2026-06-14 --to 2026-06-21 --group "Daily ARPU" --selector experiment=ad_frequency --timeout 60 --out reports/daily-arpu.json
 gamealgo report preview --pack gamealgo-report-pack-v1.json --from 2026-06-14 --to 2026-06-21 --tab-id levels --group-id max_levels --chart-id max_levels__max_level_distribution --timeout 60 --out reports/max-level-distribution-preview.json
 gamealgo events count --from 2026-06-23 --to 2026-06-23 --event-type level_end --timeout 60 --json
+gamealgo marketing adjust configure --api-token "$ADJUST_API_TOKEN" --app-token "$ADJUST_APP_TOKEN" --platform ios --currency USD --json
+gamealgo marketing adjust sync --from 2026-06-01 --to 2026-06-07 --timeout 60 --json
 ```
 
 `key list` 只返回 key 名称、前缀和状态，不返回明文。需要把 key 写入 SDK 或 TapTap Maker 服务端 Proxy 配置时，使用 `key create --name ...` 或 `key reveal --name ...` 获取明文。
@@ -101,6 +103,8 @@ gamealgo experiment managed cancel mxt_xxx --yes
 `report preview` 用于本地 Report Pack 调试：CLI 会把本地 JSON 发给服务端执行一次查询，但不会保存 pack，也不会影响线上看板和正式缓存。
 
 `events count` 用于 SDK 接入调试：它只查询当前游戏原始事件表里的固定事件计数，不需要传 `contextId`，也不接受自定义 SQL，不依赖 Report Pack 或标准中间表。先确认目标日期有事件，再继续看 Report Pack 计算结果。
+
+如果游戏接入了 Adjust，Agent 可以用 `marketing adjust configure` 保存当前游戏的 Adjust App Token 和 API Token，再用 `marketing adjust sync` 同步花费。GameAlgo 使用 Adjust `network_cost` 字段，按 campaign / country 粒度写入数据；Report Pack 引用 `marketing.roi@1` 后即可看到 ROAS、ROI、获客用户 LTV 和 Campaign 明细。
 
 TapTap Maker / TapTap 小游戏 / Lua SDK 这类通过服务端 Proxy 或 REST 协议接入的环境，`platform` 使用 `rest`。不要扩展成 `tapmaker` 之类的新枚举；具体运行环境写到 `device` 中，例如：
 

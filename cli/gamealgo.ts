@@ -2,8 +2,9 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
-import { basename, dirname, extname, join } from "node:path";
+import { dirname, join, basename } from "node:path";
 import { homedir } from "node:os";
+import YAML from "yaml";
 
 type CliConfig = {
   host: string;
@@ -15,6 +16,7 @@ type SessionPayload = {
     type: string;
     role: string;
     gameId?: string;
+    keyId?: string;
     keyName?: string;
   };
 };
@@ -23,6 +25,16 @@ type ExperimentConfigFile = {
   gameId?: string;
   latestCommitId?: string | null;
   strategies: unknown[];
+};
+
+type ManagedExperimentTaskFile = {
+  strategyName?: string;
+  strategy?: string;
+  cycleDays?: unknown;
+  maxVariantsPerRound?: unknown;
+  objective?: string;
+  autoApplyWinner?: boolean;
+  candidates?: unknown[];
 };
 
 type CliGameKey = {
@@ -58,12 +70,17 @@ async function main(): Promise<void> {
       await login(args, global);
       return;
     }
-
-    const client = await createClient(global);
     if (command === "whoami") {
+      const client = await createClient(global);
       await printResult(await client.session(), global);
       return;
     }
+    if (command === "admin-key") {
+      await handleAdminKey(args, global);
+      return;
+    }
+
+    const client = await createClient(global);
     if (command === "experiment") {
       await handleExperiment(client, args, global);
       return;
@@ -88,6 +105,10 @@ async function main(): Promise<void> {
       await handleEvents(client, args, global);
       return;
     }
+    if (command === "marketing") {
+      await handleMarketing(client, args, global);
+      return;
+    }
     throw new Error(`Unknown command: ${command}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -105,6 +126,7 @@ function parseGlobalFlags(args: string[]) {
     json: false,
     host: process.env.GAMEALGO_ADMIN_HOST || process.env.GAMEALGO_HOST || "",
     adminKey: process.env.GAMEALGO_GAME_ADMIN_KEY || "",
+    adminToken: process.env.GAMEALGO_ADMIN_TOKEN || "",
   };
   for (let index = 0; index < args.length;) {
     const arg = args[index];
@@ -120,6 +142,11 @@ function parseGlobalFlags(args: string[]) {
     }
     if (arg === "--admin-key") {
       global.adminKey = requireFlagValue(args, index, "--admin-key");
+      args.splice(index, 2);
+      continue;
+    }
+    if (arg === "--admin-token") {
+      global.adminToken = requireFlagValue(args, index, "--admin-token");
       args.splice(index, 2);
       continue;
     }
@@ -153,24 +180,55 @@ async function createClient(global: ReturnType<typeof parseGlobalFlags>): Promis
   const host = normalizeHost(global.host || saved?.host || "");
   const adminKey = global.adminKey || saved?.adminKey || "";
   if (!host || !adminKey) {
-    throw new Error("run `gamealgo login --host <url> --admin-key <game-admin-key>` first");
+    throw new Error("run `gamealgo login --host <url> --admin-key <key>` first");
   }
   return new GameAlgoAdminClient({ host, adminKey });
 }
 
+async function handleAdminKey(args: string[], global: ReturnType<typeof parseGlobalFlags>): Promise<void> {
+  const sub = args.shift();
+  if (sub !== "create") throw new Error("usage: gamealgo admin-key create --host <url> --admin-token <token> --game <gameId> --name <name>");
+  const flags = parseFlags(args);
+  const host = normalizeHost(String(flags.host || global.host || ""));
+  const adminToken = String(flags["admin-token"] || global.adminToken || "");
+  const gameId = String(flags.game || "");
+  const name = String(flags.name || "");
+  if (!host) throw new Error("--host is required");
+  if (!adminToken) throw new Error("--admin-token is required");
+  if (!gameId) throw new Error("--game is required");
+  if (!name) throw new Error("--name is required");
+  const response = await requestJson(host, `/admin/v1/games/${encodeURIComponent(gameId)}/admin-keys`, {
+    method: "POST",
+    headers: {
+      "X-GameAlgo-Admin-Token": adminToken,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ name }),
+  });
+  await printResult(response, global);
+}
+
 async function handleExperiment(client: GameAlgoAdminClient, args: string[], global: ReturnType<typeof parseGlobalFlags>): Promise<void> {
   const sub = args.shift();
+  if (sub === "managed") {
+    await handleManagedExperiment(client, args, global);
+    return;
+  }
   if (sub === "pull") {
     const flags = parseFlags(args);
     const config = await client.experimentConfig();
-    const out = String(flags.out || "experiment.yaml");
     const file = {
       gameId: config.gameId,
       latestCommitId: config.latestCommitId,
       strategies: config.strategies,
     };
-    await writeTextFile(out, await stringifyConfigFile(file, out));
-    await printResult({ ok: true, out, latestCommitId: config.latestCommitId }, global);
+    const text = YAML.stringify(file);
+    if (flags.out) {
+      await writeTextFile(String(flags.out), text);
+      await printResult({ ok: true, out: String(flags.out), latestCommitId: config.latestCommitId }, global);
+    } else {
+      process.stdout.write(text);
+    }
     return;
   }
   if (sub === "diff") {
@@ -178,9 +236,10 @@ async function handleExperiment(client: GameAlgoAdminClient, args: string[], glo
     if (!filePath) throw new Error("usage: gamealgo experiment diff <experiment.yaml>");
     const current = await client.experimentConfig();
     const next = await readExperimentConfigFile(filePath);
-    const before = await stringifyConfigFile({ gameId: current.gameId, latestCommitId: current.latestCommitId, strategies: current.strategies }, filePath);
-    const after = await stringifyConfigFile(normalizeExperimentConfigForPublish(next), filePath);
-    const diff = diffText(before.trimEnd(), after.trimEnd());
+    const diff = diffText(
+      YAML.stringify({ gameId: current.gameId, latestCommitId: current.latestCommitId, strategies: current.strategies }).trimEnd(),
+      YAML.stringify(normalizeExperimentConfigForPublish(next)).trimEnd(),
+    );
     if (global.json) {
       await printResult({ ok: true, diff }, global);
     } else {
@@ -194,9 +253,10 @@ async function handleExperiment(client: GameAlgoAdminClient, args: string[], glo
     const flags = parseFlags(args);
     const next = await readExperimentConfigFile(filePath);
     const current = await client.experimentConfig();
-    const before = await stringifyConfigFile({ gameId: current.gameId, latestCommitId: current.latestCommitId, strategies: current.strategies }, filePath);
-    const after = await stringifyConfigFile(normalizeExperimentConfigForPublish(next), filePath);
-    const diff = diffText(before.trimEnd(), after.trimEnd());
+    const diff = diffText(
+      YAML.stringify({ gameId: current.gameId, latestCommitId: current.latestCommitId, strategies: current.strategies }).trimEnd(),
+      YAML.stringify(normalizeExperimentConfigForPublish(next)).trimEnd(),
+    );
     if (!flags.yes && global.json) {
       throw new Error("experiment publish requires --yes in --json mode");
     }
@@ -240,7 +300,71 @@ async function handleExperiment(client: GameAlgoAdminClient, args: string[], glo
     await printResult({ ok: true, latestCommitId: response.latestCommitId, configHash: response.configHash }, global);
     return;
   }
-  throw new Error("usage: gamealgo experiment <pull|diff|publish|commits|rollback>");
+  throw new Error("usage: gamealgo experiment <pull|diff|publish|commits|rollback|managed>");
+}
+
+async function handleManagedExperiment(client: GameAlgoAdminClient, args: string[], global: ReturnType<typeof parseGlobalFlags>): Promise<void> {
+  const sub = args.shift();
+  if (sub === "create") {
+    const flags = parseFlags(args);
+    const filePath = optionalString(flags.file || flags.input) || optionalString(args.shift());
+    if (!filePath) throw new Error("usage: gamealgo experiment managed create <managed-experiment.yaml> --yes");
+    if (!flags.yes && global.json) {
+      throw new Error("experiment managed create requires --yes in --json mode");
+    }
+    if (!flags.yes && !isInteractive()) {
+      throw new Error("experiment managed create requires --yes in non-interactive mode");
+    }
+    const file = await readManagedExperimentTaskFile(filePath);
+    const body = normalizeManagedExperimentTaskForCreate(file, flags);
+    if (!flags.yes) {
+      const ok = await confirm(`Create managed experiment for ${body.strategyName}?`);
+      if (!ok) throw new Error("managed experiment create cancelled");
+    }
+    const response = await client.createManagedExperimentTask(body);
+    await printResult(managedExperimentStatusOutput(response, { ok: true, created: true }), global);
+    return;
+  }
+  if (sub === "list") {
+    const response = await client.listManagedExperimentTasks();
+    await printResult(response, global);
+    return;
+  }
+  if (sub === "status" || sub === "show") {
+    const flags = parseFlags(args);
+    const taskId = optionalString(flags.task || flags["task-id"] || flags.id) || optionalString(args.shift());
+    if (!taskId) throw new Error("usage: gamealgo experiment managed status <taskId>");
+    const response = await client.getManagedExperimentTask(taskId);
+    await printResult(managedExperimentStatusOutput(response), global);
+    return;
+  }
+  if (sub === "report") {
+    const flags = parseFlags(args);
+    const taskId = optionalString(flags.task || flags["task-id"] || flags.id) || optionalString(args.shift());
+    if (!taskId) throw new Error("usage: gamealgo experiment managed report <taskId> --round <roundNumber>");
+    const response = await client.getManagedExperimentTask(taskId);
+    await printResult(managedExperimentRoundReportOutput(response, flags), global);
+    return;
+  }
+  if (sub === "cancel") {
+    const flags = parseFlags(args);
+    const taskId = optionalString(flags.task || flags["task-id"] || flags.id) || optionalString(args.shift());
+    if (!taskId) throw new Error("usage: gamealgo experiment managed cancel <taskId> --yes");
+    if (!flags.yes && global.json) {
+      throw new Error("experiment managed cancel requires --yes in --json mode");
+    }
+    if (!flags.yes && !isInteractive()) {
+      throw new Error("experiment managed cancel requires --yes in non-interactive mode");
+    }
+    if (!flags.yes) {
+      const ok = await confirm(`Cancel managed experiment ${taskId}?`);
+      if (!ok) throw new Error("managed experiment cancel cancelled");
+    }
+    const response = await client.cancelManagedExperimentTask(taskId);
+    await printResult(managedExperimentStatusOutput(response, { ok: true, cancelled: true }), global);
+    return;
+  }
+  throw new Error("usage: gamealgo experiment managed <create|list|status|report|cancel>");
 }
 
 async function handleFileResource(
@@ -456,6 +580,56 @@ async function handleEvents(client: GameAlgoAdminClient, args: string[], global:
   await printResult(outputValue, global);
 }
 
+async function handleMarketing(client: GameAlgoAdminClient, args: string[], global: ReturnType<typeof parseGlobalFlags>): Promise<void> {
+  const provider = args.shift();
+  if (provider !== "adjust") throw new Error("usage: gamealgo marketing adjust <get|configure|sync>");
+  const sub = args.shift();
+  if (sub === "get" || sub === "status") {
+    await printResult(await client.getAdjustMarketing(), global);
+    return;
+  }
+  if (sub === "configure" || sub === "set") {
+    const flags = parseFlags(args);
+    const current = await client.getAdjustMarketing() as { integration?: Record<string, unknown> | null };
+    const existing = current.integration || {};
+    const appToken = optionalString(flags["app-token"] || flags.appToken || existing.appToken);
+    const platform = optionalString(flags.platform || existing.platform) || "ios";
+    if (!appToken) throw new Error("--app-token is required");
+    if (platform !== "ios" && platform !== "android") throw new Error("--platform must be ios or android");
+    const body: Record<string, unknown> = {
+      appToken,
+      appName: optionalString(flags["app-name"] || flags.appName || existing.appName) || "",
+      platform,
+      currency: optionalString(flags.currency || existing.currency) || "USD",
+      status: optionalString(flags.status || existing.status) || "active",
+    };
+    const apiToken = optionalString(flags["api-token"] || flags.apiToken);
+    if (apiToken) body.apiToken = apiToken;
+    await printResult({ ok: true, ...(await client.putAdjustMarketing(body)) }, global);
+    return;
+  }
+  if (sub === "sync") {
+    const flags = parseFlags(args);
+    const timeoutMs = reportTimeoutMs(flags);
+    const startedAt = Date.now();
+    const stopProgress = startProgress("Syncing Adjust marketing spend", timeoutMs);
+    let response: unknown;
+    try {
+      response = await client.syncAdjustMarketing({
+        startDate: optionalString(flags.from || flags.start || flags.startDate),
+        endDate: optionalString(flags.to || flags.end || flags.endDate),
+      }, { timeoutMs });
+    } finally {
+      stopProgress();
+    }
+    const elapsedMs = Date.now() - startedAt;
+    process.stderr.write(`Adjust sync finished in ${formatDuration(elapsedMs)}.\n`);
+    await printResult(withCliMeta(response, { elapsedMs, timeoutMs }), global);
+    return;
+  }
+  throw new Error("usage: gamealgo marketing adjust <get|configure|sync>");
+}
+
 async function handleGameKey(client: GameAlgoAdminClient, args: string[], global: ReturnType<typeof parseGlobalFlags>): Promise<void> {
   const sub = args.shift();
   if (sub === "list") {
@@ -611,6 +785,22 @@ class GameAlgoAdminClient {
     };
   }
 
+  async listManagedExperimentTasks() {
+    return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/managed-experiments`);
+  }
+
+  async getManagedExperimentTask(taskId: string) {
+    return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/managed-experiments/${encodeURIComponent(taskId)}`);
+  }
+
+  async createManagedExperimentTask(body: Record<string, unknown>) {
+    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/managed-experiments`, body);
+  }
+
+  async cancelManagedExperimentTask(taskId: string) {
+    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/managed-experiments/${encodeURIComponent(taskId)}/cancel`, {});
+  }
+
   async listConfigFiles() {
     return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/config-files`) as { configFiles: Array<{ name: string }> };
   }
@@ -664,6 +854,18 @@ class GameAlgoAdminClient {
 
   async countEvents(body: Record<string, unknown>, options: { timeoutMs?: number } = {}) {
     return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/events/count`, body, options);
+  }
+
+  async getAdjustMarketing() {
+    return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/marketing/adjust`);
+  }
+
+  async putAdjustMarketing(body: Record<string, unknown>) {
+    return await this.put(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/marketing/adjust`, body);
+  }
+
+  async syncAdjustMarketing(body: Record<string, unknown>, options: { timeoutMs?: number } = {}) {
+    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/marketing/adjust/sync`, body, options);
   }
 
   async listGameKeys() {
@@ -810,11 +1012,247 @@ async function saveConfig(config: CliConfig): Promise<void> {
 
 async function readExperimentConfigFile(filePath: string): Promise<ExperimentConfigFile> {
   const text = await readFile(filePath, "utf8");
-  const parsed = isYamlFile(filePath) ? await parseYaml(text) : JSON.parse(text);
+  const parsed = filePath.endsWith(".json") ? JSON.parse(text) : YAML.parse(text);
   if (!parsed || typeof parsed !== "object" || !Array.isArray((parsed as ExperimentConfigFile).strategies)) {
     throw new Error("experiment config file must contain strategies[]");
   }
   return parsed as ExperimentConfigFile;
+}
+
+async function readManagedExperimentTaskFile(filePath: string): Promise<ManagedExperimentTaskFile> {
+  const text = await readFile(filePath, "utf8");
+  const parsed = filePath.endsWith(".json") ? JSON.parse(text) : YAML.parse(text);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("managed experiment file must be a JSON/YAML object");
+  }
+  return parsed as ManagedExperimentTaskFile;
+}
+
+function normalizeManagedExperimentTaskForCreate(file: ManagedExperimentTaskFile, flags: Record<string, string | boolean>): Record<string, unknown> {
+  const strategyName = optionalString(flags.strategy || flags["strategy-name"]) || optionalString(file.strategyName || file.strategy);
+  if (!strategyName) throw new Error("managed experiment requires strategyName");
+  const candidates = file.candidates;
+  if (!Array.isArray(candidates) || candidates.length < 2) {
+    throw new Error("managed experiment requires candidates[] with at least two variants");
+  }
+  const cycleDays = optionalPositiveInteger(flags["cycle-days"] ?? flags.cycleDays ?? file.cycleDays, "cycleDays");
+  const maxVariantsPerRound = optionalPositiveInteger(flags["max-variants-per-round"] ?? flags.maxVariantsPerRound, "maxVariantsPerRound")
+    ?? optionalPositiveInteger(file.maxVariantsPerRound, "maxVariantsPerRound");
+  const objective = optionalString(flags.objective) || optionalString(file.objective);
+  const autoApplyWinner = flags["no-auto-apply"] ? false : file.autoApplyWinner;
+  return {
+    strategyName,
+    ...(cycleDays ? { cycleDays } : {}),
+    ...(maxVariantsPerRound ? { maxVariantsPerRound } : {}),
+    ...(objective ? { objective } : {}),
+    ...(autoApplyWinner !== undefined ? { autoApplyWinner } : {}),
+    candidates: candidates.map((candidate, index) => normalizeManagedExperimentCandidate(candidate, index)),
+  };
+}
+
+function normalizeManagedExperimentCandidate(candidate: unknown, index: number): Record<string, unknown> {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+    throw new Error(`candidates[${index}] must be an object`);
+  }
+  const body = candidate as Record<string, unknown>;
+  const candidateId = optionalString(body.candidateId || body.id);
+  if (!candidateId) throw new Error(`candidates[${index}].candidateId is required`);
+  return {
+    candidateId,
+    config: body.config ?? {},
+    ...(body.script !== undefined ? { script: normalizeManagedCandidateScript(body.script, index) } : {}),
+  };
+}
+
+function normalizeManagedCandidateScript(script: unknown, index: number): unknown {
+  if (typeof script === "string") return { name: script };
+  if (!script || typeof script !== "object" || Array.isArray(script)) {
+    throw new Error(`candidates[${index}].script must be a string or object`);
+  }
+  return script;
+}
+
+function managedExperimentStatusOutput(payload: unknown, extra: Record<string, unknown> = {}) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+  const body = payload as Record<string, unknown>;
+  return {
+    ...extra,
+    summary: managedExperimentTaskSummary(body),
+    task: managedExperimentLightTask(body.task),
+    estimate: body.estimate,
+    candidates: managedExperimentLightCandidates(body.candidates),
+    rounds: managedExperimentLightRounds(body.rounds),
+  };
+}
+
+function managedExperimentRoundReportOutput(payload: unknown, flags: Record<string, string | boolean>) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+  const body = payload as Record<string, unknown>;
+  const round = selectManagedExperimentRound(body.rounds, flags);
+  const task = objectValue(body.task);
+  return {
+    task: task ? {
+      id: task.id,
+      strategyName: task.strategyName,
+      status: task.status,
+    } : null,
+    round: {
+      id: round.id,
+      roundIndex: round.roundIndex,
+      roundNumber: Number(round.roundIndex ?? 0) + 1,
+      status: round.status,
+      assignmentStartDt: round.assignmentStartDt,
+      assignmentEndDt: round.assignmentEndDt,
+      experimentCompletedAt: round.experimentCompletedAt,
+      reportGeneratedAt: round.reportGeneratedAt,
+      endedAt: round.endedAt,
+      evaluatedAt: round.evaluatedAt,
+      winnerCandidateId: round.winnerCandidateId,
+      variants: round.variants,
+    },
+    report: round.report ?? null,
+    scoreReport: round.scoreReport ?? null,
+  };
+}
+
+function selectManagedExperimentRound(roundsValue: unknown, flags: Record<string, string | boolean>): Record<string, unknown> {
+  const rounds = Array.isArray(roundsValue)
+    ? roundsValue.map((round) => objectValue(round)).filter((round): round is Record<string, unknown> => Boolean(round))
+    : [];
+  if (!rounds.length) throw new Error("managed experiment task has no rounds");
+  const roundId = optionalString(flags["round-id"] || flags.roundId);
+  const roundIndexValue = flags["round-index"] ?? flags.roundIndex;
+  const roundValue = flags.round;
+  let round: Record<string, unknown> | undefined;
+  if (roundId) {
+    round = rounds.find((item) => item.id === roundId);
+  } else if (roundIndexValue !== undefined) {
+    const roundIndex = optionalNonNegativeInteger(roundIndexValue, "roundIndex");
+    round = rounds.find((item) => Number(item.roundIndex) === roundIndex);
+  } else if (roundValue !== undefined) {
+    if (typeof roundValue === "string" && roundValue.startsWith("mxr_")) {
+      round = rounds.find((item) => item.id === roundValue);
+    } else {
+      const roundNumber = optionalPositiveInteger(roundValue, "round");
+      round = rounds.find((item) => Number(item.roundIndex) + 1 === roundNumber);
+    }
+  } else {
+    throw new Error("usage: gamealgo experiment managed report <taskId> --round <roundNumber>");
+  }
+  if (!round) {
+    const available = rounds.map((item) => `#${Number(item.roundIndex ?? 0) + 1}:${String(item.id || "")}`).join(", ");
+    throw new Error(`managed experiment round not found. available rounds: ${available}`);
+  }
+  return round;
+}
+
+function managedExperimentLightTask(value: unknown) {
+  const task = objectValue(value);
+  if (!task) return null;
+  return {
+    id: task.id,
+    strategyName: task.strategyName,
+    status: task.status,
+    cycleDays: task.cycleDays,
+    maxVariantsPerRound: task.maxVariantsPerRound,
+    objective: task.objective,
+    autoApplyWinner: task.autoApplyWinner,
+    currentRoundId: task.currentRoundId,
+    winnerCandidateId: task.winnerCandidateId,
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
+  };
+}
+
+function managedExperimentLightCandidates(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.map((candidate) => {
+    const item = objectValue(candidate);
+    if (!item) return null;
+    const config = objectValue(item.config);
+    return {
+      candidateId: item.candidateId,
+      status: item.status,
+      sortOrder: item.sortOrder,
+      configKeys: config ? Object.keys(config) : [],
+      script: item.script,
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt,
+    };
+  }).filter(Boolean);
+}
+
+function managedExperimentLightRounds(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.map((round) => {
+    const item = objectValue(round);
+    if (!item) return null;
+    return {
+      id: item.id,
+      roundIndex: item.roundIndex,
+      roundNumber: Number(item.roundIndex ?? 0) + 1,
+      status: item.status,
+      assignmentStartDt: item.assignmentStartDt,
+      assignmentEndDt: item.assignmentEndDt,
+      experimentCompletedAt: item.experimentCompletedAt,
+      reportGeneratedAt: item.reportGeneratedAt,
+      endedAt: item.endedAt,
+      evaluatedAt: item.evaluatedAt,
+      winnerCandidateId: item.winnerCandidateId,
+      hasReport: item.report !== undefined && item.report !== null,
+      hasScoreReport: item.scoreReport !== undefined && item.scoreReport !== null,
+      variants: Array.isArray(item.variants) ? item.variants.map((variant) => {
+        const body = objectValue(variant);
+        if (!body) return null;
+        return {
+          candidateId: body.candidateId,
+          variant: body.variant,
+          enabled: body.enabled,
+          weight: body.weight,
+        };
+      }).filter(Boolean) : [],
+    };
+  }).filter(Boolean);
+}
+
+function managedExperimentTaskSummary(payload: Record<string, unknown>) {
+  const task = objectValue(payload.task);
+  const estimate = objectValue(payload.estimate);
+  const rounds = Array.isArray(payload.rounds) ? payload.rounds.filter((round) => round && typeof round === "object") as Array<Record<string, unknown>> : [];
+  const runningRound = rounds.find((round) => round.status === "running") || rounds[rounds.length - 1] || null;
+  const variants = runningRound && Array.isArray(runningRound.variants)
+    ? runningRound.variants.map((variant) => objectValue(variant)).filter(Boolean).map((variant) => ({
+      candidateId: variant?.candidateId,
+      variant: variant?.variant,
+    }))
+    : [];
+  return {
+    taskId: task?.id,
+    strategyName: task?.strategyName,
+    status: task?.status,
+    estimate: {
+      rounds: estimate?.estimatedRounds,
+      cycleDays: estimate?.cycleDays,
+      nominalDays: estimate?.nominalDays,
+      calendarDays: estimate?.estimatedCalendarDays,
+      maxVariantsPerRound: estimate?.maxVariantsPerRound,
+      totalCandidates: estimate?.totalCandidates,
+    },
+    currentRound: runningRound ? {
+      id: runningRound.id,
+      index: runningRound.roundIndex,
+      status: runningRound.status,
+      assignmentStartDt: runningRound.assignmentStartDt,
+      assignmentEndDt: runningRound.assignmentEndDt,
+      experimentCompletedAt: runningRound.experimentCompletedAt,
+      reportGeneratedAt: runningRound.reportGeneratedAt,
+      variants,
+    } : null,
+  };
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
 function normalizeExperimentConfigForPublish(file: ExperimentConfigFile) {
@@ -823,26 +1261,6 @@ function normalizeExperimentConfigForPublish(file: ExperimentConfigFile) {
     latestCommitId: file.latestCommitId ?? null,
     strategies: file.strategies,
   };
-}
-
-async function stringifyConfigFile(value: unknown, filePath: string): Promise<string> {
-  if (!isYamlFile(filePath)) return JSON.stringify(value, null, 2) + "\n";
-  return await stringifyYaml(value);
-}
-
-async function parseYaml(text: string): Promise<unknown> {
-  const yaml = await import("yaml");
-  return yaml.parse(text);
-}
-
-async function stringifyYaml(value: unknown): Promise<string> {
-  const yaml = await import("yaml");
-  return yaml.stringify(value);
-}
-
-function isYamlFile(filePath: string): boolean {
-  const ext = extname(filePath).toLowerCase();
-  return ext === ".yaml" || ext === ".yml";
 }
 
 async function readJsonFile(filePath: string): Promise<unknown> {
@@ -919,6 +1337,22 @@ function positiveNumberFlag(value: string | boolean, flag: string): number {
   return parsed;
 }
 
+function optionalPositiveInteger(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value === "boolean") throw new Error(`${field} must be a positive integer`);
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${field} must be a positive integer`);
+  return parsed;
+}
+
+function optionalNonNegativeInteger(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value === "boolean") throw new Error(`${field} must be a non-negative integer`);
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) throw new Error(`${field} must be a non-negative integer`);
+  return parsed;
+}
+
 function startProgress(label: string, timeoutMs?: number): () => void {
   const startedAt = Date.now();
   process.stderr.write(`${label}${timeoutMs ? `, timeout ${formatDuration(timeoutMs)}` : ""}...\n`);
@@ -953,7 +1387,7 @@ async function printResult(value: unknown, global: { json: boolean }): Promise<v
     console.log(value);
     return;
   }
-  console.log(JSON.stringify(value, null, 2));
+  console.log(YAML.stringify(value).trimEnd());
 }
 
 async function confirm(question: string): Promise<boolean> {
@@ -1034,6 +1468,11 @@ Usage:
   gamealgo experiment publish experiment.yaml --message "..." --yes
   gamealgo experiment commits
   gamealgo experiment rollback --commit exp_c_xxxxxxxxxxxxxxxx --yes
+  gamealgo experiment managed create managed-experiment.yaml --yes
+  gamealgo experiment managed list
+  gamealgo experiment managed status mxt_xxxxxxxxxxxxxxxx
+  gamealgo experiment managed report mxt_xxxxxxxxxxxxxxxx --round 1
+  gamealgo experiment managed cancel mxt_xxxxxxxxxxxxxxxx --yes
 
   gamealgo key list
   gamealgo key create --name tapmaker-proxy
@@ -1059,6 +1498,13 @@ Usage:
 
   gamealgo events count --from 2026-06-23 --to 2026-06-23
   gamealgo events count --from 2026-06-23 --to 2026-06-23 --event-type level_end
+
+  gamealgo marketing adjust get
+  gamealgo marketing adjust configure --api-token <token> --app-token <app-token> --platform ios --currency USD
+  gamealgo marketing adjust sync --from 2026-06-01 --to 2026-06-07 --timeout 60
+
+Internal bootstrap:
+  gamealgo admin-key create --host <admin-url> --admin-token <root-token> --game Mahjong --name ai-agent
 `.trim());
 }
 

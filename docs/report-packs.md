@@ -45,7 +45,7 @@ Report Pack 的 dashboard 建议按“业务问题”拆分，而不是按事件
 
 - 一个 tab 聚焦一个问题域。用户看到 `Revenue` 时应该只处理收入问题，看到 `Progression` 时只处理推进和流失问题。
 - 一个 group 通常放 2-5 个图。超过 5 个说明这个 group 可能需要继续拆分。
-- 标准看板能覆盖的优先用 `standard.ref`，例如核心概览、留存、LTV 和广告变现。自定义 pack 只补游戏特有逻辑。
+- 标准看板能覆盖的优先在 group 里配置 `standard`，例如核心概览、留存、LTV 和广告变现。自定义 pack 只补游戏特有逻辑。
 - group selector 应该只放会同时影响组内多个图的条件，例如 Strategy、Dx、mode。只影响单个图的过滤条件，优先在 report 或 chart 里固定。
 - 同一组内如果有实验 selector，建议同时保留 global 视角和实验拆分视角。没有选择 Strategy 时看整体趋势，选择 Strategy 后再看 variant 对比。
 
@@ -66,7 +66,7 @@ Report Pack 的 dashboard 建议按“业务问题”拆分，而不是按事件
 
 ## 展示文案和中文标题
 
-Report Pack 的展示文案可以直接使用中文，包括 `dashboard.title`、`tabs[].title`、`groups[].title`、`groups[].description`、`charts[].title`、`selectors[].label` 和 `options[].label`。如果游戏团队、控制台页面或需求文档使用中文标题，建议让 AI Agent 也生成中文的 tab、group、chart 和 selector 文案，避免 Admin 页面中英文混杂。
+Report Pack 的展示文案可以直接使用中文，包括顶层 `title`、`tabs[].title`、`groups[].title`、`groups[].description`、`charts[].title`、`selectors[].label` 和 `options[].label`。如果游戏团队、控制台页面或需求文档使用中文标题，建议让 AI Agent 也生成中文的 tab、group、chart 和 selector 文案，避免 Admin 页面中英文混杂。
 
 系统识别字段仍然要保持英文安全字符：`id`、`version`、事件名、dataset/report/chart/selector id、`field`、`x`、`y`、`series`、`label`、`value`、`sort` 以及 SQL 结果列名都不要写中文。这些字段会参与校验、SQL 生成、缓存和 CLI 查询。
 
@@ -200,59 +200,59 @@ Report Pack 的展示文案可以直接使用中文，包括 `dashboard.title`�
       "metrics": ["cohort_users", "avg_lifetime_duration_ms"]
     }
   ],
-  "dashboard": {
-    "title": "Mahjong Reports",
-    "tabs": [
-      {
-        "id": "overview",
-        "title": "Overview",
-        "groups": [
-          {
-            "id": "level_progress",
-            "title": "Level Progress",
-            "charts": [
-              {
-                "id": "win_rate_trend",
-                "title": "Win Rate Trend",
-                "type": "line",
-                "report": "level_overview",
-                "x": "dt",
-                "y": "win_rate",
-                "series": "level_id",
-                "format": "percent",
-                "size": "lg"
-              },
-              {
-                "id": "attempt_share",
-                "title": "Attempt Share",
-                "type": "pie",
-                "report": "level_overview",
-                "label": "level_id",
-                "value": "attempts"
-              },
-              {
-                "id": "level_dropoff_bar",
-                "title": "Level Drop-off",
-                "type": "bar",
-                "report": "level_overview",
-                "x": "level_id",
-                "y": "dropoff_rate",
-                "format": "percent",
-                "size": "lg"
-              },
-              {
-                "id": "level_table",
-                "title": "Level Detail",
-                "type": "table",
-                "report": "level_overview",
-                "size": "full"
-              }
-            ]
-          }
-        ]
-      }
-    ]
-  }
+  "title": "Mahjong Reports",
+  "charts": [
+    {
+      "id": "win_rate_trend",
+      "title": "Win Rate Trend",
+      "type": "line",
+      "report": "level_overview",
+      "x": "dt",
+      "y": "win_rate",
+      "series": "level_id",
+      "format": "percent",
+      "size": "lg"
+    },
+    {
+      "id": "attempt_share",
+      "title": "Attempt Share",
+      "type": "pie",
+      "report": "level_overview",
+      "label": "level_id",
+      "value": "attempts"
+    },
+    {
+      "id": "level_dropoff_bar",
+      "title": "Level Drop-off",
+      "type": "bar",
+      "report": "level_overview",
+      "x": "level_id",
+      "y": "dropoff_rate",
+      "format": "percent",
+      "size": "lg"
+    },
+    {
+      "id": "level_table",
+      "title": "Level Detail",
+      "type": "table",
+      "report": "level_overview",
+      "size": "full"
+    }
+  ],
+  "groups": [
+    {
+      "id": "level_progress",
+      "title": "Level Progress",
+      "charts": ["win_rate_trend", "attempt_share", "level_dropoff_bar", "level_table"]
+    }
+  ],
+  "tabs": [
+    {
+      "id": "overview",
+      "title": "Overview",
+      "groups": ["level_progress"]
+    }
+  ]
 }
 ```
 
@@ -275,9 +275,11 @@ Report Pack 的展示文案可以直接使用中文，包括 `dashboard.title`�
 - `calculations` 可以声明平台预置的计算模板。常见问题可以优先用模板配置，少写一层 dataset/report，也更不容易写错。
 - `reports` 定义可见报表查询。
 - `groupBy` 支持 `dt`、`user_segment`、dataset dimensions、`experiment.<strategy_name>` 和 `experiment`。`user_segment` 是平台内置用户类型，适用于 event/rollup 自定义报表，值为 `all`、`new`、`returning`；cohort 报表本身已经是新用户 cohort，不支持再按 `user_segment` 分组。
-- `dashboard.tabs` 定义 GameAlgo 控制台如何布局报表。
-- 一个 tab 可以包含一个或多个 `groups`。group 会在 UI 上包裹一组相关图表，并拥有一组共享 selector。group 内的图表不一定都要使用每个 selector。
-- 老版本 pack 仍可以定义顶层 `standard.ref` 或 `charts`；控制台会把 `standard.ref` 视为一个生成的标准 group，并按 `chart.report` 把顶层 `charts` 拆成自定义 group。
+- 新版 layout 使用顶层 `charts`、`groups` 和 `tabs`。`charts` 只定义图表，`groups[].charts` 只引用 chart id，`tabs[].groups` 只引用 group id。
+- `groups` 会在 UI 上包裹一组相关图表，并拥有一组共享 selector。group 内的图表不一定都要使用每个 selector。
+- 新保存的 report pack 必须使用新版 layout。旧版 `dashboard.tabs[].groups[].charts[]` 只作为线上存量 pack 的兼容兜底，不要再生成。
+- 控制台保存和 CLI/local preview 都按新版 layout 校验；只有读取已经保存在线上的旧 pack 时，服务端才会在 v2 解析失败后使用旧解析逻辑兜底。
+- 一个 group 只能选择一种模式：`standard` 或 `charts`。`standard` 可以直接写 `"core.overview@1"`，也兼容 `{ "ref": "core.overview@1" }`。
 - 图表 `type` 支持 `line`、`bar`、`pie`、`table` 和 `cohort_matrix`。
 - 折线图使用结果列里的 `x`、`y` 和可选 `series`。
 - 柱状图也使用结果列里的 `x`、`y` 和可选 `series`，适合展示分关卡流失率、分广告位收入、分模式人数等离散维度对比。离散桶需要稳定顺序时，配置 `sort` 指向结果里的排序列，例如 `bucket_order`；`sortDirection` 支持 `asc` 和 `desc`，默认 `asc`。`barMode` 支持 `grouped`、`stacked` 和 `stacked100`；`stacked100` 适合展示版本覆盖率这类占比构成。
@@ -367,12 +369,21 @@ value_per_actor = measure_value / denominator_count
         "denominator": {
           "base": "active_users"
         }
-      },
-      "dashboard": {
-        "tab": "Revenue",
-        "group": "Mode Revenue",
-        "format": "currency"
       }
+    }
+  ],
+  "groups": [
+    {
+      "id": "mode_revenue",
+      "title": "Mode Revenue",
+      "charts": ["mode_arpu"]
+    }
+  ],
+  "tabs": [
+    {
+      "id": "revenue",
+      "title": "Revenue",
+      "groups": ["mode_revenue"]
     }
   ]
 }
@@ -385,7 +396,7 @@ value_per_actor = measure_value / denominator_count
 | `mode_arpu_global` | 开启 `userSegment` 时按 `dt`、`user_segment`、`mode` 聚合；否则按 `dt`、`mode` 聚合 |
 | `mode_arpu_experiment` | 按 `dt`、可选 `user_segment`、`mode`、`scope`、`strategy`、`variant` 聚合 |
 
-两个报表都会返回 `measure_value`、`denominator_count` 和 `value_per_actor`。控制台会自动创建一个 group，里面带 Experiment selector、可选用户类型 selector 和 breakdown selector。没有选择实验时，折线图按 `mode` 出多条线；选择实验后，需要再选择一个具体 mode，然后折线图按 variant 出多条线。
+两个报表都会返回 `measure_value`、`denominator_count` 和 `value_per_actor`。在 v2 layout 中，group 通过 `charts: ["mode_arpu"]` 引用 calculation id；控制台会展开成图表，并自动给这个 group 增加 Experiment selector、可选用户类型 selector 和 breakdown selector。没有选择实验时，折线图按 `mode` 出多条线；选择实验后，需要再选择一个具体 mode，然后折线图按 variant 出多条线。
 
 如果要配置渗透率，可以把分子写成 `count_distinct`：
 
@@ -411,11 +422,6 @@ value_per_actor = measure_value / denominator_count
     "denominator": {
       "base": "active_users"
     }
-  },
-  "dashboard": {
-    "tab": "Revenue",
-    "group": "Mode Ad Penetration",
-    "format": "percent"
   }
 }
 ```
@@ -433,7 +439,7 @@ value_per_actor = measure_value / denominator_count
 | --- | --- |
 | `{id}_cohort` | `cohort_dt`、`day_offset`、`scope`、`strategy`、`variant` |
 
-控制台会自动创建一个 group，里面带 Experiment selector、Dx selector、一张趋势折线图和一张 cohort 矩阵。`metric.value` 用来指定趋势图和矩阵单元格的指标。矩阵不会被 Dx selector 过滤；它会展示已成熟的 D0 到 Dn 列，未达到 `cohort_dt + day_offset <= endDate` 的列不会提前展示。
+在 v2 layout 中，group 通过 `charts: ["new_user_max_level"]` 这类引用使用 calculation id；控制台会自动展开成一张趋势折线图和一张 cohort 矩阵，并给 group 增加 Experiment selector 和 Dx selector。`metric.value` 用来指定趋势图和矩阵单元格的指标。矩阵不会被 Dx selector 过滤；它会展示已成熟的 D0 到 Dn 列，未达到 `cohort_dt + day_offset <= endDate` 的列不会提前展示。
 
 例如，新用户最大通关关卡 cohort：
 
@@ -464,12 +470,21 @@ value_per_actor = measure_value / denominator_count
           "avg_max_level": { "agg": "avg", "field": "user_max_level" }
         },
         "value": "avg_max_level"
-      },
-      "dashboard": {
-        "tab": "关卡",
-        "group": "新用户进度 Cohort",
-        "format": "number"
       }
+    }
+  ],
+  "groups": [
+    {
+      "id": "new_user_progress",
+      "title": "新用户进度 Cohort",
+      "charts": ["new_user_max_level"]
+    }
+  ],
+  "tabs": [
+    {
+      "id": "levels",
+      "title": "关卡",
+      "groups": ["new_user_progress"]
     }
   ]
 }
@@ -491,14 +506,11 @@ value_per_actor = measure_value / denominator_count
       "ltv": { "formula": "revenue / cohort_users" }
     },
     "value": "ltv"
-  },
-  "dashboard": {
-    "tab": "收入",
-    "group": "新用户 LTV",
-    "format": "currency"
   }
 }
 ```
+
+上面的短示例只是 calculation 条目；放入完整 pack 时，同样在顶层 `groups[].charts` 引用 `"new_user_ltv"`。
 
 ## 标准看板引用
 
@@ -506,37 +518,35 @@ value_per_actor = measure_value / denominator_count
 
 ```json
 {
-  "dashboard": {
-    "title": "游戏数据看板",
-    "tabs": [
-      {
-        "id": "overview",
-        "title": "概览",
-        "groups": [
-          {
-            "id": "core",
-            "title": "核心概览",
-            "standard": { "ref": "core.overview@1" }
-          }
-        ]
-      },
-      {
-        "id": "custom_progress",
-        "title": "自定义进度",
-        "groups": [
-          {
-            "id": "progression",
-            "title": "Progression",
-            "charts": []
-          }
-        ]
-      }
-    ]
-  }
+  "title": "游戏数据看板",
+  "groups": [
+    {
+      "id": "core",
+      "title": "核心概览",
+      "standard": "core.overview@1"
+    },
+    {
+      "id": "progression",
+      "title": "Progression",
+      "charts": []
+    }
+  ],
+  "tabs": [
+    {
+      "id": "overview",
+      "title": "概览",
+      "groups": ["core"]
+    },
+    {
+      "id": "custom_progress",
+      "title": "自定义进度",
+      "groups": ["progression"]
+    }
+  ]
 }
 ```
 
-新 pack 建议每个 tab 都使用 `groups`。一个 group 只能选择一种模式：`standard.ref` 或 `charts`。标准 group 直接保存 ref，因此平台修复或升级查询实现时，不需要重写游戏 pack。版本后缀是契约的一部分；使用 `@1` 表示使用第一版标准定义。
+新 pack 必须使用顶层 `groups` 和 `tabs`。一个 group 只能选择一种模式：`standard` 或 `charts`。标准 group 直接保存 ref，因此平台修复或升级查询实现时，不需要重写游戏 pack。版本后缀是契约的一部分；使用 `@1` 表示使用第一版标准定义。
 
 Group selector 是只作用于当前 group 的 UI 控件：
 
@@ -544,7 +554,7 @@ Group selector 是只作用于当前 group 的 UI 控件：
 {
   "id": "retention_cohort",
   "title": "Retention Cohort",
-  "standard": { "ref": "retention.cohort@1" },
+  "standard": "retention.cohort@1",
   "selectors": [
     { "id": "strategy", "label": "Strategy", "source": "experimentStrategies" },
     { "id": "dayOffset", "label": "Dx", "options": ["D1", "D2", "D3", "D7"] }
@@ -566,34 +576,34 @@ Group selector 是只作用于当前 group 的 UI 控件：
       "metrics": ["revenue"]
     }
   ],
-  "dashboard": {
-    "tabs": [
-      {
-        "id": "revenue",
-        "title": "Revenue",
-        "groups": [
-          {
-            "id": "ad_revenue",
-            "title": "Ad Revenue",
-            "selectors": [
-              { "id": "experiment", "label": "Experiment", "type": "experimentStrategy" }
-            ],
-            "charts": [
-              {
-                "id": "revenue_trend",
-                "title": "Revenue Trend",
-                "type": "line",
-                "report": "ad_revenue_by_variant",
-                "x": "dt",
-                "y": "revenue",
-                "series": "variant"
-              }
-            ]
-          }
-        ]
-      }
-    ]
-  }
+  "charts": [
+    {
+      "id": "revenue_trend",
+      "title": "Revenue Trend",
+      "type": "line",
+      "report": "ad_revenue_by_variant",
+      "x": "dt",
+      "y": "revenue",
+      "series": "variant"
+    }
+  ],
+  "groups": [
+    {
+      "id": "ad_revenue",
+      "title": "Ad Revenue",
+      "selectors": [
+        { "id": "experiment", "label": "Experiment", "type": "experimentStrategy" }
+      ],
+      "charts": ["revenue_trend"]
+    }
+  ],
+  "tabs": [
+    {
+      "id": "revenue",
+      "title": "Revenue",
+      "groups": ["ad_revenue"]
+    }
+  ]
 }
 ```
 
@@ -611,34 +621,34 @@ Group selector 是只作用于当前 group 的 UI 控件：
       "metrics": ["revenue"]
     }
   ],
-  "dashboard": {
-    "tabs": [
-      {
-        "id": "revenue",
-        "title": "Revenue",
-        "groups": [
-          {
-            "id": "revenue_segments",
-            "title": "Revenue by User Segment",
-            "selectors": [
-              { "id": "user_segment", "label": "用户类型", "type": "segment" }
-            ],
-            "charts": [
-              {
-                "id": "daily_revenue",
-                "title": "Daily Revenue",
-                "type": "line",
-                "report": "daily_revenue_by_user_segment",
-                "x": "dt",
-                "y": "revenue",
-                "series": "user_segment"
-              }
-            ]
-          }
-        ]
-      }
-    ]
-  }
+  "charts": [
+    {
+      "id": "daily_revenue",
+      "title": "Daily Revenue",
+      "type": "line",
+      "report": "daily_revenue_by_user_segment",
+      "x": "dt",
+      "y": "revenue",
+      "series": "user_segment"
+    }
+  ],
+  "groups": [
+    {
+      "id": "revenue_segments",
+      "title": "Revenue by User Segment",
+      "selectors": [
+        { "id": "user_segment", "label": "用户类型", "type": "segment" }
+      ],
+      "charts": ["daily_revenue"]
+    }
+  ],
+  "tabs": [
+    {
+      "id": "revenue",
+      "title": "Revenue",
+      "groups": ["revenue_segments"]
+    }
+  ]
 }
 ```
 
@@ -662,54 +672,54 @@ Group selector 是只作用于当前 group 的 UI 控件：
       "metrics": ["completed_levels", "users"]
     }
   ],
-  "dashboard": {
-    "tabs": [
-      {
-        "id": "levels",
-        "title": "Levels",
-        "groups": [
-          {
-            "id": "mode_level_completion",
-            "title": "Mode Level Completion",
-            "selectors": [
-              { "id": "experiment", "label": "Experiment", "type": "experimentStrategy" },
-              {
-                "id": "mode",
-                "label": "Mode",
-                "type": "dimension",
-                "field": "mode",
-                "options": ["classic", "vita", "sheep"],
-                "default": "classic"
-              }
-            ],
-            "charts": [
-              {
-                "id": "completed_levels",
-                "title": "Completed Levels",
-                "type": "line",
-                "report": "mode_level_completion_global",
-                "x": "dt",
-                "y": "completed_levels",
-                "series": "mode",
-                "valueAgg": "sum",
-                "views": {
-                  "global": {
-                    "report": "mode_level_completion_global",
-                    "series": "mode"
-                  },
-                  "experiment": {
-                    "report": "mode_level_completion_experiment",
-                    "series": "variant",
-                    "requiredSelectors": ["mode"]
-                  }
-                }
-              }
-            ]
-          }
-        ]
+  "charts": [
+    {
+      "id": "completed_levels",
+      "title": "Completed Levels",
+      "type": "line",
+      "report": "mode_level_completion_global",
+      "x": "dt",
+      "y": "completed_levels",
+      "series": "mode",
+      "valueAgg": "sum",
+      "views": {
+        "global": {
+          "report": "mode_level_completion_global",
+          "series": "mode"
+        },
+        "experiment": {
+          "report": "mode_level_completion_experiment",
+          "series": "variant",
+          "requiredSelectors": ["mode"]
+        }
       }
-    ]
-  }
+    }
+  ],
+  "groups": [
+    {
+      "id": "mode_level_completion",
+      "title": "Mode Level Completion",
+      "selectors": [
+        { "id": "experiment", "label": "Experiment", "type": "experimentStrategy" },
+        {
+          "id": "mode",
+          "label": "Mode",
+          "type": "dimension",
+          "field": "mode",
+          "options": ["classic", "vita", "sheep"],
+          "default": "classic"
+        }
+      ],
+      "charts": ["completed_levels"]
+    }
+  ],
+  "tabs": [
+    {
+      "id": "levels",
+      "title": "Levels",
+      "groups": ["mode_level_completion"]
+    }
+  ]
 }
 ```
 
@@ -724,8 +734,9 @@ Group selector 是只作用于当前 group 的 UI 控件：
 | `device.version_coverage@1` | 游戏版本覆盖率。按本地日期展示 `appVersion` 的 100% 堆积柱状图，窗口内 Top 10 版本单独展示，其余归入 `其他`。同一用户同一天只按最后一次 SDK context 的版本计数。 | SDK context 行里的 `appVersion`。 |
 | `revenue.ltv@1` | 新用户 LTV cohort。包含内置 `LTV 趋势` 折线图（D0、D1、D2、D3、D7、D14）和 `新用户 LTV 矩阵` 表格（D0-D14）。控制台可通过运行时 Strategy 和 Dx selector 在全局 LTV 和分实验 LTV 之间切换。 | SDK context 行，以及收入事件。 |
 | `revenue.placement@1` | 广告变现和收入指标标准看板。会生成两个 group：`广告变现` 包含本地日期广告收入、广告位收入趋势、广告位收入/曝光占比、广告类型收入/曝光占比，所有图都支持用户类型 selector（全部/新用户/老用户）；`收入指标` 包含按广告类型的人均看广告数和整体 ARPU，并支持实验、用户类型、广告类型 selector。未选实验时，人均看广告数按 `ad_type` 拆线，ARPU 是一条总线；选中实验后，人均看广告数需要选择一个广告类型并按 variant 拆线，ARPU 也按 variant 拆线。 | 成功曝光的 `ad_view` 事件，必填 `placement`、`adType`、`revenue`、`currency`，可选 `network` 和 `mode`。广告失败、未填充、取消或未完成有效曝光时不要上报到 `ad_view`。 |
+| `marketing.roi@1` | 投放 ROI 看板。包含 ROAS 趋势、获客用户 LTV、投放花费趋势和 Campaign ROI 明细表。按 Adjust network / campaign / country 粒度关联花费和 GameAlgo 收入。 | 需要先上报 Adjust 归因（`/v1/attribution`），并在控制台或 CLI 配置 Adjust API Token + App Token 后同步花费。花费使用 Adjust `network_cost`，不是 `cost`。 |
 
-不要引用未在上表出现的 `standard.ref`。没有在上表列出的历史保留 ref 会被校验拒绝，避免页面生成没有 chart 的空 group。
+不要引用未在上表出现的标准 ref。没有在上表列出的历史保留 ref 会被校验拒绝，避免页面生成没有 chart 的空 group。
 
 推荐标准事件 payload 字段：
 
@@ -756,7 +767,7 @@ Group selector 是只作用于当前 group 的 UI 控件：
 }
 ```
 
-当前只推荐引用上表中的 ref。这些 ref 是平台已经实现的标准看板契约。保存 report pack 时只会记录选择的 `standard.ref`；标准看板背后的数据由平台准备。LTV 和留存看板会隐藏尚未成熟的 cohort/day 组合，例如 D7 只有在对应 cohort 已经过了 7 天后才会出现。
+当前只推荐引用上表中的 ref。这些 ref 是平台已经实现的标准看板契约。保存 report pack 时只会记录 group 的 `standard`；标准看板背后的数据由平台准备。LTV 和留存看板会隐藏尚未成熟的 cohort/day 组合，例如 D7 只有在对应 cohort 已经过了 7 天后才会出现。
 
 如果需要使用 `retention.country@1`，SDK 初始化时建议在 `device` 里带上国家：
 
