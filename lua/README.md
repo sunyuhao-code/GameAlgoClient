@@ -29,6 +29,8 @@ ProxyServer.Start({
 })
 ```
 
+`ga_live_xxx` 只是示例占位。实际接入必须使用真实 `ga_live_*`；如果当前没有真实 key，AI Agent 应使用 `ga_admin_*` 通过 GameAlgo CLI 创建或读取，不要提交占位 key 后声称接入完成。
+
 不要把 `X-GameAlgo-Key` 放进小游戏客户端包，也不要让客户端自己传事件上报 key。`ProxyServer` 会在客户端 headers 后追加 `defaultHeaders`，因此服务端 headers 优先，客户端无法覆盖。
 
 开启 Maker 服务端后，Maker 的数据默认会保存在服务端；但客户端已有本地数据和存档仍然可以继续读取。已有单机存档的游戏接入时，要么继续使用原来的本地存储，要么实现从本地存档到服务端存储的无缝迁移，不要直接丢弃旧存档。

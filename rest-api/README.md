@@ -30,6 +30,8 @@ client.tracker.trackSessionEnd();
 await client.tracker.flush();
 ```
 
+`ga_live_xxx` 只是示例占位。实际接入必须使用真实 `ga_live_*`；如果当前没有真实 key，AI Agent 应使用 `ga_admin_*` 通过 GameAlgo CLI 创建或读取，不要提交占位 key 后声称接入完成。
+
 `new GameAlgoRestClient(...)` 会在后台刷新 `/v1/config` 并预加载配置文件。它也会创建或复用 SDK 匿名 `userId`；如果希望 helper 跨启动持久化这个 ID，初始化时需要传入 `storage`。`executor` 和 `config` 读取的是最新本地快照，所以玩法逻辑读取实验分组或调参值时不需要直接调用远端 API。
 
 GameAlgo 控制台 Configs 页面创建的文件也可以在需要时直接拉取：

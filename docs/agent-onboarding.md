@@ -2,7 +2,24 @@
 
 这份文档给 AI Agent 使用。目标是：开发者把游戏仓库和 GameAlgo Client 仓库交给你后，你能主动完成接入，而不是把文档转发给开发者。
 
-## 0. 先问开发者要什么
+## 0. 完成状态规则
+
+如果用户要求“接入 GameAlgo SDK”，默认目标是 Activated 接入。
+
+| 状态 | 含义 | 交付口径 |
+| --- | --- | --- |
+| Activated | 已写入真实 `ga_live_*`，App 能拉配置，测试事件能进入平台 | 可以说接入完成 |
+| Scaffolded | 只完成 SDK 代码接入，但没有真实 `ga_live_*` 或没有验证上报 | 只能说代码已接入，等待激活 |
+
+如果没有真实 `ga_live_*`，必须先向用户索取 `ga_admin_*`，再用 CLI 创建或读取 Client Game Key。不要使用占位 key 后声称完成接入。
+
+如果用户暂时无法提供 `ga_admin_*`，可以先继续做 Scaffolded 代码接入，但最终回复必须明确说明：
+
+- 当前没有真实运行时 key
+- 配置拉取和事件上报未验证
+- 下一步需要 `ga_admin_*` 或真实 `ga_live_*`
+
+## 1. 先问开发者要什么
 
 只需要先问这几项：
 
@@ -14,7 +31,9 @@
 
 不要向开发者索要 `ga_live_*`。Client Game Key 由你通过 CLI 创建或读取。
 
-## 1. 登录 CLI
+例外：如果开发者已经明确提供真实 `ga_live_*`，可以直接使用；但仍然需要验证 `/v1/config` 和事件上报。不要把 `ga_live_xxx` 示例值当成真实 key。
+
+## 2. 登录 CLI
 
 根据开发者选择的环境使用对应 Admin host：
 
@@ -35,7 +54,7 @@ gamealgo login --host <admin-host> --admin-key ga_admin_xxx
 npm --silent run cli -- <command>
 ```
 
-## 2. 创建或读取 Client Game Key
+## 3. 创建或读取 Client Game Key
 
 Client Game Key 是游戏运行时 key，格式 `ga_live_*`。先检查当前游戏是否已有可用 key：
 
@@ -65,7 +84,9 @@ gamealgo key reveal --name production-client --json
 
 不要把 `ga_admin_*` 写入游戏客户端。不要把 key 打到日志、截图、崩溃上报或公开仓库。
 
-## 3. 判断接入方式
+不要把 `ga_live_xxx`、`TODO_GAME_KEY`、`NOOP_GAME_KEY` 之类占位值写入工程后继续后续验收。没有真实 `ga_live_*` 时，当前状态只能是 Scaffolded。
+
+## 4. 判断接入方式
 
 根据游戏工程选择 SDK：
 
@@ -78,7 +99,7 @@ gamealgo key reveal --name production-client --json
 
 通用接入原则见 [客户端接入指南](./integration-guide.md)。
 
-## 4. 接入运行时配置
+## 5. 接入运行时配置
 
 环境地址：
 
@@ -111,7 +132,7 @@ end
 
 如果拿不到稳定用户 ID，可以传 `nil`，SDK 会使用本地匿名 ID。不要使用昵称、头像、手机号、邮箱等可识别信息作为 `userId`。
 
-## 5. 接入基础事件
+## 6. 接入基础事件
 
 先接最小事件，不要一开始做过多自定义：
 
@@ -138,7 +159,7 @@ currency = CNY
 
 不同玩法的字段建议见 [不同类型游戏埋点建议](./tracking-recommendations.md)。如果游戏是章节 + 小关这类多层进度，报表先按粗粒度章节看，再对流失严重章节补小关分析。
 
-## 6. 验证事件是否进平台
+## 7. 验证事件是否进平台
 
 启动游戏，触发一批测试事件，等待 SDK flush 或手动 flush 后查询：
 
@@ -171,7 +192,9 @@ gamealgo events count \
 
 这一步只验证事件链路。报表为空时，再查事件字段和 Report Pack。
 
-## 7. 生成 Report Pack
+如果还没有真实 `ga_live_*`，不要执行这一节并声称验证通过。需要先回到第 3 节创建或读取 Client Game Key。
+
+## 8. 生成 Report Pack
 
 事件进入平台后，再开发报表配置。不要让开发者手写复杂 JSON。
 
@@ -205,7 +228,7 @@ gamealgo marketing adjust configure --api-token "$ADJUST_API_TOKEN" --app-token 
 gamealgo marketing adjust sync --from 2026-06-01 --to 2026-06-07 --timeout 60 --json
 ```
 
-## 8. 接入实验、配置和脚本
+## 9. 接入实验、配置和脚本
 
 如果游戏需要动态参数、动态脚本或 DDA：
 
@@ -219,7 +242,7 @@ gamealgo experiment publish experiment.yaml --message "update experiment" --yes
 
 如果要做关卡类动态难度调整，先读 [Level DDA framework](./dda-level-framework.md)。不要直接把具体规则写死成平台逻辑；游戏侧保留难度参数到玩法结果的映射，平台通过实验和数据优化参数组合。
 
-## 9. 数据回收和优化闭环
+## 10. 数据回收和优化闭环
 
 接入和报表跑通后，按这个节奏持续迭代：
 
@@ -243,7 +266,7 @@ gamealgo report result \
 
 优化方法论见 [AI LTV 优化 Playbook](./ai-ltv-optimization-playbook.md)。
 
-## 10. 最终交付给开发者
+## 11. 最终交付给开发者
 
 完成接入后，不要只说“已完成”。请给开发者一份简短交付说明：
 
@@ -253,5 +276,7 @@ gamealgo report result \
 - 如何验证事件已经进入平台
 - 当前 Report Pack 覆盖哪些 tab 和看板
 - 还有哪些风险或需要开发者确认的点
+
+只有满足 Activated 状态时，才可以写“接入完成”。如果还缺真实 key、缺配置拉取验证或缺事件统计验证，必须写“Scaffolded，尚未激活”，并列出阻塞项。
 
 开发者需要重点审核 key 的存放位置、事件字段语义、实验脚本逻辑和 Report Pack 指标口径。

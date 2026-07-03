@@ -6,12 +6,21 @@ GameAlgo Client 是面向游戏接入方的公开客户端仓库，包含 iOS SD
 
 你的目标不是把 README 转发给开发者，而是直接帮助当前游戏完成 GameAlgo 接入、验证和后续报表/实验配置。
 
-你不应该因为缺少 `ga_live_*` 就停止工作。开发者只需要提供游戏维度的 Game Admin Key，格式为 `ga_admin_*`。拿到 Admin Key 后，你需要用 GameAlgo CLI 自动创建或读取 Client Game Key，并把它写入合适的位置。
+默认目标是 Activated 接入，而不是只把 SDK 代码接进工程。
+
+| 状态 | 含义 | 能否声称接入完成 |
+| --- | --- | --- |
+| Activated | 已使用真实 `ga_live_*`，能拉配置，并能通过事件统计看到测试事件 | 可以 |
+| Scaffolded | SDK 代码已接入，但没有真实 `ga_live_*`，运行时仍是占位或 no-op | 不可以 |
+
+如果当前仓库没有真实 `ga_live_*`，不要留下 `ga_live_xxx`、`TODO_GAME_KEY`、`no-op key` 之类占位后声称完成。你必须把获取真实 Client Game Key 当作阻塞步骤。
+
+开发者通常只需要提供游戏维度的 Game Admin Key，格式为 `ga_admin_*`。拿到 Admin Key 后，你必须用 GameAlgo CLI 自动创建或读取 Client Game Key，并把真实 `ga_live_*` 写入合适的位置。
 
 先向开发者询问这几项：
 
 - 使用国内环境还是海外环境
-- Game Admin Key，格式 `ga_admin_*`
+- Game Admin Key，格式 `ga_admin_*`。如果用户已经提供真实 `ga_live_*`，可以跳过创建 key，但仍要验证
 - 游戏运行环境：iOS / Android / Web / Backend / TapTap Maker / TapTap 小游戏
 - 本次目标：只接基础事件，还是同时接实验、配置、报表和自动化实验
 
@@ -31,6 +40,12 @@ gamealgo key reveal --name <runtime-name> --json
 
 如果已有可用 Client Game Key，就复用或 reveal；如果没有，就创建。Client Game Key 格式为 `ga_live_*`，用于游戏运行时拉配置、拉配置文件、上报事件。
 
+如果用户暂时不能提供 `ga_admin_*`，你可以继续完成 Scaffolded 状态的代码接入，但最终回复必须明确写出：
+
+- 当前未激活，因为缺少真实 `ga_live_*`
+- 不能验证配置拉取和事件上报
+- 下一步需要用户提供 `ga_admin_*` 或真实 `ga_live_*`
+
 继续阅读并执行：
 
 1. [AI 接入流程](./docs/agent-onboarding.md)
@@ -43,6 +58,7 @@ gamealgo key reveal --name <runtime-name> --json
 ### 不要这样做
 
 - 不要向开发者索要 `ga_live_*`，除非开发者明确说要手工维护运行时 key。
+- 不要把 `ga_live_xxx` 示例值、占位 key 或 no-op key 提交到游戏工程后声称接入完成。
 - 不要把 `ga_admin_*` 写进游戏客户端、小游戏客户端脚本、公开配置或日志。
 - 不要把 README 原样甩给开发者后停止接入。
 - 不要让 GameAlgo 网络请求阻塞游戏主流程。
@@ -108,11 +124,14 @@ docs/       接入、埋点、报表和优化文档
 
 AI Agent 接入后应该至少完成这些验证：
 
-- `/v1/config` 能成功返回当前游戏配置。
-- 运行时 key 没有写入日志、截图、崩溃上报或不该公开的位置。
+- 客户端配置里使用真实 `ga_live_*`，不是占位值。
+- `ga_admin_*` 没有出现在客户端代码、Info.plist、资源文件、脚本包、日志或 git diff 中。
+- `/v1/config` 能成功返回当前游戏配置，或 SDK 日志显示 config fetched / config ready。
 - `session_end` 和核心玩法事件能上传成功。
 - `gamealgo events count` 能查到测试事件。
 - 配置未就绪时，游戏仍然能走本地默认逻辑。
 - Report Pack 可以 `validate` 和 `preview`。
+
+如果以上验证没有完成，交付说明里必须标记为 Scaffolded 或部分完成，不能写“已完成接入”。
 
 完整验收和排查流程见 [AI 接入流程](./docs/agent-onboarding.md)。

@@ -32,6 +32,8 @@ let sdk = GameAlgoSDK(
 )
 ```
 
+`ga_live_xxx` 只是示例占位。实际接入必须使用真实 `ga_live_*`；如果当前没有真实 key，AI Agent 应使用 `ga_admin_*` 通过 GameAlgo CLI 创建或读取，不要提交占位 key 后声称接入完成。
+
 如果需要使用按国家拆分的标准留存看板，iOS 推荐用 `Locale.current.region` 取得 ISO 国家码并写入 `device.country`。
 
 ## 使用方式

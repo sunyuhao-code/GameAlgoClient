@@ -34,6 +34,8 @@ gamealgo key revoke --name tapmaker-proxy --yes --json
 
 `key list` 返回名称、前缀和状态；`key create` 和 `key reveal` 会返回明文，用于写入 SDK 或 TapTap Maker 服务端 Proxy 配置。Client Game Key 统一使用 `ga_live_*` 前缀；QA/测试环境如需区分，可以创建单独命名的 key，并通过 `isDebug=true` 标记测试事件。`ga_admin_*` 只用于开发期自动化和控制台操作，不能打进游戏包。
 
+如果当前没有真实 `ga_live_*`，AI Agent 必须使用 `ga_admin_*` 通过 CLI 创建或读取。不要把 `ga_live_xxx`、`TODO_GAME_KEY`、`NOOP_GAME_KEY` 等占位值提交到游戏工程后声称完成接入。没有真实 Client Game Key 时，只能标记为 Scaffolded，不能进入事件上报验收。
+
 ## 2. 环境地址
 
 GameAlgo 目前有国内和海外两套环境：
@@ -137,7 +139,8 @@ gamealgo events count \
 
 ## 7. 验收清单
 
-- 包内使用正确的 `gameKey`。
+- 包内使用真实 `ga_live_*`，不是占位值。
+- `ga_admin_*` 没有出现在客户端代码、资源文件、脚本包、日志或 git diff 中。
 - 配置好的 key 能成功请求 `/v1/config`。
 - 配置会缓存在本地。
 - 配置文件可以成功拉取并缓存。
