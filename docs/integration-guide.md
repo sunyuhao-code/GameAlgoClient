@@ -34,14 +34,14 @@ gamealgo key revoke --name tapmaker-proxy --yes --json
 
 `key list` 返回名称、前缀和状态；`key create` 和 `key reveal` 会返回明文，用于写入 SDK 或 TapTap Maker 服务端 Proxy 配置。Client Game Key 统一使用 `ga_live_*` 前缀；QA/测试环境如需区分，可以创建单独命名的 key，并通过 `isDebug=true` 标记测试事件。`ga_admin_*` 只用于开发期自动化和控制台操作，不能打进游戏包。
 
-## 2. 国内环境地址
+## 2. 环境地址
 
-国内接入使用下面两个 host：
+GameAlgo 目前有国内和海外两套环境：
 
-| 用途 | Host | 说明 |
+| 环境 | SDK / REST API | Admin / CLI |
 | --- | --- | --- |
-| SDK / REST API | `https://game-algo-sdk.dictapis.cn` | 游戏运行时访问 `/v1/config`、`/v1/config-files/*`、`/v1/events/batch` |
-| Admin / CLI | `https://game-algo-admin.dictapis.cn` | 开发者控制台和 `gamealgo login --host` 使用 |
+| 国内 | `https://game-algo-sdk.dictapis.cn` | `https://game-algo-admin.dictapis.cn` |
+| 海外 | `https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev` | `https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev` |
 
 客户端 SDK 的 `baseURL` / `baseUrl` 配置为 SDK host；CLI 和浏览器控制台使用 Admin host。不要把 Admin host 配到游戏客户端里。
 
@@ -50,6 +50,7 @@ gamealgo key revoke --name tapmaker-proxy --yes --json
 - iOS SDK：使用 `../ios/`。
 - Android SDK：使用 `../android/`。
 - REST API：无法使用原生 SDK 时使用 `../rest-api/`。
+- TapTap Maker / TapTap 小游戏：使用 `../lua/`。
 
 所有接入方式都调用同一套 `/v1/*` 接口，并在每个请求中发送 `X-GameAlgo-Key`。
 
@@ -107,7 +108,7 @@ purchase
 
 ```bash
 gamealgo login \
-  --host https://game-algo-admin.dictapis.cn \
+  --host <admin-host> \
   --admin-key ga_admin_xxx
 ```
 

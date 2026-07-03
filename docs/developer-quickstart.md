@@ -4,12 +4,12 @@
 
 ## 1. 平台地址
 
-国内环境使用两个地址：
+GameAlgo 目前有国内和海外两套环境。开发者只需要告诉 AI Agent 当前游戏使用哪套环境。
 
-| 用途 | 地址 | 给谁用 |
-| --- | --- | --- |
-| SDK / REST API | `https://game-algo-sdk.dictapis.cn` | 游戏客户端 SDK、REST API、小游戏服务端代理 |
-| Admin / CLI | `https://game-algo-admin.dictapis.cn` | 浏览器控制台、`gamealgo login --host` |
+| 环境 | SDK / REST API | Admin / CLI | 给谁用 |
+| --- | --- | --- | --- |
+| 国内 | `https://game-algo-sdk.dictapis.cn` | `https://game-algo-admin.dictapis.cn` | 国内游戏、TapTap Maker / TapTap 小游戏 |
+| 海外 | `https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev` | `https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev` | 海外游戏 |
 
 客户端 SDK 只能配置 SDK / REST API 地址。Admin / CLI 地址只给开发者、AI Agent 和 CI 使用，不要配置到游戏客户端里。
 
@@ -27,9 +27,8 @@
 
 1. 打开 Admin 控制台：
 
-   ```text
-   https://game-algo-admin.dictapis.cn
-   ```
+   - 国内：`https://game-algo-admin.dictapis.cn`
+   - 海外：`https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev`
 
 2. 使用管理员提供的开发者账号和初始密码登录。
 3. 创建或选择你的游戏。
@@ -69,7 +68,7 @@ Client Game Key 统一使用 `ga_live_*` 前缀。QA/测试环境如需区分，
 客户端需要配置：
 
 ```text
-baseURL = https://game-algo-sdk.dictapis.cn
+baseURL = 按环境选择 SDK / REST API 地址
 gameKey = ga_live_xxx
 ```
 
@@ -83,7 +82,7 @@ gameKey = ga_live_xxx
 TapTap 小游戏这类沙盒环境通常不能直接访问外部服务，推荐走服务端代理：
 
 ```text
-小游戏客户端 -> 游戏服务端 Proxy -> https://game-algo-sdk.dictapis.cn
+小游戏客户端 -> 游戏服务端 Proxy -> 对应环境的 SDK / REST API 地址
 ```
 
 这种情况下，Client Game Key 建议放在服务端 Proxy，不直接放在小游戏客户端脚本里。
@@ -118,10 +117,10 @@ AI Agent 负责：
 
 拿到账号和 Game Admin Key 之后，不建议一上来就做复杂实验。推荐按下面顺序推进，每一步都让 AI Agent 帮你完成具体配置和代码改动。
 
-开始前，把 Admin 地址和你创建的 Game Admin Key 提供给 AI Agent：
+开始前，把环境和你创建的 Game Admin Key 提供给 AI Agent：
 
 ```text
-Admin host: https://game-algo-admin.dictapis.cn
+Environment: 国内 / 海外
 Game Admin Key: ga_admin_xxx
 ```
 
@@ -140,7 +139,7 @@ Client Game Key 请通过 GameAlgo CLI 创建或复用，不要让我手工维�
 
 AI Agent 应该做的事：
 
-- 在游戏工程里配置 SDK host：`https://game-algo-sdk.dictapis.cn`
+- 在游戏工程里配置对应环境的 SDK host
 - 先用 `gamealgo key list --json` 检查当前游戏是否已有可用 Client Game Key
 - 没有合适的 key 时，用 `gamealgo key create --name <用途名> --json` 创建；已有 key 但需要明文时，用 `gamealgo key reveal --name <用途名> --json`
 - 把 Client Game Key 配到 SDK 或 TapTap Maker 服务端 Proxy 中
@@ -309,7 +308,7 @@ gamealgo experiment publish experiment.yaml --message "adjust ad frequency" --ye
 
 接入完成后，建议逐项确认：
 
-- 客户端配置的是 SDK 地址 `https://game-algo-sdk.dictapis.cn`。
+- 客户端配置的是对应环境的 SDK / REST API 地址，不是 Admin / CLI 地址。
 - 客户端使用的是 Client Game Key，不是 Game Admin Key。
 - `/v1/config` 可以成功返回配置。
 - 配置文件可以成功拉取。

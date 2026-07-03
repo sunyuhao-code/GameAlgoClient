@@ -4,6 +4,13 @@ GameAlgo CLI 用于开发期自动化，不是游戏运行时 SDK。推荐给游
 
 CLI 必须使用 `ga_admin_*` 形式的 Game Admin Key。`ga_live_*` 是游戏客户端运行时使用的 Client Game Key，不能用于 `gamealgo login`。
 
+Admin host 按环境选择：
+
+| 环境 | Admin host |
+| --- | --- |
+| 国内 | `https://game-algo-admin.dictapis.cn` |
+| 海外 | `https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev` |
+
 CLI 实现在 [../cli](../cli/README.md)。推荐安装后直接使用：
 
 ```bash
@@ -32,7 +39,7 @@ npm --silent run cli -- report manifest --json
 最常用命令：
 
 ```bash
-gamealgo login --host https://game-algo-admin.dictapis.cn --admin-key ga_admin_xxx
+gamealgo login --host <admin-host> --admin-key ga_admin_xxx
 gamealgo key list --json
 gamealgo key create --name tapmaker-proxy --json
 gamealgo key reveal --name tapmaker-proxy --json
@@ -130,7 +137,7 @@ if lobby and lobby.GetMyUserId then
 end
 
 GameAlgo.Init({
-    baseUrl = "https://game-algo-sdk.dictapis.cn",
+    baseUrl = "<sdk-host>",
     appVersion = "1.0.0",
     platform = "rest",
     userId = tapUserId,
