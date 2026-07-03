@@ -25,9 +25,9 @@ SDK 会把业务字段放在事件 `payload` 中。Report pack 告诉 GameAlgo �
 - 切换配置好的报表 tab
 - 点击 `Run` 运行当前 tab 下的图表
 
-## Dashboard 组织最佳实践
+## 看板组织最佳实践
 
-Report Pack 的 dashboard 建议按“业务问题”拆分，而不是按事件表、SQL 或数据来源拆分。一个 tab 应该回答一类决策问题；一个 group 包裹一组强相关图表，并共享同一组 selector。
+Report Pack 的看板建议按“业务问题”拆分，而不是按事件表、SQL 或数据来源拆分。一个 tab 应该回答一类决策问题；一个 group 包裹一组强相关图表，并共享同一组 selector。
 
 推荐第一版先使用下面的 tab 结构：
 
@@ -275,11 +275,10 @@ Report Pack 的展示文案可以直接使用中文，包括顶层 `title`、`ta
 - `calculations` 可以声明平台预置的计算模板。常见问题可以优先用模板配置，少写一层 dataset/report，也更不容易写错。
 - `reports` 定义可见报表查询。
 - `groupBy` 支持 `dt`、`user_segment`、dataset dimensions、`experiment.<strategy_name>` 和 `experiment`。`user_segment` 是平台内置用户类型，适用于 event/rollup 自定义报表，值为 `all`、`new`、`returning`；cohort 报表本身已经是新用户 cohort，不支持再按 `user_segment` 分组。
-- 新版 layout 使用顶层 `charts`、`groups` 和 `tabs`。`charts` 只定义图表，`groups[].charts` 只引用 chart id，`tabs[].groups` 只引用 group id。
+- 当前 layout 使用顶层 `charts`、`groups` 和 `tabs`。`charts` 只定义图表，`groups[].charts` 只引用 chart id，`tabs[].groups` 只引用 group id。
 - `groups` 会在 UI 上包裹一组相关图表，并拥有一组共享 selector。group 内的图表不一定都要使用每个 selector。
-- 新保存的 report pack 必须使用新版 layout。旧版 `dashboard.tabs[].groups[].charts[]` 只作为线上存量 pack 的兼容兜底，不要再生成。
-- 控制台保存和 CLI/local preview 都按新版 layout 校验；只有读取已经保存在线上的旧 pack 时，服务端才会在 v2 解析失败后使用旧解析逻辑兜底。
-- 一个 group 只能选择一种模式：`standard` 或 `charts`。`standard` 可以直接写 `"core.overview@1"`，也兼容 `{ "ref": "core.overview@1" }`。
+- 控制台保存和 CLI/local preview 都按当前 layout 校验，不符合时会直接失败并返回错误原因。
+- 一个 group 只能选择一种模式：`standard` 或 `charts`。`standard` 直接写 `"core.overview@1"` 这样的字符串。
 - 图表 `type` 支持 `line`、`bar`、`pie`、`table` 和 `cohort_matrix`。
 - 折线图使用结果列里的 `x`、`y` 和可选 `series`。
 - 柱状图也使用结果列里的 `x`、`y` 和可选 `series`，适合展示分关卡流失率、分广告位收入、分模式人数等离散维度对比。离散桶需要稳定顺序时，配置 `sort` 指向结果里的排序列，例如 `bucket_order`；`sortDirection` 支持 `asc` 和 `desc`，默认 `asc`。`barMode` 支持 `grouped`、`stacked` 和 `stacked100`；`stacked100` 适合展示版本覆盖率这类占比构成。
@@ -396,7 +395,7 @@ value_per_actor = measure_value / denominator_count
 | `mode_arpu_global` | 开启 `userSegment` 时按 `dt`、`user_segment`、`mode` 聚合；否则按 `dt`、`mode` 聚合 |
 | `mode_arpu_experiment` | 按 `dt`、可选 `user_segment`、`mode`、`scope`、`strategy`、`variant` 聚合 |
 
-两个报表都会返回 `measure_value`、`denominator_count` 和 `value_per_actor`。在 v2 layout 中，group 通过 `charts: ["mode_arpu"]` 引用 calculation id；控制台会展开成图表，并自动给这个 group 增加 Experiment selector、可选用户类型 selector 和 breakdown selector。没有选择实验时，折线图按 `mode` 出多条线；选择实验后，需要再选择一个具体 mode，然后折线图按 variant 出多条线。
+两个报表都会返回 `measure_value`、`denominator_count` 和 `value_per_actor`。group 通过 `charts: ["mode_arpu"]` 引用 calculation id；控制台会展开成图表，并自动给这个 group 增加 Experiment selector、可选用户类型 selector 和 breakdown selector。没有选择实验时，折线图按 `mode` 出多条线；选择实验后，需要再选择一个具体 mode，然后折线图按 variant 出多条线。
 
 如果要配置渗透率，可以把分子写成 `count_distinct`：
 
@@ -439,7 +438,7 @@ value_per_actor = measure_value / denominator_count
 | --- | --- |
 | `{id}_cohort` | `cohort_dt`、`day_offset`、`scope`、`strategy`、`variant` |
 
-在 v2 layout 中，group 通过 `charts: ["new_user_max_level"]` 这类引用使用 calculation id；控制台会自动展开成一张趋势折线图和一张 cohort 矩阵，并给 group 增加 Experiment selector 和 Dx selector。`metric.value` 用来指定趋势图和矩阵单元格的指标。矩阵不会被 Dx selector 过滤；它会展示已成熟的 D0 到 Dn 列，未达到 `cohort_dt + day_offset <= endDate` 的列不会提前展示。
+group 通过 `charts: ["new_user_max_level"]` 这类引用使用 calculation id；控制台会自动展开成一张趋势折线图和一张 cohort 矩阵，并给 group 增加 Experiment selector 和 Dx selector。`metric.value` 用来指定趋势图和矩阵单元格的指标。矩阵不会被 Dx selector 过滤；它会展示已成熟的 D0 到 Dn 列，未达到 `cohort_dt + day_offset <= endDate` 的列不会提前展示。
 
 例如，新用户最大通关关卡 cohort：
 
@@ -1003,16 +1002,16 @@ gamealgo report manifest --json
 或者用 chart 标题查询：
 
 ```bash
-gamealgo report preview --pack gamealgo-report-pack-v1.json --from 2026-06-14 --to 2026-06-21 --chart "Max Level Distribution"
+gamealgo report preview --pack gamealgo-report-pack.json --from 2026-06-14 --to 2026-06-21 --chart "Max Level Distribution"
 ```
 
 为了方便本地调试，如果已经指定了 `--group-id max_levels`，也可以使用裸 chart id：
 
 ```bash
-gamealgo report preview --pack gamealgo-report-pack-v1.json --from 2026-06-14 --to 2026-06-21 --group-id max_levels --chart-id max_level_distribution
+gamealgo report preview --pack gamealgo-report-pack.json --from 2026-06-14 --to 2026-06-21 --group-id max_levels --chart-id max_level_distribution
 ```
 
-`report preview` 使用本地 pack 内容，但 selector、group、chart lookup 仍然走服务端 normalized dashboard model，不是直接按原始 JSON 查找。
+`report preview` 使用本地 pack 内容，但 selector、group、chart lookup 仍然走服务端标准化后的看板结构，不是直接按原始 JSON 查找。
 
 ## 校验
 

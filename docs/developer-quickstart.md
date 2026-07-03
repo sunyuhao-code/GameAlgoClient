@@ -210,15 +210,15 @@ AI Agent 应该做的事：
 常用命令：
 
 ```bash
-gamealgo report validate gamealgo-report-pack-v1.json
+gamealgo report validate gamealgo-report-pack.json
 gamealgo report preview \
-  --pack gamealgo-report-pack-v1.json \
+  --pack gamealgo-report-pack.json \
   --from 2026-06-14 \
   --to 2026-06-21 \
   --group "Progression" \
   --timeout 60 \
   --out reports/preview.json
-gamealgo report publish gamealgo-report-pack-v1.json
+gamealgo report publish gamealgo-report-pack.json
 ```
 
 开发者需要确认：

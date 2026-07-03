@@ -104,7 +104,7 @@ TapTap Maker 初始化时优先使用 Maker 环境提供的稳定用户 ID，例
 
 ```bash
 gamealgo report preview \
-  --pack gamealgo-report-pack-v1.json \
+  --pack gamealgo-report-pack.json \
   --from 2026-06-14 \
   --to 2026-06-21 \
   --tab-id levels \

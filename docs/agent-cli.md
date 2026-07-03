@@ -44,7 +44,7 @@ gamealgo experiment managed status mxt_xxx --json
 gamealgo experiment managed report mxt_xxx --round 1 --json
 gamealgo report manifest --json
 gamealgo report result --from 2026-06-14 --to 2026-06-21 --group "Daily ARPU" --selector experiment=ad_frequency --timeout 60 --out reports/daily-arpu.json
-gamealgo report preview --pack gamealgo-report-pack-v1.json --from 2026-06-14 --to 2026-06-21 --tab-id levels --group-id max_levels --chart-id max_levels__max_level_distribution --timeout 60 --out reports/max-level-distribution-preview.json
+gamealgo report preview --pack gamealgo-report-pack.json --from 2026-06-14 --to 2026-06-21 --tab-id levels --group-id max_levels --chart-id max_levels__max_level_distribution --timeout 60 --out reports/max-level-distribution-preview.json
 gamealgo events count --from 2026-06-23 --to 2026-06-23 --event-type level_end --timeout 60 --json
 gamealgo marketing adjust configure --api-token "$ADJUST_API_TOKEN" --app-token "$ADJUST_APP_TOKEN" --platform ios --currency USD --json
 gamealgo marketing adjust sync --from 2026-06-01 --to 2026-06-07 --timeout 60 --json
@@ -148,7 +148,7 @@ GameAlgo.Init({
 
 国内游戏、TapTap Maker / TapTap 小游戏接入时，`ad_view` 和 `purchase` 的 `currency` 统一使用 `CNY`。不要默认使用 `USD`。
 
-Report Pack JSON 里的 chart id 可以是裸 id，例如 `max_level_distribution`；服务端 manifest 会规范化成 `groupId__chartId`，例如 `max_levels__max_level_distribution`。`--chart-id` 查询参数建议使用 manifest 返回的规范化 id；如果不确定，优先用 `--chart "Max Level Distribution"` 或先跑 `report manifest`。`preview` 使用本地 pack，但 selector/group/chart lookup 仍走服务端 normalized dashboard model。
+Report Pack JSON 里的 chart id 可以是裸 id，例如 `max_level_distribution`；服务端 manifest 会规范化成 `groupId__chartId`，例如 `max_levels__max_level_distribution`。`--chart-id` 查询参数建议使用 manifest 返回的规范化 id；如果不确定，优先用 `--chart "Max Level Distribution"` 或先跑 `report manifest`。`preview` 使用本地 pack，但 selector/group/chart lookup 仍走服务端规范化后的看板结构。
 
 如果新游戏的 `experiment pull` 返回空的 `latestCommitId`，表示还没有实验版本 commit。首次发布时保留为空或 `null` 即可，服务端会创建第一个 commit；发布成功后再 pull 会拿到新的 `exp_c_...`。
 

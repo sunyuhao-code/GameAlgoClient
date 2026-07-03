@@ -135,9 +135,9 @@ gamealgo config publish configs/gameplay.json
 ## Report Pack
 
 ```bash
-gamealgo report pull --out gamealgo-report-pack-v1.json
-gamealgo report validate gamealgo-report-pack-v1.json
-gamealgo report publish gamealgo-report-pack-v1.json
+gamealgo report pull --out gamealgo-report-pack.json
+gamealgo report validate gamealgo-report-pack.json
+gamealgo report publish gamealgo-report-pack.json
 ```
 
 `report validate` 和 Admin 控制台保存时使用同一套服务端校验逻辑。
@@ -201,7 +201,7 @@ gamealgo report result \
 gamealgo report manifest --json
 
 gamealgo report preview \
-  --pack gamealgo-report-pack-v1.json \
+  --pack gamealgo-report-pack.json \
   --from 2026-06-14 \
   --to 2026-06-21 \
   --tab-id levels \
@@ -215,7 +215,7 @@ gamealgo report preview \
 
 注意 chart id 会被服务端 manifest 规范化。Report Pack 原始 JSON 里可以写裸 id，例如 `max_level_distribution`；manifest 返回的查询 id 会带上 group 前缀，例如 `max_levels__max_level_distribution`。`--chart-id` 优先使用 manifest 返回的规范化 id。如果不确定，先跑 `gamealgo report manifest --json`，或者使用 `--chart "Max Level Distribution"` 按标题查询。为了方便本地调试，已经指定 `--group-id max_levels` 时，也可以用裸 chart id：`--chart-id max_level_distribution`。
 
-`preview` 使用本地 pack 内容，但 selector、group 和 chart 查找仍然走服务端规范化后的 dashboard model，不是直接按原始 JSON 查找。
+`preview` 使用本地 pack 内容，但 selector、group 和 chart 查找仍然走服务端规范化后的看板结构，不是直接按原始 JSON 查找。
 
 常用参数：
 
