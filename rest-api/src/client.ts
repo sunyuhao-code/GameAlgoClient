@@ -285,9 +285,9 @@ export class GameAlgoRestClient {
     const provider = clean(input.provider);
     if (!provider) throw new Error("provider is required");
     const identity = await this.userIdentity(input.userId);
-    const status = clean(input.status) ?? "attributed";
     const platform = input.platform ?? this.platform;
     const attribution = normalizeAttribution(input.attribution);
+    const status = normalizeAttributionStatus(provider, clean(input.status), attribution);
     const attributedAt = clean(input.attributedAt);
     const attributionHash = clean(input.attributionHash) ?? await sha256(stableStringify({
       platform,
@@ -1012,6 +1012,33 @@ function normalizeAttribution(value: Record<string, JsonValue>): Record<string, 
     throw new Error("attribution must be an object");
   }
   return normalized as Record<string, JsonValue>;
+}
+
+function normalizeAttributionStatus(provider: string, rawStatus: string | undefined, attribution: Record<string, JsonValue>): string {
+  const status = canonicalAttributionValue(rawStatus);
+  if (status === "organic") return "organic";
+  if (isUnknownAttributionValue(status)) return "unknown";
+  if (provider.toLowerCase() === "adjust") {
+    const network = canonicalAttributionField(attribution, "network");
+    const trackerName = canonicalAttributionField(attribution, "tracker_name") || canonicalAttributionField(attribution, "trackerName");
+    const trackerToken = canonicalAttributionField(attribution, "tracker_token") || canonicalAttributionField(attribution, "trackerToken");
+    if ([network, trackerName, trackerToken].some(isUnknownAttributionValue)) return "unknown";
+    if ([network, trackerName, trackerToken].some((value) => value === "organic")) return "organic";
+  }
+  return rawStatus ?? "attributed";
+}
+
+function canonicalAttributionField(attribution: Record<string, JsonValue>, field: string): string {
+  const value = attribution[field];
+  return typeof value === "string" ? canonicalAttributionValue(value) : "";
+}
+
+function canonicalAttributionValue(value: string | undefined): string {
+  return (value ?? "").trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+}
+
+function isUnknownAttributionValue(value: string): boolean {
+  return value === "unknown" || value === "unattr" || value === "unattributed" || value === "no user consent";
 }
 
 function stableStringify(value: JsonValue): string {

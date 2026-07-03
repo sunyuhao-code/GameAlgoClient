@@ -161,6 +161,13 @@ await sdk.tracker.trackPurchase(
 | `creative` | 素材名或 ID；第一版不强制。 |
 | `country` | 如果归因 SDK 返回可靠国家码，可以回传。 |
 
+状态处理：
+
+- `attributed` 只表示能识别出有效投放归因。
+- `organic` 表示自然量。
+- `unknown` 表示无法归因、用户未授权或归因 SDK 返回占位值。
+- Adjust 返回 `tracker_token=unattr`、`trackerToken=unattr`、`network=No User Consent`、`tracker_name=No User Consent` 或 `trackerName=No User Consent` 时，不要当成有效渠道。GameAlgo SDK 会自动把这类结果归一化为 `status=unknown`。
+
 开发者接入时机：
 
 - 每次归因 SDK callback 返回归因信息时，都可以调用 GameAlgo SDK 的 `setAttribution`。

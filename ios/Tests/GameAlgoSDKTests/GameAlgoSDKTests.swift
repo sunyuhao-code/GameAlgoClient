@@ -487,6 +487,38 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual((body["attribution"] as? [String: Any])?["network"] as? String, "facebook")
     }
 
+    func testSetAttributionNormalizesAdjustNoConsentAsUnknown() async throws {
+        let suiteName = "GameAlgoSDKTests.attribution.noConsent.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let httpClient = MockHTTPClient()
+        try await httpClient.enqueueJSON(["ok": true, "accepted": 1, "attributionHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"])
+        let sdk = GameAlgoSDK(
+            gameKey: gameKey,
+            baseURL: URL(string: "https://gamealgo.test")!,
+            httpClient: httpClient,
+            userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
+            userId: "u1",
+            _autoStart: false
+        )
+
+        _ = try await sdk.setAttribution(GameAlgoUserAttribution(
+            provider: "adjust",
+            status: "attributed",
+            attribution: [
+                "tracker_token": .string("unattr"),
+                "network": .string("No User Consent"),
+                "tracker_name": .string("No User Consent"),
+            ]
+        ))
+
+        let requests = await httpClient.requests
+        let body = try requestBody(requests[0])
+        XCTAssertEqual(body["status"] as? String, "unknown")
+    }
+
     func testTrackerQueuesAndFlushesEventsAfterReadyIdentifiesUser() async throws {
         let suiteName = "GameAlgoSDKTests.tracker.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

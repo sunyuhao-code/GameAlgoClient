@@ -383,8 +383,12 @@ public actor GameAlgoSDK {
             throw GameAlgoError.encodingFailed("provider is required")
         }
         let identity = userIdentityStore.identity(userId: attribution.userId, now: now())
-        let status = clean(attribution.status) ?? "attributed"
         let platform = attribution.platform ?? defaultPlatform
+        let status = normalizeAttributionStatus(
+            provider: provider,
+            rawStatus: clean(attribution.status),
+            attribution: attribution.attribution
+        )
         let attributedAt = clean(attribution.attributedAt)
         let attributionHash = clean(attribution.attributionHash) ?? stableAttributionHash(
             platform: platform,
@@ -701,4 +705,42 @@ private func stableAttributionHash(
     )
     let data = (try? encoder.encode(payload)) ?? Data()
     return GameAlgoSHA256.hash(String(data: data, encoding: .utf8) ?? "")
+}
+
+private func normalizeAttributionStatus(
+    provider: String,
+    rawStatus: String?,
+    attribution: [String: JSONValue]
+) -> String {
+    let status = canonicalAttributionValue(rawStatus)
+    if status == "organic" { return "organic" }
+    if isUnknownAttributionValue(status) { return "unknown" }
+    if provider.lowercased() == "adjust" {
+        let network = canonicalAttributionField(attribution, "network")
+        let trackerName = canonicalAttributionField(attribution, "tracker_name").isEmpty
+            ? canonicalAttributionField(attribution, "trackerName")
+            : canonicalAttributionField(attribution, "tracker_name")
+        let trackerToken = canonicalAttributionField(attribution, "tracker_token").isEmpty
+            ? canonicalAttributionField(attribution, "trackerToken")
+            : canonicalAttributionField(attribution, "tracker_token")
+        if [network, trackerName, trackerToken].contains(where: isUnknownAttributionValue) { return "unknown" }
+        if [network, trackerName, trackerToken].contains("organic") { return "organic" }
+    }
+    return rawStatus ?? "attributed"
+}
+
+private func canonicalAttributionField(_ attribution: [String: JSONValue], _ field: String) -> String {
+    return canonicalAttributionValue(attribution[field]?.stringValue)
+}
+
+private func canonicalAttributionValue(_ value: String?) -> String {
+    return (value ?? "")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+        .replacingOccurrences(of: "[_-]+", with: " ", options: .regularExpression)
+        .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+}
+
+private func isUnknownAttributionValue(_ value: String) -> Bool {
+    return value == "unknown" || value == "unattr" || value == "unattributed" || value == "no user consent"
 }

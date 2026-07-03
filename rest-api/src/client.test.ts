@@ -460,6 +460,35 @@ test("setAttribution posts user attribution once until it changes", async () => 
   assert.equal(requests.length, 1);
 });
 
+test("setAttribution normalizes Adjust no-consent attribution as unknown", async () => {
+  const requests: Request[] = [];
+  const client = createClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    userId: "u1",
+    autoStart: false,
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      requests.push(request.clone());
+      const body = await request.json() as Record<string, unknown>;
+      assert.equal(body.status, "unknown");
+      return jsonResponse({ ok: true, accepted: 1, attributionHash: body.attributionHash });
+    },
+  });
+
+  await client.setAttribution({
+    provider: "adjust",
+    status: "attributed",
+    attribution: {
+      tracker_token: "unattr",
+      network: "No User Consent",
+      tracker_name: "No User Consent",
+    },
+  });
+
+  assert.equal(requests.length, 1);
+});
+
 test("tracker buffers events until context is ready", async () => {
   let uploadedEvents: Array<Record<string, unknown>> = [];
   const client = createClient({

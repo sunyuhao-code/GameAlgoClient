@@ -19,6 +19,7 @@ public final class GameAlgoClientSmokeTest {
         testConstructorBackfillsCreatedAtForPersistedLegacyUserId();
         testUploadEventsFillsDefaults();
         testSetAttributionPostsOnceUntilItChanges();
+        testSetAttributionNormalizesAdjustNoConsentAsUnknown();
         testTrackerBuffersEventsUntilContextIsReady();
         testTrackerQueuesAndFlushesEvents();
         testCustomEventsPreservePayload();
@@ -365,6 +366,37 @@ public final class GameAlgoClientSmokeTest {
         check("android".equals(body.get("platform")), "attribution body should include platform");
         check("adjust".equals(body.get("provider")), "attribution body should include provider");
         check("facebook".equals(GameAlgoJson.asObject(body.get("attribution"), "attribution").get("network")), "attribution body should include fields");
+    }
+
+    private static void testSetAttributionNormalizesAdjustNoConsentAsUnknown() throws Exception {
+        FakeHttpClient httpClient = new FakeHttpClient();
+        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":1,\"attributionHash\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}"));
+        GameAlgoClient client = new GameAlgoClient(
+                "ga_live_test_key_0123456789abcdef",
+                "https://gamealgo.test",
+                "1.0.0",
+                null,
+                "android",
+                httpClient,
+                new FakeScriptRuntime(),
+                null,
+                null,
+                GameAlgoLogger.console(),
+                false
+        );
+        Map<String, Object> attribution = new LinkedHashMap<>();
+        attribution.put("tracker_token", "unattr");
+        attribution.put("network", "No User Consent");
+        attribution.put("tracker_name", "No User Consent");
+
+        client.setAttribution(
+                new GameAlgoUserAttribution("adjust", attribution)
+                        .status("attributed")
+                        .userId("u1")
+        );
+
+        Map<String, Object> body = requestBody(httpClient.requests.get(0));
+        check("unknown".equals(body.get("status")), "no-consent attribution should be unknown");
     }
 
     private static void testTrackerBuffersEventsUntilContextIsReady() throws Exception {

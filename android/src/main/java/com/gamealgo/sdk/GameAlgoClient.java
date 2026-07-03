@@ -353,15 +353,12 @@ public final class GameAlgoClient {
             throw new GameAlgoException("provider is required");
         }
         GameAlgoUserIdentity identity = userIdentity(attribution.getUserId());
-        String status = clean(attribution.getStatus());
-        if (status == null) {
-            status = "attributed";
-        }
         String platform = clean(attribution.getPlatform());
         if (platform == null) {
             platform = defaultPlatform;
         }
         Map<String, Object> attributionPayload = new LinkedHashMap<>(attribution.getAttribution());
+        String status = normalizeAttributionStatus(provider, clean(attribution.getStatus()), attributionPayload);
         String attributedAt = clean(attribution.getAttributedAt());
         String attributionHash = clean(attribution.getAttributionHash());
         if (attributionHash == null) {
@@ -412,6 +409,50 @@ public final class GameAlgoClient {
         }
         log("attribution synced: provider=" + provider + ", accepted=" + response.getAccepted());
         return response;
+    }
+
+    private static String normalizeAttributionStatus(String provider, String rawStatus, Map<String, Object> attribution) {
+        String status = canonicalAttributionValue(rawStatus);
+        if ("organic".equals(status)) {
+            return "organic";
+        }
+        if (isUnknownAttributionValue(status)) {
+            return "unknown";
+        }
+        if ("adjust".equals(provider.toLowerCase())) {
+            String network = canonicalAttributionField(attribution, "network");
+            String trackerName = canonicalAttributionField(attribution, "tracker_name");
+            if (trackerName.isEmpty()) {
+                trackerName = canonicalAttributionField(attribution, "trackerName");
+            }
+            String trackerToken = canonicalAttributionField(attribution, "tracker_token");
+            if (trackerToken.isEmpty()) {
+                trackerToken = canonicalAttributionField(attribution, "trackerToken");
+            }
+            if (isUnknownAttributionValue(network) || isUnknownAttributionValue(trackerName) || isUnknownAttributionValue(trackerToken)) {
+                return "unknown";
+            }
+            if ("organic".equals(network) || "organic".equals(trackerName) || "organic".equals(trackerToken)) {
+                return "organic";
+            }
+        }
+        return rawStatus == null ? "attributed" : rawStatus;
+    }
+
+    private static String canonicalAttributionField(Map<String, Object> attribution, String field) {
+        Object value = attribution.get(field);
+        return value instanceof String ? canonicalAttributionValue((String) value) : "";
+    }
+
+    private static String canonicalAttributionValue(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.trim().toLowerCase().replaceAll("[_-]+", " ").replaceAll("\\s+", " ");
+    }
+
+    private static boolean isUnknownAttributionValue(String value) {
+        return "unknown".equals(value) || "unattr".equals(value) || "unattributed".equals(value) || "no user consent".equals(value);
     }
 
     public synchronized void clearConfigCache() {
