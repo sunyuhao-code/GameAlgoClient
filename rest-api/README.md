@@ -179,7 +179,7 @@ ad_view
 purchase
 ```
 
-广告变现使用 `trackAd`。它会上报 `ad_view`。`ad_view` 只表示广告已经成功曝光并产生一次有效展示；广告加载失败、未填充、播放失败、用户取消或关闭但没有完成有效曝光时，不要上报到 `ad_view`。必填字段为 `placement`、`adType`、`revenue` 和 `currency`；`network` 可选。国内游戏、TapTap Maker / TapTap 小游戏接入时，`currency` 统一使用 `CNY`，不要默认使用 `USD`：
+广告变现使用 `trackAd`。它会上报 `ad_view`。`ad_view` 只表示广告 SDK 确认实际产生收入的有效曝光；用户看了一部分广告后跳过，但广告 SDK 已确认本次曝光有效并产生收入，也应该上报。广告加载失败、未填充、播放失败，或广告 SDK 没有确认产生收入的展示，不要上报到 `ad_view`。必填字段为 `placement`、`adType`、`revenue` 和 `currency`；`network` 可选。国内游戏、TapTap Maker / TapTap 小游戏接入时，`currency` 统一使用 `CNY`，不要默认使用 `USD`：
 
 ```ts
 client.tracker.trackAd("rewarded_level_end", "reward", 0.018, "CNY", "admob");

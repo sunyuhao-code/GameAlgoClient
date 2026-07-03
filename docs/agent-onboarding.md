@@ -134,12 +134,14 @@ end
 
 ## 6. 接入基础事件
 
-先接最小事件，不要一开始做过多自定义：
+先读 [AI Agent 埋点接入手册](./ai-tracking-manual.md)，按“所有游戏必接 + 条件接入 + 玩法补充”的顺序接入。不要一开始做过多自定义。
+
+所有游戏都应该先保证：
 
 ```text
 session_end
-level_start
-level_end
+核心玩法开始事件：game_start 或 level_start
+核心玩法结束事件：game_over 或 level_end
 ```
 
 有广告或内购时继续接：
@@ -149,13 +151,15 @@ ad_view
 purchase
 ```
 
-广告事件使用 `ad_view`，只在广告成功曝光并产生有效展示时上报。`placement`、`adType`、`revenue`、`currency` 必填。
+广告事件使用 `ad_view`，只在广告 SDK 确认实际产生收入的有效曝光时上报；用户看了一部分广告后跳过，但广告 SDK 已确认本次曝光有效并产生收入，也算有效曝光。`placement`、`adType`、`revenue`、`currency` 必填。
 
 国内游戏、TapTap Maker / TapTap 小游戏的广告和付费事件默认使用：
 
 ```text
 currency = CNY
 ```
+
+如果游戏使用 Adjust 等归因 SDK，并且能从 SDK callback 拿到归因信息，推荐每次 callback 都调用 GameAlgo SDK 的 attribution API。GameAlgo SDK 会自己做 hash、ack 去重和失败后重试，开发者不需要维护重试状态。需要看投放 ROI、ROAS、花费或 Campaign 明细时，还要用 CLI 配置 Adjust API Token 和 App Token，并同步成本。
 
 不同玩法的字段建议见 [不同类型游戏埋点建议](./tracking-recommendations.md)。如果游戏是章节 + 小关这类多层进度，报表先按粗粒度章节看，再对流失严重章节补小关分析。
 
@@ -221,12 +225,14 @@ Report Pack 结构和标准看板见 [Report Pack 配置](./report-packs.md)。
 - Revenue：广告收入、ARPU、LTV、广告位表现
 - Progression：关卡/章节进度、胜率、最大进度分布
 
-如果接入了 Adjust，可以配置投放成本同步并使用投放 ROI 看板：
+如果接入了 Adjust，并且需要投放 ROI 看板，可以配置投放成本同步：
 
 ```bash
-gamealgo marketing adjust configure --api-token "$ADJUST_API_TOKEN" --app-token "$ADJUST_APP_TOKEN" --platform ios --currency USD --json
+gamealgo marketing adjust configure --api-token "$ADJUST_API_TOKEN" --app-token "$ADJUST_APP_TOKEN" --platform ios --currency CNY --json
 gamealgo marketing adjust sync --from 2026-06-01 --to 2026-06-07 --timeout 60 --json
 ```
+
+海外游戏按 Adjust 投放账户实际成本币种替换 `--currency`。
 
 ## 9. 接入实验、配置和脚本
 

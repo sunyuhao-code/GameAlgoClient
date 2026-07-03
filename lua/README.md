@@ -109,7 +109,7 @@ GameAlgo.TrackSessionEnd()
 GameAlgo.Flush()
 ```
 
-`GameAlgo.TrackAd` 上报的是 `ad_view`，只用于广告成功曝光并产生一次有效展示。广告加载失败、未填充、播放失败、用户取消或关闭但没有完成有效曝光时，不要调用 `TrackAd`。
+`GameAlgo.TrackAd` 上报的是 `ad_view`，只用于广告 SDK 确认实际产生收入的有效曝光。用户看了一部分广告后跳过，但广告 SDK 已确认本次曝光有效并产生收入，也应该调用 `TrackAd`；广告加载失败、未填充、播放失败，或广告 SDK 没有确认产生收入的展示，不要调用 `TrackAd`。
 
 TapTap Maker / TapTap 小游戏接入时，广告和付费事件的 `currency` 统一使用 `CNY`。不要默认使用 `USD`。
 

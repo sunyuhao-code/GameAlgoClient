@@ -17,9 +17,9 @@
 | 事件 | 什么时候上报 | 关键字段 |
 | --- | --- | --- |
 | `session_end` | 一次 App / 游戏会话结束，或切后台前可以安全 flush 时 | `sessionDurationMs` |
-| `game_start` | 一局、一次对局、一次 run 或一次核心玩法开始 | `mode`, `progressionType`, `runId` 或 `gameId` |
+| `game_start` | 一局、一次对局、一次 run 或一次核心玩法开始 | `mode`, `progressionType`, `runId` 或 `roundId` |
 | `game_over` | 一局、一次对局、一次 run 或一次核心玩法结束 | `mode`, `result`, `durationMs`, `progressionNo` |
-| `ad_view` | 广告完成有效曝光并产生收入时 | `placement`, `adType`, `revenue`, `currency` |
+| `ad_view` | 广告 SDK 确认实际产生收入的有效曝光时 | `placement`, `adType`, `revenue`, `currency` |
 | `purchase` | 内购或付费成功时 | `productId`, `revenue`, `currency` |
 
 国内游戏、TapTap Maker / TapTap 小游戏的 `currency` 统一使用 `CNY`。
@@ -218,7 +218,7 @@
 | `currency` | 国内统一 `CNY`。 |
 | `source` | 购买入口，例如 `shop`、`offer_popup`。 |
 
-广告加载失败、无填充、播放中断、用户关闭但没有形成有效曝光时，不要上报 `ad_view`。这些可以作为自定义诊断事件，例如 `_ad_load_failed`，但不要混入收入报表口径。
+`ad_view` 的判断标准是广告 SDK 是否确认本次曝光有效并产生收入。用户看了一部分广告后跳过，但广告 SDK 已确认产生收入，也应该上报。广告加载失败、无填充、播放失败，或广告 SDK 没有确认产生收入的展示，不要上报 `ad_view`。这些可以作为自定义诊断事件，例如 `_ad_load_failed`，但不要混入收入报表口径。
 
 ## 用户归因
 
@@ -232,10 +232,10 @@
 
 上报时机：
 
-- 第一次拿到归因结果时上报。
-- 归因内容变化时上报。
-- 上次上传失败或没有拿到服务端 `attributionHash` ack 时，下次启动后重试。
-- 不需要每次 App 打开都重复上报同一份归因。
+- 开发者每次收到归因 SDK callback 时都可以调用 GameAlgo SDK 的 attribution API。
+- GameAlgo SDK 会自己计算 hash、保存服务端 ack，并跳过已经成功同步过的相同归因。
+- 如果上次上传失败或没有拿到服务端 ack，下次再次调用时 SDK 会重新上报。
+- 开发者不需要自己维护重试状态或 `attributionHash`。
 
 建议字段：
 

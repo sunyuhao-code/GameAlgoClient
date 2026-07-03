@@ -281,7 +281,7 @@ GameAlgo 会把 `payload` 作为事件业务数据保存。后续每个游戏可
 | `ad_view` | 广告展示和收入 |
 | `purchase` | 付费 |
 
-`ad_view` 只表示广告已经成功曝光并产生一次有效展示；广告加载失败、未填充、播放失败、用户取消或关闭但没有完成有效曝光时，不要上报到 `ad_view`。
+`ad_view` 只表示广告 SDK 确认实际产生收入的有效曝光。用户看了一部分广告后跳过，但广告 SDK 已确认本次曝光有效并产生收入，也应该上报；广告加载失败、未填充、播放失败，或广告 SDK 没有确认产生收入的展示，不要上报到 `ad_view`。
 
 `ad_view` 的标准 payload 必须包含 `placement`、`adType`、`revenue`、`currency`，可以额外包含 `network`。`adType` 表示广告位类型，例如 `reward`、`banner`、`interstitial`。国内游戏、TapTap Maker / TapTap 小游戏接入时，`currency` 统一使用 `CNY`，不要默认使用 `USD`：
 
@@ -368,9 +368,10 @@ Content-Type: application/json
 
 客户端行为：
 
-- 不要求每次 App 打开都上传归因。
-- 当归因 SDK 第一次返回归因、归因内容变化、或上次上传没有拿到服务端 ack 时再上传。
+- 开发者每次收到归因 SDK callback 时都可以调用官方 SDK 的 attribution API。
 - 官方 SDK 会把服务端返回的 `attributionHash` 持久化；相同 provider 和相同归因内容已 ack 时跳过重复请求。
+- 如果上次上传失败或没有拿到服务端 ack，下次再次调用时官方 SDK 会重新上报。
+- 直调 REST API 时，调用方需要自行持久化最近一次成功 ack 的 `attributionHash`，或使用 GameAlgo REST helper。
 - 归因数据用于后续用户归因快照表和分渠道报表，不作为普通 `eventType` 事件参与事件数统计。
 
 ## 8. 客户端 API 形态

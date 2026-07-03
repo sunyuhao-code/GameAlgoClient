@@ -76,11 +76,11 @@ SDK 默认会把 user id、配置拉取、实验分组、配置文件和脚本�
 
 `tracker` 会把事件排入内存队列，每批最多上传 100 条，每 30 秒 flush 一次，并在 App 进入后台或退出时主动 flush；失败批次会保留到下次重试。如果配置 context 还没准备好，事件会继续留在本地，`flush` 会在上传前填入当前 `contextId`。关键事件后可以调用 `await sdk.tracker.flush()` 手动 flush；`trackSessionEnd` 入队 `session_end` 后也会立即触发一次 flush。
 
-`trackAd` 上报的是 `ad_view`，只用于广告成功曝光并产生一次有效展示。广告加载失败、未填充、播放失败、用户取消或关闭但没有完成有效曝光时，不要调用 `trackAd`。
+`trackAd` 上报的是 `ad_view`，只用于广告 SDK 确认实际产生收入的有效曝光。用户看了一部分广告后跳过，但广告 SDK 已确认本次曝光有效并产生收入，也应该调用 `trackAd`；广告加载失败、未填充、播放失败，或广告 SDK 没有确认产生收入的展示，不要调用 `trackAd`。
 
 国内游戏接入时，广告和付费事件的 `currency` 统一使用 `CNY`。不要默认使用 `USD`。
 
-如果接入 Adjust 等归因 SDK，在归因 callback 返回后调用 `setAttribution`。SDK 会自动带上 `platform=ios`，并保存服务端返回的 `attributionHash`；同一份归因已经成功 ack 后不会重复上传，归因变化或上次失败时会重试。
+如果接入 Adjust 等归因 SDK，在每次归因 callback 返回后都可以调用 `setAttribution`。SDK 会自动带上 `platform=ios`，并保存服务端返回的 `attributionHash`；同一份归因已经成功 ack 后不会重复上传，归因变化或上次失败时会重试。开发者不需要自己维护重试状态或 `attributionHash`。
 
 SDK 会在 `/v1/config` 请求里自动带上 `userCreatedAt` 和基础 `device` context。接入方可以在 `GameAlgoSDK(...)` 或 `fetchConfig` 中传入 `device` / `deviceId`，用于追加 App 自定义字段或覆盖默认值。
 

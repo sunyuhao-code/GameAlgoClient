@@ -69,18 +69,20 @@ GameAlgo 目前有国内和海外两套环境：
   - REST: `await client.fetchConfigFile("gameplay.json")`
 - 事件上报优先使用 SDK tracker。tracker 会内存批量队列、周期 flush，并重试失败批次。
 - 实验分组保存在配置拉取时创建的 SDK context 中，事件里不需要复制实验字段。
-- 如果接入 Adjust 等归因 SDK，归因结果异步返回后调用 SDK 的 `setAttribution` / REST `/v1/attribution`。同一份归因成功 ack 后 SDK 会跳过重复上报；归因变化或上次失败时会重试。
+- 如果接入 Adjust 等归因 SDK，归因结果异步返回后调用 SDK 的 `setAttribution` / REST helper。开发者可以每次 callback 都调用；同一份归因成功 ack 后 SDK 会跳过重复上报，归因变化或上次失败时会重试。直调 `/v1/attribution` 时才需要调用方自己处理 ack 去重。
 - 不要让 GameAlgo 网络请求阻塞游戏主流程。
 - GameAlgo 不可用时走本地默认逻辑。
 
 ## 5. 推荐事件
 
-最小推荐事件：
+更完整的 AI 接入清单见 [AI Agent 埋点接入手册](./ai-tracking-manual.md)。
+
+所有游戏最小推荐接入：
 
 ```text
 session_end
-level_start
-level_end
+核心玩法开始事件：game_start 或 level_start
+核心玩法结束事件：game_over 或 level_end
 ```
 
 有广告或内购的游戏还应上报：
@@ -101,6 +103,10 @@ purchase
 - REST: `await client.setAttribution({ provider: "adjust", attribution })`
 
 `attribution` 里只放渠道、campaign、adgroup、creative 等非敏感字段。不要上传手机号、邮箱、OAID、IDFA、TapID 等强身份字段。
+
+GameAlgo 官方 SDK 会持久化归因 ack 状态。开发者不需要自己保存 `attributionHash` 或实现重试队列，只要在归因 SDK callback 里调用 `setAttribution`。
+
+如果需要看投放 ROI、ROAS、花费趋势或 Campaign 明细，AI Agent 还需要在 CLI/Admin 中配置 Adjust API Token 和 App Token，并执行一次成本同步；这些 token 不能写进客户端。
 
 ## 6. 接入测试时验证事件上报
 
@@ -149,4 +155,4 @@ gamealgo events count \
 - 客户端运行时使用 `ga_live_*`；如需区分 QA/生产环境，使用不同名称的 Client Game Key。
 - 临时网络失败后，事件会继续重试。
 - 可以通过 `gamealgo events count` 查到测试事件。
-- 如接入归因，首次拿到归因后能调用 `/v1/attribution`，并收到 `attributionHash`。
+- 如接入归因，每次归因 SDK callback 后能调用官方 SDK / REST helper 的 `setAttribution`，重复相同归因时 SDK 会跳过重复上报。

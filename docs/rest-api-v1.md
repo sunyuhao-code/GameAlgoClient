@@ -175,7 +175,7 @@ curl -s -X POST "https://game-algo-sdk.dictapis.cn/v1/attribution" \
 }
 ```
 
-直调 REST API 时必须带 `platform`，取值为 `ios`、`android` 或 `rest`。建议客户端持久化最近一次成功 ack 的 `attributionHash`。同一个 provider 的归因内容没有变化时不要重复上传；如果上次上传失败或没有拿到 ack，下次启动后可以重试。
+直调 REST API 时必须带 `platform`，取值为 `ios`、`android` 或 `rest`。如果使用 GameAlgo REST helper，开发者可以每次归因 SDK callback 都调用 `setAttribution`，helper 会持久化最近一次成功 ack 的 `attributionHash`，相同 provider 和相同归因内容已 ack 时跳过重复请求；如果上次上传失败或没有拿到 ack，下次再次调用时会重试。直接手写 HTTP 调 `/v1/attribution` 时，需要调用方自己做同样的 ack 去重。
 
 TypeScript helper 可以直接调用：
 
@@ -205,7 +205,7 @@ ad_view
 purchase
 ```
 
-`ad_view` 只表示广告已经成功曝光并产生一次有效展示；广告加载失败、未填充、播放失败、用户取消或关闭但没有完成有效曝光时，不要上报到 `ad_view`。
+`ad_view` 只表示广告 SDK 确认实际产生收入的有效曝光。用户看了一部分广告后跳过，但广告 SDK 已确认本次曝光有效并产生收入，也应该上报；广告加载失败、未填充、播放失败，或广告 SDK 没有确认产生收入的展示，不要上报到 `ad_view`。
 
 `ad_view` payload 必须包含 `placement`、`adType`、`revenue` 和 `currency`。`adType` 表示广告位类型，例如 `reward`、`banner` 或 `interstitial`。`network` 可选。国内游戏、TapTap Maker / TapTap 小游戏接入时，`currency` 统一使用 `CNY`，不要默认使用 `USD`：
 
@@ -267,6 +267,6 @@ SDK tracker 默认不会给自定义事件附加实验分组。需要做实验�
 - 会话结束时会上报带时长的 `session_end`。
 - 有关卡的游戏会上报 `level_start` 和 `level_end`。
 - 有广告的游戏会上报带 `placement`、`adType`、`revenue` 和 `currency` 的 `ad_view`。
-- 如接入 Adjust 等归因 SDK，拿到归因结果后调用 `/v1/attribution`，并用 `attributionHash` 做 ack 去重。
+- 如接入 Adjust 等归因 SDK，拿到归因结果后调用 REST helper 的 `setAttribution`；helper 会用 `attributionHash` 做 ack 去重。直接手写 HTTP 调 `/v1/attribution` 时再自行维护 ack。
 - QA 包设置 `isDebug=true`。
 - 客户端运行时只使用 `ga_live_*`。QA/测试环境如需区分，可以创建单独命名的 Client Game Key，并设置 `isDebug=true`。

@@ -10,19 +10,22 @@
 2. [客户端接入指南](./integration-guide.md)
    两类 key、国内/海外 host、运行时要求、推荐事件和验收清单。
 
-3. [不同类型游戏埋点建议](./tracking-recommendations.md)
+3. [AI Agent 埋点接入手册](./ai-tracking-manual.md)
+   AI 接入时哪些 context、事件、广告、付费、归因和 Adjust 成本配置推荐接入。
+
+4. [不同类型游戏埋点建议](./tracking-recommendations.md)
    关卡/对局、run/roguelike、模拟经营、剧情分支等玩法的事件设计建议。
 
-4. [Report Pack 配置](./report-packs.md)
+5. [Report Pack 配置](./report-packs.md)
    报表配置结构、标准看板、自定义 dataset/report/calculation、chart 和 selector。
 
-5. [Agent CLI 命令参考](./agent-cli.md)
+6. [Agent CLI 命令参考](./agent-cli.md)
    CLI 安装、登录、key 管理、实验、脚本、配置、报表、事件统计和投放同步命令。
 
-6. [AI LTV 优化 Playbook](./ai-ltv-optimization-playbook.md)
+7. [AI LTV 优化 Playbook](./ai-ltv-optimization-playbook.md)
    接入完成后，如何围绕 LTV 做数据回收、实验和持续优化。
 
-7. [Level DDA framework](./dda-level-framework.md)
+8. [Level DDA framework](./dda-level-framework.md)
    关卡类游戏动态难度调整的标准化框架。
 
 ## 开发者推荐阅读

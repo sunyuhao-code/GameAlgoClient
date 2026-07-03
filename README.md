@@ -50,10 +50,11 @@ gamealgo key reveal --name <runtime-name> --json
 
 1. [AI 接入流程](./docs/agent-onboarding.md)
 2. [客户端接入指南](./docs/integration-guide.md)
-3. [不同类型游戏埋点建议](./docs/tracking-recommendations.md)
-4. [Report Pack 配置](./docs/report-packs.md)
-5. [Agent CLI 命令参考](./docs/agent-cli.md)
-6. [AI LTV 优化 Playbook](./docs/ai-ltv-optimization-playbook.md)
+3. [AI Agent 埋点接入手册](./docs/ai-tracking-manual.md)
+4. [不同类型游戏埋点建议](./docs/tracking-recommendations.md)
+5. [Report Pack 配置](./docs/report-packs.md)
+6. [Agent CLI 命令参考](./docs/agent-cli.md)
+7. [AI LTV 优化 Playbook](./docs/ai-ltv-optimization-playbook.md)
 
 ### 不要这样做
 
@@ -128,6 +129,7 @@ AI Agent 接入后应该至少完成这些验证：
 - `ga_admin_*` 没有出现在客户端代码、Info.plist、资源文件、脚本包、日志或 git diff 中。
 - `/v1/config` 能成功返回当前游戏配置，或 SDK 日志显示 config fetched / config ready。
 - `session_end` 和核心玩法事件能上传成功。
+- 如果游戏使用 Adjust 等归因 SDK，归因 callback 后能回传归因；如果需要投放 ROI 报表，Adjust API Token / App Token 已在 CLI/Admin 配置并完成同步验证。
 - `gamealgo events count` 能查到测试事件。
 - 配置未就绪时，游戏仍然能走本地默认逻辑。
 - Report Pack 可以 `validate` 和 `preview`。
