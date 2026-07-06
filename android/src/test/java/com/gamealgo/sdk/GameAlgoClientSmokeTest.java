@@ -17,6 +17,7 @@ public final class GameAlgoClientSmokeTest {
         testConstructorRestoresPersistedSnapshotThenStillRefreshes();
         testConstructorGeneratesAndReusesAnonymousUserId();
         testConstructorBackfillsCreatedAtForPersistedLegacyUserId();
+        testConfigureAdjustServerCallbackParamsUsesGameAlgoIdentity();
         testUploadEventsFillsDefaults();
         testSetAttributionPostsOnceUntilItChanges();
         testSetAttributionNormalizesAdjustNoConsentAsUnknown();
@@ -284,6 +285,31 @@ public final class GameAlgoClientSmokeTest {
         check(firstUserId.equals(second.userId()), "anonymous user id should be persisted");
         check(firstUserId.equals(requestBody(firstHttpClient.requests.get(0)).get("userId")), "first config request should use generated user id");
         check(firstUserId.equals(requestBody(secondHttpClient.requests.get(0)).get("userId")), "second config request should reuse generated user id");
+    }
+
+    private static void testConfigureAdjustServerCallbackParamsUsesGameAlgoIdentity() throws Exception {
+        MemoryCacheStorage cache = new MemoryCacheStorage();
+        cache.setItem("gamealgo_user_id", "u1");
+        cache.setItem("gamealgo_user_created_at", "2026-05-28T10:00:00.000Z");
+        GameAlgoClient client = new GameAlgoClient(
+                "ga_live_test_key_0123456789abcdef",
+                "https://gamealgo.test",
+                "1.0.0",
+                null,
+                "android",
+                new FakeHttpClient(),
+                new FakeScriptRuntime(),
+                cache,
+                "test-cache",
+                GameAlgoLogger.console(),
+                false
+        );
+
+        Map<String, String> params = new LinkedHashMap<>();
+        client.configureAdjustServerCallbackParams(params::put);
+
+        check("u1".equals(params.get("gamealgo_user_id")), "adjust callback params should include gamealgo user id");
+        check("2026-05-28T10:00:00.000Z".equals(params.get("gamealgo_user_created_at")), "adjust callback params should include gamealgo user created at");
     }
 
     private static void testUploadEventsFillsDefaults() throws Exception {

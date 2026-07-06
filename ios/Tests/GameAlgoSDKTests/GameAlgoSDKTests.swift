@@ -73,6 +73,31 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(configRequest["userCreatedAt"] as? String, "2026-05-28T10:00:00.000Z")
     }
 
+    func testConfigureAdjustServerCallbackParamsUsesGameAlgoIdentity() throws {
+        let suiteName = "GameAlgoSDKTests.adjustCallbackParams.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defaults.set("u1", forKey: GameAlgoUserIdentityStore.legacyUserIdKey)
+        defaults.set("2026-05-28T10:00:00.000Z", forKey: GameAlgoUserIdentityStore.legacyUserCreatedAtKey)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let sdk = GameAlgoSDK(
+            gameKey: gameKey,
+            baseURL: URL(string: "https://gamealgo.test")!,
+            httpClient: MockHTTPClient(),
+            userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
+            _autoStart: false
+        )
+
+        var params: [String: String] = [:]
+        sdk.configureAdjustServerCallbackParams { key, value in
+            params[key] = value
+        }
+
+        XCTAssertEqual(params["gamealgo_user_id"], "u1")
+        XCTAssertEqual(params["gamealgo_user_created_at"], "2026-05-28T10:00:00.000Z")
+    }
+
     func testTrackerBuffersEventsUntilConfigContextIsReady() async throws {
         let suiteName = "GameAlgoSDKTests.initialTrackerIdentity.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

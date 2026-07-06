@@ -209,6 +209,15 @@ public final class GameAlgoClient {
         return userIdentity(null);
     }
 
+    public void configureAdjustServerCallbackParams(GameAlgoCallbackParameterSetter setter) throws GameAlgoException {
+        if (setter == null) {
+            throw new GameAlgoException("callback parameter setter is required");
+        }
+        GameAlgoUserIdentity identity = userIdentity(null);
+        setter.set("gamealgo_user_id", identity.getUserId());
+        setter.set("gamealgo_user_created_at", identity.getUserCreatedAt());
+    }
+
     public synchronized GameAlgoConfigResponse fetchConfig() throws GameAlgoException {
         return fetchConfig(new GameAlgoFetchConfigRequest(null));
     }

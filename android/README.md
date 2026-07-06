@@ -38,6 +38,16 @@ sdk.setAttribution(
 )
 ```
 
+如果游戏启用 Adjust Server Callback，在初始化 Adjust SDK 前配置 GameAlgo 自定义 callback 参数：
+
+```kotlin
+sdk.configureAdjustServerCallbackParams { key, value ->
+    Adjust.addGlobalCallbackParameter(key, value)
+}
+```
+
+`gamealgo_user_id` 和 `gamealgo_user_created_at` 不是 Adjust 内置参数，SDK 会从 GameAlgo 本地 identity 中取值并写入 Adjust global callback parameters。接入方不要手写这两个字段。
+
 `GameAlgo.init(...)` 会在后台 executor 里刷新 `/v1/config` 并预加载配置文件。它也会创建或复用 SDK 匿名 `userId`；如果 App 希望无依赖 core 持久化这个 ID，初始化时需要传入 `GameAlgoCacheStorage`。`executor` 和 `config()` 读取的是最新本地快照，所以玩法代码读取实验分组或调参值时不需要直接调用远端 API。
 
 GameAlgo 控制台 Configs 页面创建的文件也可以在需要时直接拉取：

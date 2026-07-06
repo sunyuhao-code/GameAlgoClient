@@ -167,6 +167,12 @@ public actor GameAlgoSDK {
         userIdentity.userId
     }
 
+    public nonisolated func configureAdjustServerCallbackParams(_ setCallbackParam: (_ key: String, _ value: String) -> Void) {
+        let identity = userIdentity
+        setCallbackParam("gamealgo_user_id", identity.userId)
+        setCallbackParam("gamealgo_user_created_at", identity.userCreatedAt)
+    }
+
     public nonisolated func executor(_ key: String) -> GameAlgoExperimentExecutor {
         GameAlgoExperimentExecutor(key: key, store: snapshotStore, scriptRuntime: scriptRuntime, logger: logger)
     }

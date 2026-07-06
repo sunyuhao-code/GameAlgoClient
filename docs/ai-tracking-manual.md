@@ -175,6 +175,16 @@ await sdk.tracker.trackPurchase(
 - GameAlgo SDK 会根据 provider + 归因内容计算稳定 hash；同一份归因已经成功 ack 后会跳过重复请求。
 - 如果上次上传失败或没有拿到服务端 ack，下次开发者再次调用 `setAttribution` 时 SDK 会重新上报。
 
+如果使用 Adjust Server Callback，AI Agent 还要在 Adjust SDK 初始化前配置 GameAlgo callback 参数：
+
+| SDK | 调用方式 |
+| --- | --- |
+| iOS | `sdk.configureAdjustServerCallbackParams { key, value in Adjust.addGlobalCallbackParameter(value, forKey: key) }` |
+| Android | `sdk.configureAdjustServerCallbackParams { key, value -> Adjust.addGlobalCallbackParameter(key, value) }` |
+| REST/Web | `await client.configureAdjustServerCallbackParams((key, value) => adjustSetCallbackParam(key, value))` |
+
+`gamealgo_user_id` 和 `gamealgo_user_created_at` 是 GameAlgo 写入 Adjust 的自定义 global callback parameters，不是 Adjust 自带字段。不要让开发者或 AI 自己拼这两个值；统一调用 SDK helper。
+
 归因数据用于分渠道留存、LTV、ROI 和投放看板。不要上传手机号、邮箱、OAID、IDFA、TapID 等强身份字段。
 
 ## 7. 需要投放报表时配置 Adjust 成本同步
@@ -200,6 +210,14 @@ gamealgo marketing adjust configure \
   --currency CNY \
   --json
 ```
+
+保存成功后，Agent 可以读取 Adjust Server Callback URL：
+
+```bash
+gamealgo marketing adjust get --json
+```
+
+返回的 `integration.callbackUrl` 就是要填到 Adjust Raw Data Export / Server Callback 里的 URL。URL 由服务端生成，包含当前游戏、callback token 和 Adjust placeholder；Agent 不要自己拼 URL。
 
 手动同步最近一段时间用于验证：
 

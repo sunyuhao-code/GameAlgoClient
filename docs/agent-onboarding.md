@@ -229,10 +229,11 @@ Report Pack 结构和标准看板见 [Report Pack 配置](./report-packs.md)。
 
 ```bash
 gamealgo marketing adjust configure --api-token "$ADJUST_API_TOKEN" --app-token "$ADJUST_APP_TOKEN" --platform ios --currency CNY --json
+gamealgo marketing adjust get --json
 gamealgo marketing adjust sync --from 2026-06-01 --to 2026-06-07 --timeout 60 --json
 ```
 
-海外游戏按 Adjust 投放账户实际成本币种替换 `--currency`。
+`get --json` 返回的 `integration.callbackUrl` 是 Adjust Server Callback URL，Agent 可以把它配置到 Adjust Raw Data Export / Server Callback。海外游戏按 Adjust 投放账户实际成本币种替换 `--currency`。
 
 ## 9. 接入实验、配置和脚本
 

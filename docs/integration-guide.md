@@ -106,6 +106,14 @@ purchase
 
 GameAlgo 官方 SDK 会持久化归因 ack 状态。开发者不需要自己保存 `attributionHash` 或实现重试队列，只要在归因 SDK callback 里调用 `setAttribution`。
 
+如果游戏启用 Adjust Server Callback，还需要在 Adjust SDK 初始化前调用 GameAlgo 的 callback 参数 helper：
+
+- iOS: `sdk.configureAdjustServerCallbackParams { key, value in Adjust.addGlobalCallbackParameter(value, forKey: key) }`
+- Android: `sdk.configureAdjustServerCallbackParams { key, value -> Adjust.addGlobalCallbackParameter(key, value) }`
+- REST/Web: `await client.configureAdjustServerCallbackParams((key, value) => adjustSetCallbackParam(key, value))`
+
+这里配置的是 Adjust global callback parameters。`gamealgo_user_id` / `gamealgo_user_created_at` 不是 Adjust 内置参数，也不是开发者自己生成的业务字段；GameAlgo SDK 会从本地 identity 里读取并写入 Adjust。这个调用要早于 Adjust SDK 首次上报，否则首次 install/session server callback 可能无法关联到 GameAlgo 用户。
+
 如果需要看投放 ROI、ROAS、花费趋势或 Campaign 明细，AI Agent 还需要在 CLI/Admin 中配置 Adjust API Token 和 App Token，并执行一次成本同步；这些 token 不能写进客户端。
 
 ## 6. 接入测试时验证事件上报

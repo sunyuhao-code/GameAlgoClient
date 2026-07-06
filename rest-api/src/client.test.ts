@@ -384,6 +384,27 @@ test("constructor backfills createdAt for persisted legacy user id", async () =>
   client.tracker.close();
 });
 
+test("configureAdjustServerCallbackParams uses GameAlgo identity", async () => {
+  const storage = new MapStorage();
+  storage.setItem("gamealgo_user_id", "u1");
+  storage.setItem("gamealgo_user_created_at", "2026-05-28T10:00:00.000Z");
+  const client = createClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    storage,
+    autoStart: false,
+  });
+
+  const params: Record<string, string> = {};
+  await client.configureAdjustServerCallbackParams((key, value) => {
+    params[key] = value;
+  });
+
+  assert.equal(params.gamealgo_user_id, "u1");
+  assert.equal(params.gamealgo_user_created_at, "2026-05-28T10:00:00.000Z");
+  client.tracker.close();
+});
+
 test("uploadEvents fills timestamp and preserves payload fields", async () => {
   const client = createClient({
     baseUrl: "https://gamealgo.test",

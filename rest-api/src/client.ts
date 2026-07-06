@@ -160,6 +160,18 @@ export class GameAlgoRestClient {
     return this.currentIdentity;
   }
 
+  async configureAdjustServerCallbackParams(
+    setCallbackParam: (key: string, value: string) => void | Promise<void>,
+    explicitUserId?: string,
+  ): Promise<void> {
+    if (typeof setCallbackParam !== "function") {
+      throw new Error("callback parameter setter is required");
+    }
+    const identity = await this.userIdentity(explicitUserId);
+    await setCallbackParam("gamealgo_user_id", identity.userId);
+    await setCallbackParam("gamealgo_user_created_at", identity.userCreatedAt);
+  }
+
   async fetchConfig(options: FetchConfigOptions = {}): Promise<ConfigResponse> {
     const identity = await this.userIdentity(options.userId);
     const userCreatedAt = clean(options.userCreatedAt) ?? identity.userCreatedAt;
