@@ -111,7 +111,7 @@ gamealgo experiment managed cancel mxt_xxx --yes
 
 `events count` 用于 SDK 接入调试：它只查询当前游戏原始事件表里的固定事件计数，不需要传 `contextId`，也不接受自定义 SQL，不依赖 Report Pack 或标准中间表。先确认目标日期有事件，再继续看 Report Pack 计算结果。
 
-如果游戏接入了 Adjust，Agent 可以用 `marketing adjust configure` 保存当前游戏的 Adjust App Token 和 API Token。保存后用 `gamealgo marketing adjust get --json` 读取 `integration.callbackUrl`，把这个 URL 填到 Adjust Raw Data Export / Server Callback 配置里；URL 由服务端生成，Agent 不要自己拼。之后用 `marketing adjust sync` 同步花费。国内游戏、TapTap Maker / TapTap 小游戏通常使用 `--currency CNY`，海外游戏按 Adjust 投放账户实际成本币种填写。GameAlgo 使用 Adjust `network_cost` 字段，按 campaign / country 粒度写入数据；Report Pack 引用 `marketing.roi@1` 后即可看到 ROAS、ROI、获客用户 LTV 和 Campaign 明细。
+如果游戏接入了 Adjust，Agent 可以用 `marketing adjust configure` 保存当前游戏的 Adjust App Token 和 API Token。保存后用 `gamealgo marketing adjust get --json` 读取 `integration.callbackUrl`，把这个 URL 填到 Adjust Raw Data Export / Server Callback 配置里；URL 由服务端生成，Agent 不要自己拼。Adjust callback trigger 选择 `Install`，并建议额外配置一条 `Reattribution`；如果 UI 一次只能选一个 trigger，就两条 callback 都填同一个 URL。不要选择 `Session`、普通 `Event` 或 `Ad revenue`。之后用 `marketing adjust sync` 同步花费。国内游戏、TapTap Maker / TapTap 小游戏通常使用 `--currency CNY`，海外游戏按 Adjust 投放账户实际成本币种填写。GameAlgo 使用 Adjust `network_cost` 字段，按 campaign / country 粒度写入数据；Report Pack 引用 `marketing.roi@1` 后即可看到 ROAS、ROI、获客用户 LTV 和 Campaign 明细。
 
 TapTap Maker / TapTap 小游戏 / Lua SDK 这类通过服务端 Proxy 或 REST 协议接入的环境，`platform` 使用 `rest`。不要扩展成 `tapmaker` 之类的新枚举；具体运行环境写到 `device` 中，例如：
 

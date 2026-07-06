@@ -114,6 +114,8 @@ GameAlgo 官方 SDK 会持久化归因 ack 状态。开发者不需要自己保�
 
 这里配置的是 Adjust global callback parameters。`gamealgo_user_id` / `gamealgo_user_created_at` 不是 Adjust 内置参数，也不是开发者自己生成的业务字段；GameAlgo SDK 会从本地 identity 里读取并写入 Adjust。这个调用要早于 Adjust SDK 首次上报，否则首次 install/session server callback 可能无法关联到 GameAlgo 用户。
 
+Adjust Server Callback 的 trigger 选择 `Install`，并建议额外配置 `Reattribution`。如果 Adjust UI 一次只能选一个 trigger，就创建两条 callback，两个 trigger 都使用 GameAlgo CLI/Admin 返回的同一个 callback URL。不要选择 `Session`、普通 `Event` 或 `Ad revenue`；广告收入由 GameAlgo `ad_view` 上报。
+
 如果需要看投放 ROI、ROAS、花费趋势或 Campaign 明细，AI Agent 还需要在 CLI/Admin 中配置 Adjust API Token 和 App Token，并执行一次成本同步；这些 token 不能写进客户端。
 
 ## 6. 接入测试时验证事件上报

@@ -219,6 +219,13 @@ gamealgo marketing adjust get --json
 
 返回的 `integration.callbackUrl` 就是要填到 Adjust Raw Data Export / Server Callback 里的 URL。URL 由服务端生成，包含当前游戏、callback token 和 Adjust placeholder；Agent 不要自己拼 URL。
 
+配置 Adjust Server Callback trigger 时：
+
+- `Install` 必选，用于新用户首次归因，是 ROI、LTV 和分渠道留存的核心来源。
+- `Reattribution` 建议也配置；如果游戏有召回、再营销或用户被重新归因，需要靠它更新渠道。
+- 如果 Adjust UI 一次只能选一个 trigger，就创建两条 callback，`Install` 和 `Reattribution` 都使用同一个 `integration.callbackUrl`。
+- 不要选择 `Session`、普通 `Event`、`Ad revenue`、SKAN、subscription 或 uninstall。Session 量很大且不是归因主链路；广告收入由 GameAlgo `ad_view` 上报，不走 Adjust callback。
+
 手动同步最近一段时间用于验证：
 
 ```bash

@@ -233,7 +233,7 @@ gamealgo marketing adjust get --json
 gamealgo marketing adjust sync --from 2026-06-01 --to 2026-06-07 --timeout 60 --json
 ```
 
-`get --json` 返回的 `integration.callbackUrl` 是 Adjust Server Callback URL，Agent 可以把它配置到 Adjust Raw Data Export / Server Callback。海外游戏按 Adjust 投放账户实际成本币种替换 `--currency`。
+`get --json` 返回的 `integration.callbackUrl` 是 Adjust Server Callback URL，Agent 可以把它配置到 Adjust Raw Data Export / Server Callback。Trigger 选择 `Install`，并建议额外配置一条 `Reattribution`；如果 Adjust UI 一次只能选一个 trigger，就两条 callback 都使用同一个 URL。不要选择 `Session`、普通 `Event` 或 `Ad revenue`。海外游戏按 Adjust 投放账户实际成本币种替换 `--currency`。
 
 ## 9. 接入实验、配置和脚本
 
