@@ -40,7 +40,7 @@
 | 环境 | Admin host |
 | --- | --- |
 | 国内 | `https://game-algo-admin.dictapis.cn` |
-| 海外 | `https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev` |
+| 海外 | `https://dirichlet.ai/algo_admin` |
 
 然后使用 Game Admin Key 登录：
 
@@ -106,7 +106,7 @@ gamealgo key reveal --name production-client --json
 | 环境 | SDK / REST API | Admin / CLI |
 | --- | --- | --- |
 | 国内 | `https://game-algo-sdk.dictapis.cn` | `https://game-algo-admin.dictapis.cn` |
-| 海外 | `https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev` | `https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev` |
+| 海外 | `https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev` | `https://dirichlet.ai/algo_admin` |
 
 游戏运行时只配置 SDK / REST API 地址。Admin host 只给 CLI、控制台和 CI 使用。
 

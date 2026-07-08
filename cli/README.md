@@ -31,16 +31,23 @@ npm --silent run cli -- report manifest --json
 
 平台管理员会给每个游戏生成一个 Game Admin Key。
 
+Admin host 按环境选择：
+
+| 环境 | Admin host |
+| --- | --- |
+| 国内 | `https://game-algo-admin.dictapis.cn` |
+| 海外 | `https://dirichlet.ai/algo_admin` |
+
 ```bash
 gamealgo login \
-  --host https://game-algo-admin.dictapis.cn \
+  --host <admin-host> \
   --admin-key ga_admin_xxx
 ```
 
 登录信息会写入本机 `~/.gamealgo/cli.json`，CLI 会把文件权限设置为 `600`。也可以通过环境变量临时传入：
 
 ```bash
-GAMEALGO_ADMIN_HOST=https://game-algo-admin.dictapis.cn
+GAMEALGO_ADMIN_HOST=<admin-host>
 GAMEALGO_GAME_ADMIN_KEY=ga_admin_xxx
 ```
 

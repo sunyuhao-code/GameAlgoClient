@@ -29,7 +29,7 @@ GameAlgo Client 是面向游戏接入方的公开客户端仓库，包含 iOS SD
 | 环境 | Admin host |
 | --- | --- |
 | 国内 | `https://game-algo-admin.dictapis.cn` |
-| 海外 | `https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev` |
+| 海外 | `https://dirichlet.ai/algo_admin` |
 
 ```bash
 gamealgo login --host <admin-host> --admin-key <ga_admin_xxx>
@@ -106,7 +106,7 @@ docs/       接入、埋点、报表和优化文档
 | 环境 | SDK / REST API | Admin / CLI |
 | --- | --- | --- |
 | 国内 | `https://game-algo-sdk.dictapis.cn` | `https://game-algo-admin.dictapis.cn` |
-| 海外 | `https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev` | `https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev` |
+| 海外 | `https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev` | `https://dirichlet.ai/algo_admin` |
 
 客户端 SDK 只配置 SDK / REST API 地址。Admin / CLI 地址只给开发者、AI Agent 和 CI 使用。
 

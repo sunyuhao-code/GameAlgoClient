@@ -43,7 +43,7 @@ GameAlgo 目前有国内和海外两套环境：
 | 环境 | SDK / REST API | Admin / CLI |
 | --- | --- | --- |
 | 国内 | `https://game-algo-sdk.dictapis.cn` | `https://game-algo-admin.dictapis.cn` |
-| 海外 | `https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev` | `https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev` |
+| 海外 | `https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev` | `https://dirichlet.ai/algo_admin` |
 
 客户端 SDK 的 `baseURL` / `baseUrl` 配置为 SDK host；CLI 和浏览器控制台使用 Admin host。不要把 Admin host 配到游戏客户端里。
 

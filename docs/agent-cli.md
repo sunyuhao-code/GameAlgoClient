@@ -9,7 +9,7 @@ Admin host 按环境选择：
 | 环境 | Admin host |
 | --- | --- |
 | 国内 | `https://game-algo-admin.dictapis.cn` |
-| 海外 | `https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev` |
+| 海外 | `https://dirichlet.ai/algo_admin` |
 
 CLI 实现在 [../cli](../cli/README.md)。推荐安装后直接使用：
 

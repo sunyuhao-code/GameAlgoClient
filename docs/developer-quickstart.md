@@ -9,7 +9,7 @@ GameAlgo 目前有国内和海外两套环境。开发者只需要告诉 AI Agen
 | 环境 | SDK / REST API | Admin / CLI | 给谁用 |
 | --- | --- | --- | --- |
 | 国内 | `https://game-algo-sdk.dictapis.cn` | `https://game-algo-admin.dictapis.cn` | 国内游戏、TapTap Maker / TapTap 小游戏 |
-| 海外 | `https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev` | `https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev` | 海外游戏 |
+| 海外 | `https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev` | `https://dirichlet.ai/algo_admin` | 海外游戏 |
 
 客户端 SDK 只能配置 SDK / REST API 地址。Admin / CLI 地址只给开发者、AI Agent 和 CI 使用，不要配置到游戏客户端里。
 
@@ -28,7 +28,7 @@ GameAlgo 目前有国内和海外两套环境。开发者只需要告诉 AI Agen
 1. 打开 Admin 控制台：
 
    - 国内：`https://game-algo-admin.dictapis.cn`
-   - 海外：`https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev`
+   - 海外：`https://dirichlet.ai/algo_admin`
 
 2. 使用管理员提供的开发者账号和初始密码登录。
 3. 创建或选择你的游戏。
