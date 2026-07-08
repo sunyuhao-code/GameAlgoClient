@@ -113,6 +113,39 @@ GameAlgo.Flush()
 
 TapTap Maker / TapTap 小游戏接入时，广告和付费事件的 `currency` 统一使用 `CNY`。不要默认使用 `USD`。
 
+TapTap Maker 的广告回调 `result.extra` 中通常会包含内部广告 `trackId`。这是 GameAlgo 把 Maker 游戏埋点和内部广告收入数据串起来的关键字段。Maker 游戏上报 `ad_view` 时必须尽量把 `trackId` 放进 payload；广告收入可以先填 `0`，后续平台通过 `trackId` 回补真实收入。
+
+Lua SDK 提供 `GameAlgo.ExtractAdTrackId(result)`，用于从 `result.trackId`、`result.track_id`、`result.extra` JSON、`result.msg` JSON 中解析 `trackId`。开发者仍然需要自己传入广告位、广告类型和业务字段：
+
+```lua
+sdk:ShowRewardVideoAd(function(result)
+    result = result or {}
+    local trackId = GameAlgo.ExtractAdTrackId(result)
+
+    -- exposureSuccess 由游戏根据 Maker 回调语义判断。
+    if exposureSuccess then
+        GameAlgo.TrackAd("classic_revive", "reward", 0, "CNY", "taptap", {
+            round = round,
+            wave = wave,
+            score = score,
+            kills = totalKills,
+            reviveCount = reviveCount,
+            action = result.success and "completed" or "skipped",
+            trackId = trackId,
+        })
+    end
+
+    if not trackId then
+        GameAlgo.TrackEvent("ad_no_track_id", {
+            placement = "classic_revive",
+            adType = "reward",
+            network = "taptap",
+            message = tostring(result.msg),
+        })
+    end
+end)
+```
+
 如果游戏有 update loop，建议周期调用 `GameAlgo.Update()`，用于清理代理请求超时。如果 SDK 初始化发生在连接事件之后，它也会给 transport 一次补 flush 队列的机会。
 
 ```lua

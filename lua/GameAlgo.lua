@@ -162,6 +162,20 @@ local function normalizePayload(payload)
     return {}
 end
 
+local function decodeJsonObject(value)
+    if type(value) == "table" then return value end
+    if type(value) ~= "string" then return nil end
+    if not tostring(value):find("{", 1, true) then return nil end
+    local ok, decoded = pcall(cjson.decode, value)
+    if ok and type(decoded) == "table" then return decoded end
+    return nil
+end
+
+local function nonEmptyString(value)
+    if value == nil or value == "" then return nil end
+    return tostring(value)
+end
+
 local function currentAssignment(key)
     local config = state_.config
     local experiments = config and config.experiments or {}
@@ -309,6 +323,25 @@ end
 
 function GameAlgo.TrackLevelEnd(payload)
     return GameAlgo.Track("level_end", payload)
+end
+
+function GameAlgo.ExtractAdTrackId(result)
+    if type(result) ~= "table" then return nil end
+    local direct = nonEmptyString(result.trackId or result.track_id)
+    if direct then return direct end
+
+    local extra = decodeJsonObject(result.extra)
+    if extra then
+        local trackId = nonEmptyString(extra.trackId or extra.track_id)
+        if trackId then return trackId end
+    end
+
+    local message = decodeJsonObject(result.msg or result.message)
+    if message then
+        local trackId = nonEmptyString(message.trackId or message.track_id)
+        if trackId then return trackId end
+    end
+    return nil
 end
 
 function GameAlgo.TrackAd(placement, adType, revenue, currency, network, payload)

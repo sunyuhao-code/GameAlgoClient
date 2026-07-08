@@ -208,6 +208,7 @@
 | `adType` | 广告类型，例如 `reward`、`banner`、`interstitial`。 |
 | `revenue` | 本次曝光收入。 |
 | `currency` | 国内统一 `CNY`。 |
+| `trackId` | TapTap Maker / 小游戏广告回调里的内部广告标识。Maker 场景必须尽量上报，用于和内部广告收入数据关联。 |
 
 `purchase` 建议字段：
 
@@ -219,6 +220,8 @@
 | `source` | 购买入口，例如 `shop`、`offer_popup`。 |
 
 `ad_view` 的判断标准是广告 SDK 是否确认本次曝光有效并产生收入。用户看了一部分广告后跳过，但广告 SDK 已确认产生收入，也应该上报。广告加载失败、无填充、播放失败，或广告 SDK 没有确认产生收入的展示，不要上报 `ad_view`。这些可以作为自定义诊断事件，例如 `_ad_load_failed`，但不要混入收入报表口径。
+
+TapTap Maker / TapTap 小游戏如果拿不到单次广告收入，可以先把 `revenue` 填 `0`，但必须尽量带上广告回调中的 `trackId`。Lua SDK 提供 `GameAlgo.ExtractAdTrackId(result)` 从 `result.extra` 等字段解析 `trackId`，后续平台会用它和内部广告收入数据关联。
 
 ## 用户归因
 

@@ -100,11 +100,33 @@ GameAlgo.Init({
 | --- | --- | --- |
 | `placement` | 必填 | 广告位，例如 `level_end_reward`、`home_banner`。 |
 | `adType` | 必填 | 广告类型，例如 `reward`、`banner`、`interstitial`。 |
-| `revenue` | 必填 | 本次曝光收入。拿不到单次收入时，先不要伪造收入。 |
+| `revenue` | 必填 | 本次曝光收入。TapTap Maker 拿不到单次收入时，可以先填 `0`，但必须尽量带上 `trackId` 供平台回补。 |
 | `currency` | 必填 | 国内游戏、TapTap Maker / 小游戏默认 `CNY`。海外按实际收入币种。 |
 | `network` | 可选 | 广告网络，例如 `admob`、`applovin`。 |
+| `trackId` | Maker 必填 | TapTap Maker 广告回调 `result.extra` 里的内部广告标识，用于和内部广告收入数据关联。Lua SDK 可用 `GameAlgo.ExtractAdTrackId(result)` 解析。 |
 
 广告加载失败、无填充、播放失败，或广告 SDK 没有确认产生收入的展示，不要上报为 `ad_view`。这些只能作为诊断事件，例如 `_ad_load_failed`。
+
+TapTap Maker / TapTap 小游戏上报广告时，开发者仍然需要自己填写 `placement`、`adType`、`network` 和业务字段；SDK 只提供 `trackId` 解析工具。示例：
+
+```lua
+local trackId = GameAlgo.ExtractAdTrackId(result)
+if exposureSuccess then
+    GameAlgo.TrackAd("classic_revive", "reward", 0, "CNY", "taptap", {
+        round = round,
+        wave = wave,
+        action = result.success and "completed" or "skipped",
+        trackId = trackId,
+    })
+end
+if not trackId then
+    GameAlgo.TrackEvent("ad_no_track_id", {
+        placement = "classic_revive",
+        adType = "reward",
+        network = "taptap",
+    })
+end
+```
 
 示例：
 
