@@ -275,7 +275,7 @@ Report Pack 的展示文案可以直接使用中文，包括顶层 `title`、`ta
 - `calculations` 可以声明平台预置的计算模板。常见问题可以优先用模板配置，少写一层 dataset/report，也更不容易写错。
 - `reports` 定义可见报表查询。
 - `groupBy` 支持 `dt`、`user_segment`、dataset dimensions、`experiment.<strategy_name>` 和 `experiment`。`user_segment` 是平台内置用户类型，适用于 event/rollup 自定义报表，值为 `all`、`new`、`returning`；cohort 报表本身已经是新用户 cohort，不支持再按 `user_segment` 分组。
-- 当前 layout 使用顶层 `charts`、`groups` 和 `tabs`。`charts` 只定义图表，`groups[].charts` 只引用 chart id，`tabs[].groups` 只引用 group id。
+- 当前 layout 使用顶层 `charts`、`groups`、`tabs`，以及可选的 `experimentViews`。`charts` 只定义图表，`groups[].charts` 只引用 chart id，`tabs[].groups` 只引用 group id，`experimentViews[].groups` 把已有 group 绑定到某个实验策略的详情页。
 - `groups` 会在 UI 上包裹一组相关图表，并拥有一组共享 selector。group 内的图表不一定都要使用每个 selector。
 - 控制台保存和 CLI/local preview 都按当前 layout 校验，不符合时会直接失败并返回错误原因。
 - 一个 group 只能选择一种模式：`standard` 或 `charts`。`standard` 直接写 `"core.overview@1"` 这样的字符串。
@@ -286,6 +286,61 @@ Report Pack 的展示文案可以直接使用中文，包括顶层 `title`、`ta
 - 表格会渲染完整报表结果。
 - `cohort_matrix` 用来把长表 cohort 结果渲染成矩阵。它使用 `x` 作为行字段（通常是 `cohort_dt`），`series` 作为列字段（通常是 `day_offset`），`y` 作为单元格指标。选择实验后，如果结果里有 `variant` 列，矩阵会按 `variant + cohort_dt` 展示行。
 - 自定义 ratio metric 如果要按百分比展示，需要显式设置 `"format": "percent"`。否则小数会按普通数值展示，平台标准留存列如 `retention_rate`、`d1_rate` 除外。
+
+## 实验报表
+
+Report Pack 默认用于日常经营看板，例如活跃、留存、收入、广告、投放和关卡进度。实验 v2 的详情页也可以复用同一套 group/chart 模型，但入口不是 `tabs`，而是顶层 `experimentViews`。
+
+配置逻辑是：
+
+- `charts` 仍然只定义图表本身。
+- `groups` 仍然负责组织一组图表和共享 selector。
+- `tabs` 负责日常看板页面展示。
+- `experimentViews` 负责把已有 group 挂到某个 strategy 的实验详情页。
+- `experimentViews[].strategy` 必须等于实验 v2 的策略 key。
+- 如果某个 strategy 没有配置 `experimentViews`，实验详情页会显示一个空的默认实验报表区域。
+
+实验报表应该更聚焦，一般只放和这次实验目标相关的 1 到 3 个 group，不建议把日常看板整页搬进去。实验报表可以引用普通自定义 chart、calculation 生成的 chart，也可以引用标准看板 group。
+
+```json
+{
+  "charts": [
+    {
+      "id": "daily_arpu",
+      "title": "日 ARPU",
+      "type": "line",
+      "report": "daily_arpu",
+      "x": "dt",
+      "y": "arpu",
+      "series": "variant",
+      "format": "currency"
+    }
+  ],
+  "groups": [
+    {
+      "id": "ad_frequency_experiment",
+      "title": "广告频率实验",
+      "charts": ["daily_arpu"]
+    }
+  ],
+  "tabs": [
+    {
+      "id": "revenue",
+      "title": "收入",
+      "groups": ["ad_frequency_experiment"]
+    }
+  ],
+  "experimentViews": [
+    {
+      "strategy": "ad_frequency",
+      "title": "广告频率实验",
+      "groups": ["ad_frequency_experiment"]
+    }
+  ]
+}
+```
+
+上面的配置含义是：`ad_frequency_experiment` 这个 group 会同时出现在日常 `收入` tab 里，也会出现在 `ad_frequency` 这个实验策略的详情页里。如果只想在实验详情页展示，不想放到日常看板，可以只在 `experimentViews` 引用该 group，不在任何 `tabs[].groups` 中引用。
 
 分桶柱状图示例：
 
@@ -1013,6 +1068,15 @@ gamealgo report preview --pack gamealgo-report-pack.json --from 2026-06-14 --to 
 ```
 
 `report preview` 使用本地 pack 内容，但 selector、group、chart lookup 仍然走服务端标准化后的看板结构，不是直接按原始 JSON 查找。
+
+## 实验目标和实验报表
+
+实验 v2 里有两个概念需要分开：
+
+- 实验目标：创建 run 时指定，例如 `ltv_proxy`。它是实验闭环和托管实验自动评估使用的固定目标，创建后不建议中途变更。
+- 实验报表：Report Pack 里的 `experimentViews`。它负责在实验详情页展示辅助观察数据，例如 ARPU、留存、广告收入、关卡进度等。
+
+因此，`experimentViews` 不会改变托管实验的 winner 评分逻辑，也不会改变手动实验的目标定义。它的作用是让开发者和 AI Agent 在实验详情页看到更聚焦的证据，而不是打开完整日常看板后手动筛选。
 
 ## 校验
 
