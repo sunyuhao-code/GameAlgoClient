@@ -43,22 +43,24 @@ CLI 使用游戏维度的 Game Admin Key。这个 key 只用于开发期自动�
 gamealgo login --host https://game-algo-admin.dictapis.cn --admin-key ga_admin_xxx
 ```
 
-拉取当前实验：
+创建实验前，先发布脚本版本并准备 Strategy / Run 配置：
 
 ```bash
-gamealgo experiment pull --out experiment.yaml
+gamealgo script publish scripts/ad-policy.lua --message "ad policy" --json
 ```
 
-修改后先看 diff：
+创建或更新 Strategy：
 
 ```bash
-gamealgo experiment diff experiment.yaml
+gamealgo experiment strategy publish strategy.yaml --yes
 ```
 
-发布实验：
+创建实验 Run：
 
 ```bash
-gamealgo experiment publish experiment.yaml --message "adjust first ad level" --yes
+gamealgo experiment run create ad_frequency run.yaml --yes
+gamealgo experiment run evaluate xrun_xxx --from 2026-07-01 --to 2026-07-07 --yes
+gamealgo experiment run promote xrun_xxx --variant later_first_ad --yes
 ```
 
 拉取可用报表：

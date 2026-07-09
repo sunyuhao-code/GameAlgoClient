@@ -275,15 +275,17 @@ AI Agent 应该输出：
 ```text
 请基于最近 7 天报表，设计一个广告频率实验。
 目标是提升 LTV，但 D1 留存不能明显下降。
-先给我看 experiment diff，再发布。
+先给我看 Strategy 和 Run 配置，再通过 CLI 创建实验。
 ```
 
 常用命令：
 
 ```bash
-gamealgo experiment pull --out experiment.yaml
-gamealgo experiment diff experiment.yaml
-gamealgo experiment publish experiment.yaml --message "adjust ad frequency" --yes
+gamealgo script publish scripts/ad-frequency.lua --message "ad frequency script" --json
+gamealgo experiment strategy publish strategy.yaml --yes
+gamealgo experiment run create ad_frequency run.yaml --yes
+gamealgo experiment run evaluate xrun_xxx --from 2026-07-01 --to 2026-07-07 --yes
+gamealgo experiment run promote xrun_xxx --variant slower_ads --yes
 ```
 
 开发者需要确认：

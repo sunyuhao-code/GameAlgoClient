@@ -85,49 +85,114 @@ gamealgo key revoke --name tapmaker-proxy --yes
 
 ## 实验闭环
 
-拉取当前完整实验配置：
+新实验系统围绕 `Strategy` 和 `Run` 两层设计：
+
+- `Strategy` 是游戏代码读取的稳定策略 key，包含默认参数和可选脚本版本。
+- `Run` 是一次实验闭环，绑定某个 Strategy，包含实验组、流量、平台、目标和实验报表。
+
+如果实验依赖脚本，先发布不可变脚本版本，记录返回的 `scriptVersion.versionId`：
 
 ```bash
-gamealgo experiment pull --out experiment.yaml
+gamealgo script publish scripts/ad-frequency.lua \
+  --message "广告频率实验脚本" \
+  --json
 ```
 
-Agent 修改 `experiment.yaml` 后先看 diff：
-
-```bash
-gamealgo experiment diff experiment.yaml
-```
-
-发布会创建一个新的实验 commit，并立即生效：
-
-```bash
-gamealgo experiment publish experiment.yaml \
-  --message "调整广告频率实验" \
-  --yes
-```
-
-`publish` 和 `rollback` 会改线上状态。在 `--json`、CI 或非交互环境下也必须显式传 `--yes`，否则 CLI 会拒绝执行。
-
-查看和回滚版本：
-
-```bash
-gamealgo experiment commits
-gamealgo experiment rollback --commit exp_c_xxxxxxxxxxxxxxxx --message "回滚异常实验" --yes
-```
-
-如果 `latestCommitId` 不是当前线上 head，服务端会拒绝发布，避免多个 Agent 覆盖彼此的改动。
-
-新游戏或从未通过 CLI/Admin 发布过实验版本时，`experiment pull` 可能返回空的 `latestCommitId`：
+创建或更新 Strategy：
 
 ```yaml
-latestCommitId:
+# strategy.yaml
+strategyKey: ad_frequency
+displayName: 广告频率
+defaultConfig:
+  firstAdLevel: 4
+  interval: 30
+script:
+  versionId: sv_xxxxxxxxxxxxxxxx
+message: 初始化广告频率策略
 ```
 
-这是正常的首次提交状态。Agent 保持这个字段为空或 `null`，执行 `experiment publish ... --yes` 时服务端会把它当成 `null` base；只要线上当前 head 也是空，就会创建第一个实验 commit。发布成功后再次 `experiment pull`，文件里会带上新的 `exp_c_...`。
+```bash
+gamealgo experiment strategy publish strategy.yaml --yes
+```
+
+创建手动实验 Run：
+
+```yaml
+# run.yaml
+displayName: 广告频率第一轮
+type: manual
+platform: ios
+objective: ltv_proxy
+variants:
+  - variantId: control
+    weight: 1
+    config:
+      firstAdLevel: 4
+      interval: 30
+  - variantId: slower_ads
+    weight: 1
+    config:
+      firstAdLevel: 5
+      interval: 45
+```
+
+```bash
+gamealgo experiment run create ad_frequency run.yaml --yes
+```
+
+如果要把当前默认参数也放进实验，需要显式配置 `variantId: default`；否则默认参数不参与流量。所有有流量的实验组数量必须至少为 2。
+
+查看、评估和完成实验闭环：
+
+```bash
+gamealgo experiment strategies
+gamealgo experiment strategy show ad_frequency
+gamealgo experiment run show xrun_xxxxxxxxxxxxxxxx
+gamealgo experiment run evaluate xrun_xxxxxxxxxxxxxxxx --from 2026-07-01 --to 2026-07-07 --yes
+gamealgo experiment run report xrun_xxxxxxxxxxxxxxxx
+gamealgo experiment run promote xrun_xxxxxxxxxxxxxxxx --variant slower_ads --yes
+```
+
+`promote` 会把胜出的 variant 写回 Strategy 默认参数，并结束当前 Run。取消实验用：
+
+```bash
+gamealgo experiment run cancel xrun_xxxxxxxxxxxxxxxx --yes
+```
+
+调试指定用户/设备强制进某个实验组：
+
+```bash
+gamealgo experiment override set xrun_xxxxxxxxxxxxxxxx --user user-1 --variant slower_ads --yes
+gamealgo experiment override list xrun_xxxxxxxxxxxxxxxx
+gamealgo experiment override delete xrun_xxxxxxxxxxxxxxxx --user user-1 --yes
+```
+
+托管实验也是创建 `type: managed` 的 Run，平台会按轮次自动调整流量并最终推全胜出组：
+
+```yaml
+displayName: 广告频率托管实验
+type: managed
+platform: ios
+objective: ltv_proxy
+cycleDays: 7
+maxVariantsPerRound: 3
+variants:
+  - variantId: alpha
+    config: { firstAdLevel: 4, interval: 30 }
+  - variantId: bravo
+    config: { firstAdLevel: 5, interval: 30 }
+  - variantId: charlie
+    config: { firstAdLevel: 4, interval: 45 }
+```
+
+所有会修改线上状态的实验命令都必须显式传 `--yes`。
 
 ## 脚本和配置
 
 ```bash
 gamealgo script list
+gamealgo script versions level-generator.js
 gamealgo script pull --all --out scripts/
 gamealgo script publish scripts/level-generator.js
 
@@ -136,7 +201,7 @@ gamealgo config pull gameplay.json --out configs/
 gamealgo config publish configs/gameplay.json
 ```
 
-`script` 会按 `.js` / `.lua` 后缀识别脚本文件，其他文件走 `config`。
+`script publish` 会创建不可变脚本版本并返回 `scriptVersion.versionId`；v2 实验只能引用 `script.versionId`，不要引用脚本文件名。`script` 会按 `.js` / `.lua` 后缀识别脚本文件，其他文件走 `config`。
 `pull --all` 落盘前会校验服务端返回的文件名，避免路径穿越。`publish --name` 只能和单个文件一起使用；发布 `.json` 配置时 CLI 会先在本地校验 JSON。
 
 ## Report Pack
@@ -151,7 +216,7 @@ gamealgo report publish gamealgo-report-pack.json
 
 ## Adjust 投放花费
 
-如果游戏接入了 Adjust 归因，并希望在 GameAlgo 里看 ROAS、ROI 和获客用户 LTV，Agent 可以用 Game Admin Key 配置当前游戏的 Adjust App Token 和 API Token：
+如果游戏接入了 Adjust 归因，并希望在 GameAlgo 里看 ROAS、投放花费和获客用户 LTV，Agent 可以用 Game Admin Key 配置当前游戏的 Adjust App Token 和 API Token：
 
 ```bash
 gamealgo marketing adjust configure \
@@ -178,7 +243,7 @@ gamealgo marketing adjust sync \
   --json
 ```
 
-花费使用 Adjust 报表里的 `network_cost` 字段，并按 campaign / country 粒度写入平台。Report Pack 里引用 `marketing.roi@1` 即可使用标准 ROI 看板。
+花费使用 Adjust 报表里的 `network_cost` 字段，并按 campaign / country 粒度写入平台。Report Pack 里引用 `marketing.overview@1` 和 `marketing.roi@1` 即可使用标准投放总览和 ROAS 看板。
 
 ## 回收报表结果
 

@@ -159,7 +159,7 @@ purchase
 currency = CNY
 ```
 
-如果游戏使用 Adjust 等归因 SDK，并且能从 SDK callback 拿到归因信息，推荐每次 callback 都调用 GameAlgo SDK 的 attribution API。GameAlgo SDK 会自己做 hash、ack 去重和失败后重试，开发者不需要维护重试状态。需要看投放 ROI、ROAS、花费或 Campaign 明细时，还要用 CLI 配置 Adjust API Token 和 App Token，并同步成本。
+如果游戏使用 Adjust 等归因 SDK，并且能从 SDK callback 拿到归因信息，推荐每次 callback 都调用 GameAlgo SDK 的 attribution API。GameAlgo SDK 会自己做 hash、ack 去重和失败后重试，开发者不需要维护重试状态。需要看投放 ROAS、花费、获客用户 LTV 或投放总览时，还要用 CLI 配置 Adjust API Token 和 App Token，并同步成本。
 
 不同玩法的字段建议见 [不同类型游戏埋点建议](./tracking-recommendations.md)。如果游戏是章节 + 小关这类多层进度，报表先按粗粒度章节看，再对流失严重章节补小关分析。
 
@@ -240,12 +240,14 @@ gamealgo marketing adjust sync --from 2026-06-01 --to 2026-06-07 --timeout 60 --
 如果游戏需要动态参数、动态脚本或 DDA：
 
 ```bash
-gamealgo experiment pull --out experiment.yaml
-gamealgo experiment diff experiment.yaml
-gamealgo experiment publish experiment.yaml --message "update experiment" --yes
+gamealgo script publish scripts/level-generator.js --message "level script" --json
+gamealgo experiment strategy publish strategy.yaml --yes
+gamealgo experiment run create level_generator run.yaml --yes
+gamealgo experiment run evaluate xrun_xxx --from 2026-07-01 --to 2026-07-07 --yes
+gamealgo experiment run promote xrun_xxx --variant better_levels --yes
 ```
 
-实验、配置和脚本的改动必须先让开发者看 diff。发布后再通过报表观察结果。
+实验、配置和脚本的改动必须先让开发者看 Strategy / Run 配置。发布后再通过实验报告和日常报表观察结果。
 
 如果要做关卡类动态难度调整，先读 [Level DDA framework](./dda-level-framework.md)。不要直接把具体规则写死成平台逻辑；游戏侧保留难度参数到玩法结果的映射，平台通过实验和数据优化参数组合。
 

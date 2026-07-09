@@ -21,22 +21,6 @@ type SessionPayload = {
   };
 };
 
-type ExperimentConfigFile = {
-  gameId?: string;
-  latestCommitId?: string | null;
-  strategies: unknown[];
-};
-
-type ManagedExperimentTaskFile = {
-  strategyName?: string;
-  strategy?: string;
-  cycleDays?: unknown;
-  maxVariantsPerRound?: unknown;
-  objective?: string;
-  autoApplyWinner?: boolean;
-  candidates?: unknown[];
-};
-
 type CliGameKey = {
   id: string;
   name: string;
@@ -210,161 +194,206 @@ async function handleAdminKey(args: string[], global: ReturnType<typeof parseGlo
 
 async function handleExperiment(client: GameAlgoAdminClient, args: string[], global: ReturnType<typeof parseGlobalFlags>): Promise<void> {
   const sub = args.shift();
-  if (sub === "managed") {
-    await handleManagedExperiment(client, args, global);
-    return;
-  }
-  if (sub === "pull") {
+  if (sub === "strategies" || sub === "list") {
     const flags = parseFlags(args);
-    const config = await client.experimentConfig();
-    const file = {
-      gameId: config.gameId,
-      latestCommitId: config.latestCommitId,
-      strategies: config.strategies,
-    };
-    const text = YAML.stringify(file);
-    if (flags.out) {
-      await writeTextFile(String(flags.out), text);
-      await printResult({ ok: true, out: String(flags.out), latestCommitId: config.latestCommitId }, global);
-    } else {
-      process.stdout.write(text);
-    }
+    await printResult(await client.listExperimentV2Strategies(Boolean(flags["include-archived"] || flags.archived)), global);
     return;
   }
-  if (sub === "diff") {
-    const filePath = args.shift();
-    if (!filePath) throw new Error("usage: gamealgo experiment diff <experiment.yaml>");
-    const current = await client.experimentConfig();
-    const next = await readExperimentConfigFile(filePath);
-    const diff = diffText(
-      YAML.stringify({ gameId: current.gameId, latestCommitId: current.latestCommitId, strategies: current.strategies }).trimEnd(),
-      YAML.stringify(normalizeExperimentConfigForPublish(next)).trimEnd(),
-    );
-    if (global.json) {
-      await printResult({ ok: true, diff }, global);
-    } else {
-      console.log(diff || "No changes.");
-    }
+  if (sub === "strategy") {
+    await handleExperimentStrategy(client, args, global);
     return;
   }
-  if (sub === "publish") {
-    const filePath = args.shift();
-    if (!filePath) throw new Error("usage: gamealgo experiment publish <experiment.yaml> --message <message>");
-    const flags = parseFlags(args);
-    const next = await readExperimentConfigFile(filePath);
-    const current = await client.experimentConfig();
-    const diff = diffText(
-      YAML.stringify({ gameId: current.gameId, latestCommitId: current.latestCommitId, strategies: current.strategies }).trimEnd(),
-      YAML.stringify(normalizeExperimentConfigForPublish(next)).trimEnd(),
-    );
-    if (!flags.yes && global.json) {
-      throw new Error("experiment publish requires --yes in --json mode");
-    }
-    if (!flags.yes && !isInteractive()) {
-      throw new Error("experiment publish requires --yes in non-interactive mode");
-    }
-    if (!flags.yes) {
-      console.log(diff || "No changes.");
-      const ok = await confirm("Publish this experiment config?");
-      if (!ok) throw new Error("publish cancelled");
-    }
-    const response = await client.publishExperimentConfig({
-      latestCommitId: next.latestCommitId ?? null,
-      strategies: next.strategies,
-      message: optionalString(flags.message),
-      force: Boolean(flags.force),
-    });
-    await printResult({ ok: true, latestCommitId: response.latestCommitId, configHash: response.configHash }, global);
+  if (sub === "run") {
+    await handleExperimentRun(client, args, global);
     return;
   }
-  if (sub === "commits") {
-    const flags = parseFlags(args);
-    await printResult(await client.experimentCommits(Number(flags.limit || 20)), global);
+  if (sub === "override") {
+    await handleExperimentOverride(client, args, global);
     return;
   }
-  if (sub === "rollback") {
-    const flags = parseFlags(args);
-    const commitId = String(flags.commit || args.shift() || "");
-    if (!commitId) throw new Error("usage: gamealgo experiment rollback --commit <commitId>");
-    if (!flags.yes && global.json) {
-      throw new Error("experiment rollback requires --yes in --json mode");
-    }
-    if (!flags.yes && !isInteractive()) {
-      throw new Error("experiment rollback requires --yes in non-interactive mode");
-    }
-    if (!flags.yes) {
-      const ok = await confirm(`Rollback experiment config to commit ${commitId}?`);
-      if (!ok) throw new Error("rollback cancelled");
-    }
-    const response = await client.rollbackExperiment(commitId, optionalString(flags.message));
-    await printResult({ ok: true, latestCommitId: response.latestCommitId, configHash: response.configHash }, global);
-    return;
-  }
-  throw new Error("usage: gamealgo experiment <pull|diff|publish|commits|rollback|managed>");
+  throw new Error("usage: gamealgo experiment <strategies|strategy|run|override>");
 }
 
-async function handleManagedExperiment(client: GameAlgoAdminClient, args: string[], global: ReturnType<typeof parseGlobalFlags>): Promise<void> {
+async function handleExperimentStrategy(client: GameAlgoAdminClient, args: string[], global: ReturnType<typeof parseGlobalFlags>): Promise<void> {
   const sub = args.shift();
-  if (sub === "create") {
+  if (sub === "show" || sub === "get") {
     const flags = parseFlags(args);
-    const filePath = optionalString(flags.file || flags.input) || optionalString(args.shift());
-    if (!filePath) throw new Error("usage: gamealgo experiment managed create <managed-experiment.yaml> --yes");
-    if (!flags.yes && global.json) {
-      throw new Error("experiment managed create requires --yes in --json mode");
+    const strategyKey = optionalString(flags.strategy || flags.key) || optionalString(args.shift());
+    if (!strategyKey) throw new Error("usage: gamealgo experiment strategy show <strategyKey>");
+    const response = await client.getExperimentV2Strategy(strategyKey);
+    if (flags.out) {
+      await writeTextFile(String(flags.out), YAML.stringify(response));
+      await printResult({ ok: true, out: String(flags.out), strategyKey }, global);
+      return;
     }
-    if (!flags.yes && !isInteractive()) {
-      throw new Error("experiment managed create requires --yes in non-interactive mode");
-    }
-    const file = await readManagedExperimentTaskFile(filePath);
-    const body = normalizeManagedExperimentTaskForCreate(file, flags);
-    if (!flags.yes) {
-      const ok = await confirm(`Create managed experiment for ${body.strategyName}?`);
-      if (!ok) throw new Error("managed experiment create cancelled");
-    }
-    const response = await client.createManagedExperimentTask(body);
-    await printResult(managedExperimentStatusOutput(response, { ok: true, created: true }), global);
-    return;
-  }
-  if (sub === "list") {
-    const response = await client.listManagedExperimentTasks();
     await printResult(response, global);
     return;
   }
-  if (sub === "status" || sub === "show") {
+  if (sub === "publish" || sub === "upsert") {
     const flags = parseFlags(args);
-    const taskId = optionalString(flags.task || flags["task-id"] || flags.id) || optionalString(args.shift());
-    if (!taskId) throw new Error("usage: gamealgo experiment managed status <taskId>");
-    const response = await client.getManagedExperimentTask(taskId);
-    await printResult(managedExperimentStatusOutput(response), global);
+    const filePath = optionalString(flags.file || flags.input) || optionalString(args.shift());
+    if (!filePath) throw new Error("usage: gamealgo experiment strategy publish <strategy.yaml> --yes");
+    await requireYes(flags, global, "experiment strategy publish");
+    const body = await readObjectFile(filePath, "experiment strategy");
+    if (!optionalString(body.displayName)) {
+      throw new Error("experiment strategy requires displayName");
+    }
+    if (!optionalString(body.strategyKey || body.key)) {
+      throw new Error("experiment strategy requires strategyKey");
+    }
+    const response = await client.upsertExperimentV2Strategy(body);
+    await printResult(response, global);
+    return;
+  }
+  if (sub === "default") {
+    const flags = parseFlags(args);
+    const strategyKey = optionalString(flags.strategy || flags.key) || optionalString(args.shift());
+    const filePath = optionalString(flags.file || flags.input) || optionalString(args.shift());
+    if (!strategyKey || !filePath) throw new Error("usage: gamealgo experiment strategy default <strategyKey> <strategy.yaml> --yes");
+    await requireYes(flags, global, "experiment strategy default");
+    const response = await client.updateExperimentV2StrategyDefault(strategyKey, await readObjectFile(filePath, "experiment strategy default"));
+    await printResult(response, global);
+    return;
+  }
+  if (sub === "archive" || sub === "restore") {
+    const flags = parseFlags(args);
+    const strategyKey = optionalString(flags.strategy || flags.key) || optionalString(args.shift());
+    if (!strategyKey) throw new Error(`usage: gamealgo experiment strategy ${sub} <strategyKey> --yes`);
+    await requireYes(flags, global, `experiment strategy ${sub}`);
+    await printResult(await client.archiveExperimentV2Strategy(strategyKey, sub === "archive"), global);
+    return;
+  }
+  throw new Error("usage: gamealgo experiment strategy <show|publish|default|archive|restore>");
+}
+
+async function handleExperimentRun(client: GameAlgoAdminClient, args: string[], global: ReturnType<typeof parseGlobalFlags>): Promise<void> {
+  const sub = args.shift();
+  if (sub === "create") {
+    const flags = parseFlags(args);
+    const strategyKey = optionalString(flags.strategy || flags.key) || optionalString(args.shift());
+    const filePath = optionalString(flags.file || flags.input) || optionalString(args.shift());
+    if (!strategyKey || !filePath) throw new Error("usage: gamealgo experiment run create <strategyKey> <run.yaml> --yes");
+    await requireYes(flags, global, "experiment run create");
+    const body = await readObjectFile(filePath, "experiment run");
+    if (!optionalString(body.displayName)) throw new Error("experiment run requires displayName");
+    await printResult(await client.createExperimentV2Run(strategyKey, body), global);
+    return;
+  }
+  if (sub === "show" || sub === "get") {
+    const flags = parseFlags(args);
+    const runId = optionalString(flags.run || flags["run-id"] || flags.id) || optionalString(args.shift());
+    if (!runId) throw new Error("usage: gamealgo experiment run show <runId>");
+    const response = await client.getExperimentV2Run(runId);
+    if (flags.out) {
+      await writeTextFile(String(flags.out), YAML.stringify(response));
+      await printResult({ ok: true, out: String(flags.out), runId }, global);
+      return;
+    }
+    await printResult(response, global);
+    return;
+  }
+  if (sub === "evaluate") {
+    const flags = parseFlags(args);
+    const runId = optionalString(flags.run || flags["run-id"] || flags.id) || optionalString(args.shift());
+    if (!runId) throw new Error("usage: gamealgo experiment run evaluate <runId> --from YYYY-MM-DD --to YYYY-MM-DD --yes");
+    await requireYes(flags, global, "experiment run evaluate");
+    await printResult(await client.evaluateExperimentV2Run(runId, {
+      from: optionalString(flags.from || flags.start || flags.startDate),
+      to: optionalString(flags.to || flags.end || flags.endDate),
+      days: optionalString(flags.days),
+      platform: optionalString(flags.platform),
+    }), global);
     return;
   }
   if (sub === "report") {
     const flags = parseFlags(args);
-    const taskId = optionalString(flags.task || flags["task-id"] || flags.id) || optionalString(args.shift());
-    if (!taskId) throw new Error("usage: gamealgo experiment managed report <taskId> --round <roundNumber>");
-    const response = await client.getManagedExperimentTask(taskId);
-    await printResult(managedExperimentRoundReportOutput(response, flags), global);
+    const runId = optionalString(flags.run || flags["run-id"] || flags.id) || optionalString(args.shift());
+    if (!runId) throw new Error("usage: gamealgo experiment run report <runId> [--report-id <id>]");
+    const response = await client.getExperimentV2Run(runId) as { run?: { reports?: unknown[] } };
+    const reports = Array.isArray(response.run?.reports) ? response.run.reports : [];
+    const reportId = optionalString(flags.report || flags["report-id"] || flags.id);
+    const report = reportId
+      ? reports.map((item) => objectValue(item)).find((item) => item?.id === reportId || item?.evaluationId === reportId)
+      : objectValue(reports[reports.length - 1]);
+    if (!report) throw new Error(reportId ? `experiment run report not found: ${reportId}` : "experiment run has no reports");
+    await printResult({ runId, report }, global);
+    return;
+  }
+  if (sub === "promote") {
+    const flags = parseFlags(args);
+    const runId = optionalString(flags.run || flags["run-id"] || flags.id) || optionalString(args.shift());
+    const variantId = optionalString(flags.variant || flags["variant-id"]) || optionalString(args.shift());
+    if (!runId || !variantId) throw new Error("usage: gamealgo experiment run promote <runId> --variant <variantId> --yes");
+    await requireYes(flags, global, "experiment run promote");
+    await printResult(await client.promoteExperimentV2Run(runId, variantId, optionalString(flags.message)), global);
     return;
   }
   if (sub === "cancel") {
     const flags = parseFlags(args);
-    const taskId = optionalString(flags.task || flags["task-id"] || flags.id) || optionalString(args.shift());
-    if (!taskId) throw new Error("usage: gamealgo experiment managed cancel <taskId> --yes");
-    if (!flags.yes && global.json) {
-      throw new Error("experiment managed cancel requires --yes in --json mode");
-    }
-    if (!flags.yes && !isInteractive()) {
-      throw new Error("experiment managed cancel requires --yes in non-interactive mode");
-    }
-    if (!flags.yes) {
-      const ok = await confirm(`Cancel managed experiment ${taskId}?`);
-      if (!ok) throw new Error("managed experiment cancel cancelled");
-    }
-    const response = await client.cancelManagedExperimentTask(taskId);
-    await printResult(managedExperimentStatusOutput(response, { ok: true, cancelled: true }), global);
+    const runId = optionalString(flags.run || flags["run-id"] || flags.id) || optionalString(args.shift());
+    if (!runId) throw new Error("usage: gamealgo experiment run cancel <runId> --yes");
+    await requireYes(flags, global, "experiment run cancel");
+    await printResult(await client.cancelExperimentV2Run(runId), global);
     return;
   }
-  throw new Error("usage: gamealgo experiment managed <create|list|status|report|cancel>");
+  if (sub === "traffic") {
+    const flags = parseFlags(args);
+    const runId = optionalString(flags.run || flags["run-id"] || flags.id) || optionalString(args.shift());
+    const variantId = optionalString(flags.variant || flags["variant-id"]) || optionalString(args.shift());
+    if (!runId || !variantId) throw new Error("usage: gamealgo experiment run traffic <runId> <variantId> [--weight n] [--status running|paused] --yes");
+    await requireYes(flags, global, "experiment run traffic");
+    const body: Record<string, unknown> = {};
+    if (flags.weight !== undefined) body.weight = optionalNonNegativeInteger(flags.weight, "weight");
+    if (flags.status !== undefined) body.status = optionalString(flags.status);
+    await printResult(await client.updateExperimentV2VariantTraffic(runId, variantId, body), global);
+    return;
+  }
+  throw new Error("usage: gamealgo experiment run <create|show|evaluate|report|promote|cancel|traffic>");
+}
+
+async function handleExperimentOverride(client: GameAlgoAdminClient, args: string[], global: ReturnType<typeof parseGlobalFlags>): Promise<void> {
+  const sub = args.shift();
+  if (sub === "list") {
+    const flags = parseFlags(args);
+    const runId = optionalString(flags.run || flags["run-id"] || flags.id) || optionalString(args.shift());
+    if (!runId) throw new Error("usage: gamealgo experiment override list <runId>");
+    await printResult(await client.listExperimentV2Overrides(runId), global);
+    return;
+  }
+  if (sub === "set") {
+    const flags = parseFlags(args);
+    const runId = optionalString(flags.run || flags["run-id"] || flags.id) || optionalString(args.shift());
+    const userId = optionalString(flags.user || flags["user-id"] || flags.device || flags["device-id"]);
+    const variantId = optionalString(flags.variant || flags["variant-id"]);
+    if (!runId || !userId || !variantId) throw new Error("usage: gamealgo experiment override set <runId> --user <userId> --variant <variantId> --yes");
+    await requireYes(flags, global, "experiment override set");
+    await printResult(await client.upsertExperimentV2Override(runId, userId, variantId), global);
+    return;
+  }
+  if (sub === "delete" || sub === "remove") {
+    const flags = parseFlags(args);
+    const runId = optionalString(flags.run || flags["run-id"] || flags.id) || optionalString(args.shift());
+    const userId = optionalString(flags.user || flags["user-id"] || flags.device || flags["device-id"]);
+    if (!runId || !userId) throw new Error(`usage: gamealgo experiment override ${sub} <runId> --user <userId> --yes`);
+    await requireYes(flags, global, `experiment override ${sub}`);
+    await printResult(await client.deleteExperimentV2Override(runId, userId), global);
+    return;
+  }
+  throw new Error("usage: gamealgo experiment override <list|set|delete>");
+}
+
+async function requireYes(flags: Record<string, string | boolean>, global: ReturnType<typeof parseGlobalFlags>, action: string): Promise<void> {
+  if (flags.yes) return;
+  if (global.json) {
+    throw new Error(`${action} requires --yes in --json mode`);
+  }
+  if (!isInteractive()) {
+    throw new Error(`${action} requires --yes in non-interactive mode`);
+  }
+  const ok = await confirm(`Run ${action}?`);
+  if (!ok) {
+    throw new Error(`${action} cancelled`);
+  }
 }
 
 async function handleFileResource(
@@ -376,6 +405,11 @@ async function handleFileResource(
   const sub = args.shift();
   const isScript = resource === "script";
   if (sub === "list") {
+    if (isScript) {
+      const flags = parseFlags(args);
+      await printResult(await client.listScriptVersions(optionalString(flags.name), Number(flags.limit || 50)), global);
+      return;
+    }
     const files = (await client.listConfigFiles()).configFiles.filter((file: { name: string }) => isScriptFileName(file.name) === isScript);
     await printResult({ files }, global);
     return;
@@ -386,6 +420,24 @@ async function handleFileResource(
     const all = Boolean(flags.all);
     const names = args;
     if (!all && names.length === 0) throw new Error(`usage: gamealgo ${resource} pull <name> [--out dir]`);
+    if (isScript) {
+      const list = all
+        ? latestScriptVersionNames((await client.listScriptVersions(undefined, Number(flags.limit || 500))).scriptVersions)
+        : names.map((name) => sanitizeRemoteFileName(name));
+      const pulled: string[] = [];
+      for (const name of list) {
+        const versions = (await client.listScriptVersions(name, 1)).scriptVersions;
+        const latest = versions[0];
+        if (!latest) throw new Error(`script version not found: ${name}`);
+        const file = await client.getScriptVersion(name, latest.versionId);
+        const fileName = sanitizeRemoteFileName(file.scriptVersion.name);
+        const target = join(outDir, fileName);
+        await writeTextFile(target, file.scriptVersion.content);
+        pulled.push(target);
+      }
+      await printResult({ ok: true, files: pulled }, global);
+      return;
+    }
     const list = all
       ? (await client.listConfigFiles()).configFiles.filter((file: { name: string }) => isScriptFileName(file.name) === isScript).map((file: { name: string }) => file.name)
       : names;
@@ -411,13 +463,25 @@ async function handleFileResource(
     for (const filePath of files) {
       const name = sanitizeRemoteFileName(String(flags.name || basename(filePath)));
       const content = await readFile(filePath, "utf8");
+      if (isScript) {
+        const result = await client.createScriptVersion(name, content, contentTypeForFileName(name), optionalString(flags.message));
+        published.push(result.scriptVersion);
+        continue;
+      }
       if (!isScript && (name.toLowerCase().endsWith(".json") || filePath.toLowerCase().endsWith(".json"))) {
         validateJsonText(content, filePath);
       }
       const result = await client.putConfigFile(name, content, contentTypeForFileName(name));
       published.push(result.configFile);
     }
-    await printResult({ ok: true, files: published }, global);
+    await printResult(isScript ? { ok: true, scriptVersions: published } : { ok: true, files: published }, global);
+    return;
+  }
+  if (isScript && (sub === "versions" || sub === "version")) {
+    const flags = parseFlags(args);
+    const name = optionalString(flags.name) || optionalString(args.shift());
+    if (!name) throw new Error("usage: gamealgo script versions <name> [--limit 20]");
+    await printResult(await client.listScriptVersions(sanitizeRemoteFileName(name), Number(flags.limit || 50)), global);
     return;
   }
   throw new Error(`usage: gamealgo ${resource} <list|pull|publish>`);
@@ -759,46 +823,70 @@ class GameAlgoAdminClient {
     return gameId;
   }
 
-  async experimentConfig() {
-    return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/experiment-config`) as {
-      gameId: string;
-      latestCommitId: string | null;
-      strategies: unknown[];
-    };
+  async listExperimentV2Strategies(includeArchived = false) {
+    const query = includeArchived ? "?includeArchived=1" : "";
+    return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/strategies-v2${query}`);
   }
 
-  async publishExperimentConfig(body: Record<string, unknown>) {
-    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/experiment-config/publish`, body) as {
-      latestCommitId: string;
-      configHash: string;
-    };
+  async getExperimentV2Strategy(strategyKey: string) {
+    return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/strategies-v2/${encodeURIComponent(strategyKey)}`);
   }
 
-  async experimentCommits(limit: number) {
-    return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/experiment-commits?limit=${encodeURIComponent(String(limit))}`);
+  async upsertExperimentV2Strategy(body: Record<string, unknown>) {
+    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/strategies-v2`, body);
   }
 
-  async rollbackExperiment(commitId: string, message?: string) {
-    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/experiment-commits/${encodeURIComponent(commitId)}/rollback`, { message }) as {
-      latestCommitId: string;
-      configHash: string;
-    };
+  async updateExperimentV2StrategyDefault(strategyKey: string, body: Record<string, unknown>) {
+    return await this.put(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/strategies-v2/${encodeURIComponent(strategyKey)}/default`, body);
   }
 
-  async listManagedExperimentTasks() {
-    return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/managed-experiments`);
+  async archiveExperimentV2Strategy(strategyKey: string, archived: boolean) {
+    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/strategies-v2/${encodeURIComponent(strategyKey)}/archive`, { archived });
   }
 
-  async getManagedExperimentTask(taskId: string) {
-    return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/managed-experiments/${encodeURIComponent(taskId)}`);
+  async createExperimentV2Run(strategyKey: string, body: Record<string, unknown>) {
+    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/strategies-v2/${encodeURIComponent(strategyKey)}/runs`, body);
   }
 
-  async createManagedExperimentTask(body: Record<string, unknown>) {
-    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/managed-experiments`, body);
+  async getExperimentV2Run(runId: string) {
+    return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/experiment-runs-v2/${encodeURIComponent(runId)}`);
   }
 
-  async cancelManagedExperimentTask(taskId: string) {
-    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/managed-experiments/${encodeURIComponent(taskId)}/cancel`, {});
+  async evaluateExperimentV2Run(runId: string, query: Record<string, string | undefined>) {
+    const params = new URLSearchParams();
+    if (query.from) params.set("from", query.from);
+    if (query.to) params.set("to", query.to);
+    if (query.days) params.set("days", query.days);
+    if (query.platform) params.set("platform", query.platform);
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/experiment-runs-v2/${encodeURIComponent(runId)}/evaluate${suffix}`, {});
+  }
+
+  async promoteExperimentV2Run(runId: string, variantId: string, message?: string) {
+    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/experiment-runs-v2/${encodeURIComponent(runId)}/promote`, {
+      variantId,
+      ...(message ? { message } : {}),
+    });
+  }
+
+  async cancelExperimentV2Run(runId: string) {
+    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/experiment-runs-v2/${encodeURIComponent(runId)}/cancel`, {});
+  }
+
+  async listExperimentV2Overrides(runId: string) {
+    return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/experiment-runs-v2/${encodeURIComponent(runId)}/overrides`);
+  }
+
+  async upsertExperimentV2Override(runId: string, userId: string, variantId: string) {
+    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/experiment-runs-v2/${encodeURIComponent(runId)}/overrides`, { userId, variantId });
+  }
+
+  async deleteExperimentV2Override(runId: string, userId: string) {
+    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/experiment-runs-v2/${encodeURIComponent(runId)}/overrides/delete`, { userId });
+  }
+
+  async updateExperimentV2VariantTraffic(runId: string, variantId: string, body: Record<string, unknown>) {
+    return await this.patch(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/experiment-runs-v2/${encodeURIComponent(runId)}/variants/${encodeURIComponent(variantId)}/traffic`, body);
   }
 
   async listConfigFiles() {
@@ -814,6 +902,31 @@ class GameAlgoAdminClient {
   async putConfigFile(name: string, content: string, contentType: string) {
     return await this.put(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/config-files/${encodeURIComponent(name)}`, { content, contentType }) as {
       configFile: unknown;
+    };
+  }
+
+  async listScriptVersions(name?: string, limit = 50) {
+    const params = new URLSearchParams();
+    if (name) params.set("name", name);
+    params.set("limit", String(limit));
+    return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/script-versions?${params.toString()}`) as {
+      scriptVersions: Array<{ versionId: string; name: string; content?: string; createdAt?: string }>;
+    };
+  }
+
+  async createScriptVersion(name: string, content: string, contentType: string, message?: string) {
+    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/scripts/${encodeURIComponent(name)}/versions`, {
+      content,
+      contentType,
+      ...(message ? { message } : {}),
+    }) as {
+      scriptVersion: { versionId: string; name: string; hash: string; contentType: string; createdAt?: string };
+    };
+  }
+
+  async getScriptVersion(name: string, versionId: string) {
+    return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/scripts/${encodeURIComponent(name)}/versions/${encodeURIComponent(versionId)}`) as {
+      scriptVersion: { versionId: string; name: string; content: string; hash: string; contentType: string; createdAt?: string };
     };
   }
 
@@ -909,6 +1022,14 @@ class GameAlgoAdminClient {
   async put(path: string, body: unknown) {
     return await requestJson(this.host, path, {
       method: "PUT",
+      headers: this.headers({ "Content-Type": "application/json" }),
+      body: JSON.stringify(body),
+    });
+  }
+
+  async patch(path: string, body: unknown) {
+    return await requestJson(this.host, path, {
+      method: "PATCH",
       headers: this.headers({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
     });
@@ -1010,257 +1131,28 @@ async function saveConfig(config: CliConfig): Promise<void> {
   await chmod(CONFIG_PATH, 0o600).catch(() => undefined);
 }
 
-async function readExperimentConfigFile(filePath: string): Promise<ExperimentConfigFile> {
-  const text = await readFile(filePath, "utf8");
-  const parsed = filePath.endsWith(".json") ? JSON.parse(text) : YAML.parse(text);
-  if (!parsed || typeof parsed !== "object" || !Array.isArray((parsed as ExperimentConfigFile).strategies)) {
-    throw new Error("experiment config file must contain strategies[]");
-  }
-  return parsed as ExperimentConfigFile;
-}
-
-async function readManagedExperimentTaskFile(filePath: string): Promise<ManagedExperimentTaskFile> {
+async function readObjectFile(filePath: string, label: string): Promise<Record<string, unknown>> {
   const text = await readFile(filePath, "utf8");
   const parsed = filePath.endsWith(".json") ? JSON.parse(text) : YAML.parse(text);
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("managed experiment file must be a JSON/YAML object");
+    throw new Error(`${label} file must be a JSON/YAML object`);
   }
-  return parsed as ManagedExperimentTaskFile;
+  return parsed as Record<string, unknown>;
 }
 
-function normalizeManagedExperimentTaskForCreate(file: ManagedExperimentTaskFile, flags: Record<string, string | boolean>): Record<string, unknown> {
-  const strategyName = optionalString(flags.strategy || flags["strategy-name"]) || optionalString(file.strategyName || file.strategy);
-  if (!strategyName) throw new Error("managed experiment requires strategyName");
-  const candidates = file.candidates;
-  if (!Array.isArray(candidates) || candidates.length < 2) {
-    throw new Error("managed experiment requires candidates[] with at least two variants");
-  }
-  const cycleDays = optionalPositiveInteger(flags["cycle-days"] ?? flags.cycleDays ?? file.cycleDays, "cycleDays");
-  const maxVariantsPerRound = optionalPositiveInteger(flags["max-variants-per-round"] ?? flags.maxVariantsPerRound, "maxVariantsPerRound")
-    ?? optionalPositiveInteger(file.maxVariantsPerRound, "maxVariantsPerRound");
-  const objective = optionalString(flags.objective) || optionalString(file.objective);
-  const autoApplyWinner = flags["no-auto-apply"] ? false : file.autoApplyWinner;
-  return {
-    strategyName,
-    ...(cycleDays ? { cycleDays } : {}),
-    ...(maxVariantsPerRound ? { maxVariantsPerRound } : {}),
-    ...(objective ? { objective } : {}),
-    ...(autoApplyWinner !== undefined ? { autoApplyWinner } : {}),
-    candidates: candidates.map((candidate, index) => normalizeManagedExperimentCandidate(candidate, index)),
-  };
-}
-
-function normalizeManagedExperimentCandidate(candidate: unknown, index: number): Record<string, unknown> {
-  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
-    throw new Error(`candidates[${index}] must be an object`);
-  }
-  const body = candidate as Record<string, unknown>;
-  const candidateId = optionalString(body.candidateId || body.id);
-  if (!candidateId) throw new Error(`candidates[${index}].candidateId is required`);
-  return {
-    candidateId,
-    config: body.config ?? {},
-    ...(body.script !== undefined ? { script: normalizeManagedCandidateScript(body.script, index) } : {}),
-  };
-}
-
-function normalizeManagedCandidateScript(script: unknown, index: number): unknown {
-  if (typeof script === "string") return { name: script };
-  if (!script || typeof script !== "object" || Array.isArray(script)) {
-    throw new Error(`candidates[${index}].script must be a string or object`);
-  }
-  return script;
-}
-
-function managedExperimentStatusOutput(payload: unknown, extra: Record<string, unknown> = {}) {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
-  const body = payload as Record<string, unknown>;
-  return {
-    ...extra,
-    summary: managedExperimentTaskSummary(body),
-    task: managedExperimentLightTask(body.task),
-    estimate: body.estimate,
-    candidates: managedExperimentLightCandidates(body.candidates),
-    rounds: managedExperimentLightRounds(body.rounds),
-  };
-}
-
-function managedExperimentRoundReportOutput(payload: unknown, flags: Record<string, string | boolean>) {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
-  const body = payload as Record<string, unknown>;
-  const round = selectManagedExperimentRound(body.rounds, flags);
-  const task = objectValue(body.task);
-  return {
-    task: task ? {
-      id: task.id,
-      strategyName: task.strategyName,
-      status: task.status,
-    } : null,
-    round: {
-      id: round.id,
-      roundIndex: round.roundIndex,
-      roundNumber: Number(round.roundIndex ?? 0) + 1,
-      status: round.status,
-      assignmentStartDt: round.assignmentStartDt,
-      assignmentEndDt: round.assignmentEndDt,
-      experimentCompletedAt: round.experimentCompletedAt,
-      reportGeneratedAt: round.reportGeneratedAt,
-      endedAt: round.endedAt,
-      evaluatedAt: round.evaluatedAt,
-      winnerCandidateId: round.winnerCandidateId,
-      variants: round.variants,
-    },
-    report: round.report ?? null,
-    scoreReport: round.scoreReport ?? null,
-  };
-}
-
-function selectManagedExperimentRound(roundsValue: unknown, flags: Record<string, string | boolean>): Record<string, unknown> {
-  const rounds = Array.isArray(roundsValue)
-    ? roundsValue.map((round) => objectValue(round)).filter((round): round is Record<string, unknown> => Boolean(round))
-    : [];
-  if (!rounds.length) throw new Error("managed experiment task has no rounds");
-  const roundId = optionalString(flags["round-id"] || flags.roundId);
-  const roundIndexValue = flags["round-index"] ?? flags.roundIndex;
-  const roundValue = flags.round;
-  let round: Record<string, unknown> | undefined;
-  if (roundId) {
-    round = rounds.find((item) => item.id === roundId);
-  } else if (roundIndexValue !== undefined) {
-    const roundIndex = optionalNonNegativeInteger(roundIndexValue, "roundIndex");
-    round = rounds.find((item) => Number(item.roundIndex) === roundIndex);
-  } else if (roundValue !== undefined) {
-    if (typeof roundValue === "string" && roundValue.startsWith("mxr_")) {
-      round = rounds.find((item) => item.id === roundValue);
-    } else {
-      const roundNumber = optionalPositiveInteger(roundValue, "round");
-      round = rounds.find((item) => Number(item.roundIndex) + 1 === roundNumber);
-    }
-  } else {
-    throw new Error("usage: gamealgo experiment managed report <taskId> --round <roundNumber>");
-  }
-  if (!round) {
-    const available = rounds.map((item) => `#${Number(item.roundIndex ?? 0) + 1}:${String(item.id || "")}`).join(", ");
-    throw new Error(`managed experiment round not found. available rounds: ${available}`);
-  }
-  return round;
-}
-
-function managedExperimentLightTask(value: unknown) {
-  const task = objectValue(value);
-  if (!task) return null;
-  return {
-    id: task.id,
-    strategyName: task.strategyName,
-    status: task.status,
-    cycleDays: task.cycleDays,
-    maxVariantsPerRound: task.maxVariantsPerRound,
-    objective: task.objective,
-    autoApplyWinner: task.autoApplyWinner,
-    currentRoundId: task.currentRoundId,
-    winnerCandidateId: task.winnerCandidateId,
-    createdAt: task.createdAt,
-    updatedAt: task.updatedAt,
-  };
-}
-
-function managedExperimentLightCandidates(value: unknown) {
+function latestScriptVersionNames(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
-  return value.map((candidate) => {
-    const item = objectValue(candidate);
-    if (!item) return null;
-    const config = objectValue(item.config);
-    return {
-      candidateId: item.candidateId,
-      status: item.status,
-      sortOrder: item.sortOrder,
-      configKeys: config ? Object.keys(config) : [],
-      script: item.script,
-      createdAt: item.createdAt,
-      updatedAt: item.updatedAt,
-    };
-  }).filter(Boolean);
-}
-
-function managedExperimentLightRounds(value: unknown) {
-  if (!Array.isArray(value)) return [];
-  return value.map((round) => {
-    const item = objectValue(round);
-    if (!item) return null;
-    return {
-      id: item.id,
-      roundIndex: item.roundIndex,
-      roundNumber: Number(item.roundIndex ?? 0) + 1,
-      status: item.status,
-      assignmentStartDt: item.assignmentStartDt,
-      assignmentEndDt: item.assignmentEndDt,
-      experimentCompletedAt: item.experimentCompletedAt,
-      reportGeneratedAt: item.reportGeneratedAt,
-      endedAt: item.endedAt,
-      evaluatedAt: item.evaluatedAt,
-      winnerCandidateId: item.winnerCandidateId,
-      hasReport: item.report !== undefined && item.report !== null,
-      hasScoreReport: item.scoreReport !== undefined && item.scoreReport !== null,
-      variants: Array.isArray(item.variants) ? item.variants.map((variant) => {
-        const body = objectValue(variant);
-        if (!body) return null;
-        return {
-          candidateId: body.candidateId,
-          variant: body.variant,
-          enabled: body.enabled,
-          weight: body.weight,
-        };
-      }).filter(Boolean) : [],
-    };
-  }).filter(Boolean);
-}
-
-function managedExperimentTaskSummary(payload: Record<string, unknown>) {
-  const task = objectValue(payload.task);
-  const estimate = objectValue(payload.estimate);
-  const rounds = Array.isArray(payload.rounds) ? payload.rounds.filter((round) => round && typeof round === "object") as Array<Record<string, unknown>> : [];
-  const runningRound = rounds.find((round) => round.status === "running") || rounds[rounds.length - 1] || null;
-  const variants = runningRound && Array.isArray(runningRound.variants)
-    ? runningRound.variants.map((variant) => objectValue(variant)).filter(Boolean).map((variant) => ({
-      candidateId: variant?.candidateId,
-      variant: variant?.variant,
-    }))
-    : [];
-  return {
-    taskId: task?.id,
-    strategyName: task?.strategyName,
-    status: task?.status,
-    estimate: {
-      rounds: estimate?.estimatedRounds,
-      cycleDays: estimate?.cycleDays,
-      nominalDays: estimate?.nominalDays,
-      calendarDays: estimate?.estimatedCalendarDays,
-      maxVariantsPerRound: estimate?.maxVariantsPerRound,
-      totalCandidates: estimate?.totalCandidates,
-    },
-    currentRound: runningRound ? {
-      id: runningRound.id,
-      index: runningRound.roundIndex,
-      status: runningRound.status,
-      assignmentStartDt: runningRound.assignmentStartDt,
-      assignmentEndDt: runningRound.assignmentEndDt,
-      experimentCompletedAt: runningRound.experimentCompletedAt,
-      reportGeneratedAt: runningRound.reportGeneratedAt,
-      variants,
-    } : null,
-  };
+  const names = new Set<string>();
+  for (const item of value) {
+    const body = objectValue(item);
+    const name = optionalString(body?.name);
+    if (name && !names.has(name)) names.add(sanitizeRemoteFileName(name));
+  }
+  return [...names];
 }
 
 function objectValue(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-}
-
-function normalizeExperimentConfigForPublish(file: ExperimentConfigFile) {
-  return {
-    gameId: file.gameId,
-    latestCommitId: file.latestCommitId ?? null,
-    strategies: file.strategies,
-  };
 }
 
 async function readJsonFile(filePath: string): Promise<unknown> {
@@ -1337,14 +1229,6 @@ function positiveNumberFlag(value: string | boolean, flag: string): number {
   return parsed;
 }
 
-function optionalPositiveInteger(value: unknown, field: string): number | undefined {
-  if (value === undefined || value === null || value === "") return undefined;
-  if (typeof value === "boolean") throw new Error(`${field} must be a positive integer`);
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${field} must be a positive integer`);
-  return parsed;
-}
-
 function optionalNonNegativeInteger(value: unknown, field: string): number | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   if (typeof value === "boolean") throw new Error(`${field} must be a non-negative integer`);
@@ -1418,43 +1302,6 @@ function contentTypeForFileName(name: string): string {
   return "text/plain; charset=utf-8";
 }
 
-function diffText(before: string, after: string): string {
-  if (before === after) return "";
-  const a = before.split("\n");
-  const b = after.split("\n");
-  const table = Array.from({ length: a.length + 1 }, () => Array<number>(b.length + 1).fill(0));
-  for (let i = a.length - 1; i >= 0; i -= 1) {
-    for (let j = b.length - 1; j >= 0; j -= 1) {
-      table[i][j] = a[i] === b[j] ? table[i + 1][j + 1] + 1 : Math.max(table[i + 1][j], table[i][j + 1]);
-    }
-  }
-  const lines = ["--- current", "+++ next"];
-  let i = 0;
-  let j = 0;
-  while (i < a.length && j < b.length) {
-    if (a[i] === b[j]) {
-      lines.push(` ${a[i]}`);
-      i += 1;
-      j += 1;
-    } else if (table[i + 1][j] >= table[i][j + 1]) {
-      lines.push(`-${a[i]}`);
-      i += 1;
-    } else {
-      lines.push(`+${b[j]}`);
-      j += 1;
-    }
-  }
-  while (i < a.length) {
-    lines.push(`-${a[i]}`);
-    i += 1;
-  }
-  while (j < b.length) {
-    lines.push(`+${b[j]}`);
-    j += 1;
-  }
-  return lines.join("\n");
-}
-
 function printHelp(): void {
   console.log(`
 GameAlgo CLI
@@ -1463,16 +1310,21 @@ Usage:
   gamealgo login --host <admin-url> --admin-key <game-admin-key>
   gamealgo whoami
 
-  gamealgo experiment pull --out experiment.yaml
-  gamealgo experiment diff experiment.yaml
-  gamealgo experiment publish experiment.yaml --message "..." --yes
-  gamealgo experiment commits
-  gamealgo experiment rollback --commit exp_c_xxxxxxxxxxxxxxxx --yes
-  gamealgo experiment managed create managed-experiment.yaml --yes
-  gamealgo experiment managed list
-  gamealgo experiment managed status mxt_xxxxxxxxxxxxxxxx
-  gamealgo experiment managed report mxt_xxxxxxxxxxxxxxxx --round 1
-  gamealgo experiment managed cancel mxt_xxxxxxxxxxxxxxxx --yes
+  gamealgo experiment strategies
+  gamealgo experiment strategies --include-archived
+  gamealgo experiment strategy show ad_frequency
+  gamealgo experiment strategy publish strategy.yaml --yes
+  gamealgo experiment strategy default ad_frequency strategy.yaml --yes
+  gamealgo experiment strategy archive ad_frequency --yes
+  gamealgo experiment run create ad_frequency run.yaml --yes
+  gamealgo experiment run show xrun_xxxxxxxxxxxxxxxx
+  gamealgo experiment run evaluate xrun_xxxxxxxxxxxxxxxx --from 2026-07-01 --to 2026-07-07 --yes
+  gamealgo experiment run report xrun_xxxxxxxxxxxxxxxx
+  gamealgo experiment run promote xrun_xxxxxxxxxxxxxxxx --variant bravo --yes
+  gamealgo experiment run cancel xrun_xxxxxxxxxxxxxxxx --yes
+  gamealgo experiment run traffic xrun_xxxxxxxxxxxxxxxx bravo --weight 0 --status paused --yes
+  gamealgo experiment override set xrun_xxxxxxxxxxxxxxxx --user user-1 --variant bravo --yes
+  gamealgo experiment override list xrun_xxxxxxxxxxxxxxxx
 
   gamealgo key list
   gamealgo key create --name tapmaker-proxy
@@ -1480,9 +1332,10 @@ Usage:
   gamealgo key revoke --name tapmaker-proxy --yes
 
   gamealgo script list
+  gamealgo script versions level-generator.js
   gamealgo script pull level-generator.js --out scripts/
   gamealgo script pull --all --out scripts/
-  gamealgo script publish scripts/level-generator.js
+  gamealgo script publish scripts/level-generator.js --message "initial version"
 
   gamealgo config list
   gamealgo config pull gameplay.json --out configs/

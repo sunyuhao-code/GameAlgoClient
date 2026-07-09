@@ -12,7 +12,7 @@
 | 会话和核心玩法 | 计算 DAU、会话时长、核心玩法参与和进度 | 所有游戏都要接 |
 | 商业化 | 计算广告收入、付费、ARPU、LTV | 有广告或内购就要接 |
 | 归因 | 计算分渠道 ROI、LTV、留存和投放效果 | 接入 Adjust 等归因 SDK 时推荐接 |
-| 投放成本 | 计算 ROAS、ROI、花费趋势、Campaign 明细 | 需要看投放相关报表时配置 |
+| 投放成本 | 计算 ROAS、花费趋势、获客用户 LTV 和投放总览 | 需要看投放相关报表时配置 |
 
 埋点接入完成后，必须用 `gamealgo events count` 验证事件进表。只改代码但没有真实 key 或没有验证，不能写“接入完成”。
 
@@ -211,7 +211,7 @@ await sdk.tracker.trackPurchase(
 
 ## 7. 需要投放报表时配置 Adjust 成本同步
 
-如果开发者需要在 GameAlgo 里看投放 ROI、ROAS、花费趋势、获客用户 LTV 或 Campaign 明细，AI Agent 需要配置 Adjust 成本同步。只回传用户归因还不够；ROI 报表还需要从 Adjust 拉取投放花费。
+如果开发者需要在 GameAlgo 里看投放 ROAS、花费趋势、获客用户 LTV 或投放总览，AI Agent 需要配置 Adjust 成本同步。只回传用户归因还不够；投放报表还需要从 Adjust 拉取投放花费。
 
 需要向开发者确认或让开发者的投放 Agent 提供：
 
