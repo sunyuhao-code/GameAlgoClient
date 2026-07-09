@@ -268,6 +268,27 @@ export class GameAlgoRestClient {
     return file;
   }
 
+  private async fetchScriptFile(script: ConfigFileRef): Promise<ConfigFileResponse> {
+    const scriptUrl = new URL(script.url, this.baseUrl);
+    const response = await this.request(scriptUrl, { method: "GET" });
+    const file = {
+      name: scriptCacheKey(script),
+      content: await response.text(),
+      contentType: response.headers.get("content-type") ?? script.contentType ?? "application/octet-stream",
+      etag: response.headers.get("etag") ?? undefined,
+    };
+    const configFiles = new Map(this.snapshot.configFiles);
+    configFiles.set(file.name, file);
+    this.snapshot = {
+      ...this.snapshot,
+      configFiles,
+      updatedAt: this.now(),
+    };
+    await this.persistSnapshot();
+    this.log(`script loaded: ${script.name}${script.versionId ? ` (${script.versionId})` : ""}`);
+    return file;
+  }
+
   async uploadEvents(events: GameEvent[]): Promise<EventBatchResponse> {
     if (!Array.isArray(events) || events.length === 0) {
       throw new Error("events must be a non-empty array");
@@ -377,26 +398,32 @@ export class GameAlgoRestClient {
       return;
     }
 
-    const names = Array.isArray(preload)
-      ? preload
-      : [
-          ...config.configFiles.map((file) => file.name),
-          ...config.experiments.flatMap((experiment) => experiment.script?.name ? [experiment.script.name] : []),
-        ];
-    const preloadNames = [...new Set(names)];
-    if (preloadNames.length === 0) {
+    const configFileNames = Array.isArray(preload) ? preload : config.configFiles.map((file) => file.name);
+    const scriptRefs = Array.isArray(preload)
+      ? []
+      : [...new Map(config.experiments.flatMap((experiment) => experiment.script ? [[scriptCacheKey(experiment.script), experiment.script] as const] : [])).values()];
+    const preloadLabels = [
+      ...new Set([
+        ...configFileNames,
+        ...scriptRefs.map((script) => script.versionId ? `${script.name}@${script.versionId}` : script.name),
+      ]),
+    ];
+    if (preloadLabels.length === 0) {
       this.log("no config files to preload");
     } else {
-      this.log(`preloading config files: ${preloadNames.sort().join(", ")}`);
+      this.log(`preloading config files: ${preloadLabels.sort().join(", ")}`);
     }
-    await Promise.all(preloadNames.map((name) => this.fetchConfigFile(name)));
+    await Promise.all([
+      ...[...new Set(configFileNames)].map((name) => this.fetchConfigFile(name)),
+      ...scriptRefs.map((script) => this.fetchScriptFile(script)),
+    ]);
     for (const experiment of config.experiments) {
-      const scriptName = experiment.script?.name;
-      if (scriptName && this.snapshot.configFiles.has(scriptName)) {
-        this.log(`script loaded: ${experiment.key} -> ${scriptName}`);
+      const script = experiment.script;
+      if (script && this.snapshot.configFiles.has(scriptCacheKey(script))) {
+        this.log(`script ready: ${experiment.key} -> ${script.name}${script.versionId ? ` (${script.versionId})` : ""}`);
       }
     }
-    if (preloadNames.length > 0) {
+    if (preloadLabels.length > 0) {
       this.log("all config files loaded");
     }
     this.tracker.setAssignments(config.experiments);
@@ -780,9 +807,9 @@ export class GameAlgoExperimentExecutor {
       };
     }
 
-    const scriptFile = snapshot.configFiles.get(assignment.script.name);
+    const scriptFile = snapshot.configFiles.get(scriptCacheKey(assignment.script));
     if (!scriptFile) {
-      this.log(`execute skipped: script not loaded: ${assignment.key} -> ${assignment.script.name}`);
+      this.log(`execute skipped: script not loaded: ${assignment.key} -> ${assignment.script.name}${assignment.script.versionId ? ` (${assignment.script.versionId})` : ""}`);
       return undefined;
     }
 
@@ -899,6 +926,10 @@ export function createEvent(input: Omit<GameEvent, "eventId" | "timestamp"> & { 
     timestamp: input.timestamp ?? new Date().toISOString(),
     payload: normalizePayload(input.payload ?? {}),
   };
+}
+
+function scriptCacheKey(script: ConfigFileRef): string {
+  return script.versionId ? `script:${script.versionId}` : script.name;
 }
 
 async function apiError(response: Response): Promise<GameAlgoApiError> {

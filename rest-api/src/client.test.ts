@@ -227,6 +227,66 @@ function execute(input) {
   assert.deepEqual(result?.diagnostics, { variant: "variant-a", userId: "u1" });
 });
 
+test("executor preloads versioned script URLs", async () => {
+  const script = `
+function execute(input) {
+  return {
+    payload: { mode: input.config.mode, turn: input.state.turn },
+    diagnostics: { variant: input.meta.variant }
+  };
+}
+`;
+  const requestedUrls: string[] = [];
+  const client = createClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    userId: "u1",
+    sdkVersion: "1.0.0",
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      requestedUrls.push(request.url);
+      if (request.url === "https://gamealgo.test/v1/scripts/sv_test_script") {
+        return new Response(script, {
+          headers: { "content-type": "text/javascript; charset=utf-8" },
+        });
+      }
+      if (request.url.includes("/v1/config-files/level-generator.js")) {
+        return new Response("not found", { status: 404 });
+      }
+      return jsonResponse({
+        contextId: "ctx-1",
+        gameId: "Mahjong",
+        environment: "live",
+        configVersion: "v1",
+        ttlSeconds: 60,
+        serverTime: "2026-05-28T10:00:00.000Z",
+        experiments: [{
+          key: "level_generator",
+          experimentId: "exp-level-generator-001",
+          variant: "variant-a",
+          config: { mode: "versioned" },
+          script: {
+            versionId: "sv_test_script",
+            name: "level-generator.js",
+            url: "https://gamealgo.test/v1/scripts/sv_test_script",
+            hash: "",
+          },
+        }],
+        configFiles: [],
+      });
+    },
+  });
+
+  assert.equal(await client.waitForReady(), true);
+  const result = await client.executor("level_generator").execute({ turn: 9 });
+
+  assert.deepEqual(result?.payload, { mode: "versioned", turn: 9 });
+  assert.deepEqual(result?.diagnostics, { variant: "variant-a" });
+  assert.equal(requestedUrls.includes("https://gamealgo.test/v1/scripts/sv_test_script"), true);
+  assert.equal(requestedUrls.some((url) => url.includes("/v1/config-files/level-generator.js")), false);
+  assert.equal(client.snapshotValue().configFiles.has("script:sv_test_script"), true);
+});
+
 test("constructor restores persisted snapshot then still tries to refresh", async () => {
   const storage = new MapStorage();
   const first = createClient({

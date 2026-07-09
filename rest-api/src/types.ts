@@ -12,6 +12,7 @@ export type ExperimentAssignment = {
 };
 
 export type ConfigFileRef = {
+  versionId?: string;
   name: string;
   url: string;
   hash: string;
