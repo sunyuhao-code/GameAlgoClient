@@ -491,13 +491,10 @@ async function handleReport(client: GameAlgoAdminClient, args: string[], global:
   const sub = args.shift();
   if (sub === "pull") {
     const flags = parseFlags(args);
-    const packs = await client.listReportPacks();
-    const version = String(flags.version || packs.reportPacks.find((pack: { status: string }) => pack.status === "active")?.version || packs.reportPacks[0]?.version || "");
-    if (!version) throw new Error("no report pack found");
-    const pack = await client.getReportPack(version);
+    const pack = await client.getReportPack();
     const out = String(flags.out || "gamealgo-report-pack-v1.json");
     await writeTextFile(out, JSON.stringify(pack.reportPack.content, null, 2) + "\n");
-    await printResult({ ok: true, out, version }, global);
+    await printResult({ ok: true, out }, global);
     return;
   }
   if (sub === "validate") {
@@ -510,17 +507,15 @@ async function handleReport(client: GameAlgoAdminClient, args: string[], global:
   if (sub === "publish") {
     const filePath = args.shift();
     if (!filePath) throw new Error("usage: gamealgo report publish <report-pack.json>");
-    const flags = parseFlags(args);
+    parseFlags(args);
     const content = await readJsonFile(filePath);
-    const version = String(flags.version || (content && typeof content === "object" && "version" in content ? (content as { version?: unknown }).version : "") || "");
-    if (!version) throw new Error("--version is required when content.version is missing");
-    const response = await client.putReportPack(version, content);
-    await printResult({ ok: true, version, validation: response.reportPack.validation }, global);
+    const response = await client.putReportPack(content);
+    await printResult({ ok: true, validation: response.reportPack.validation }, global);
     return;
   }
   if (sub === "manifest" || sub === "list") {
-    const flags = parseFlags(args);
-    await printResult(await client.reportManifest(optionalString(flags.version)), global);
+    parseFlags(args);
+    await printResult(await client.reportManifest(), global);
     return;
   }
   if (sub === "result") {
@@ -535,7 +530,6 @@ async function handleReport(client: GameAlgoAdminClient, args: string[], global:
     let response: unknown;
     try {
       response = await client.queryReportDashboard({
-        version: optionalString(flags.version),
         startDate,
         endDate,
         tab: optionalString(flags.tab),
@@ -583,7 +577,6 @@ async function handleReport(client: GameAlgoAdminClient, args: string[], global:
     try {
       response = await client.previewReportDashboard({
         content,
-        version: optionalString(flags.version),
         startDate,
         endDate,
         tab: optionalString(flags.tab),
@@ -930,31 +923,24 @@ class GameAlgoAdminClient {
     };
   }
 
-  async listReportPacks() {
-    return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/report-packs`) as {
-      reportPacks: Array<{ version: string; status: string }>;
-    };
-  }
-
-  async getReportPack(version: string) {
-    return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/report-packs/${encodeURIComponent(version)}`) as {
+  async getReportPack() {
+    return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/report-pack`) as {
       reportPack: { content: unknown };
     };
   }
 
   async previewReportPack(content: unknown) {
-    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/report-packs/preview`, { content });
+    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/report-pack/preview`, { content });
   }
 
-  async putReportPack(version: string, content: unknown) {
-    return await this.put(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/report-packs/${encodeURIComponent(version)}`, { content, status: "active" }) as {
+  async putReportPack(content: unknown) {
+    return await this.put(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/report-pack`, { content }) as {
       reportPack: { validation: unknown };
     };
   }
 
-  async reportManifest(version?: string) {
-    const query = version ? `?version=${encodeURIComponent(version)}` : "";
-    return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/reports/manifest${query}`);
+  async reportManifest() {
+    return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/reports/manifest`);
   }
 
   async queryReportDashboard(body: Record<string, unknown>, options: { timeoutMs?: number } = {}) {

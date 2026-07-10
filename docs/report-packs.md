@@ -16,6 +16,8 @@ gamealgo report publish gamealgo-report-pack.json
 
 GameAlgo 管理后台的 `Reports` 页面只用于查看当前游戏已经发布的报表、切换日期和平台，以及浏览不同 tab。
 
+每个游戏只有一个当前 Report Pack。`report publish` 会整体覆盖上一次发布的配置，不需要维护版本号；建议在 Git 中审查和保留配置变更历史。
+
 ## 看板组织最佳实践
 
 Report Pack 的看板建议按“业务问题”拆分，而不是按事件表、SQL 或数据来源拆分。一个 tab 应该回答一类决策问题；一个 group 包裹一组强相关图表，并共享同一组 selector。
@@ -59,13 +61,12 @@ Report Pack 的看板建议按“业务问题”拆分，而不是按事件表�
 
 Report Pack 的展示文案可以直接使用中文，包括顶层 `title`、`tabs[].title`、`groups[].title`、`groups[].description`、`charts[].title`、`selectors[].label` 和 `options[].label`。如果游戏团队、控制台页面或需求文档使用中文标题，建议让 AI Agent 也生成中文的 tab、group、chart 和 selector 文案，避免 Admin 页面中英文混杂。
 
-系统识别字段仍然要保持英文安全字符：`id`、`version`、事件名、dataset/report/chart/selector id、`field`、`x`、`y`、`series`、`label`、`value`、`sort` 以及 SQL 结果列名都不要写中文。这些字段会参与校验、SQL 生成、缓存和 CLI 查询。
+系统识别字段仍然要保持英文安全字符：`id`、事件名、dataset/report/chart/selector id、`field`、`x`、`y`、`series`、`label`、`value`、`sort` 以及 SQL 结果列名都不要写中文。这些字段会参与校验、SQL 生成、缓存和 CLI 查询。
 
 ## 示例
 
 ```json
 {
-  "version": "1.0.0",
   "events": {
     "level_end": {
       "fields": {
@@ -591,7 +592,7 @@ group 通过 `charts: ["new_user_max_level"]` 这类引用使用 calculation id�
 }
 ```
 
-新 pack 必须使用顶层 `groups` 和 `tabs`。一个 group 只能选择一种模式：`standard` 或 `charts`。标准 group 直接保存 ref，因此平台修复或升级查询实现时，不需要重写游戏 pack。版本后缀是契约的一部分；使用 `@1` 表示使用第一版标准定义。
+Report Pack 必须使用顶层 `groups` 和 `tabs`。一个 group 只能选择一种模式：`standard` 或 `charts`。标准 group 直接保存 ref，因此平台修复或升级查询实现时，不需要重写游戏 Pack。标准 ref 的版本后缀是契约的一部分；使用 `@1` 表示使用第一版标准定义。
 
 Group selector 是只作用于当前 group 的 UI 控件：
 
@@ -1071,6 +1072,6 @@ gamealgo report preview --pack gamealgo-report-pack.json --from 2026-06-14 --to 
 
 ## 校验
 
-保存前请在 `Manage Pack` 中点击 `Validate`。校验会检查 JSON 结构、report 引用、chart 映射、dataset 定义、标准看板 ref，以及顶层 `version` 是否和要保存的版本一致。
+发布前运行 `gamealgo report validate gamealgo-report-pack.json`。校验会检查 JSON 结构、report 引用、chart 映射、dataset 定义和标准看板 ref。
 
-保存 `active` pack 后，回到主 `Reports` 页面，选择日期范围并点击 `Run`，即可加载配置好的看板。
+运行 `gamealgo report publish gamealgo-report-pack.json` 后，当前游戏的旧 Report Pack 会被整体替换，Admin 的 `Reports` 页面会自动加载新配置。

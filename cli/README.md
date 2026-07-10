@@ -212,6 +212,8 @@ gamealgo report validate gamealgo-report-pack.json
 gamealgo report publish gamealgo-report-pack.json
 ```
 
+每个游戏只有一个当前 Report Pack。`publish` 会整体覆盖上一次提交的配置，不需要传版本号；配置历史由游戏项目自己的 Git 管理。
+
 `report validate` 和 Admin 控制台保存时使用同一套服务端校验逻辑。
 
 ## Adjust 投放花费
@@ -291,7 +293,6 @@ gamealgo report preview \
 
 常用参数：
 
-- `--version <version>`：指定 Report Pack 版本，默认使用 active 版本。
 - `--tab <title>` / `--tab-id <id>`：选择 tab。
 - `--group <title>` / `--group-id <id>`：选择 group。
 - `--chart <title>` / `--chart-id <id>`：选择单个 chart。`--chart-id` 建议使用 manifest 返回的规范化 id。
