@@ -1,43 +1,18 @@
-# GameAlgo TapTap 小游戏 Lua SDK
+# GameAlgo TapTap Maker / 小游戏 Lua SDK
 
-TapTap 小游戏客户端运行在沙盒中，不能直接调用 GameAlgo HTTP API。推荐使用下面的代理结构：
+TapTap Maker 客户端支持直接访问 GameAlgo HTTPS API。接入只需要把 `GameAlgo.lua` 和 `HttpTransport.lua` 放入客户端脚本，不需要开启多人模式，也不需要部署服务端代理。`client_main.lua` 是可直接参考的初始化示例。
+
+## 网络白名单
+
+在 Maker 项目网络白名单中加入 SDK 域名：
 
 ```text
-Client
-  GameAlgo.lua          SDK 业务层：config / experiment / track
-  ProxyTransport.lua    RemoteEvent 传输层
-
-Server
-  ProxyServer.lua       RemoteEvent -> 真实 HTTP 代理
-  server_main.lua       代理启动和服务端配置
+game-algo-sdk.dictapis.cn
 ```
 
-## 服务端配置
-
-TapTap Maker 接入时需要开启多人模式，也就是启用 Maker 自带的服务端能力。这个服务端由 Maker 平台部署和运行，不需要为 GameAlgo 额外部署独立后端。SDK 已提供服务端代理代码，直接使用本目录下的 `ProxyServer.lua` 和 `server_main.lua`。
-
-把 `ProxyServer.lua` 和 `server_main.lua` 放在 TapTap 游戏服务端。真实 GameAlgo key 只配置在服务端 Proxy，用来给拉配置、拉配置文件和事件上报请求统一注入 `X-GameAlgo-Key`：
-
-```lua
-ProxyServer.Start({
-    allowedHosts = { "game-algo-sdk.dictapis.cn" },
-    allowedPathPrefixes = { "/v1/" },
-    defaultHeaders = {
-        ["X-GameAlgo-Key"] = "ga_live_xxx",
-        ["X-Proxy-Source"] = "maker-server",
-    },
-})
-```
-
-`ga_live_xxx` 只是示例占位。实际接入必须使用真实 `ga_live_*`；如果当前没有真实 key，AI Agent 应使用 `ga_admin_*` 通过 GameAlgo CLI 创建或读取，不要提交占位 key 后声称接入完成。
-
-不要把 `X-GameAlgo-Key` 放进小游戏客户端包，也不要让客户端自己传事件上报 key。`ProxyServer` 会在客户端 headers 后追加 `defaultHeaders`，因此服务端 headers 优先，客户端无法覆盖。
-
-开启 Maker 服务端后，Maker 的数据默认会保存在服务端；但客户端已有本地数据和存档仍然可以继续读取。已有单机存档的游戏接入时，要么继续使用原来的本地存储，要么实现从本地存档到服务端存储的无缝迁移，不要直接丢弃旧存档。
+SDK 固定访问这个域名下的 `/v1/config`、`/v1/config-files/*` 和 `/v1/events/batch`。
 
 ## 客户端配置
-
-把 `GameAlgo.lua` 和 `ProxyTransport.lua` 放在小游戏客户端：
 
 ```lua
 local GameAlgo = require("GameAlgo")
@@ -49,6 +24,7 @@ end
 
 GameAlgo.Init({
     baseUrl = "https://game-algo-sdk.dictapis.cn",
+    gameKey = "ga_live_xxx",
     appVersion = "1.0.0",
     platform = "rest",
     userId = tapUserId,
@@ -59,13 +35,11 @@ GameAlgo.Init({
 })
 ```
 
+`ga_live_xxx` 只是示例占位。实际接入必须使用真实 `ga_live_*`；如果当前没有真实 key，AI Agent 应使用 `ga_admin_*` 通过 GameAlgo CLI 创建或读取。`ga_admin_*` 只能给 CLI 使用，不能放入客户端。
+
 TapTap Maker 接入时推荐优先使用 Maker 环境提供的稳定用户 ID，例如 `lobby:GetMyUserId()`。这样同一个玩家跨会话、跨版本的实验分组和报表归因更稳定。不要使用昵称、头像、手机号等可识别信息作为 `userId`；如果当前运行时拿不到 Maker 用户 ID，可以传 `nil`，SDK 会退回到本地匿名 ID。
 
-`Init` 会发起非阻塞的 `/v1/config` 请求。游戏逻辑应该保留本地默认值，只在远端配置可用时读取远端值。
-
-persistent world / background match 模式下，客户端可能在服务端脚本 ready 前调用 `Init`。`ProxyTransport` 会先把待发送请求放入队列；`ServerConnected` 只记录连接状态，不发送队列；等 `ServerReady` 触发后才会 flush 队列。这样可以避免 RemoteEvent 在服务端 Proxy 尚未 ready 时被过早发送。
-
-默认会等待 `ServerReady`。如果自定义运行时没有这个事件，可以在 `GameAlgo.Init` 中传 `waitForServerReady = false` 回到连接可用后立即发送的旧行为。
+`Init` 会从客户端发起非阻塞的 `/v1/config` 请求。游戏逻辑应该保留本地默认值，只在远端配置可用时读取远端值。
 
 ## 实验
 
@@ -146,21 +120,4 @@ sdk:ShowRewardVideoAd(function(result)
 end)
 ```
 
-如果游戏有 update loop，建议周期调用 `GameAlgo.Update()`，用于清理代理请求超时。如果 SDK 初始化发生在连接事件之后，它也会给 transport 一次补 flush 队列的机会。
-
-```lua
-function Update(timeStep)
-    GameAlgo.Update()
-end
-```
-
-## RemoteEvent
-
-客户端传输层使用：
-
-```text
-HttpProxy_Request
-HttpProxy_Response
-```
-
-如果自定义这些事件名，客户端和服务端必须使用同一个 `eventPrefix`。
+客户端 HTTP 请求由 `HttpTransport.lua` 异步执行，不依赖游戏服务端连接状态，也不要求在 update loop 中轮询网络请求。

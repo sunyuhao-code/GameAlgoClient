@@ -2,27 +2,25 @@
 --- ============================================================
 --- GameAlgo.lua — TapTap 小游戏 Lua SDK 业务层
 --- ============================================================
---- 职责：实验/配置读取、事件排队和上报。网络请求通过
----       ProxyTransport.lua 发给游戏服务端，再由 ProxyServer.lua
----       转发到 GameAlgo HTTP API。
+--- 职责：实验/配置读取、事件排队和上报。网络请求由客户端直接
+---       调用 GameAlgo HTTP API。
 ---
 --- 设计约束：
---- - 客户端不需要携带 X-GameAlgo-Key；推荐在 ProxyServer defaultHeaders
----   中由服务端注入。
+--- - Client Game Key 通过 X-GameAlgo-Key 随请求发送。
 --- - 初始化不阻塞游戏主流程；远端失败时本地默认值继续生效。
 --- - Lua 版先不执行 JS 实验脚本，execute 返回 config-only 结果。
 --- ============================================================
 
 local cjson = require("cjson")
 
-local okTransport, ProxyTransport = pcall(require, "sdk.ProxyTransport")
+local okTransport, HttpTransport = pcall(require, "sdk.HttpTransport")
 if not okTransport then
-    ProxyTransport = require("ProxyTransport")
+    HttpTransport = require("HttpTransport")
 end
 
 local GameAlgo = {}
 
-local SDK_VERSION = "1.0.0-lua"
+local SDK_VERSION = "1.1.0-lua"
 local DEFAULT_BASE_URL = "https://game-algo-sdk.dictapis.cn"
 
 local state_ = {
@@ -45,6 +43,7 @@ local state_ = {
     preloadConfigFiles = true,
     storage = nil,
     logger = nil,
+    transport = HttpTransport,
 }
 
 local function log(message)
@@ -137,7 +136,7 @@ local function httpRequest(method, path, bodyTable, callback)
         headers["X-GameAlgo-Key"] = state_.gameKey
     end
 
-    ProxyTransport.Request({
+    state_.transport.Request({
         method = method,
         url = trimSlash(state_.baseUrl) .. path,
         headers = headers,
@@ -216,15 +215,16 @@ function GameAlgo.Init(options)
     state_.isDebug = options.isDebug == true
     state_.storage = options.storage
     state_.logger = options.logger
+    state_.transport = options.transport or HttpTransport
     state_.maxBatchSize = options.maxBatchSize or 100
     state_.preloadConfigFiles = options.preloadConfigFiles ~= false
     state_.sessionId = options.sessionId or randomId("ga_session")
     state_.sessionStartMs = nowMs()
     ensureIdentity(options.userId)
-    ProxyTransport.Start({
-        eventPrefix = options.eventPrefix or "HttpProxy",
-        waitForServerReady = options.waitForServerReady,
-    })
+    if type(state_.transport.Start) == "function" then state_.transport.Start(options.transportOptions) end
+    if not state_.gameKey or state_.gameKey == "" then
+        log("missing gameKey; config and event requests will be rejected")
+    end
     log("initialized: userId=" .. state_.userId .. ", sessionId=" .. state_.sessionId)
     if options.autoFetch ~= false then
         GameAlgo.FetchConfig(nil)
@@ -233,7 +233,7 @@ function GameAlgo.Init(options)
 end
 
 function GameAlgo.Update()
-    ProxyTransport.Update()
+    if type(state_.transport.Update) == "function" then state_.transport.Update() end
 end
 
 function GameAlgo.FetchConfig(callback)

@@ -8,7 +8,7 @@ GameAlgo 有两类 key，名字接近但用途完全不同。接入时不要混�
 
 | Key | 示例 | 谁使用 | 放在哪里 | 主要用途 |
 | --- | --- | --- | --- | --- |
-| Client Game Key | `ga_live_*` | 游戏客户端 SDK / REST API | 游戏客户端包或服务端代理里 | 拉取配置、拉取配置文件、上报事件 |
+| Client Game Key | `ga_live_*` | 游戏客户端 SDK / REST API | 游戏客户端 SDK 配置 | 拉取配置、拉取配置文件、上报事件 |
 | Game Admin Key | `ga_admin_*` | 开发者、AI Agent、CI、CLI | 开发机器、CI Secret、Agent Secret | 管理实验、脚本、配置、Report Pack，拉取报表和事件统计 |
 
 Client Game Key 是运行时 key。游戏启动后，SDK 会用它访问 SDK host 下的 `/v1/config`、`/v1/config-files/*` 和 `/v1/events/batch`，请求头是：
@@ -27,12 +27,12 @@ X-GameAlgo-Game-Admin-Key: ga_admin_xxx
 
 ```bash
 gamealgo key list --json
-gamealgo key create --name tapmaker-proxy --json
-gamealgo key reveal --name tapmaker-proxy --json
-gamealgo key revoke --name tapmaker-proxy --yes --json
+gamealgo key create --name tapmaker-client --json
+gamealgo key reveal --name tapmaker-client --json
+gamealgo key revoke --name tapmaker-client --yes --json
 ```
 
-`key list` 返回名称、前缀和状态；`key create` 和 `key reveal` 会返回明文，用于写入 SDK 或 TapTap Maker 服务端 Proxy 配置。Client Game Key 统一使用 `ga_live_*` 前缀；QA/测试环境如需区分，可以创建单独命名的 key，并通过 `isDebug=true` 标记测试配置请求和事件。`ga_admin_*` 只用于开发期自动化和控制台操作，不能打进游戏包。
+`key list` 返回名称、前缀和状态；`key create` 和 `key reveal` 会返回明文，用于写入 SDK 配置。Client Game Key 统一使用 `ga_live_*` 前缀；QA/测试环境如需区分，可以创建单独命名的 key，并通过 `isDebug=true` 标记测试配置请求和事件。`ga_admin_*` 只用于开发期自动化和控制台操作，不能打进游戏包。
 
 如果当前没有真实 `ga_live_*`，AI Agent 必须使用 `ga_admin_*` 通过 CLI 创建或读取。不要把 `ga_live_xxx`、`TODO_GAME_KEY`、`NOOP_GAME_KEY` 等占位值提交到游戏工程后声称完成接入。没有真实 Client Game Key 时，只能标记为 Scaffolded，不能进入事件上报验收。
 
@@ -53,6 +53,8 @@ GameAlgo 目前有国内和海外两套环境：
 - Android SDK：使用 `../android/`。
 - REST API：无法使用原生 SDK 时使用 `../rest-api/`。
 - TapTap Maker / TapTap 小游戏：使用 `../lua/`。
+
+TapTap Maker / TapTap 小游戏使用 Lua SDK 从客户端直接访问国内 SDK host。把 `game-algo-sdk.dictapis.cn` 加入 Maker 网络白名单，并在 `GameAlgo.Init` 中配置真实 Client Game Key；不需要开启多人模式或部署 GameAlgo 服务端代理。
 
 所有接入方式都调用同一套 `/v1/*` 接口，并在每个请求中发送 `X-GameAlgo-Key`。
 

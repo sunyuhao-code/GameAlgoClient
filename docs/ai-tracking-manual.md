@@ -22,7 +22,7 @@ SDK 初始化或 `/v1/config` 请求会写入 SDK context。AI Agent 应尽量�
 
 | 字段 | 要求 | 说明 |
 | --- | --- | --- |
-| `gameKey` | 必填 | 真实 `ga_live_*`。TapTap Maker / 小游戏放服务端 Proxy。 |
+| `gameKey` | 必填 | 真实 `ga_live_*`。TapTap Maker / 小游戏直接配置在 Lua SDK。 |
 | `baseUrl` / `baseURL` | 必填 | SDK / REST API host，不是 Admin host。 |
 | `platform` | 必填 | `ios`、`android` 或 `rest`。TapTap Maker 当前用 `rest`。 |
 | `appVersion` | 必填 | 游戏版本号，用于版本覆盖率和版本维度排查。 |
@@ -54,6 +54,7 @@ end
 
 GameAlgo.Init({
     baseUrl = "https://game-algo-sdk.dictapis.cn",
+    gameKey = "ga_live_xxx",
     appVersion = "1.0.0",
     platform = "rest",
     userId = tapUserId,

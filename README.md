@@ -63,7 +63,7 @@ gamealgo key reveal --name <runtime-name> --json
 - 不要把 `ga_admin_*` 写进游戏客户端、小游戏客户端脚本、公开配置或日志。
 - 不要把 README 原样甩给开发者后停止接入。
 - 不要让 GameAlgo 网络请求阻塞游戏主流程。
-- 不要在 TapTap Maker / TapTap 小游戏客户端包里写 `ga_live_*`；这类场景优先写到服务端 Proxy。
+- TapTap Maker / TapTap 小游戏使用 Lua SDK 客户端直连，必须配置真实 `ga_live_*`，但不能写入 `ga_admin_*`。
 - 不要默认使用 `USD`；国内游戏、TapTap Maker / TapTap 小游戏的广告和付费事件默认使用 `CNY`。
 
 ## 如果你是开发者
@@ -83,7 +83,7 @@ gamealgo key reveal --name <runtime-name> --json
 | Key | 示例 | 用途 | 放在哪里 |
 | --- | --- | --- | --- |
 | Game Admin Key | `ga_admin_*` | CLI / AI Agent / CI 管理实验、脚本、配置、Report Pack，拉取报表和事件统计 | 开发机器、CI Secret、Agent Secret |
-| Client Game Key | `ga_live_*` | 游戏运行时拉取配置、拉取配置文件、上报事件 | 原生客户端包，或小游戏的服务端 Proxy |
+| Client Game Key | `ga_live_*` | 游戏运行时拉取配置、拉取配置文件、上报事件 | 游戏客户端 SDK 配置 |
 
 常规流程是：开发者只手工创建 Game Admin Key；AI Agent 用 CLI 创建、读取和维护 Client Game Key。
 
@@ -93,7 +93,7 @@ gamealgo key reveal --name <runtime-name> --json
 ios/        iOS Swift Package SDK
 android/    Android Java SDK core
 rest-api/   REST API helper 和示例
-lua/        TapTap Maker / TapTap 小游戏 Lua SDK 和服务端代理传输
+lua/        TapTap Maker / TapTap 小游戏 Lua SDK 和客户端 HTTP 传输
 cli/        游戏开发 Agent 使用的自动化 CLI
 examples/   可运行接入示例
 docs/       接入、埋点、报表和优化文档

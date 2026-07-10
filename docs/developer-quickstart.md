@@ -40,10 +40,10 @@ GameAlgo 有两类 key，名字接近但用途不同。
 
 | Key | 示例 | 用途 | 放在哪里 |
 | --- | --- | --- | --- |
-| Client Game Key | `ga_live_*` | 游戏运行时拉取配置、拉取配置文件、上报事件 | 游戏客户端包，或小游戏的服务端代理 |
+| Client Game Key | `ga_live_*` | 游戏运行时拉取配置、拉取配置文件、上报事件 | 游戏客户端 SDK 配置 |
 | Game Admin Key | `ga_admin_*` | CLI / AI Agent / CI 管理实验、脚本、配置、Report Pack，拉取报表和事件统计 | 开发机器、CI Secret、Agent Secret |
 
-推荐流程是：开发者只手工创建 `Game Admin Key`，然后把它交给 AI Agent。AI Agent 会用 CLI 检查当前游戏是否已有可用的 Client Game Key；没有时自动创建；需要写入 SDK 或 TapTap Maker 服务端 Proxy 时，再通过 CLI 读取明文。
+推荐流程是：开发者只手工创建 `Game Admin Key`，然后把它交给 AI Agent。AI Agent 会用 CLI 检查当前游戏是否已有可用的 Client Game Key；没有时自动创建；需要写入 SDK 时，再通过 CLI 读取明文。
 
 - 在 `Game Admin Key` 区域点击创建。
 - 用于 `gamealgo login`、AI Agent 和 CI。
@@ -76,22 +76,18 @@ gameKey = ga_live_xxx
 
 - iOS：使用 `ios/`
 - Android：使用 `android/`
-- TapTap Maker / TapTap 小游戏：使用 `lua/`，客户端接入 `GameAlgo.lua` 和 `ProxyTransport.lua`，服务端代理使用 `ProxyServer.lua` 和 `server_main.lua`
+- TapTap Maker / TapTap 小游戏：使用 `lua/`，客户端接入 `GameAlgo.lua` 和 `HttpTransport.lua`
 - 其他环境：使用 REST API
 
-TapTap 小游戏这类沙盒环境通常不能直接访问外部服务，推荐走服务端代理：
+TapTap Maker 客户端支持直接访问 GameAlgo HTTPS API：
 
 ```text
-小游戏客户端 -> 游戏服务端 Proxy -> 对应环境的 SDK / REST API 地址
+小游戏客户端 -> GameAlgo SDK API
 ```
 
-这种情况下，Client Game Key 建议放在服务端 Proxy，不直接放在小游戏客户端脚本里。
-
-TapTap Maker 接入时需要开启多人模式，也就是启用 Maker 自带的服务端能力。这个服务端由 Maker 平台部署和运行，不需要开发者额外购买服务器、部署独立后端，或为 GameAlgo 单独开发一套服务。GameAlgo Lua SDK 已经提供服务端代理代码：把 `lua/ProxyServer.lua` 和 `lua/server_main.lua` 放到 Maker 服务端脚本里即可。
+接入时把 `game-algo-sdk.dictapis.cn` 加入 Maker 网络白名单，并在客户端 `GameAlgo.Init` 中配置真实 Client Game Key。不需要开启多人模式，也不需要部署 GameAlgo 服务端代理。
 
 TapTap Maker 客户端初始化时，推荐优先使用 Maker 环境提供的稳定用户 ID，例如 `lobby:GetMyUserId()`，并传给 `GameAlgo.Init({ userId = tapUserId })`。拿不到时可以传 `nil`，SDK 会退回到本地匿名 ID。不要使用昵称、头像、手机号等可识别信息作为 `userId`。
-
-开启服务端后，Maker 的数据默认会保存在服务端；但客户端原来的本地数据和存档仍然可以继续读取。已有单机存档的游戏接入时，需要二选一：继续沿用原来的本地存储，或者在合适的版本里把本地存档无缝迁移到服务端存储。不要因为接入 GameAlgo 就直接丢弃旧本地存档。
 
 ## 6. 推荐让 AI Agent 使用 CLI
 
@@ -142,13 +138,12 @@ AI Agent 应该做的事：
 - 在游戏工程里配置对应环境的 SDK host
 - 先用 `gamealgo key list --json` 检查当前游戏是否已有可用 Client Game Key
 - 没有合适的 key 时，用 `gamealgo key create --name <用途名> --json` 创建；已有 key 但需要明文时，用 `gamealgo key reveal --name <用途名> --json`
-- 把 Client Game Key 配到 SDK 或 TapTap Maker 服务端 Proxy 中
+- 把 Client Game Key 配到 SDK 中
 - 初始化 SDK，确保 `userId` 稳定
 - TapTap Maker / TapTap 小游戏优先使用 `lobby:GetMyUserId()` 这类平台稳定用户 ID；拿不到时再使用 SDK 本地匿名 ID
 - 在关键点位补充事件上报
 - 国内游戏、TapTap Maker / TapTap 小游戏的 `ad_view` 和 `purchase` 事件统一使用 `currency = "CNY"`，不要默认使用 `USD`
-- 如果是 TapTap Maker / TapTap 小游戏这类沙盒环境，开启多人模式服务端，使用 SDK 内置 `lua/ProxyServer.lua` 和 `lua/server_main.lua` 转发请求；不要额外设计或部署新的后端服务
-- 如果游戏已经有单机本地存档，保留读取逻辑，按项目需要继续使用本地存储或迁移到 Maker 服务端存储
+- TapTap Maker / TapTap 小游戏把 SDK 域名加入网络白名单，并使用 `lua/HttpTransport.lua` 从客户端直连
 
 开发者需要确认：
 

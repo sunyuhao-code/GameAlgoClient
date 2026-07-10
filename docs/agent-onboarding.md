@@ -68,7 +68,7 @@ gamealgo key list --json
 gamealgo key create --name production-client --json
 ```
 
-已有 key 但需要写入 SDK 或服务端 Proxy 时读取明文：
+已有 key 但需要写入 SDK 时读取明文：
 
 ```bash
 gamealgo key reveal --name production-client --json
@@ -80,7 +80,7 @@ gamealgo key reveal --name production-client --json
 | --- | --- |
 | iOS / Android | App 配置、构建配置或安全的运行时配置位置 |
 | Web / Backend / REST | 服务端环境变量或后端配置 |
-| TapTap Maker / TapTap 小游戏 | 服务端 Proxy 配置，不要写进客户端脚本 |
+| TapTap Maker / TapTap 小游戏 | Lua SDK 客户端配置 |
 
 不要把 `ga_admin_*` 写入游戏客户端。不要把 key 打到日志、截图、崩溃上报或公开仓库。
 
@@ -189,7 +189,7 @@ gamealgo events count \
 1. SDK host 是否是运行时 host，不是 Admin host。
 2. `ga_live_*` 是否写入正确位置。
 3. 请求头是否是 `X-GameAlgo-Key`。
-4. TapTap Maker 是否已经启用多人模式和服务端 Proxy。
+4. TapTap Maker 是否已配置 SDK 域名网络白名单。
 5. 事件是否真的触发。
 6. 是否调用了 flush，或等待了自动 flush。
 7. Debug 包是否设置了 `isDebug=true`，查询口径是否包含 debug 数据。

@@ -29,7 +29,7 @@ npm --silent run cli -- report manifest --json
 
 1. 平台为当前游戏生成 Game Admin Key。
 2. Agent 用 `gamealgo login` 登录，key 只绑定一个游戏。
-3. Agent 用 `key list/create/reveal` 获取当前游戏的 Client Game Key，用于 SDK 或 TapTap Maker 服务端 Proxy。
+3. Agent 用 `key list/create/reveal` 获取当前游戏的 Client Game Key，用于运行时 SDK。
 4. Agent 拉取脚本、配置和 Report Pack，并按需发布脚本版本。
 5. Agent 创建或更新 Strategy，提交手动或托管 Run。
 6. 数据沉淀后，Agent 评估 Run，并通过 promote 把胜出组推为默认参数。
@@ -41,8 +41,8 @@ npm --silent run cli -- report manifest --json
 ```bash
 gamealgo login --host <admin-host> --admin-key ga_admin_xxx
 gamealgo key list --json
-gamealgo key create --name tapmaker-proxy --json
-gamealgo key reveal --name tapmaker-proxy --json
+gamealgo key create --name tapmaker-client --json
+gamealgo key reveal --name tapmaker-client --json
 gamealgo script publish scripts/level-generator.js --message "level script" --json
 gamealgo experiment strategy publish strategy.yaml --yes --json
 gamealgo experiment run create ad_frequency run.yaml --yes --json
@@ -58,7 +58,7 @@ gamealgo marketing adjust configure --api-token "$ADJUST_API_TOKEN" --app-token 
 gamealgo marketing adjust sync --from 2026-06-01 --to 2026-06-07 --timeout 60 --json
 ```
 
-`key list` 只返回 key 名称、前缀和状态，不返回明文。需要把 key 写入 SDK 或 TapTap Maker 服务端 Proxy 配置时，使用 `key create --name ...` 或 `key reveal --name ...` 获取明文。
+`key list` 只返回 key 名称、前缀和状态，不返回明文。需要把 key 写入 SDK 配置时，使用 `key create --name ...` 或 `key reveal --name ...` 获取明文。
 
 实验相关写操作在 `--json` / CI / 非交互环境下必须显式传 `--yes`。`report result` 和 `report preview` 的进度和耗时输出到 stderr，不会污染 JSON stdout。
 
@@ -132,7 +132,7 @@ gamealgo experiment run cancel xrun_xxx --yes
 
 如果游戏接入了 Adjust，Agent 可以用 `marketing adjust configure` 保存当前游戏的 Adjust App Token 和 API Token。保存后用 `gamealgo marketing adjust get --json` 读取 `integration.callbackUrl`，把这个 URL 填到 Adjust Raw Data Export / Server Callback 配置里；URL 由服务端生成，Agent 不要自己拼。Adjust callback trigger 选择 `Install`，并建议额外配置一条 `Reattribution`；如果 UI 一次只能选一个 trigger，就两条 callback 都填同一个 URL。不要选择 `Session`、普通 `Event` 或 `Ad revenue`。之后用 `marketing adjust sync` 同步花费。国内游戏、TapTap Maker / TapTap 小游戏通常使用 `--currency CNY`，海外游戏按 Adjust 投放账户实际成本币种填写。GameAlgo 使用 Adjust `network_cost` 字段，按 campaign / country 粒度写入数据；Report Pack 可以引用 `marketing.overview@1` 和 `marketing.roi@1` 查看投放总览、ROAS、获客用户 LTV 和投放花费。
 
-TapTap Maker / TapTap 小游戏 / Lua SDK 这类通过服务端 Proxy 或 REST 协议接入的环境，`platform` 使用 `rest`。不要扩展成 `tapmaker` 之类的新枚举；具体运行环境写到 `device` 中，例如：
+TapTap Maker / TapTap 小游戏 / Lua SDK 使用 `rest` 作为 `platform`。不要扩展成 `tapmaker` 之类的新枚举；具体运行环境写到 `device` 中，例如：
 
 ```json
 {
@@ -145,7 +145,7 @@ TapTap Maker / TapTap 小游戏 / Lua SDK 这类通过服务端 Proxy 或 REST �
 }
 ```
 
-TapTap Maker 接入时需要开启多人模式服务端。这个服务端是 Maker 自带的部署和运行能力，不需要额外部署独立后端；GameAlgo SDK 已经提供服务端代理代码，直接使用 `lua/ProxyServer.lua` 和 `lua/server_main.lua`。Agent 不要为 GameAlgo 另起一个服务，也不要把 Client Game Key 放进客户端脚本。
+TapTap Maker 使用 Lua SDK 客户端直连。Agent 需要把 `game-algo-sdk.dictapis.cn` 加入 Maker 网络白名单，把 `GameAlgo.lua` 和 `HttpTransport.lua` 放入客户端，并在 `GameAlgo.Init` 中配置 Client Game Key。不需要开启多人模式或部署服务端代理。
 
 TapTap Maker 客户端初始化时，优先使用 Maker 环境提供的稳定用户 ID 作为 `userId`，例如：
 
@@ -157,6 +157,7 @@ end
 
 GameAlgo.Init({
     baseUrl = "<sdk-host>",
+    gameKey = "ga_live_xxx",
     appVersion = "1.0.0",
     platform = "rest",
     userId = tapUserId,
@@ -169,8 +170,6 @@ GameAlgo.Init({
 ```
 
 如果拿不到 Maker 用户 ID，可以传 `nil`，SDK 会退回到本地匿名 ID。不要使用昵称、头像、手机号等可识别信息作为 `userId`。
-
-开启 Maker 服务端后，数据默认会保存在服务端；但客户端已有的本地数据和存档仍然可以继续读取。如果游戏原来是单机存档，接入时必须保留兼容策略：要么继续使用原来的本地存储，要么实现从本地存档到 Maker 服务端存储的无缝迁移。不要因为接入 SDK 删除或覆盖旧存档。
 
 国内游戏、TapTap Maker / TapTap 小游戏接入时，`ad_view` 和 `purchase` 的 `currency` 统一使用 `CNY`。不要默认使用 `USD`。
 
