@@ -108,64 +108,63 @@
       "metrics": ["sessions", "users", "avg_session_duration_ms"]
     }
   ],
-  "dashboard": {
-    "title": "Web Demo Reports",
-    "tabs": [
-      {
-        "id": "overview",
-        "label": "Overview",
-        "groups": [
-          {
-            "id": "gameplay",
-            "title": "Gameplay",
-            "charts": [
-              {
-                "id": "level_attempts",
-                "title": "Level Attempts",
-                "type": "line",
-                "report": "level_daily",
-                "x": "dt",
-                "y": "attempts"
-              },
-              {
-                "id": "success_rate",
-                "title": "Success Rate",
-                "type": "line",
-                "report": "level_daily",
-                "x": "dt",
-                "y": "success_rate",
-                "format": "percent"
-              },
-              {
-                "id": "session_duration",
-                "title": "Avg Session Duration",
-                "type": "line",
-                "report": "session_daily",
-                "x": "dt",
-                "y": "avg_session_duration_ms"
-              }
-            ]
-          },
-          {
-            "id": "monetization",
-            "title": "Monetization",
-            "charts": [
-              {
-                "id": "ad_revenue_by_placement",
-                "title": "Ad Revenue By Placement",
-                "type": "table",
-                "report": "ad_placement_daily"
-              },
-              {
-                "id": "purchase_revenue",
-                "title": "Purchase Revenue",
-                "type": "table",
-                "report": "purchase_daily"
-              }
-            ]
-          }
-        ]
-      }
-    ]
-  }
+  "title": "Web Demo Reports",
+  "charts": [
+    {
+      "id": "level_attempts",
+      "title": "Level Attempts",
+      "type": "line",
+      "report": "level_daily",
+      "x": "dt",
+      "y": "attempts"
+    },
+    {
+      "id": "success_rate",
+      "title": "Success Rate",
+      "type": "line",
+      "report": "level_daily",
+      "x": "dt",
+      "y": "success_rate",
+      "format": "percent"
+    },
+    {
+      "id": "session_duration",
+      "title": "Avg Session Duration",
+      "type": "line",
+      "report": "session_daily",
+      "x": "dt",
+      "y": "avg_session_duration_ms"
+    },
+    {
+      "id": "ad_revenue_by_placement",
+      "title": "Ad Revenue By Placement",
+      "type": "table",
+      "report": "ad_placement_daily"
+    },
+    {
+      "id": "purchase_revenue",
+      "title": "Purchase Revenue",
+      "type": "table",
+      "report": "purchase_daily"
+    }
+  ],
+  "groups": [
+    {
+      "id": "gameplay",
+      "title": "Gameplay",
+      "charts": ["level_attempts", "success_rate", "session_duration"]
+    },
+    {
+      "id": "monetization",
+      "title": "Monetization",
+      "charts": ["ad_revenue_by_placement", "purchase_revenue"]
+    }
+  ],
+  "tabs": [
+    {
+      "id": "overview",
+      "title": "Overview",
+      "groups": ["gameplay", "monetization"]
+    }
+  ]
 }

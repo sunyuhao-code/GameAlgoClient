@@ -40,4 +40,4 @@ Game Key: 从 GameAlgo 控制台获取的游戏 key
 
 ## Report Pack
 
-`report-pack.json` 是这个 demo 配套的 report pack。把它导入 demo 游戏的 GameAlgo 控制台 Reports 页面后，运行报表即可验证事件是否能在看板中展示。
+`report-pack.json` 是这个 demo 配套的 Report Pack。使用 GameAlgo CLI 执行 `report validate`、`report preview` 和 `report publish` 后，即可在管理后台的 Reports 页面查看结果。

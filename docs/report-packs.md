@@ -4,26 +4,17 @@ Report pack 用来定义一个游戏如何把 SDK 上报的事件 `payload` 转�
 
 SDK 会把业务字段放在事件 `payload` 中。Report pack 告诉 GameAlgo 哪些 payload 字段需要用于报表、如何聚合，以及最终生成哪些报表视图。
 
-## 提交位置
+## 提交方式
 
-在 GameAlgo 控制台选择游戏，然后打开 `Reports` tab。
+Report Pack 由 AI Agent 通过 GameAlgo CLI 创建、校验、预览和发布：
 
-`Reports` tab 用于查看当前生效的看板。需要编辑 report pack JSON、校验或保存新版本时，点击 `Manage Pack`。
+```bash
+gamealgo report validate gamealgo-report-pack.json
+gamealgo report preview --pack gamealgo-report-pack.json --from 2026-06-14 --to 2026-06-21 --tab-id overview
+gamealgo report publish gamealgo-report-pack.json
+```
 
-在 `Manage Pack` 中可以：
-
-- 创建版本，例如 `1.0.0`
-- 粘贴或编辑 report pack JSON
-- 点击 `Validate` 查看校验结果
-- 选择 `draft`、`active` 或 `disabled`
-- 点击 `Save`
-
-在主 `Reports` 页面中可以：
-
-- 选择一个 active 的 report pack 版本
-- 选择日期范围
-- 切换配置好的报表 tab
-- 点击 `Run` 运行当前 tab 下的图表
+GameAlgo 管理后台的 `Reports` 页面只用于查看当前游戏已经发布的报表、切换日期和平台，以及浏览不同 tab。
 
 ## 看板组织最佳实践
 
