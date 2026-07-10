@@ -11,6 +11,7 @@ public actor GameAlgoSDK {
     private let defaultPlatform: GameAlgoPlatform
     private let defaultSDKVersion: String
     private let defaultAppVersion: String?
+    private let defaultIsDebug: Bool
     private let httpClient: any GameAlgoHTTPClient
     private let scriptRuntime: any GameAlgoScriptRuntime
     private let cacheStorage: (any GameAlgoCacheStorage)?
@@ -123,6 +124,7 @@ public actor GameAlgoSDK {
         self.defaultSDKVersion = sdkVersion
         self.defaultAppVersion = appVersion
         self.defaultPlatform = platform
+        self.defaultIsDebug = isDebug
         self.httpClient = httpClient
         self.scriptRuntime = scriptRuntime
         self.cacheStorage = cacheStorage
@@ -263,6 +265,7 @@ public actor GameAlgoSDK {
         deviceId: String? = nil,
         timezone: String? = nil,
         device: [String: JSONValue] = [:],
+        isDebug: Bool? = nil,
         forceRefresh: Bool = false
     ) async throws -> GameAlgoConfigResponse {
         let identity = userIdentityStore.identity(userId: userId, now: now())
@@ -271,6 +274,7 @@ public actor GameAlgoSDK {
         let resolvedPlatform = platform ?? defaultPlatform
         let resolvedSDKVersion = sdkVersion ?? defaultSDKVersion
         let resolvedAppVersion = appVersion ?? defaultAppVersion
+        let resolvedIsDebug = isDebug ?? defaultIsDebug
         await tracker.identify(
             userId: identity.userId,
             sessionId: sessionId,
@@ -297,7 +301,8 @@ public actor GameAlgoSDK {
             sdkVersion: resolvedSDKVersion,
             appVersion: resolvedAppVersion,
             timezone: resolvedTimezone,
-            device: resolvedDevice
+            device: resolvedDevice,
+            isDebug: resolvedIsDebug
         )
 
         if !forceRefresh,
@@ -318,7 +323,8 @@ public actor GameAlgoSDK {
                 sdkVersion: resolvedSDKVersion,
                 appVersion: resolvedAppVersion,
                 timezone: resolvedTimezone,
-                device: resolvedDevice
+                device: resolvedDevice,
+                isDebug: resolvedIsDebug
             )
 
             let response: GameAlgoConfigResponse = try await requestJSON(
@@ -632,6 +638,7 @@ private struct ConfigCacheKey: Sendable, Equatable {
     let appVersion: String?
     let timezone: String
     let device: [String: JSONValue]
+    let isDebug: Bool
 }
 
 private struct ConfigRequest: Encodable {
@@ -643,6 +650,7 @@ private struct ConfigRequest: Encodable {
     let appVersion: String?
     let timezone: String
     let device: [String: JSONValue]
+    let isDebug: Bool
 }
 
 private struct AttributionRequest: Encodable {

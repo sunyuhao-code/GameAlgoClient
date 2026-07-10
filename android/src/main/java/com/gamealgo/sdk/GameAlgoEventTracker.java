@@ -77,6 +77,10 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         this.isDebug = isDebug;
     }
 
+    public synchronized boolean isDebug() {
+        return isDebug;
+    }
+
     public synchronized void setTimezone(String timezone) {
         this.timezone = isBlank(timezone) ? TimeZone.getDefault().getID() : timezone;
     }

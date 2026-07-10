@@ -32,7 +32,7 @@ gamealgo key reveal --name tapmaker-proxy --json
 gamealgo key revoke --name tapmaker-proxy --yes --json
 ```
 
-`key list` 返回名称、前缀和状态；`key create` 和 `key reveal` 会返回明文，用于写入 SDK 或 TapTap Maker 服务端 Proxy 配置。Client Game Key 统一使用 `ga_live_*` 前缀；QA/测试环境如需区分，可以创建单独命名的 key，并通过 `isDebug=true` 标记测试事件。`ga_admin_*` 只用于开发期自动化和控制台操作，不能打进游戏包。
+`key list` 返回名称、前缀和状态；`key create` 和 `key reveal` 会返回明文，用于写入 SDK 或 TapTap Maker 服务端 Proxy 配置。Client Game Key 统一使用 `ga_live_*` 前缀；QA/测试环境如需区分，可以创建单独命名的 key，并通过 `isDebug=true` 标记测试配置请求和事件。`ga_admin_*` 只用于开发期自动化和控制台操作，不能打进游戏包。
 
 如果当前没有真实 `ga_live_*`，AI Agent 必须使用 `ga_admin_*` 通过 CLI 创建或读取。不要把 `ga_live_xxx`、`TODO_GAME_KEY`、`NOOP_GAME_KEY` 等占位值提交到游戏工程后声称完成接入。没有真实 Client Game Key 时，只能标记为 Scaffolded，不能进入事件上报验收。
 
@@ -161,7 +161,7 @@ gamealgo events count \
 - 配置会缓存在本地。
 - 配置文件可以成功拉取并缓存。
 - 只要平台本地存储未被清空，重装/更新后 SDK 匿名 `userId` 能保持稳定。
-- Debug 或 QA 事件设置 `isDebug=true`。
+- Debug 或 QA 包的配置请求和事件都设置 `isDebug=true`。
 - 客户端运行时使用 `ga_live_*`；如需区分 QA/生产环境，使用不同名称的 Client Game Key。
 - 临时网络失败后，事件会继续重试。
 - 可以通过 `gamealgo events count` 查到测试事件。

@@ -60,6 +60,7 @@ public final class GameAlgoClientSmokeTest {
         check(requestBody.get("sessionId") instanceof String && ((String) requestBody.get("sessionId")).length() > 0, "config body should include sessionId");
         check("android".equals(requestBody.get("platform")), "config body should include platform");
         check("1.0.0".equals(requestBody.get("sdkVersion")), "config body should include sdkVersion");
+        check(Boolean.FALSE.equals(requestBody.get("isDebug")), "config body should default isDebug=false");
         Map<String, Object> device = GameAlgoJson.asObject(requestBody.get("device"), "device");
         check("java".equals(device.get("runtime")), "config body should include default device runtime");
         check(device.get("javaVersion") instanceof String, "config body should include java version");

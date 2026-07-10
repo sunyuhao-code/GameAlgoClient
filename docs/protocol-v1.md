@@ -112,6 +112,7 @@ Content-Type: application/json
   "sdkVersion": "1.0.0",
   "appVersion": "1.2.3",
   "timezone": "Asia/Shanghai",
+  "isDebug": false,
   "device": {
     "deviceId": "debug-device-id",
     "os": "iOS 18.0",
@@ -132,11 +133,12 @@ Content-Type: application/json
 | `sdkVersion` | 是 | SDK 版本 |
 | `appVersion` | 否 | 游戏 App 版本 |
 | `timezone` | 否 | 客户端本地时区 |
+| `isDebug` | 否 | Debug / QA 请求标记；设为 `true` 时 SDK context 会入库，但标准分析和看板默认过滤 |
 | `device` | 否 | 设备上下文；官方 SDK 会自动补基础设备信息，接入方可覆盖或追加字段；调试或排查用，不作为强身份。`device.country` 建议传 ISO 国家码，用于国家留存等标准看板 |
 
 服务端收到配置请求后会生成一条 SDK context 日志，记录可信 `gameId`、`userId`、`userCreatedAt`、`sessionId`、设备上下文和本次实验分配。后续事件只需要引用返回的 `contextId`，不再把设备信息复制到每条事件。
 
-`/v1/config` 对同一个 `gameId + userId + sessionId` 做 5 分钟幂等缓存。5 分钟内重复请求会返回同一个 `contextId` 和同一份配置响应，不重复写 SDK context 日志；超过 5 分钟会重新计算配置和实验分组。
+`/v1/config` 对同一个 `gameId + userId + sessionId + isDebug` 做 5 分钟幂等缓存。5 分钟内重复请求会返回同一个 `contextId` 和同一份配置响应，不重复写 SDK context 日志；超过 5 分钟会重新计算配置和实验分组。
 
 响应：
 

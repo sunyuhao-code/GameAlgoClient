@@ -59,7 +59,7 @@ gamealgo key reveal --name <用途名> --json
 gamealgo key revoke --name <用途名> --yes --json
 ```
 
-Client Game Key 统一使用 `ga_live_*` 前缀。QA/测试环境如需区分，可以创建单独命名的 key，并通过 `isDebug=true` 标记测试事件。SDK / REST 请求会通过 `X-GameAlgo-Key` 携带 Client Game Key。
+Client Game Key 统一使用 `ga_live_*` 前缀。QA/测试环境如需区分，可以创建单独命名的 key，并通过 `isDebug=true` 标记测试配置请求和事件。SDK / REST 请求会通过 `X-GameAlgo-Key` 携带 Client Game Key。
 
 如果团队暂时不用 AI Agent，也可以在控制台的 `客户端密钥` 区域手工创建 Client Game Key。但常规接入建议只把 Game Admin Key 提供给 AI，让 AI 负责运行时 key 的创建和维护，开发者负责审核 AI 写入项目配置的位置是否正确。
 
@@ -154,7 +154,7 @@ AI Agent 应该做的事：
 
 - 游戏能正常启动，不被 GameAlgo 网络请求阻塞
 - 配置拉取失败时，游戏仍然走本地默认逻辑
-- Debug / QA 包设置 `isDebug=true`，如需隔离环境则使用单独命名的 Client Game Key
+- Debug / QA 包的配置请求和事件都设置 `isDebug=true`，如需隔离环境则使用单独命名的 Client Game Key
 
 ### 第二步：验证事件上报链路
 

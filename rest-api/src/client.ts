@@ -48,6 +48,7 @@ export class GameAlgoRestClient {
   private readonly appVersion?: string;
   private readonly platform: Platform;
   private readonly timezone: string;
+  private readonly isDebug: boolean;
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
   private readonly storage?: GameAlgoStorage;
@@ -75,6 +76,7 @@ export class GameAlgoRestClient {
     this.appVersion = options.appVersion;
     this.platform = options.platform ?? "rest";
     this.timezone = clean(options.timezone) ?? defaultTimezone();
+    this.isDebug = options.isDebug ?? false;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.now = options.now ?? Date.now;
     this.storage = options.storage;
@@ -89,7 +91,7 @@ export class GameAlgoRestClient {
       sdkVersion: this.sdkVersion,
       appVersion: this.appVersion,
       timezone: this.timezone,
-      isDebug: options.isDebug ?? false,
+      isDebug: this.isDebug,
       flushIntervalMs: options.eventFlushIntervalMs ?? 30000,
       maxBatchSize: options.eventMaxBatchSize ?? 100,
       queueLimit: options.eventQueueLimit ?? 1000,
@@ -181,6 +183,7 @@ export class GameAlgoRestClient {
     const sdkVersion = options.sdkVersion ?? this.sdkVersion;
     const appVersion = options.appVersion ?? this.appVersion;
     const sessionId = clean(options.sessionId) ?? this.tracker.currentSessionId();
+    const isDebug = options.isDebug ?? this.isDebug;
     const device = {
       ...defaultDeviceContext(),
       ...(options.device ?? {}),
@@ -196,6 +199,7 @@ export class GameAlgoRestClient {
       deviceId: options.deviceId,
       timezone: options.timezone ?? this.timezone,
       device,
+      isDebug,
     });
 
     if (!options.forceRefresh && this.cachedConfig && this.cachedConfig.cacheKey === cacheKey && this.cachedConfig.expiresAt > this.now()) {
@@ -218,6 +222,7 @@ export class GameAlgoRestClient {
           appVersion,
           timezone: options.timezone ?? this.timezone,
           device,
+          isDebug,
         }),
       });
       this.cachedConfig = {

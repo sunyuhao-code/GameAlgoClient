@@ -13,6 +13,7 @@ public final class GameAlgoFetchConfigRequest {
     private String deviceId;
     private String timezone;
     private Map<String, Object> device = new LinkedHashMap<>();
+    private Boolean isDebug;
     private boolean forceRefresh;
 
     public GameAlgoFetchConfigRequest(String userId) {
@@ -59,6 +60,11 @@ public final class GameAlgoFetchConfigRequest {
         return this;
     }
 
+    public GameAlgoFetchConfigRequest isDebug(Boolean isDebug) {
+        this.isDebug = isDebug;
+        return this;
+    }
+
     public GameAlgoFetchConfigRequest forceRefresh(boolean forceRefresh) {
         this.forceRefresh = forceRefresh;
         return this;
@@ -98,6 +104,10 @@ public final class GameAlgoFetchConfigRequest {
 
     public Map<String, Object> getDevice() {
         return new LinkedHashMap<>(device);
+    }
+
+    public Boolean getIsDebug() {
+        return isDebug;
     }
 
     public boolean isForceRefresh() {

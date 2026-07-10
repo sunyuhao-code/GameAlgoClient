@@ -160,6 +160,7 @@ final class GameAlgoSDKTests: XCTestCase {
             cacheStorage: GameAlgoUserDefaultsCacheStorage(userDefaults: defaults),
             userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
             _autoStart: false,
+            isDebug: true,
             now: { Date(timeIntervalSince1970: 1_000) }
         )
 
@@ -179,6 +180,7 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertFalse((requestPayload["sessionId"] as? String ?? "").isEmpty)
         XCTAssertEqual(requestPayload["platform"] as? String, "ios")
         XCTAssertEqual(requestPayload["sdkVersion"] as? String, "1.0.0")
+        XCTAssertEqual(requestPayload["isDebug"] as? Bool, true)
         let device = try XCTUnwrap(requestPayload["device"] as? [String: Any])
         XCTAssertEqual(device["runtime"] as? String, "ios")
         XCTAssertEqual(device["locale"] as? String, Locale.current.identifier)

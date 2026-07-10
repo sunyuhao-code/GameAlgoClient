@@ -41,6 +41,7 @@ export type FetchConfigOptions = {
   deviceId?: string;
   timezone?: string;
   device?: Record<string, JsonValue>;
+  isDebug?: boolean;
   forceRefresh?: boolean;
 };
 

@@ -233,6 +233,7 @@ public final class GameAlgoClient {
         String appVersion = request.getAppVersion() == null ? defaultAppVersion : request.getAppVersion();
         String sessionId = isBlank(resolvedRequest.getSessionId()) ? tracker.currentSessionId() : resolvedRequest.getSessionId();
         String timezone = isBlank(request.getTimezone()) ? TimeZone.getDefault().getID() : request.getTimezone();
+        Boolean isDebug = resolvedRequest.getIsDebug() == null ? tracker.isDebug() : resolvedRequest.getIsDebug();
         Map<String, Object> device = defaultDeviceContext();
         device.putAll(request.getDevice());
         if (!isBlank(request.getDeviceId())) {
@@ -246,7 +247,8 @@ public final class GameAlgoClient {
                 sdkVersion,
                 appVersion,
                 timezone,
-                device
+                device,
+                isDebug
         );
 
         long nowMillis = System.currentTimeMillis();
@@ -271,6 +273,7 @@ public final class GameAlgoClient {
             }
             body.put("timezone", timezone);
             body.put("device", device);
+            body.put("isDebug", isDebug);
 
             GameAlgoConfigResponse response = parseConfigResponse(
                     requestJson(
@@ -517,6 +520,7 @@ public final class GameAlgoClient {
                 .deviceId(request.getDeviceId())
                 .timezone(request.getTimezone())
                 .device(request.getDevice())
+                .isDebug(request.getIsDebug())
                 .forceRefresh(request.isForceRefresh());
         return resolved;
     }
@@ -1007,8 +1011,9 @@ public final class GameAlgoClient {
         private final String appVersion;
         private final String timezone;
         private final Map<String, Object> device;
+        private final Boolean isDebug;
 
-        private ConfigCacheKey(String userId, String userCreatedAt, String sessionId, String platform, String sdkVersion, String appVersion, String timezone, Map<String, Object> device) {
+        private ConfigCacheKey(String userId, String userCreatedAt, String sessionId, String platform, String sdkVersion, String appVersion, String timezone, Map<String, Object> device, Boolean isDebug) {
             this.userId = userId;
             this.userCreatedAt = userCreatedAt;
             this.sessionId = sessionId;
@@ -1017,6 +1022,7 @@ public final class GameAlgoClient {
             this.appVersion = appVersion;
             this.timezone = timezone;
             this.device = device == null ? new LinkedHashMap<String, Object>() : new LinkedHashMap<>(device);
+            this.isDebug = isDebug;
         }
 
         @Override
@@ -1035,7 +1041,8 @@ public final class GameAlgoClient {
                     && equalsNullable(sdkVersion, that.sdkVersion)
                     && equalsNullable(appVersion, that.appVersion)
                     && equalsNullable(timezone, that.timezone)
-                    && equalsNullable(device, that.device);
+                    && equalsNullable(device, that.device)
+                    && equalsNullable(isDebug, that.isDebug);
         }
 
         @Override
@@ -1048,6 +1055,7 @@ public final class GameAlgoClient {
             result = 31 * result + hashNullable(appVersion);
             result = 31 * result + hashNullable(timezone);
             result = 31 * result + hashNullable(device);
+            result = 31 * result + hashNullable(isDebug);
             return result;
         }
 

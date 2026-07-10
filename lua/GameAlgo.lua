@@ -247,6 +247,7 @@ function GameAlgo.FetchConfig(callback)
         appVersion = state_.appVersion,
         timezone = state_.timezone,
         device = state_.device,
+        isDebug = state_.isDebug,
     }
     httpRequest("POST", "/v1/config", request, function(error, config)
         if error then
