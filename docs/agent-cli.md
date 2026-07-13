@@ -64,9 +64,19 @@ gamealgo marketing adjust sync --from 2026-06-01 --to 2026-06-07 --timeout 60 --
 
 实验文件分两类。Strategy 定义游戏代码读取的稳定策略 key、默认参数和可选脚本版本：
 
+在第一次接入实验或客户端新增实验参数前，先创建实验接入版本，并把返回的整数写入 SDK 初始化代码：
+
+```bash
+gamealgo experiment integration-version latest --json
+gamealgo experiment integration-version create --title "广告频率参数" --message "支持 firstAdLevel 和 interval" --json
+```
+
+版本号是当前 App 构建已实现的实验能力，不是运行时配置版本。客户端不能运行时查询 latest。Debug Context 不会把版本标记为已观测；只有非 Debug Context 成功落库后，版本才会从 `draft` 变为 `observed` 并记录 `firstSeenAt`。版本创建后只能更新 `message`，`title` 和版本号不可改。
+
 ```yaml
 strategyKey: ad_frequency
 displayName: 广告频率
+requiredIntegrationVersion: 3
 defaultConfig:
   firstAdLevel: 4
   interval: 30

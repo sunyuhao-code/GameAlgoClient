@@ -10,6 +10,7 @@ public final class GameAlgoFetchConfigRequest {
     private String platform;
     private String sdkVersion;
     private String appVersion;
+    private Integer experimentIntegrationVersion;
     private String deviceId;
     private String timezone;
     private Map<String, Object> device = new LinkedHashMap<>();
@@ -42,6 +43,14 @@ public final class GameAlgoFetchConfigRequest {
 
     public GameAlgoFetchConfigRequest appVersion(String appVersion) {
         this.appVersion = appVersion;
+        return this;
+    }
+
+    public GameAlgoFetchConfigRequest experimentIntegrationVersion(int experimentIntegrationVersion) {
+        if (experimentIntegrationVersion < 0) {
+            throw new IllegalArgumentException("experimentIntegrationVersion must be a non-negative integer");
+        }
+        this.experimentIntegrationVersion = experimentIntegrationVersion;
         return this;
     }
 
@@ -92,6 +101,10 @@ public final class GameAlgoFetchConfigRequest {
 
     public String getAppVersion() {
         return appVersion;
+    }
+
+    public Integer getExperimentIntegrationVersion() {
+        return experimentIntegrationVersion;
     }
 
     public String getDeviceId() {

@@ -90,6 +90,19 @@ gamealgo key revoke --name tapmaker-proxy --yes
 - `Strategy` 是游戏代码读取的稳定策略 key，包含默认参数和可选脚本版本。
 - `Run` 是一次实验闭环，绑定某个 Strategy，包含实验组、流量、平台、目标和实验报表。
 
+先为当前客户端支持的实验能力创建一个游戏级版本。版本号由服务端自增，写入客户端初始化代码，并由 Strategy 的 `requiredIntegrationVersion` 引用：
+
+```bash
+gamealgo experiment integration-version latest --json
+gamealgo experiment integration-version create \
+  --title "广告频率参数" \
+  --message "客户端已支持 firstAdLevel 和 interval" \
+  --json
+gamealgo experiment integration-version get --version 3 --json
+```
+
+`title` 创建后不可修改；`message` 可以用 `integration-version update --version 3 --message "..."` 补充，服务端会保留修订记录。不要在运行时查询 latest 后上报，必须把创建后返回的 `version` 固定到对应 App 构建中。新增客户端能力时创建新版本，不要扩充已经被线上客户端观测到的旧版本语义。
+
 如果实验依赖脚本，先发布不可变脚本版本，记录返回的 `scriptVersion.versionId`：
 
 ```bash
@@ -104,6 +117,7 @@ gamealgo script publish scripts/ad-frequency.lua \
 # strategy.yaml
 strategyKey: ad_frequency
 displayName: 广告频率
+requiredIntegrationVersion: 3
 defaultConfig:
   firstAdLevel: 4
   interval: 30

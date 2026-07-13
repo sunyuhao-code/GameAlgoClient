@@ -38,6 +38,7 @@ export type FetchConfigOptions = {
   platform?: Platform;
   sdkVersion?: string;
   appVersion?: string;
+  experimentIntegrationVersion?: number;
   deviceId?: string;
   timezone?: string;
   device?: Record<string, JsonValue>;
@@ -100,6 +101,7 @@ export type GameAlgoRestClientOptions = {
   sessionId?: string;
   sdkVersion?: string;
   appVersion?: string;
+  experimentIntegrationVersion?: number;
   platform?: Platform;
   deviceId?: string;
   device?: Record<string, JsonValue>;

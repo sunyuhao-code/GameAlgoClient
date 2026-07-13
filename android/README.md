@@ -7,10 +7,18 @@
 ## 最小 API
 
 ```kotlin
-val sdk = GameAlgo.init("ga_live_xxx", "https://gamealgo.example.com")
+val sdk = GameAlgo.init(
+    "ga_live_xxx",
+    "https://gamealgo.example.com",
+    "1.0.0",
+    "1.2.3",
+    3
+)
 ```
 
 `ga_live_xxx` 只是示例占位。实际接入必须使用真实 `ga_live_*`；如果当前没有真实 key，AI Agent 应使用 `ga_admin_*` 通过 GameAlgo CLI 创建或读取，不要提交占位 key 后声称接入完成。
+
+最后一个整数来自 `gamealgo experiment integration-version create`，表示这个 App 构建已经实现的实验参数能力。不要在运行时查询 latest；没有接入实验时可以继续使用两参数 `GameAlgo.init`，其版本为 `0`。
 
 ## 使用方式
 

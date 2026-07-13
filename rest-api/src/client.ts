@@ -46,6 +46,7 @@ export class GameAlgoRestClient {
   private readonly gameKey: string;
   private readonly sdkVersion: string;
   private readonly appVersion?: string;
+  private readonly experimentIntegrationVersion: number;
   private readonly platform: Platform;
   private readonly timezone: string;
   private readonly isDebug: boolean;
@@ -74,6 +75,7 @@ export class GameAlgoRestClient {
     this.gameKey = options.gameKey;
     this.sdkVersion = options.sdkVersion ?? "1.0.0";
     this.appVersion = options.appVersion;
+    this.experimentIntegrationVersion = normalizeExperimentIntegrationVersion(options.experimentIntegrationVersion);
     this.platform = options.platform ?? "rest";
     this.timezone = clean(options.timezone) ?? defaultTimezone();
     this.isDebug = options.isDebug ?? false;
@@ -182,6 +184,9 @@ export class GameAlgoRestClient {
     const platform = options.platform ?? this.platform;
     const sdkVersion = options.sdkVersion ?? this.sdkVersion;
     const appVersion = options.appVersion ?? this.appVersion;
+    const experimentIntegrationVersion = normalizeExperimentIntegrationVersion(
+      options.experimentIntegrationVersion ?? this.experimentIntegrationVersion,
+    );
     const sessionId = clean(options.sessionId) ?? this.tracker.currentSessionId();
     const isDebug = options.isDebug ?? this.isDebug;
     const device = {
@@ -196,6 +201,7 @@ export class GameAlgoRestClient {
       platform,
       sdkVersion,
       appVersion,
+      experimentIntegrationVersion,
       deviceId: options.deviceId,
       timezone: options.timezone ?? this.timezone,
       device,
@@ -220,6 +226,7 @@ export class GameAlgoRestClient {
           platform,
           sdkVersion,
           appVersion,
+          experimentIntegrationVersion,
           timezone: options.timezone ?? this.timezone,
           device,
           isDebug,
@@ -962,6 +969,14 @@ function randomId(): string {
 function clean(value: string | undefined | null): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function normalizeExperimentIntegrationVersion(value: number | undefined): number {
+  const version = value ?? 0;
+  if (!Number.isSafeInteger(version) || version < 0) {
+    throw new Error("experimentIntegrationVersion must be a non-negative integer");
+  }
+  return version;
 }
 
 function resolveLogger(logger: GameAlgoLogger | undefined): ((message: string) => void) | undefined {

@@ -16,6 +16,7 @@ const client = new GameAlgoRestClient({
   gameKey: "ga_live_xxx",
   sdkVersion: "1.0.0",
   appVersion: "1.2.3",
+  experimentIntegrationVersion: 3,
 });
 
 const levelGenerator = client.executor("level_generator");
@@ -31,6 +32,8 @@ await client.tracker.flush();
 ```
 
 `ga_live_xxx` 只是示例占位。实际接入必须使用真实 `ga_live_*`；如果当前没有真实 key，AI Agent 应使用 `ga_admin_*` 通过 GameAlgo CLI 创建或读取，不要提交占位 key 后声称接入完成。
+
+`experimentIntegrationVersion` 来自 `gamealgo experiment integration-version create`，表示当前构建已经实现的实验参数能力。它必须固定在构建配置中，不能在运行时查询 latest；没有接入实验时默认是 `0`。
 
 `new GameAlgoRestClient(...)` 会在后台刷新 `/v1/config` 并预加载配置文件。它也会创建或复用 SDK 匿名 `userId`；如果希望 helper 跨启动持久化这个 ID，初始化时需要传入 `storage`。`executor` 和 `config` 读取的是最新本地快照，所以玩法逻辑读取实验分组或调参值时不需要直接调用远端 API。
 

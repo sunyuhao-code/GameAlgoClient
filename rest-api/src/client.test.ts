@@ -20,6 +20,7 @@ test("fetchConfig sends Protocol v1 headers and caches by ttl", async () => {
     baseUrl: "https://gamealgo.test",
     gameKey,
     sdkVersion: "1.0.0",
+    experimentIntegrationVersion: 7,
     isDebug: true,
     autoStart: false,
     now: () => 1000,
@@ -36,6 +37,7 @@ test("fetchConfig sends Protocol v1 headers and caches by ttl", async () => {
       assert.equal(body.sessionId, client.tracker.currentSessionId());
       assert.equal(body.platform, "rest");
       assert.equal(body.sdkVersion, "1.0.0");
+      assert.equal(body.experimentIntegrationVersion, 7);
       assert.equal(body.isDebug, true);
       const device = body.device as Record<string, unknown>;
       assert.equal(device.runtime, "node");

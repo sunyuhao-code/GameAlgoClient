@@ -211,7 +211,53 @@ async function handleExperiment(client: GameAlgoAdminClient, args: string[], glo
     await handleExperimentOverride(client, args, global);
     return;
   }
-  throw new Error("usage: gamealgo experiment <strategies|strategy|run|override>");
+  if (sub === "integration-version") {
+    await handleExperimentIntegrationVersion(client, args, global);
+    return;
+  }
+  throw new Error("usage: gamealgo experiment <strategies|strategy|run|override|integration-version>");
+}
+
+async function handleExperimentIntegrationVersion(
+  client: GameAlgoAdminClient,
+  args: string[],
+  global: ReturnType<typeof parseGlobalFlags>,
+): Promise<void> {
+  const sub = args.shift();
+  const flags = parseFlags(args);
+  if (sub === "latest") {
+    await printResult(await client.getLatestExperimentIntegrationVersion(), global);
+    return;
+  }
+  if (sub === "list") {
+    const limit = optionalNonNegativeInteger(flags.limit, "--limit") ?? 100;
+    await printResult(await client.listExperimentIntegrationVersions(limit), global);
+    return;
+  }
+  if (sub === "get" || sub === "show") {
+    const version = positiveInteger(flags.version || args.shift(), "version");
+    await printResult(await client.getExperimentIntegrationVersion(version), global);
+    return;
+  }
+  if (sub === "create") {
+    const title = optionalString(flags.title);
+    const message = optionalString(flags.message);
+    if (!title || !message) {
+      throw new Error("usage: gamealgo experiment integration-version create --title <title> --message <message>");
+    }
+    await printResult(await client.createExperimentIntegrationVersion(title, message), global);
+    return;
+  }
+  if (sub === "update") {
+    const version = positiveInteger(flags.version || args.shift(), "version");
+    const message = optionalString(flags.message);
+    if (!message) {
+      throw new Error("usage: gamealgo experiment integration-version update --version <version> --message <message>");
+    }
+    await printResult(await client.updateExperimentIntegrationVersion(version, message), global);
+    return;
+  }
+  throw new Error("usage: gamealgo experiment integration-version <latest|list|get|create|update>");
 }
 
 async function handleExperimentStrategy(client: GameAlgoAdminClient, args: string[], global: ReturnType<typeof parseGlobalFlags>): Promise<void> {
@@ -240,6 +286,10 @@ async function handleExperimentStrategy(client: GameAlgoAdminClient, args: strin
     }
     if (!optionalString(body.strategyKey || body.key)) {
       throw new Error("experiment strategy requires strategyKey");
+    }
+    const requiredIntegrationVersion = optionalNonNegativeInteger(body.requiredIntegrationVersion, "requiredIntegrationVersion");
+    if (!requiredIntegrationVersion) {
+      throw new Error("experiment strategy requires requiredIntegrationVersion >= 1");
     }
     const response = await client.upsertExperimentV2Strategy(body);
     await printResult(response, global);
@@ -821,6 +871,26 @@ class GameAlgoAdminClient {
     return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/strategies-v2${query}`);
   }
 
+  async listExperimentIntegrationVersions(limit = 100) {
+    return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/experiment-integration-versions?limit=${encodeURIComponent(String(limit))}`);
+  }
+
+  async getLatestExperimentIntegrationVersion() {
+    return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/experiment-integration-versions/latest`);
+  }
+
+  async getExperimentIntegrationVersion(version: number) {
+    return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/experiment-integration-versions/${version}`);
+  }
+
+  async createExperimentIntegrationVersion(title: string, message: string) {
+    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/experiment-integration-versions`, { title, message });
+  }
+
+  async updateExperimentIntegrationVersion(version: number, message: string) {
+    return await this.patch(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/experiment-integration-versions/${version}`, { message });
+  }
+
   async getExperimentV2Strategy(strategyKey: string) {
     return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/strategies-v2/${encodeURIComponent(strategyKey)}`);
   }
@@ -1223,6 +1293,12 @@ function optionalNonNegativeInteger(value: unknown, field: string): number | und
   return parsed;
 }
 
+function positiveInteger(value: unknown, field: string): number {
+  const parsed = optionalNonNegativeInteger(value, field);
+  if (!parsed) throw new Error(`${field} must be a positive integer`);
+  return parsed;
+}
+
 function startProgress(label: string, timeoutMs?: number): () => void {
   const startedAt = Date.now();
   process.stderr.write(`${label}${timeoutMs ? `, timeout ${formatDuration(timeoutMs)}` : ""}...\n`);
@@ -1298,6 +1374,11 @@ Usage:
 
   gamealgo experiment strategies
   gamealgo experiment strategies --include-archived
+  gamealgo experiment integration-version latest
+  gamealgo experiment integration-version list
+  gamealgo experiment integration-version get --version 3
+  gamealgo experiment integration-version create --title "关卡动态难度" --message "客户端已接入难度参数"
+  gamealgo experiment integration-version update --version 3 --message "补充支持新参数"
   gamealgo experiment strategy show ad_frequency
   gamealgo experiment strategy publish strategy.yaml --yes
   gamealgo experiment strategy default ad_frequency strategy.yaml --yes

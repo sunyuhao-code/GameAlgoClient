@@ -11,6 +11,7 @@ public actor GameAlgoSDK {
     private let defaultPlatform: GameAlgoPlatform
     private let defaultSDKVersion: String
     private let defaultAppVersion: String?
+    private let experimentIntegrationVersion: Int
     private let defaultIsDebug: Bool
     private let httpClient: any GameAlgoHTTPClient
     private let scriptRuntime: any GameAlgoScriptRuntime
@@ -37,6 +38,7 @@ public actor GameAlgoSDK {
         baseURL: URL,
         sdkVersion: String = GameAlgoSDK.defaultSDKVersion,
         appVersion: String? = nil,
+        experimentIntegrationVersion: Int = 0,
         platform: GameAlgoPlatform = .ios,
         httpClient: any GameAlgoHTTPClient = URLSessionGameAlgoHTTPClient(),
         scriptRuntime: any GameAlgoScriptRuntime = JavaScriptCoreGameAlgoScriptRuntime(),
@@ -61,6 +63,7 @@ public actor GameAlgoSDK {
             baseURL: baseURL,
             sdkVersion: sdkVersion,
             appVersion: appVersion,
+            experimentIntegrationVersion: experimentIntegrationVersion,
             platform: platform,
             httpClient: httpClient,
             scriptRuntime: scriptRuntime,
@@ -88,6 +91,7 @@ public actor GameAlgoSDK {
         baseURL: URL,
         sdkVersion: String = GameAlgoSDK.defaultSDKVersion,
         appVersion: String? = nil,
+        experimentIntegrationVersion: Int = 0,
         platform: GameAlgoPlatform = .ios,
         httpClient: any GameAlgoHTTPClient = URLSessionGameAlgoHTTPClient(),
         scriptRuntime: any GameAlgoScriptRuntime = JavaScriptCoreGameAlgoScriptRuntime(),
@@ -123,6 +127,8 @@ public actor GameAlgoSDK {
         self.baseURL = baseURL
         self.defaultSDKVersion = sdkVersion
         self.defaultAppVersion = appVersion
+        precondition(experimentIntegrationVersion >= 0, "experimentIntegrationVersion must be a non-negative integer")
+        self.experimentIntegrationVersion = experimentIntegrationVersion
         self.defaultPlatform = platform
         self.defaultIsDebug = isDebug
         self.httpClient = httpClient
@@ -300,6 +306,7 @@ public actor GameAlgoSDK {
             platform: resolvedPlatform,
             sdkVersion: resolvedSDKVersion,
             appVersion: resolvedAppVersion,
+            experimentIntegrationVersion: experimentIntegrationVersion,
             timezone: resolvedTimezone,
             device: resolvedDevice,
             isDebug: resolvedIsDebug
@@ -322,6 +329,7 @@ public actor GameAlgoSDK {
                 platform: resolvedPlatform,
                 sdkVersion: resolvedSDKVersion,
                 appVersion: resolvedAppVersion,
+                experimentIntegrationVersion: experimentIntegrationVersion,
                 timezone: resolvedTimezone,
                 device: resolvedDevice,
                 isDebug: resolvedIsDebug
@@ -636,6 +644,7 @@ private struct ConfigCacheKey: Sendable, Equatable {
     let platform: GameAlgoPlatform
     let sdkVersion: String
     let appVersion: String?
+    let experimentIntegrationVersion: Int
     let timezone: String
     let device: [String: JSONValue]
     let isDebug: Bool
@@ -648,6 +657,7 @@ private struct ConfigRequest: Encodable {
     let platform: GameAlgoPlatform
     let sdkVersion: String
     let appVersion: String?
+    let experimentIntegrationVersion: Int
     let timezone: String
     let device: [String: JSONValue]
     let isDebug: Bool

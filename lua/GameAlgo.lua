@@ -27,6 +27,7 @@ local state_ = {
     baseUrl = DEFAULT_BASE_URL,
     gameKey = nil,
     appVersion = nil,
+    experimentIntegrationVersion = 0,
     platform = "rest",
     timezone = nil,
     device = {},
@@ -209,6 +210,10 @@ function GameAlgo.Init(options)
     state_.baseUrl = options.baseUrl or DEFAULT_BASE_URL
     state_.gameKey = options.gameKey
     state_.appVersion = options.appVersion
+    state_.experimentIntegrationVersion = tonumber(options.experimentIntegrationVersion) or 0
+    if state_.experimentIntegrationVersion < 0 or state_.experimentIntegrationVersion % 1 ~= 0 then
+        error("experimentIntegrationVersion must be a non-negative integer")
+    end
     state_.platform = options.platform or "rest"
     state_.timezone = options.timezone
     state_.device = options.device or {}
@@ -245,6 +250,7 @@ function GameAlgo.FetchConfig(callback)
         platform = state_.platform,
         sdkVersion = SDK_VERSION,
         appVersion = state_.appVersion,
+        experimentIntegrationVersion = state_.experimentIntegrationVersion,
         timezone = state_.timezone,
         device = state_.device,
         isDebug = state_.isDebug,

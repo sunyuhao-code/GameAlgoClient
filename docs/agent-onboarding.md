@@ -240,6 +240,7 @@ gamealgo marketing adjust sync --from 2026-06-01 --to 2026-06-07 --timeout 60 --
 如果游戏需要动态参数、动态脚本或 DDA：
 
 ```bash
+gamealgo experiment integration-version create --title "关卡生成参数" --message "客户端已支持本轮实验参数" --json
 gamealgo script publish scripts/level-generator.js --message "level script" --json
 gamealgo experiment strategy publish strategy.yaml --yes
 gamealgo experiment run create level_generator run.yaml --yes
