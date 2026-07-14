@@ -22,6 +22,7 @@ end
 local HttpTransport = requireSdkModule("HttpTransport")
 local LuaScriptRuntime = requireSdkModule("LuaScriptRuntime")
 local Sha256 = requireSdkModule("Sha256")
+local DDA = requireSdkModule("DDA")
 
 local GameAlgo = {}
 
@@ -45,6 +46,7 @@ local state_ = {
     config = nil,
     configFiles = {},
     scripts = {},
+    ddaControllers = {},
     queue = {},
     maxBatchSize = 100,
     preloadConfigFiles = true,
@@ -579,6 +581,23 @@ function GameAlgo.Executor(key)
     end
 
     return executor
+end
+
+function GameAlgo.DDA(key, options)
+    key = tostring(key or "")
+    if key == "" then error("DDA strategy key is required") end
+    if state_.ddaControllers[key] then return state_.ddaControllers[key] end
+    options = options or {}
+    local gameKeyPrefix = tostring(state_.gameKey or "anonymous"):sub(1, 16)
+    local controller = DDA.New({
+        executor = GameAlgo.Executor(key),
+        storageKey = options.storageKey or ("gamealgo:v1:dda:" .. gameKeyPrefix .. ":" .. key),
+        recentWindowSize = options.recentWindowSize,
+        storageGet = storageGet,
+        storageSet = storageSet,
+    })
+    state_.ddaControllers[key] = controller
+    return controller
 end
 
 function GameAlgo.ConfigValue(path, defaultValue, fileName)

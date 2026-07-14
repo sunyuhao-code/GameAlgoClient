@@ -21,6 +21,8 @@ import type {
   UserAttributionInput,
   UserAttributionResponse,
 } from "./types.ts";
+import type { GameAlgoDDAOptions } from "./types.ts";
+import { GameAlgoDDAController } from "./dda.ts";
 
 type RefreshOptions = FetchConfigOptions & {
   preloadConfigFiles?: boolean | string[];
@@ -64,6 +66,7 @@ export class GameAlgoRestClient {
   private currentIdentity: GameAlgoUserIdentity | null = null;
   private readyPromise: Promise<void> | null = null;
   private didLogUserId = false;
+  private readonly ddaControllers = new Map<string, GameAlgoDDAController>();
   readonly config: GameAlgoConfigReader;
   readonly tracker: GameAlgoEventTracker;
 
@@ -125,6 +128,17 @@ export class GameAlgoRestClient {
 
   executor(key: string): GameAlgoExperimentExecutor {
     return new GameAlgoExperimentExecutor(key, () => this.snapshot, this.scriptRuntime, this.logger);
+  }
+
+  dda(key: string, options: GameAlgoDDAOptions = {}): GameAlgoDDAController {
+    const strategy = clean(key);
+    if (!strategy) throw new Error("DDA strategy key is required");
+    const existing = this.ddaControllers.get(strategy);
+    if (existing) return existing;
+    const storageKey = `gamealgo:v1:dda:${this.baseUrl.origin}:${this.gameKey.slice(0, 16)}:${strategy}`;
+    const controller = new GameAlgoDDAController(this.executor(strategy), this.storage, storageKey, options, this.logger);
+    this.ddaControllers.set(strategy, controller);
+    return controller;
   }
 
   async userIdentity(explicitUserId?: string): Promise<GameAlgoUserIdentity> {

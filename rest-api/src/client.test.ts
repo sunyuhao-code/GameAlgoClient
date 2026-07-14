@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { GameAlgoApiError, GameAlgoRestClient, createEvent } from "./client.ts";
+import { GameAlgoDDAController } from "./dda.ts";
 import type { GameAlgoRestClientOptions } from "./types.ts";
 
 const gameKey = "ga_live_test_key_0123456789abcdef";
@@ -747,6 +748,71 @@ test("trackAd uploads standard ad_view payload", async () => {
     network: "admob",
   });
   client.tracker.close();
+});
+
+test("DDA controller persists rolling behavior windows and executes decisions", async () => {
+  const storage = new MapStorage();
+  let scriptState: unknown;
+  const assignment = {
+    key: "level_dda",
+    experimentId: "exp-dda",
+    variant: "assist",
+    config: {},
+  };
+  const executor = {
+    async execute(state: unknown) {
+      scriptState = state;
+      return {
+        payload: { adjustment: "decrease", difficultyBand: "easy" },
+        diagnostics: { score: 4 },
+        assignment,
+      } as const;
+    },
+  };
+  const dda = new GameAlgoDDAController(executor, storage, "dda:test", { recentWindowSize: 2 });
+
+  await dda.recordBehavior("level_failed");
+  await dda.recordBehavior("item_used", 2);
+  await dda.completeStep("level-1");
+  await dda.completeStep("level-2");
+  await dda.recordBehavior("mistake");
+
+  const decision = await dda.decide({ level: 3 });
+  assert.equal(decision.adjustment, "decrease");
+  assert.equal(decision.isFallback, false);
+  assert.deepEqual(scriptState, {
+    context: { level: 3 },
+    behavior: {
+      current: { mistake: 1 },
+      recent: { level_failed: 1, item_used: 2 },
+      lifetime: { level_failed: 1, item_used: 2, mistake: 1 },
+      recentSteps: [
+        { stepId: "level-1", behaviors: { level_failed: 1, item_used: 2 } },
+        { stepId: "level-2", behaviors: {} },
+      ],
+      completedSteps: 2,
+      windowSize: 2,
+    },
+  });
+
+  const restored = new GameAlgoDDAController(executor, storage, "dda:test", { recentWindowSize: 2 });
+  assert.deepEqual((await restored.snapshot()).behavior.lifetime, { level_failed: 1, item_used: 2, mistake: 1 });
+});
+
+test("DDA controller falls back to keep for invalid script output", async () => {
+  const dda = new GameAlgoDDAController({
+    async execute() {
+      return {
+        payload: { adjustment: "unexpected" },
+        diagnostics: {},
+        assignment: { key: "level_dda", experimentId: "exp-dda", variant: "bad", config: {} },
+      };
+    },
+  }, undefined, "dda:test");
+
+  const decision = await dda.decide();
+  assert.equal(decision.adjustment, "keep");
+  assert.equal(decision.isFallback, true);
 });
 
 test("throws structured API errors", async () => {

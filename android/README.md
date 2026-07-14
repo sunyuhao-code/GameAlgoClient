@@ -68,6 +68,22 @@ SDK 默认会把 user id、配置拉取、实验分组、配置文件和脚本�
 
 如果实验分组包含 `script`，`executor.execute(state)` 会通过配置的 `GameAlgoScriptRuntime` 执行预加载脚本。无依赖 core 内置了 Java 环境可用的 JSR-223 runtime；Android App 包建议注入 QuickJS 或 WebView runtime。
 
+## DDA 行为窗口
+
+```kotlin
+val dda = sdk.dda("level_dda", 10)
+dda.recordBehavior("item_used")
+dda.recordBehavior("level_failed")
+dda.completeStep("level-42")
+
+val decision = dda.decide(
+    mapOf("mode" to "normal", "progressionNo" to 43)
+)
+// decision.adjustment: INCREASE / KEEP / DECREASE
+```
+
+行为窗口按 strategy 存在本地，不会自动上传。脚本未准备好或返回非法动作时会安全返回 `KEEP`。
+
 需要底层能力时，也可以直接使用这些阻塞方法：
 
 ```kotlin

@@ -40,6 +40,7 @@ public final class GameAlgoClient {
     private final GameAlgoSnapshotStore snapshotStore;
     private final GameAlgoConfigReader configReader;
     private final GameAlgoEventTracker tracker;
+    private final Map<String, GameAlgoDDAController> ddaControllers = new LinkedHashMap<>();
     private final CompletableFuture<Void> readyFuture;
     private CachedConfig cachedConfig;
     private GameAlgoUserIdentity userIdentity;
@@ -191,6 +192,26 @@ public final class GameAlgoClient {
 
     public GameAlgoExperimentExecutor executor(String key) {
         return new GameAlgoExperimentExecutor(key, snapshotStore, scriptRuntime, logger);
+    }
+
+    public synchronized GameAlgoDDAController dda(String key) {
+        return dda(key, 10);
+    }
+
+    public synchronized GameAlgoDDAController dda(String key, int recentWindowSize) {
+        String strategy = key == null ? "" : key.trim();
+        if (strategy.length() == 0) throw new IllegalArgumentException("DDA strategy key is required");
+        GameAlgoDDAController existing = ddaControllers.get(strategy);
+        if (existing != null) return existing;
+        GameAlgoDDAController controller = new GameAlgoDDAController(
+                executor(strategy),
+                cacheStorage,
+                snapshotCacheKey + ":dda:" + strategy,
+                recentWindowSize,
+                logger
+        );
+        ddaControllers.put(strategy, controller);
+        return controller;
     }
 
     public GameAlgoConfigReader config() {

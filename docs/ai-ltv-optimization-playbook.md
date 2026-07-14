@@ -94,7 +94,7 @@ gamealgo events count \
 
 接入 TapTap Maker / TapTap 小游戏 / Lua SDK 时，`platform` 填 `rest`。这类环境使用 Lua SDK 客户端直连，不属于原生 `ios` / `android`。如果需要在报表或排查中识别 TapMaker，把运行环境写入 `device`，例如 `device.runtime = "tapmaker"`、`device.engine = "lua"`、`device.channel = "taptap_mini_game"`。
 
-TapTap Maker 接入需要把 `game-algo-sdk.dictapis.cn` 加入网络白名单，并使用 `GameAlgo.lua`、`HttpTransport.lua`、`LuaScriptRuntime.lua` 与 `Sha256.lua` 从客户端直接访问 GameAlgo，不需要开启多人模式或部署服务端代理。
+TapTap Maker 接入需要把 `game-algo-sdk.dictapis.cn` 加入网络白名单，并使用 `GameAlgo.lua`、`HttpTransport.lua`、`LuaScriptRuntime.lua`、`Sha256.lua` 与 `DDA.lua` 从客户端直接访问 GameAlgo，不需要开启多人模式或部署服务端代理。
 
 TapTap Maker 初始化时优先使用 Maker 环境提供的稳定用户 ID，例如 `lobby:GetMyUserId()`，并传给 `GameAlgo.Init({ userId = tapUserId })`。拿不到时可以传 `nil`，SDK 会退回到本地匿名 ID。不要使用昵称、头像、手机号等可识别信息作为 `userId`。
 

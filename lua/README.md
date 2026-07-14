@@ -6,6 +6,7 @@ TapTap Maker 客户端支持直接访问 GameAlgo HTTPS API。接入时把以下
 - `HttpTransport.lua`
 - `LuaScriptRuntime.lua`
 - `Sha256.lua`
+- `DDA.lua`
 
 `client_main.lua` 是可直接参考的初始化示例。
 
@@ -96,6 +97,24 @@ end
 ```
 
 脚本没有准备好、hash 不一致、编译失败或执行失败时，`Execute` 返回 `nil`，游戏必须继续使用本地默认逻辑。没有绑定脚本的实验仍然返回 config-only 结果。
+
+## DDA 行为窗口
+
+```lua
+local dda = GameAlgo.DDA("level_dda", { recentWindowSize = 10 })
+
+dda.RecordBehavior("item_used")
+dda.RecordBehavior("level_failed")
+dda.CompleteStep("level-42")
+
+local decision = dda.Decide({
+    mode = "normal",
+    progressionNo = 43,
+})
+-- decision.adjustment: increase / keep / decrease
+```
+
+行为窗口按 strategy 存在本地，不会自动上传。脚本未准备好、执行失败或返回非法动作时会安全返回 `keep`，并设置 `isFallback=true`。
 
 ## 配置文件
 

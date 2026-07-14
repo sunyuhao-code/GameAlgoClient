@@ -169,3 +169,35 @@ export type GameAlgoScriptInput = {
 export type GameAlgoScriptRuntime = {
   execute(script: string, input: GameAlgoScriptInput): JsonValue | Promise<JsonValue>;
 };
+
+export type GameAlgoDDAAdjustment = "increase" | "keep" | "decrease";
+
+export type GameAlgoDDAOptions = {
+  recentWindowSize?: number;
+  storageKey?: string;
+};
+
+export type GameAlgoDDAStep = {
+  stepId?: string;
+  behaviors: Record<string, number>;
+};
+
+export type GameAlgoDDAScriptState = {
+  context: JsonValue;
+  behavior: {
+    current: Record<string, number>;
+    recent: Record<string, number>;
+    lifetime: Record<string, number>;
+    recentSteps: GameAlgoDDAStep[];
+    completedSteps: number;
+    windowSize: number;
+  };
+};
+
+export type GameAlgoDDADecision = {
+  adjustment: GameAlgoDDAAdjustment;
+  payload: JsonValue;
+  diagnostics: JsonValue;
+  assignment?: ExperimentAssignment;
+  isFallback: boolean;
+};
