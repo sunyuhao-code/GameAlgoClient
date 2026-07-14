@@ -7,6 +7,7 @@ export {
   GameAlgoRestClient,
   createEvent,
 } from "./client.ts";
+export { GameAlgoDDAController } from "./dda.ts";
 export type {
   ConfigFileRef,
   ConfigFileResponse,
@@ -15,6 +16,11 @@ export type {
   ExperimentAssignment,
   FetchConfigOptions,
   GameAlgoExecutionResult,
+  GameAlgoDDAAdjustment,
+  GameAlgoDDADecision,
+  GameAlgoDDAOptions,
+  GameAlgoDDAScriptState,
+  GameAlgoDDAStep,
   GameAlgoRestClientOptions,
   GameAlgoScriptInput,
   GameAlgoScriptRuntime,

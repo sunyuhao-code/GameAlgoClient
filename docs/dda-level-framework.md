@@ -52,25 +52,41 @@ SDK 在本地执行 Adapter
 
 ## 3. DDA Adapter
 
-DDA Adapter 是游戏侧提供的决策逻辑，可以是 JS 脚本、配置模板，或游戏代码里的适配层。它的输入和输出建议保持稳定。
+DDA Adapter 由平台脚本和游戏参数映射层组成。平台脚本只输出抽象升降难动作，游戏代码负责把动作映射为安全的具体参数。
 
 输入：
 
 ```json
 {
-  "context": {
-    "mode": "normal",
-    "progressionNo": 42,
-    "userSegment": "existing"
-  },
   "state": {
-    "difficultyScore": 38,
-    "recentFriction": 0.2
+    "context": {
+      "mode": "normal",
+      "progressionNo": 42
+    },
+    "behavior": {
+      "current": {},
+      "recent": {
+        "level_failed": 2,
+        "item_used": 1
+      },
+      "lifetime": {
+        "level_failed": 8,
+        "item_used": 5
+      },
+      "recentSteps": [
+        { "stepId": "level-40", "behaviors": { "level_failed": 1 } },
+        { "stepId": "level-41", "behaviors": { "level_failed": 1, "item_used": 1 } }
+      ],
+      "completedSteps": 41,
+      "windowSize": 10
+    }
   },
-  "knobs": {
-    "difficulty_bias": 0,
-    "failure_protection": "high",
-    "hard_level_mode": "soft"
+  "config": {
+    "behaviorWeights": {
+      "level_failed": 1,
+      "item_used": 0.25
+    },
+    "decreaseThreshold": 0.8
   }
 }
 ```
@@ -79,25 +95,29 @@ DDA Adapter 是游戏侧提供的决策逻辑，可以是 JS 脚本、配置模�
 
 ```json
 {
-  "decisionId": "client-generated-or-script-generated-id",
-  "parameters": {
-    "difficultyScore": 42,
-    "difficultyBand": "normal",
-    "puzzleBucket": "rank_3"
-  },
-  "nextState": {
-    "difficultyScore": 42
+  "adjustment": "decrease"
+}
+```
+
+脚本的完整返回值：
+
+```json
+{
+  "payload": {
+    "adjustment": "decrease"
   },
   "diagnostics": {
-    "reason": "normal_progression"
+    "frictionPerStep": 1.125,
+    "recentStepCount": 2
   }
 }
 ```
 
 约定：
 
-- `parameters` 是游戏真正使用的参数。
-- `nextState` 由 SDK 或游戏保存到本地，用于下一次决策。
+- `adjustment` 只能是 `increase`、`keep`、`decrease`。
+- 游戏 Adapter 把 `adjustment` 映射为真正使用的关卡参数。
+- SDK 保存行为窗口，游戏不需要自己维护 DDA state。
 - `diagnostics` 用于排查和报表归因，不应该影响玩法。
 - Adapter 必须有本地 fallback，配置拉取失败时游戏仍能正常生成关卡。
 
@@ -219,7 +239,7 @@ score =
 
 ## 7. SDK 接入流程
 
-第一版可以完全基于现有 executor/config 能力实现。
+SDK 提供 strategy 维度的本地 DDA controller。行为名称由游戏自定义，SDK 不写死游戏分类或具体规则。
 
 推荐流程：
 
@@ -227,29 +247,30 @@ score =
 2. 每个 variant 配置一组 knobs。
 3. 游戏接入 DDA Adapter 脚本或本地 Adapter。
 4. SDK start 后拉取实验配置。
-5. 关卡开始前调用 Adapter，得到下一关参数。
+5. 关卡开始前调用 `decide(context)`，得到升降难动作。
 6. 游戏使用参数生成或选择关卡。
-7. 关卡结束后更新本地 DDA state。
+7. 游戏过程中调用 `recordBehavior`；关卡结束后调用 `completeStep`。
 8. 上报关卡结果、收入和 DDA diagnostics。
 
 伪代码：
 
 ```swift
-let dda = sdk.executor("level_dda")
-let knobs = dda.config
-let state = loadLocalDDAState()
+let dda = sdk.dda("level_dda")
+let decision = dda.decide(context: .object([
+  "mode": .string("normal"),
+  "progressionNo": .number(42)
+]))
+let levelParams = gameDDAAdapter.apply(decision.adjustment)
 
-let decision = dda.execute([
-  "context": currentLevelContext,
-  "state": state,
-  "knobs": knobs
-])
+// 关卡过程中记录游戏自定义行为。
+try dda.recordBehavior("item_used")
+try dda.recordBehavior("mistake")
 
-let levelParams = decision.payload.parameters
-saveLocalDDAState(decision.payload.nextState)
+// 关卡结束后推进滚动窗口。
+dda.completeStep("level-42")
 ```
 
-如果游戏不使用脚本，也可以直接读取 variant 配置：
+如果脚本未准备好、执行失败或返回非法动作，`decide` 会安全返回 `keep`。如果游戏不使用脚本，也可以直接读取 variant 配置：
 
 ```swift
 let difficultyBias = sdk.executor("level_dda").int("difficulty_bias", default: 0)
@@ -257,7 +278,7 @@ let difficultyBias = sdk.executor("level_dda").int("difficulty_bias", default: 0
 
 ## 8. 归因和报表
 
-DDA 相关字段建议随 `level_start` / `level_end` 或游戏自定义关卡事件上报。
+DDA 行为计数默认只保存在本地，不会自动上报。需要分析时，把决策摘要随 `level_start` / `level_end` 或游戏自定义关卡事件上报，不要上传完整行为历史。
 
 推荐字段：
 
@@ -338,4 +359,4 @@ Adapter 内部再把这些 knobs 映射到原来的 `strategy`、`rank`、`tier`
 6. 淘汰低分策略，保留高分策略。
 7. 生成下一轮候选。
 
-这部分是平台能力，不要求客户端 SDK 先实现。客户端第一版只要能稳定读取实验、执行 Adapter、保存 state、上报归因数据，就可以支持 DDA 优化闭环。
+客户端 SDK 已提供统一行为窗口和决策输入；后续平台能力只需要围绕 knobs 搜索、实验评估与自动迭代扩展。

@@ -25,6 +25,7 @@ public final class GameAlgoClientSmokeTest {
         testTrackerQueuesAndFlushesEvents();
         testCustomEventsPreservePayload();
         testTrackAdUploadsStandardAdViewPayload();
+        testDDAControllerPersistsBehaviorWindowAndReturnsDecision();
     }
 
     private static void testFetchConfigSendsHeadersAndCaches() throws Exception {
@@ -98,6 +99,48 @@ public final class GameAlgoClientSmokeTest {
         check("\"sha256:test\"".equals(file.getEtag()), "etag should decode");
         check("{\"difficulty\":\"normal\"}\n".equals(file.getContent()), "content should decode");
         check("https://gamealgo.test/v1/config-files/gameplay.json".equals(httpClient.requests.get(0).getUrl().toString()), "config file URL should match Protocol v1");
+    }
+
+    private static void testDDAControllerPersistsBehaviorWindowAndReturnsDecision() throws Exception {
+        FakeHttpClient httpClient = new FakeHttpClient();
+        httpClient.enqueue(jsonResponse(configJsonWithExperimentConfig(
+                "level_dda",
+                "assist",
+                "{\"adjustment\":\"decrease\"}"
+        )));
+        MemoryCacheStorage storage = new MemoryCacheStorage();
+        GameAlgoClient client = new GameAlgoClient(
+                "ga_live_test_key_0123456789abcdef",
+                "https://gamealgo.test",
+                "1.0.0",
+                null,
+                "android",
+                httpClient,
+                new FakeScriptRuntime(),
+                storage,
+                "dda-test-cache",
+                GameAlgoLogger.console(),
+                false
+        );
+        client.fetchConfig("u1");
+
+        GameAlgoDDAController dda = client.dda("level_dda", 2);
+        dda.recordBehavior("level_failed");
+        dda.recordBehavior("item_used", 2);
+        dda.completeStep("level-1");
+        dda.completeStep("level-2");
+        dda.recordBehavior("mistake");
+
+        Map<String, Object> behavior = GameAlgoJson.asObject(dda.snapshot().get("behavior"), "behavior");
+        check(((Number) behavior.get("completedSteps")).intValue() == 2, "DDA should count completed steps");
+        check(((Number) GameAlgoJson.asObject(behavior.get("recent"), "recent").get("level_failed")).doubleValue() == 1, "DDA should aggregate recent behavior");
+        check(dda.decide().getAdjustment() == GameAlgoDDAAdjustment.DECREASE, "DDA should return experiment decision");
+
+        GameAlgoDDAController restored = new GameAlgoDDAController(
+                client.executor("level_dda"), storage, "dda-test-cache:dda:level_dda", 2, null
+        );
+        Map<String, Object> restoredBehavior = GameAlgoJson.asObject(restored.snapshot().get("behavior"), "behavior");
+        check(((Number) GameAlgoJson.asObject(restoredBehavior.get("lifetime"), "lifetime").get("item_used")).doubleValue() == 2, "DDA should restore lifetime behavior");
     }
 
     private static void testConstructorPreloadsConfigFilesAndExposesLocalExecutorAndConfigReaders() throws Exception {
@@ -651,6 +694,24 @@ public final class GameAlgoClientSmokeTest {
                 + "\"experimentId\":\"exp-level-generator-001\","
                 + "\"variant\":\"variant-a\","
                 + "\"config\":{}"
+                + "}],"
+                + "\"configFiles\":[]"
+                + "}";
+    }
+
+    private static String configJsonWithExperimentConfig(String key, String variant, String config) {
+        return "{"
+                + "\"contextId\":\"ctx-1\","
+                + "\"gameId\":\"Mahjong\","
+                + "\"environment\":\"live\","
+                + "\"configVersion\":\"v1\","
+                + "\"ttlSeconds\":60,"
+                + "\"serverTime\":\"2026-05-28T10:00:00.000Z\","
+                + "\"experiments\":[{"
+                + "\"key\":\"" + key + "\","
+                + "\"experimentId\":\"exp-dda\","
+                + "\"variant\":\"" + variant + "\","
+                + "\"config\":" + config
                 + "}],"
                 + "\"configFiles\":[]"
                 + "}";

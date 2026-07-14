@@ -140,7 +140,7 @@ Content-Type: application/json
 
 服务端收到配置请求后会生成一条 SDK context 日志，记录可信 `gameId`、`userId`、`userCreatedAt`、`sessionId`、设备上下文和本次实验分配。后续事件只需要引用返回的 `contextId`，不再把设备信息复制到每条事件。
 
-Strategy 可以声明最低 `requiredIntegrationVersion`。客户端未上报版本、版本未注册或版本低于要求时，服务端不会给该客户端下发该 Strategy。只有 `isDebug=false` 的 SDK context 成功写入后，服务端才会把对应接入版本标记为 `observed` 并记录首次观测时间；Debug / QA 请求不会改变版本状态。
+Strategy 必须显式声明最低 `requiredIntegrationVersion`；`0` 表示不设置客户端实验能力门槛。值大于 `0` 时必须引用已创建的版本，客户端未上报版本、版本未注册或版本低于要求时，服务端不会给该客户端下发该 Strategy。只有 `isDebug=false` 的 SDK context 成功写入后，服务端才会把对应接入版本标记为 `observed` 并记录首次观测时间；Debug / QA 请求不会改变版本状态。
 
 `/v1/config` 对同一个 `gameId + userId + sessionId + isDebug + experimentIntegrationVersion` 做 5 分钟幂等缓存。5 分钟内重复请求会返回同一个 `contextId` 和同一份配置响应，不重复写 SDK context 日志；超过 5 分钟会重新计算配置和实验分组。
 
@@ -161,9 +161,11 @@ Strategy 可以声明最低 `requiredIntegrationVersion`。客户端未上报版
       "variant": "variant-a",
       "config": {},
       "script": {
+        "versionId": "sv_level_generator_v1",
         "name": "level-generator.js",
-        "url": "https://game-algo-sdk.dictapis.cn/v1/config-files/level-generator.js",
-        "hash": "sha256:..."
+        "url": "https://game-algo-sdk.dictapis.cn/v1/scripts/sv_level_generator_v1",
+        "hash": "sha256:...",
+        "contentType": "text/javascript; charset=utf-8"
       }
     }
   ],
@@ -186,7 +188,7 @@ Strategy 可以声明最低 `requiredIntegrationVersion`。客户端未上报版
 - 拉取失败时继续使用上一次成功缓存。
 - 没有缓存时使用游戏本地默认配置。
 - 配置拉取不能阻塞游戏主流程。
-- `script` 是可选字段；没有 script 的实验按 config-only 处理。
+- `script` 是可选字段；没有 script 的实验按 config-only 处理。不可变脚本版本通过 `versionId` 和 `/v1/scripts/{versionId}` 下载；客户端必须在执行前校验 `hash`。
 
 ## 5. 拉取配置文件
 

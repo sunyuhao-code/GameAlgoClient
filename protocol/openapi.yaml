@@ -264,6 +264,8 @@ components:
         - url
         - hash
       properties:
+        versionId:
+          type: string
         name:
           type: string
         url:

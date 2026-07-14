@@ -85,6 +85,8 @@ script:
 message: 初始化广告频率策略
 ```
 
+发布 Strategy 时 `requiredIntegrationVersion` 是必填字段，不能依赖默认值。没有客户端版本门槛时也要明确写 `0`；大于 `0` 时必须引用已创建且已接入客户端的实验能力版本。Run 自动继承该值，不重复声明。
+
 Run 定义一次实验。手动实验由 Agent/开发者决定何时评估、推全或取消：
 
 ```yaml
@@ -161,7 +163,7 @@ TapTap Maker / TapTap 小游戏 / Lua SDK 使用 `rest` 作为 `platform`。不�
 }
 ```
 
-TapTap Maker 使用 Lua SDK 客户端直连。Agent 需要把 `game-algo-sdk.dictapis.cn` 加入 Maker 网络白名单，把 `GameAlgo.lua` 和 `HttpTransport.lua` 放入客户端，并在 `GameAlgo.Init` 中配置 Client Game Key。不需要开启多人模式或部署服务端代理。
+TapTap Maker 使用 Lua SDK 客户端直连。Agent 需要把 `game-algo-sdk.dictapis.cn` 加入 Maker 网络白名单，把 `GameAlgo.lua`、`HttpTransport.lua`、`LuaScriptRuntime.lua`、`Sha256.lua` 和 `DDA.lua` 放入客户端，并在 `GameAlgo.Init` 中配置 Client Game Key。不需要开启多人模式或部署服务端代理。
 
 TapTap Maker 客户端初始化时，优先使用 Maker 环境提供的稳定用户 ID 作为 `userId`，例如：
 

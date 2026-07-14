@@ -10,6 +10,7 @@ public enum GameAlgoError: Error, Equatable, LocalizedError {
     case decodingFailed(String)
     case networkFailed(String)
     case scriptExecutionFailed(String)
+    case invalidDDA(String)
 
     public var errorDescription: String? {
         switch self {
@@ -34,6 +35,8 @@ public enum GameAlgoError: Error, Equatable, LocalizedError {
             return "Network request failed: \(message)"
         case let .scriptExecutionFailed(message):
             return "Script execution failed: \(message)"
+        case let .invalidDDA(message):
+            return "Invalid DDA operation: \(message)"
         }
     }
 }

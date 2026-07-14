@@ -288,8 +288,8 @@ async function handleExperimentStrategy(client: GameAlgoAdminClient, args: strin
       throw new Error("experiment strategy requires strategyKey");
     }
     const requiredIntegrationVersion = optionalNonNegativeInteger(body.requiredIntegrationVersion, "requiredIntegrationVersion");
-    if (!requiredIntegrationVersion) {
-      throw new Error("experiment strategy requires requiredIntegrationVersion >= 1");
+    if (requiredIntegrationVersion === undefined) {
+      throw new Error("experiment strategy requires explicit requiredIntegrationVersion; use 0 when no client integration version is required");
     }
     const response = await client.upsertExperimentV2Strategy(body);
     await printResult(response, global);
@@ -1364,6 +1364,8 @@ function isScriptFileName(name: string): boolean {
 
 function contentTypeForFileName(name: string): string {
   if (name.endsWith(".json")) return "application/json; charset=utf-8";
+  if (name.endsWith(".lua")) return "application/lua; charset=utf-8";
+  if (name.endsWith(".js")) return "text/javascript; charset=utf-8";
   return "text/plain; charset=utf-8";
 }
 

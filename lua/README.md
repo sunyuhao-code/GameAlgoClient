@@ -1,6 +1,14 @@
 # GameAlgo TapTap Maker / 小游戏 Lua SDK
 
-TapTap Maker 客户端支持直接访问 GameAlgo HTTPS API。接入只需要把 `GameAlgo.lua` 和 `HttpTransport.lua` 放入客户端脚本，不需要开启多人模式，也不需要部署服务端代理。`client_main.lua` 是可直接参考的初始化示例。
+TapTap Maker 客户端支持直接访问 GameAlgo HTTPS API。接入时把以下文件放入客户端脚本，不需要开启多人模式，也不需要部署服务端代理：
+
+- `GameAlgo.lua`
+- `HttpTransport.lua`
+- `LuaScriptRuntime.lua`
+- `Sha256.lua`
+- `DDA.lua`
+
+`client_main.lua` 是可直接参考的初始化示例。
 
 ## 网络白名单
 
@@ -10,7 +18,7 @@ TapTap Maker 客户端支持直接访问 GameAlgo HTTPS API。接入只需要把
 game-algo-sdk.dictapis.cn
 ```
 
-SDK 固定访问这个域名下的 `/v1/config`、`/v1/config-files/*` 和 `/v1/events/batch`。
+SDK 固定访问这个域名下的 `/v1/config`、`/v1/config-files/*`、`/v1/scripts/*` 和 `/v1/events/batch`。
 
 ## 客户端配置
 
@@ -54,7 +62,59 @@ local difficulty = levelGenerator.Value("difficulty", "normal")
 local result = levelGenerator.Execute({ turn = 7 })
 ```
 
-Lua SDK 当前只返回 config-only 执行结果，不会在客户端执行 JavaScript 实验脚本。
+实验可以绑定通过 CLI 发布的不可变 `.lua` 脚本版本：
+
+```bash
+gamealgo script publish scripts/level-dda.lua --message "level DDA v1" --json
+```
+
+Lua SDK 会根据配置中的 `script.url` 下载脚本，校验 `script.hash` 后缓存在本地，并在受限环境执行。脚本无法访问 `require`、网络、文件、`os`、`debug` 或游戏全局对象，只能读取 JSON 兼容的 `input` 并返回 JSON 兼容结果。
+
+脚本执行兼容 Lua 5.1 的 `loadstring/setfenv` 和 Lua 5.2+ 的 `load`。如果宿主运行时关闭了动态编译能力，SDK 不会执行远端脚本，游戏继续使用本地默认逻辑。
+
+```lua
+-- level-dda.lua
+return function(input)
+    local failures = tonumber(input.state.failures or 0) or 0
+    return {
+        payload = {
+            adjustment = failures >= 2 and "easier" or "keep",
+        },
+        diagnostics = {
+            reason = failures >= 2 and "repeated_failures" or "stable",
+        },
+    }
+end
+```
+
+脚本下载是异步的。执行前可检查：
+
+```lua
+if levelGenerator.IsReady() then
+    local result = levelGenerator.Execute({ failures = 2 })
+    if result then print(result.payload.adjustment) end
+end
+```
+
+脚本没有准备好、hash 不一致、编译失败或执行失败时，`Execute` 返回 `nil`，游戏必须继续使用本地默认逻辑。没有绑定脚本的实验仍然返回 config-only 结果。
+
+## DDA 行为窗口
+
+```lua
+local dda = GameAlgo.DDA("level_dda", { recentWindowSize = 10 })
+
+dda.RecordBehavior("item_used")
+dda.RecordBehavior("level_failed")
+dda.CompleteStep("level-42")
+
+local decision = dda.Decide({
+    mode = "normal",
+    progressionNo = 43,
+})
+-- decision.adjustment: increase / keep / decrease
+```
+
+行为窗口按 strategy 存在本地，不会自动上传。脚本未准备好、执行失败或返回非法动作时会安全返回 `keep`，并设置 `isFallback=true`。
 
 ## 配置文件
 

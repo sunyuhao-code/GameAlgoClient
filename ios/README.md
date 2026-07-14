@@ -87,6 +87,23 @@ SDK 默认会把 user id、配置拉取、实验分组、配置文件和脚本�
 
 如果实验分组包含 `script`，`executor.execute(state)` 会通过 JSCore 执行预加载 JavaScript 文件。只有 config 的实验会直接把 config 作为 execution payload 返回。
 
+## DDA 行为窗口
+
+```swift
+let dda = sdk.dda("level_dda", recentWindowSize: 10)
+try dda.recordBehavior("item_used")
+try dda.recordBehavior("level_failed")
+dda.completeStep("level-42")
+
+let decision = dda.decide(context: .object([
+    "mode": .string("normal"),
+    "progressionNo": .number(43),
+]))
+// decision.adjustment: .increase / .keep / .decrease
+```
+
+行为窗口按 strategy 存在本地，不会自动上传。脚本未准备好或返回非法动作时会安全返回 `.keep`。
+
 `tracker` 会把事件排入内存队列，每批最多上传 100 条，每 30 秒 flush 一次，并在 App 进入后台或退出时主动 flush；失败批次会保留到下次重试。如果配置 context 还没准备好，事件会继续留在本地，`flush` 会在上传前填入当前 `contextId`。关键事件后可以调用 `await sdk.tracker.flush()` 手动 flush；`trackSessionEnd` 入队 `session_end` 后也会立即触发一次 flush。
 
 `trackAd` 上报的是 `ad_view`，只用于广告 SDK 确认实际产生收入的有效曝光。用户看了一部分广告后跳过，但广告 SDK 已确认本次曝光有效并产生收入，也应该调用 `trackAd`；广告加载失败、未填充、播放失败，或广告 SDK 没有确认产生收入的展示，不要调用 `trackAd`。

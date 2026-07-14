@@ -8,19 +8,25 @@
 --- 设计约束：
 --- - Client Game Key 通过 X-GameAlgo-Key 随请求发送。
 --- - 初始化不阻塞游戏主流程；远端失败时本地默认值继续生效。
---- - Lua 版先不执行 JS 实验脚本，execute 返回 config-only 结果。
+--- - Lua 实验脚本按不可变 versionId 下载、校验后在受限环境执行。
 --- ============================================================
 
 local cjson = require("cjson")
 
-local okTransport, HttpTransport = pcall(require, "sdk.HttpTransport")
-if not okTransport then
-    HttpTransport = require("HttpTransport")
+local function requireSdkModule(name)
+    local ok, value = pcall(require, "sdk." .. name)
+    if ok then return value end
+    return require(name)
 end
+
+local HttpTransport = requireSdkModule("HttpTransport")
+local LuaScriptRuntime = requireSdkModule("LuaScriptRuntime")
+local Sha256 = requireSdkModule("Sha256")
+local DDA = requireSdkModule("DDA")
 
 local GameAlgo = {}
 
-local SDK_VERSION = "1.1.0-lua"
+local SDK_VERSION = "1.2.0-lua"
 local DEFAULT_BASE_URL = "https://game-algo-sdk.dictapis.cn"
 
 local state_ = {
@@ -39,6 +45,8 @@ local state_ = {
     contextId = nil,
     config = nil,
     configFiles = {},
+    scripts = {},
+    ddaControllers = {},
     queue = {},
     maxBatchSize = 100,
     preloadConfigFiles = true,
@@ -157,6 +165,18 @@ local function httpRequest(method, path, bodyTable, callback)
     end)
 end
 
+local function rawHttpRequest(method, url, callback)
+    callback = callback or function() end
+    local headers = {}
+    if state_.gameKey and state_.gameKey ~= "" then headers["X-GameAlgo-Key"] = state_.gameKey end
+    state_.transport.Request({
+        method = method,
+        url = tostring(url or ""),
+        headers = headers,
+        body = "",
+    }, callback)
+end
+
 local function normalizePayload(payload)
     if type(payload) == "table" then return payload end
     return {}
@@ -183,6 +203,34 @@ local function currentAssignment(key)
         if item.key == key then return item end
     end
     return nil
+end
+
+local function scriptCacheKey(script)
+    if not script then return nil end
+    if script.versionId and script.versionId ~= "" then return "version:" .. tostring(script.versionId) end
+    if script.name and script.name ~= "" then return "name:" .. tostring(script.name) end
+    return nil
+end
+
+local function scriptStorageKey(script)
+    local key = scriptCacheKey(script)
+    return key and ("gamealgo_lua_script_" .. key) or nil
+end
+
+local function isLuaScript(script)
+    if not script then return false end
+    local name = tostring(script.name or ""):lower()
+    local contentType = tostring(script.contentType or ""):lower()
+    return name:sub(-4) == ".lua" or contentType:find("lua", 1, true) ~= nil
+end
+
+local function verifyScript(script, content)
+    if not script or not script.hash or script.hash == "" then return false, "script hash is required" end
+    local actual = Sha256.hash(content)
+    if tostring(script.hash):lower() ~= actual then
+        return false, "script hash mismatch: expected " .. tostring(script.hash) .. ", got " .. actual
+    end
+    return true, nil
 end
 
 local function tablePath(root, path)
@@ -270,12 +318,57 @@ function GameAlgo.FetchConfig(callback)
                 if file.name then GameAlgo.FetchConfigFile(file.name, nil) end
             end
             for _, experiment in ipairs(config.experiments or {}) do
-                if experiment.script and experiment.script.name then
-                    GameAlgo.FetchConfigFile(experiment.script.name, nil)
-                end
+                if experiment.script then GameAlgo.FetchScript(experiment.script, nil) end
             end
         end
         GameAlgo.Flush(nil)
+    end)
+end
+
+
+function GameAlgo.FetchScript(script, callback)
+    callback = callback or function() end
+    if type(script) ~= "table" then callback("invalid script reference", nil) return end
+    if not isLuaScript(script) then callback("unsupported Lua SDK script type: " .. tostring(script.name), nil) return end
+    local cacheKey = scriptCacheKey(script)
+    if not cacheKey then callback("script versionId or name is required", nil) return end
+
+    local cached = state_.scripts[cacheKey]
+    if cached then callback(nil, cached) return end
+
+    local persisted = storageGet(scriptStorageKey(script))
+    if persisted and persisted ~= "" then
+        local valid = verifyScript(script, persisted)
+        if valid then
+            local file = { name = script.name, versionId = script.versionId, content = persisted, contentType = script.contentType, hash = script.hash }
+            state_.scripts[cacheKey] = file
+            log("script cache ready: " .. tostring(script.name) .. "@" .. tostring(script.versionId or "name"))
+            callback(nil, file)
+            return
+        end
+    end
+
+    local url = script.url
+    if not url or url == "" then callback("script url is required", nil) return end
+    if tostring(url):sub(1, 1) == "/" then url = trimSlash(state_.baseUrl) .. tostring(url) end
+    rawHttpRequest("GET", url, function(error, response)
+        if error then
+            log("script fetch failed: " .. tostring(script.name) .. " " .. tostring(error))
+            callback(error, nil)
+            return
+        end
+        local content = response and response.body or ""
+        local valid, verifyError = verifyScript(script, content)
+        if not valid then
+            log("script verify failed: " .. tostring(script.name) .. " " .. tostring(verifyError))
+            callback(verifyError, nil)
+            return
+        end
+        local file = { name = script.name, versionId = script.versionId, content = content, contentType = script.contentType, hash = script.hash }
+        state_.scripts[cacheKey] = file
+        storageSet(scriptStorageKey(script), content)
+        log("script ready: " .. tostring(script.name) .. "@" .. tostring(script.versionId or "name"))
+        callback(nil, file)
     end)
 end
 
@@ -412,6 +505,14 @@ end
 function GameAlgo.Executor(key)
     local executor = {}
 
+    function executor.IsReady()
+        local item = currentAssignment(key)
+        if not item then return false end
+        if not item.script then return true end
+        local cacheKey = scriptCacheKey(item.script)
+        return cacheKey ~= nil and state_.scripts[cacheKey] ~= nil
+    end
+
     function executor.Variant(defaultValue)
         local item = currentAssignment(key)
         return item and item.variant or defaultValue
@@ -427,18 +528,76 @@ function GameAlgo.Executor(key)
     function executor.Execute(input)
         local item = currentAssignment(key)
         if not item then return nil end
+        if item.script then
+            if not isLuaScript(item.script) then
+                log("execute skipped: unsupported script type: " .. tostring(item.script.name))
+                return nil
+            end
+            local cacheKey = scriptCacheKey(item.script)
+            local file = cacheKey and state_.scripts[cacheKey] or nil
+            if not file then
+                log("execute skipped: script not loaded: " .. tostring(item.key) .. " -> " .. tostring(item.script.name))
+                return nil
+            end
+            local scriptInput = {
+                state = normalizePayload(input),
+                config = normalizePayload(item.config),
+                meta = {
+                    gameId = state_.config and state_.config.gameId or "",
+                    userId = state_.userId or "",
+                    environment = state_.config and state_.config.environment or "live",
+                    strategy = item.key,
+                    experimentId = item.experimentId,
+                    variant = item.variant,
+                },
+            }
+            local result, executeError = LuaScriptRuntime.Execute(file.content, scriptInput, {
+                chunkName = "@gamealgo:" .. tostring(item.script.versionId or item.script.name),
+            })
+            if not result then
+                log("execute failed: " .. tostring(item.key) .. " " .. tostring(executeError))
+                return nil
+            end
+            local serializable = pcall(cjson.encode, result)
+            if not serializable then
+                log("execute failed: result is not JSON serializable: " .. tostring(item.key))
+                return nil
+            end
+            return {
+                variant = item.variant,
+                payload = result.payload,
+                diagnostics = result.diagnostics or {},
+                assignment = item,
+            }
+        end
         return {
             variant = item.variant,
             payload = item.config or {},
             diagnostics = {
                 luaSdk = "config_only",
-                script = item.script and item.script.name or nil,
             },
             input = input,
         }
     end
 
     return executor
+end
+
+function GameAlgo.DDA(key, options)
+    key = tostring(key or "")
+    if key == "" then error("DDA strategy key is required") end
+    if state_.ddaControllers[key] then return state_.ddaControllers[key] end
+    options = options or {}
+    local gameKeyPrefix = tostring(state_.gameKey or "anonymous"):sub(1, 16)
+    local controller = DDA.New({
+        executor = GameAlgo.Executor(key),
+        storageKey = options.storageKey or ("gamealgo:v1:dda:" .. gameKeyPrefix .. ":" .. key),
+        recentWindowSize = options.recentWindowSize,
+        storageGet = storageGet,
+        storageSet = storageSet,
+    })
+    state_.ddaControllers[key] = controller
+    return controller
 end
 
 function GameAlgo.ConfigValue(path, defaultValue, fileName)
@@ -460,6 +619,7 @@ function GameAlgo.Snapshot()
         contextId = state_.contextId,
         config = state_.config,
         configFiles = state_.configFiles,
+        scripts = state_.scripts,
         queuedEvents = #state_.queue,
     }
 end

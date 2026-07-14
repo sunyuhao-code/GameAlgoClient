@@ -47,6 +47,23 @@ helper 默认会把 user id、配置拉取、实验分组、配置文件和脚�
 
 如果实验分组包含 `script`，`executor.execute(state)` 会执行预加载脚本。只有 config 的实验会直接把 config 作为 execution payload 返回。
 
+## DDA 行为窗口
+
+关卡类游戏可以使用 SDK 的本地 DDA controller。行为类型由游戏定义，数据默认只保存在本地：
+
+```ts
+const dda = client.dda("level_dda", { recentWindowSize: 10 });
+
+await dda.recordBehavior("item_used");
+await dda.recordBehavior("level_failed");
+await dda.completeStep("level-42");
+
+const decision = await dda.decide({ mode: "normal", progressionNo: 43 });
+// decision.adjustment: increase | keep | decrease
+```
+
+脚本没有准备好或返回非法动作时，`decide` 会返回 `keep` 且 `isFallback=true`。
+
 `fetchConfig` 仍可用于底层调用，并会在内存里缓存上一次成功配置直到 `ttlSeconds` 过期。传入 `forceRefresh: true` 可以绕过缓存。
 
 helper 会在 `/v1/config` 请求里自动带上 `userCreatedAt` 和基础 `device` context。接入方可以在 `new GameAlgoRestClient(...)` 或 `fetchConfig` 中传入 `device` / `deviceId`，用于追加 App 自定义字段或覆盖默认值。

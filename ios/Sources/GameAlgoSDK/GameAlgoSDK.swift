@@ -16,6 +16,7 @@ public actor GameAlgoSDK {
     private let httpClient: any GameAlgoHTTPClient
     private let scriptRuntime: any GameAlgoScriptRuntime
     private let cacheStorage: (any GameAlgoCacheStorage)?
+    private let ddaControllerStore: GameAlgoDDAControllerStore
     private let userIdentityStore: GameAlgoUserIdentityStore
     private let snapshotCacheKey: String
     private let attributionAckCacheKey: String
@@ -43,6 +44,7 @@ public actor GameAlgoSDK {
         httpClient: any GameAlgoHTTPClient = URLSessionGameAlgoHTTPClient(),
         scriptRuntime: any GameAlgoScriptRuntime = JavaScriptCoreGameAlgoScriptRuntime(),
         cacheStorage: (any GameAlgoCacheStorage)? = GameAlgoUserDefaultsCacheStorage(),
+        ddaStorage: (any GameAlgoDDAStorage)? = GameAlgoUserDefaultsDDAStorage(),
         userIdentityStore: GameAlgoUserIdentityStore = GameAlgoUserIdentityStore(),
         cacheKey: String? = nil,
         userId: String? = nil,
@@ -68,6 +70,7 @@ public actor GameAlgoSDK {
             httpClient: httpClient,
             scriptRuntime: scriptRuntime,
             cacheStorage: cacheStorage,
+            ddaStorage: ddaStorage,
             userIdentityStore: userIdentityStore,
             cacheKey: cacheKey,
             userId: userId,
@@ -96,6 +99,7 @@ public actor GameAlgoSDK {
         httpClient: any GameAlgoHTTPClient = URLSessionGameAlgoHTTPClient(),
         scriptRuntime: any GameAlgoScriptRuntime = JavaScriptCoreGameAlgoScriptRuntime(),
         cacheStorage: (any GameAlgoCacheStorage)? = GameAlgoUserDefaultsCacheStorage(),
+        ddaStorage: (any GameAlgoDDAStorage)? = GameAlgoUserDefaultsDDAStorage(),
         userIdentityStore: GameAlgoUserIdentityStore = GameAlgoUserIdentityStore(),
         cacheKey: String? = nil,
         userId: String? = nil,
@@ -134,6 +138,11 @@ public actor GameAlgoSDK {
         self.httpClient = httpClient
         self.scriptRuntime = scriptRuntime
         self.cacheStorage = cacheStorage
+        self.ddaControllerStore = GameAlgoDDAControllerStore(
+            storage: ddaStorage,
+            storagePrefix: "gamealgo:v1:dda:\(baseURL.absoluteString):\(gameKey.prefix(16))",
+            logger: logger
+        )
         self.userIdentityStore = userIdentityStore
         self.snapshotCacheKey = cacheKey ?? "gamealgo:v1:snapshot:\(baseURL.absoluteString):\(gameKey.prefix(16))"
         self.attributionAckCacheKey = "gamealgo:v1:attribution:\(baseURL.absoluteString):\(gameKey.prefix(16))"
@@ -183,6 +192,15 @@ public actor GameAlgoSDK {
 
     public nonisolated func executor(_ key: String) -> GameAlgoExperimentExecutor {
         GameAlgoExperimentExecutor(key: key, store: snapshotStore, scriptRuntime: scriptRuntime, logger: logger)
+    }
+
+    public nonisolated func dda(_ key: String, recentWindowSize: Int = 10) -> GameAlgoDDAController {
+        precondition(!key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "DDA strategy key is required")
+        return ddaControllerStore.controller(
+            key: key,
+            executor: executor(key),
+            recentWindowSize: recentWindowSize
+        )
     }
 
     public nonisolated func snapshotValue() -> GameAlgoSnapshot {

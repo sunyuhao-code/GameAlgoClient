@@ -751,6 +751,48 @@ final class GameAlgoSDKTests: XCTestCase {
         }
     }
 
+    func testDDAControllerPersistsBehaviorWindowAndReturnsDecision() async throws {
+        let storage = MemoryDDAStorage()
+        let httpClient = MockHTTPClient()
+        try await httpClient.enqueueJSON(configResponse(version: "v1", experiments: [[
+            "key": "level_dda",
+            "experimentId": "exp-dda",
+            "variant": "assist",
+            "config": ["adjustment": "decrease"],
+        ]]))
+        let sdk = GameAlgoSDK(
+            gameKey: gameKey,
+            baseURL: URL(string: "https://gamealgo.test")!,
+            httpClient: httpClient,
+            ddaStorage: storage
+        )
+        let ready = await sdk.waitForReady()
+        XCTAssertTrue(ready)
+
+        let dda = sdk.dda("level_dda", recentWindowSize: 2)
+        try dda.recordBehavior("level_failed")
+        try dda.recordBehavior("item_used", amount: 2)
+        dda.completeStep("level-1")
+        dda.completeStep("level-2")
+        try dda.recordBehavior("mistake")
+
+        let behavior = try XCTUnwrap(dda.snapshot(context: .object(["level": .number(3)]))["behavior"])
+        XCTAssertEqual(behavior["completedSteps"]?.intValue, 2)
+        XCTAssertEqual(behavior["recent"]?["level_failed"]?.doubleValue, 1)
+        XCTAssertEqual(behavior["current"]?["mistake"]?.doubleValue, 1)
+        XCTAssertEqual(dda.decide().adjustment, .decrease)
+
+        let restoredSDK = GameAlgoSDK(
+            gameKey: gameKey,
+            baseURL: URL(string: "https://gamealgo.test")!,
+            httpClient: MockHTTPClient(),
+            ddaStorage: storage,
+            _autoStart: false
+        )
+        let restored = restoredSDK.dda("level_dda", recentWindowSize: 2)
+        XCTAssertEqual(restored.snapshot()["behavior"]?["lifetime"]?["item_used"]?.doubleValue, 2)
+    }
+
     func testRejectsUnsafeConfigFileNames() async throws {
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
@@ -873,6 +915,29 @@ private final class MemoryCacheStorage: GameAlgoCacheStorage, @unchecked Sendabl
     func removeSnapshot(cacheKey: String) throws {
         lock.lock()
         values.removeValue(forKey: cacheKey)
+        lock.unlock()
+    }
+}
+
+private final class MemoryDDAStorage: GameAlgoDDAStorage, @unchecked Sendable {
+    private var values: [String: Data] = [:]
+    private let lock = NSLock()
+
+    func load(key: String) throws -> Data? {
+        lock.lock()
+        defer { lock.unlock() }
+        return values[key]
+    }
+
+    func save(_ data: Data, key: String) throws {
+        lock.lock()
+        values[key] = data
+        lock.unlock()
+    }
+
+    func remove(key: String) throws {
+        lock.lock()
+        values.removeValue(forKey: key)
         lock.unlock()
     }
 }

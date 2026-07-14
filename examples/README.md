@@ -14,5 +14,6 @@
 当前已有示例：
 
 - `../rest-api/examples/node/basic.ts`
+- `dda/`：JavaScript / Lua DDA 策略模板
 - `web-game-demo/`
 - `curl/`
