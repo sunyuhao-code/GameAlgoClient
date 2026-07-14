@@ -112,6 +112,10 @@ platform: ios
 objective: ltv_proxy
 cycleDays: 7
 maxVariantsPerRound: 3
+# 可选；只适用于托管实验。
+startCondition:
+  minCoverage: 0.8
+  minUsers: 100
 variants:
   - variantId: alpha
     config: { firstAdLevel: 4, interval: 30 }
@@ -120,6 +124,8 @@ variants:
   - variantId: charlie
     config: { firstAdLevel: 4, interval: 45 }
 ```
+
+托管实验的 `startCondition` 使用指定平台最近 24 小时的非 Debug Context：每个用户只取最新记录，`minCoverage` 要求实验接入版本达到 Strategy `requiredIntegrationVersion` 的用户占比，`minUsers` 要求窗口内去重用户数。两项同时配置时按 AND；等待期间继续使用 Strategy 默认参数，达标后才开始首轮。手动实验禁止配置该字段。用 `gamealgo experiment run show <runId> --json` 查看 `waiting_for_coverage` 状态和 `startConditionSnapshot`。
 
 实验报告里的 `LTV Proxy` 口径是：
 

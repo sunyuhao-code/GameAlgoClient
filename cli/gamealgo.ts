@@ -326,6 +326,9 @@ async function handleExperimentRun(client: GameAlgoAdminClient, args: string[], 
     await requireYes(flags, global, "experiment run create");
     const body = await readObjectFile(filePath, "experiment run");
     if (!optionalString(body.displayName)) throw new Error("experiment run requires displayName");
+    if ((optionalString(body.type) || "manual") !== "managed" && body.startCondition !== undefined) {
+      throw new Error("experiment run startCondition is supported only when type is managed");
+    }
     await printResult(await client.createExperimentV2Run(strategyKey, body), global);
     return;
   }

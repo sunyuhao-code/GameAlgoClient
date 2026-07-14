@@ -191,6 +191,10 @@ platform: ios
 objective: ltv_proxy
 cycleDays: 7
 maxVariantsPerRound: 3
+# 可选：仅托管实验支持。最近 24 小时同时满足两个门槛后才开始首轮。
+startCondition:
+  minCoverage: 0.8
+  minUsers: 100
 variants:
   - variantId: alpha
     config: { firstAdLevel: 4, interval: 30 }
@@ -199,6 +203,8 @@ variants:
   - variantId: charlie
     config: { firstAdLevel: 4, interval: 45 }
 ```
+
+`minCoverage` 表示指定平台最近 24 小时内，实验接入版本达到 Strategy `requiredIntegrationVersion` 的去重用户占比；`minUsers` 表示同一窗口内的非 Debug 去重用户数。两项可单独配置，同时配置时必须同时满足。等待期间 Strategy 继续下发默认参数，满足门槛后平台才生成首轮时间窗并开始分流。手动实验不支持 `startCondition`，托管实验不配置时仍会立即启动。`experiment run show` 返回 `startConditionSnapshot`，可查看当前用户数、覆盖率和最近检查时间。
 
 所有会修改线上状态的实验命令都必须显式传 `--yes`。
 
