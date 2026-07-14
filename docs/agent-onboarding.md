@@ -248,6 +248,8 @@ gamealgo experiment run evaluate xrun_xxx --from 2026-07-01 --to 2026-07-07 --ye
 gamealgo experiment run promote xrun_xxx --variant better_levels --yes
 ```
 
+`strategy.yaml` 必须显式包含 `requiredIntegrationVersion`。没有客户端版本门槛时填写 `0`；需要新增参数、脚本输入或执行能力时，填写前一步创建并固化到客户端的版本号。
+
 实验、配置和脚本的改动必须先让开发者看 Strategy / Run 配置。发布后再通过实验报告和日常报表观察结果。
 
 如果要做关卡类动态难度调整，先读 [Level DDA framework](./dda-level-framework.md)。不要直接把具体规则写死成平台逻辑；游戏侧保留难度参数到玩法结果的映射，平台通过实验和数据优化参数组合。

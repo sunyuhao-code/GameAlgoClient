@@ -85,6 +85,8 @@ script:
 message: 初始化广告频率策略
 ```
 
+发布 Strategy 时 `requiredIntegrationVersion` 是必填字段，不能依赖默认值。没有客户端版本门槛时也要明确写 `0`；大于 `0` 时必须引用已创建且已接入客户端的实验能力版本。Run 自动继承该值，不重复声明。
+
 Run 定义一次实验。手动实验由 Agent/开发者决定何时评估、推全或取消：
 
 ```yaml
