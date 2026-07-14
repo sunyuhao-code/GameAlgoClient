@@ -161,7 +161,7 @@ TapTap Maker / TapTap 小游戏 / Lua SDK 使用 `rest` 作为 `platform`。不�
 }
 ```
 
-TapTap Maker 使用 Lua SDK 客户端直连。Agent 需要把 `game-algo-sdk.dictapis.cn` 加入 Maker 网络白名单，把 `GameAlgo.lua` 和 `HttpTransport.lua` 放入客户端，并在 `GameAlgo.Init` 中配置 Client Game Key。不需要开启多人模式或部署服务端代理。
+TapTap Maker 使用 Lua SDK 客户端直连。Agent 需要把 `game-algo-sdk.dictapis.cn` 加入 Maker 网络白名单，把 `GameAlgo.lua`、`HttpTransport.lua`、`LuaScriptRuntime.lua` 和 `Sha256.lua` 放入客户端，并在 `GameAlgo.Init` 中配置 Client Game Key。不需要开启多人模式或部署服务端代理。
 
 TapTap Maker 客户端初始化时，优先使用 Maker 环境提供的稳定用户 ID 作为 `userId`，例如：
 

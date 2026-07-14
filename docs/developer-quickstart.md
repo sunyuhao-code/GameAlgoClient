@@ -76,7 +76,7 @@ gameKey = ga_live_xxx
 
 - iOS：使用 `ios/`
 - Android：使用 `android/`
-- TapTap Maker / TapTap 小游戏：使用 `lua/`，客户端接入 `GameAlgo.lua` 和 `HttpTransport.lua`
+- TapTap Maker / TapTap 小游戏：使用 `lua/`，客户端接入 `GameAlgo.lua`、`HttpTransport.lua`、`LuaScriptRuntime.lua` 和 `Sha256.lua`
 - 其他环境：使用 REST API
 
 TapTap Maker 客户端支持直接访问 GameAlgo HTTPS API：

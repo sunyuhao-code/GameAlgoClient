@@ -1364,6 +1364,8 @@ function isScriptFileName(name: string): boolean {
 
 function contentTypeForFileName(name: string): string {
   if (name.endsWith(".json")) return "application/json; charset=utf-8";
+  if (name.endsWith(".lua")) return "application/lua; charset=utf-8";
+  if (name.endsWith(".js")) return "text/javascript; charset=utf-8";
   return "text/plain; charset=utf-8";
 }
 
