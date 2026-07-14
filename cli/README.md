@@ -90,6 +90,19 @@ gamealgo key revoke --name tapmaker-proxy --yes
 - `Strategy` 是游戏代码读取的稳定策略 key，包含默认参数和可选脚本版本。
 - `Run` 是一次实验闭环，绑定某个 Strategy，包含实验组、流量、平台、目标和实验报表。
 
+先为当前客户端支持的实验能力创建一个游戏级版本。版本号由服务端自增，写入客户端初始化代码，并由 Strategy 的 `requiredIntegrationVersion` 引用：
+
+```bash
+gamealgo experiment integration-version latest --json
+gamealgo experiment integration-version create \
+  --title "广告频率参数" \
+  --message "客户端已支持 firstAdLevel 和 interval" \
+  --json
+gamealgo experiment integration-version get --version 3 --json
+```
+
+`title` 创建后不可修改；`message` 可以用 `integration-version update --version 3 --message "..."` 补充，服务端会保留修订记录。不要在运行时查询 latest 后上报，必须把创建后返回的 `version` 固定到对应 App 构建中。新增客户端能力时创建新版本，不要扩充已经被线上客户端观测到的旧版本语义。
+
 如果实验依赖脚本，先发布不可变脚本版本，记录返回的 `scriptVersion.versionId`：
 
 ```bash
@@ -104,6 +117,7 @@ gamealgo script publish scripts/ad-frequency.lua \
 # strategy.yaml
 strategyKey: ad_frequency
 displayName: 广告频率
+requiredIntegrationVersion: 3
 defaultConfig:
   firstAdLevel: 4
   interval: 30
@@ -177,6 +191,10 @@ platform: ios
 objective: ltv_proxy
 cycleDays: 7
 maxVariantsPerRound: 3
+# 可选：仅托管实验支持。最近 24 小时同时满足两个门槛后才开始首轮。
+startCondition:
+  minCoverage: 0.8
+  minUsers: 100
 variants:
   - variantId: alpha
     config: { firstAdLevel: 4, interval: 30 }
@@ -185,6 +203,8 @@ variants:
   - variantId: charlie
     config: { firstAdLevel: 4, interval: 45 }
 ```
+
+`minCoverage` 表示指定平台最近 24 小时内，实验接入版本达到 Strategy `requiredIntegrationVersion` 的去重用户占比；`minUsers` 表示同一窗口内的非 Debug 去重用户数。两项可单独配置，同时配置时必须同时满足。等待期间 Strategy 继续下发默认参数，满足门槛后平台才生成首轮时间窗并开始分流。手动实验不支持 `startCondition`，托管实验不配置时仍会立即启动。`experiment run show` 返回 `startConditionSnapshot`，可查看当前用户数、覆盖率和最近检查时间。
 
 所有会修改线上状态的实验命令都必须显式传 `--yes`。
 

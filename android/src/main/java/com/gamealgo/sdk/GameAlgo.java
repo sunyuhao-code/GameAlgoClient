@@ -24,6 +24,25 @@ public final class GameAlgo {
             String sdkVersion,
             String appVersion,
             GameAlgoCacheStorage cacheStorage) {
+        return init(gameKey, baseUrl, sdkVersion, appVersion, 0, cacheStorage);
+    }
+
+    public static synchronized GameAlgoClient init(
+            String gameKey,
+            String baseUrl,
+            String sdkVersion,
+            String appVersion,
+            int experimentIntegrationVersion) {
+        return init(gameKey, baseUrl, sdkVersion, appVersion, experimentIntegrationVersion, null);
+    }
+
+    public static synchronized GameAlgoClient init(
+            String gameKey,
+            String baseUrl,
+            String sdkVersion,
+            String appVersion,
+            int experimentIntegrationVersion,
+            GameAlgoCacheStorage cacheStorage) {
         client = new GameAlgoClient(
                 gameKey,
                 baseUrl,
@@ -33,7 +52,9 @@ public final class GameAlgo {
                 new UrlConnectionGameAlgoHttpClient(),
                 new JavaxScriptGameAlgoRuntime(),
                 cacheStorage,
-                null
+                null,
+                GameAlgoLogger.console(),
+                new GameAlgoFetchConfigRequest(null).experimentIntegrationVersion(experimentIntegrationVersion)
         );
         return client;
     }

@@ -156,6 +156,7 @@ final class GameAlgoSDKTests: XCTestCase {
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
             sdkVersion: "1.0.0",
+            experimentIntegrationVersion: 7,
             httpClient: httpClient,
             cacheStorage: GameAlgoUserDefaultsCacheStorage(userDefaults: defaults),
             userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
@@ -180,6 +181,7 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertFalse((requestPayload["sessionId"] as? String ?? "").isEmpty)
         XCTAssertEqual(requestPayload["platform"] as? String, "ios")
         XCTAssertEqual(requestPayload["sdkVersion"] as? String, "1.0.0")
+        XCTAssertEqual(requestPayload["experimentIntegrationVersion"] as? Int, 7)
         XCTAssertEqual(requestPayload["isDebug"] as? Bool, true)
         let device = try XCTUnwrap(requestPayload["device"] as? [String: Any])
         XCTAssertEqual(device["runtime"] as? String, "ios")

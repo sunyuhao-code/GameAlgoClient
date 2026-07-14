@@ -111,6 +111,7 @@ Content-Type: application/json
   "platform": "ios",
   "sdkVersion": "1.0.0",
   "appVersion": "1.2.3",
+  "experimentIntegrationVersion": 3,
   "timezone": "Asia/Shanghai",
   "isDebug": false,
   "device": {
@@ -132,13 +133,16 @@ Content-Type: application/json
 | `platform` | 是 | `ios` / `android` / `rest` |
 | `sdkVersion` | 是 | SDK 版本 |
 | `appVersion` | 否 | 游戏 App 版本 |
+| `experimentIntegrationVersion` | 否 | 当前客户端构建已实现的实验能力版本；未接入时为 `0`。该值由 CLI 创建后固定在构建中，不能运行时查询 latest |
 | `timezone` | 否 | 客户端本地时区 |
 | `isDebug` | 否 | Debug / QA 请求标记；设为 `true` 时 SDK context 会入库，但标准分析和看板默认过滤 |
 | `device` | 否 | 设备上下文；官方 SDK 会自动补基础设备信息，接入方可覆盖或追加字段；调试或排查用，不作为强身份。`device.country` 建议传 ISO 国家码，用于国家留存等标准看板 |
 
 服务端收到配置请求后会生成一条 SDK context 日志，记录可信 `gameId`、`userId`、`userCreatedAt`、`sessionId`、设备上下文和本次实验分配。后续事件只需要引用返回的 `contextId`，不再把设备信息复制到每条事件。
 
-`/v1/config` 对同一个 `gameId + userId + sessionId + isDebug` 做 5 分钟幂等缓存。5 分钟内重复请求会返回同一个 `contextId` 和同一份配置响应，不重复写 SDK context 日志；超过 5 分钟会重新计算配置和实验分组。
+Strategy 可以声明最低 `requiredIntegrationVersion`。客户端未上报版本、版本未注册或版本低于要求时，服务端不会给该客户端下发该 Strategy。只有 `isDebug=false` 的 SDK context 成功写入后，服务端才会把对应接入版本标记为 `observed` 并记录首次观测时间；Debug / QA 请求不会改变版本状态。
+
+`/v1/config` 对同一个 `gameId + userId + sessionId + isDebug + experimentIntegrationVersion` 做 5 分钟幂等缓存。5 分钟内重复请求会返回同一个 `contextId` 和同一份配置响应，不重复写 SDK context 日志；超过 5 分钟会重新计算配置和实验分组。
 
 响应：
 

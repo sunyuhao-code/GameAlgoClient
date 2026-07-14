@@ -35,6 +35,7 @@ curl -s -X POST "https://game-algo-sdk.dictapis.cn/v1/config" \
     "platform": "rest",
     "sdkVersion": "1.0.0",
     "appVersion": "1.2.3",
+    "experimentIntegrationVersion": 3,
     "timezone": "Asia/Shanghai",
     "isDebug": false,
     "device": {

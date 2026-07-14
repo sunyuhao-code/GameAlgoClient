@@ -28,11 +28,14 @@ let country = Locale.current.region?.identifier
 let sdk = GameAlgoSDK(
     gameKey: "ga_live_xxx",
     baseURL: URL(string: "https://gamealgo.example.com")!,
+    experimentIntegrationVersion: 3,
     device: country.map { ["country": .string($0)] } ?? [:]
 )
 ```
 
 `ga_live_xxx` 只是示例占位。实际接入必须使用真实 `ga_live_*`；如果当前没有真实 key，AI Agent 应使用 `ga_admin_*` 通过 GameAlgo CLI 创建或读取，不要提交占位 key 后声称接入完成。
+
+`experimentIntegrationVersion` 来自 `gamealgo experiment integration-version create`。它表示这个 App 构建已经实现的实验参数能力，必须固定在构建中；不要在运行时查询 latest。没有接入实验时可保持默认值 `0`。
 
 如果需要使用按国家拆分的标准留存看板，iOS 推荐用 `Locale.current.region` 取得 ISO 国家码并写入 `device.country`。
 

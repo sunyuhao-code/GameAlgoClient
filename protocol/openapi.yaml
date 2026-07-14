@@ -192,6 +192,9 @@ components:
           minLength: 1
         appVersion:
           type: string
+        experimentIntegrationVersion:
+          type: integer
+          minimum: 0
         timezone:
           type: string
         device:

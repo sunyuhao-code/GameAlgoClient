@@ -30,6 +30,7 @@ public final class GameAlgoClient {
     private final String defaultPlatform;
     private final String defaultSDKVersion;
     private final String defaultAppVersion;
+    private final int defaultExperimentIntegrationVersion;
     private final GameAlgoHttpClient httpClient;
     private final GameAlgoScriptRuntime scriptRuntime;
     private final GameAlgoCacheStorage cacheStorage;
@@ -139,6 +140,9 @@ public final class GameAlgoClient {
         this.defaultSDKVersion = isBlank(sdkVersion) ? DEFAULT_SDK_VERSION : sdkVersion;
         this.defaultAppVersion = appVersion;
         this.defaultPlatform = isBlank(platform) ? "android" : platform;
+        this.defaultExperimentIntegrationVersion = initialRequest == null || initialRequest.getExperimentIntegrationVersion() == null
+                ? 0
+                : initialRequest.getExperimentIntegrationVersion();
         this.httpClient = httpClient == null ? new UrlConnectionGameAlgoHttpClient() : httpClient;
         this.scriptRuntime = scriptRuntime == null ? new JavaxScriptGameAlgoRuntime() : scriptRuntime;
         this.cacheStorage = cacheStorage;
@@ -231,6 +235,9 @@ public final class GameAlgoClient {
         String platform = isBlank(request.getPlatform()) ? defaultPlatform : request.getPlatform();
         String sdkVersion = isBlank(request.getSdkVersion()) ? defaultSDKVersion : request.getSdkVersion();
         String appVersion = request.getAppVersion() == null ? defaultAppVersion : request.getAppVersion();
+        int experimentIntegrationVersion = request.getExperimentIntegrationVersion() == null
+                ? defaultExperimentIntegrationVersion
+                : request.getExperimentIntegrationVersion();
         String sessionId = isBlank(resolvedRequest.getSessionId()) ? tracker.currentSessionId() : resolvedRequest.getSessionId();
         String timezone = isBlank(request.getTimezone()) ? TimeZone.getDefault().getID() : request.getTimezone();
         Boolean isDebug = resolvedRequest.getIsDebug() == null ? tracker.isDebug() : resolvedRequest.getIsDebug();
@@ -246,6 +253,7 @@ public final class GameAlgoClient {
                 platform,
                 sdkVersion,
                 appVersion,
+                experimentIntegrationVersion,
                 timezone,
                 device,
                 isDebug
@@ -271,6 +279,7 @@ public final class GameAlgoClient {
             if (appVersion != null) {
                 body.put("appVersion", appVersion);
             }
+            body.put("experimentIntegrationVersion", experimentIntegrationVersion);
             body.put("timezone", timezone);
             body.put("device", device);
             body.put("isDebug", isDebug);
@@ -522,6 +531,9 @@ public final class GameAlgoClient {
                 .device(request.getDevice())
                 .isDebug(request.getIsDebug())
                 .forceRefresh(request.isForceRefresh());
+        if (request.getExperimentIntegrationVersion() != null) {
+            resolved.experimentIntegrationVersion(request.getExperimentIntegrationVersion());
+        }
         return resolved;
     }
 
@@ -1009,17 +1021,19 @@ public final class GameAlgoClient {
         private final String platform;
         private final String sdkVersion;
         private final String appVersion;
+        private final int experimentIntegrationVersion;
         private final String timezone;
         private final Map<String, Object> device;
         private final Boolean isDebug;
 
-        private ConfigCacheKey(String userId, String userCreatedAt, String sessionId, String platform, String sdkVersion, String appVersion, String timezone, Map<String, Object> device, Boolean isDebug) {
+        private ConfigCacheKey(String userId, String userCreatedAt, String sessionId, String platform, String sdkVersion, String appVersion, int experimentIntegrationVersion, String timezone, Map<String, Object> device, Boolean isDebug) {
             this.userId = userId;
             this.userCreatedAt = userCreatedAt;
             this.sessionId = sessionId;
             this.platform = platform;
             this.sdkVersion = sdkVersion;
             this.appVersion = appVersion;
+            this.experimentIntegrationVersion = experimentIntegrationVersion;
             this.timezone = timezone;
             this.device = device == null ? new LinkedHashMap<String, Object>() : new LinkedHashMap<>(device);
             this.isDebug = isDebug;
@@ -1040,6 +1054,7 @@ public final class GameAlgoClient {
                     && equalsNullable(platform, that.platform)
                     && equalsNullable(sdkVersion, that.sdkVersion)
                     && equalsNullable(appVersion, that.appVersion)
+                    && experimentIntegrationVersion == that.experimentIntegrationVersion
                     && equalsNullable(timezone, that.timezone)
                     && equalsNullable(device, that.device)
                     && equalsNullable(isDebug, that.isDebug);
@@ -1053,6 +1068,7 @@ public final class GameAlgoClient {
             result = 31 * result + hashNullable(platform);
             result = 31 * result + hashNullable(sdkVersion);
             result = 31 * result + hashNullable(appVersion);
+            result = 31 * result + experimentIntegrationVersion;
             result = 31 * result + hashNullable(timezone);
             result = 31 * result + hashNullable(device);
             result = 31 * result + hashNullable(isDebug);
