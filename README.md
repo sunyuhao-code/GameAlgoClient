@@ -32,11 +32,15 @@ GameAlgo Client 是面向游戏接入方的公开客户端仓库，包含 iOS SD
 | 海外 | `https://dirichlet.ai/algo_admin` |
 
 ```bash
+npm install -g gamealgo-cli@latest
+gamealgo docs agent-onboarding --host <admin-host>
 gamealgo login --host <admin-host> --admin-key <ga_admin_xxx>
 gamealgo key list --json
 gamealgo key create --name <runtime-name> --json
 gamealgo key reveal --name <runtime-name> --json
 ```
+
+安装和更新 CLI 都使用 `npm install -g gamealgo-cli@latest`，不需要拉取 GameAlgo Client 仓库。`gamealgo docs` 从当前 Admin Host 获取最新 AI 文档；登录前显式传 `--host`，登录后 CLI 会使用已保存的 Host。需要网页阅读时使用 `gamealgo docs --open`。
 
 如果已有可用 Client Game Key，就复用或 reveal；如果没有，就创建。Client Game Key 格式为 `ga_live_*`，用于游戏运行时拉配置、拉配置文件、上报事件。
 

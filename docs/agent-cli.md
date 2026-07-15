@@ -14,8 +14,29 @@ Admin host 按环境选择：
 CLI 实现在 [../cli](../cli/README.md)。推荐安装后直接使用：
 
 ```bash
+npm install -g gamealgo-cli@latest
 gamealgo help
 ```
+
+更新时再次执行 `npm install -g gamealgo-cli@latest`。安装、更新和日常使用都不需要拉取 GameAlgo Client 仓库；只有开发 CLI 本身时才需要源码。
+
+AI Agent 可以直接从 Admin Host 读取最新文档，不需要拉取本仓库：
+
+```bash
+# 登录前显式指定 Admin Host
+gamealgo docs --host <admin-host>
+gamealgo docs agent-onboarding --host <admin-host>
+
+# 登录后可以省略 --host
+gamealgo docs report-packs
+gamealgo docs experiment-integration-versions --json
+
+# 在浏览器打开文档中心
+gamealgo docs --open
+gamealgo docs report-packs --open
+```
+
+CLI 会把已读取的文档缓存到 `~/.gamealgo/docs/`。Admin Host 临时不可用时会回退到本地缓存，并在 stderr 中提示当前使用的是缓存内容。
 
 源码仓库内调试可以用 npm script；如果命令带 `--json`，必须使用 `npm --silent`：
 

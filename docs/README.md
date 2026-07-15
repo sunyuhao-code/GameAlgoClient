@@ -2,6 +2,16 @@
 
 这个目录是 GameAlgo Client 仓库的文档入口。AI Agent 拿到仓库后，应优先阅读根目录 [README](../README.md) 和本页，再按任务阶段进入具体文档。
 
+AI Agent 日常不需要拉取本仓库来更新文档。可以从 Admin Host 获取最新目录和正文：
+
+```bash
+gamealgo docs --host <admin-host>
+gamealgo docs agent-onboarding --host <admin-host>
+gamealgo docs --open --host <admin-host>
+```
+
+CLI 会缓存已读取内容，Admin Host 暂时不可用时自动回退到本地缓存。CLI 本身通过 `npm install -g gamealgo-cli@latest` 安装或更新。
+
 ## AI Agent 推荐阅读顺序
 
 1. [AI 接入流程](./agent-onboarding.md)

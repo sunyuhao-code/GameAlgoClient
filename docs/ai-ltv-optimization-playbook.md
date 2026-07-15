@@ -40,8 +40,11 @@ Agent 的任务不是单次调参，而是持续迭代：先找到高影响问�
 CLI 使用游戏维度的 Game Admin Key。这个 key 只用于开发期自动化，不放进客户端包，也不用于运行时事件上报。
 
 ```bash
+npm install -g gamealgo-cli@latest
 gamealgo login --host https://game-algo-admin.dictapis.cn --admin-key ga_admin_xxx
 ```
+
+已经安装 CLI 时可以跳过第一条；更新 CLI 也使用同一条安装命令。
 
 创建实验前，先发布脚本版本并准备 Strategy / Run 配置：
 

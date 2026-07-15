@@ -1,18 +1,32 @@
 {
-  "name": "gamealgo-client",
-  "private": true,
+  "name": "gamealgo-cli",
+  "version": "0.1.0",
+  "description": "GameAlgo command-line client for AI agents and game developers",
   "type": "module",
   "bin": {
-    "gamealgo": "./cli/gamealgo.ts"
+    "gamealgo": "dist/gamealgo.js"
+  },
+  "files": [
+    "dist/",
+    "cli/README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
-    "check": "node --test rest-api/src/*.test.ts",
-    "cli": "node cli/gamealgo.ts"
+    "build:cli": "tsc -p tsconfig.cli.json",
+    "check": "npm run build:cli && node --test rest-api/src/*.test.ts",
+    "cli": "node cli/gamealgo.ts",
+    "prepack": "npm run build:cli"
   },
   "engines": {
     "node": ">=24"
   },
   "dependencies": {
     "yaml": "^2.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.0"
   }
 }

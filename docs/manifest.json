@@ -1,0 +1,106 @@
+{
+  "schemaVersion": 1,
+  "version": "2026.07.15",
+  "updatedAt": "2026-07-15",
+  "defaultTopic": "agent-onboarding",
+  "topics": [
+    {
+      "id": "agent-onboarding",
+      "title": "AI 接入流程",
+      "summary": "从获取密钥、接入 SDK、验证事件到发布第一版报表的完整任务流程。",
+      "group": "开始接入",
+      "source": "docs/agent-onboarding.md"
+    },
+    {
+      "id": "integration-guide",
+      "title": "客户端接入指南",
+      "summary": "环境地址、两类密钥、SDK 初始化、基础事件和验收要求。",
+      "group": "开始接入",
+      "source": "docs/integration-guide.md"
+    },
+    {
+      "id": "ai-tracking-manual",
+      "title": "AI Agent 埋点手册",
+      "summary": "Context、事件、广告、付费、归因和投放数据的推荐接入方式。",
+      "group": "数据接入",
+      "source": "docs/ai-tracking-manual.md"
+    },
+    {
+      "id": "tracking-recommendations",
+      "title": "不同类型游戏埋点建议",
+      "summary": "关卡、Run、模拟经营和剧情分支等玩法的事件与报表设计建议。",
+      "group": "数据接入",
+      "source": "docs/tracking-recommendations.md"
+    },
+    {
+      "id": "experiment-integration-versions",
+      "title": "实验接入版本",
+      "summary": "最低实验版本、托管实验覆盖率门槛和多平台发布规则。",
+      "group": "实验与优化",
+      "source": "docs/experiment-integration-versions.md"
+    },
+    {
+      "id": "report-packs",
+      "title": "Report Pack 配置",
+      "summary": "事件、数据集、报表、计算模板、图表和实验报表的配置参考。",
+      "group": "实验与优化",
+      "source": "docs/report-packs.md"
+    },
+    {
+      "id": "ai-ltv-playbook",
+      "title": "AI LTV 优化 Playbook",
+      "summary": "围绕留存、收入和实验形成持续 LTV 优化闭环。",
+      "group": "实验与优化",
+      "source": "docs/ai-ltv-optimization-playbook.md"
+    },
+    {
+      "id": "dda-level-framework",
+      "title": "关卡 DDA 框架",
+      "summary": "关卡类游戏的本地行为计数、脚本输入和难度决策框架。",
+      "group": "实验与优化",
+      "source": "docs/dda-level-framework.md"
+    },
+    {
+      "id": "agent-cli",
+      "title": "Agent CLI 命令参考",
+      "summary": "登录、密钥、实验、脚本、配置、报表和事件统计命令。",
+      "group": "工具与协议",
+      "source": "docs/agent-cli.md"
+    },
+    {
+      "id": "ios-sdk",
+      "title": "iOS SDK",
+      "summary": "SwiftPM 接入、初始化、事件、实验和归因接口。",
+      "group": "平台 SDK",
+      "source": "ios/README.md"
+    },
+    {
+      "id": "android-sdk",
+      "title": "Android SDK",
+      "summary": "Android SDK 初始化、事件、实验和生命周期接入。",
+      "group": "平台 SDK",
+      "source": "android/README.md"
+    },
+    {
+      "id": "lua-sdk",
+      "title": "TapTap Maker / Lua SDK",
+      "summary": "Maker 客户端直连、事件、广告 Track ID、脚本与 DDA 接入。",
+      "group": "平台 SDK",
+      "source": "lua/README.md"
+    },
+    {
+      "id": "rest-api",
+      "title": "REST API",
+      "summary": "非原生平台接入 GameAlgo 配置、事件和归因接口。",
+      "group": "工具与协议",
+      "source": "docs/rest-api-v1.md"
+    },
+    {
+      "id": "protocol",
+      "title": "Protocol v1",
+      "summary": "SDK 协议、Context、事件格式和服务端响应参考。",
+      "group": "工具与协议",
+      "source": "docs/protocol-v1.md"
+    }
+  ]
+}

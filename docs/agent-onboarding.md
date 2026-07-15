@@ -33,7 +33,14 @@
 
 例外：如果开发者已经明确提供真实 `ga_live_*`，可以直接使用；但仍然需要验证 `/v1/config` 和事件上报。不要把 `ga_live_xxx` 示例值当成真实 key。
 
-## 2. 登录 CLI
+## 2. 安装并登录 CLI
+
+首次使用先从 npm 安装。后续更新也执行同一条命令，不需要拉取 GameAlgo Client 仓库：
+
+```bash
+npm install -g gamealgo-cli@latest
+gamealgo help
+```
 
 根据开发者选择的环境使用对应 Admin host：
 
