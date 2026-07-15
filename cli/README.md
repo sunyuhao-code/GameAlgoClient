@@ -16,10 +16,19 @@ CLI 使用游戏维度的 Game Admin Key 鉴权。这个 key 只绑定一个游�
 推荐安装后直接使用 `gamealgo` 命令：
 
 ```bash
+npm install -g gamealgo-cli@latest
 gamealgo help
 ```
 
-在源码仓库内调试时可以用 npm script，但涉及 `--json` 的命令必须加 `--silent`，避免 npm 自己的日志污染 JSON stdout：
+更新 CLI 使用同一条命令：
+
+```bash
+npm install -g gamealgo-cli@latest
+```
+
+安装和更新不需要拉取 GameAlgo Client 仓库。Node.js 版本需要为 24 或更高。
+
+只有开发 CLI 本身时才需要源码仓库。源码内调试可以用 npm script，但涉及 `--json` 的命令必须加 `--silent`，避免 npm 自己的日志污染 JSON stdout：
 
 ```bash
 npm install
@@ -56,6 +65,19 @@ GAMEALGO_GAME_ADMIN_KEY=ga_admin_xxx
 ```bash
 gamealgo whoami
 ```
+
+## 最新文档
+
+AI Agent 可以通过 CLI 从 Admin Host 获取最新文档，不需要拉取本仓库：
+
+```bash
+gamealgo docs --host <admin-host>
+gamealgo docs agent-onboarding --host <admin-host>
+gamealgo docs report-packs --json
+gamealgo docs --open
+```
+
+登录后可以省略 `--host`。CLI 会把已读取的文档缓存到 `~/.gamealgo/docs/`，网络不可用时自动回退到缓存。
 
 ## Client Game Key
 

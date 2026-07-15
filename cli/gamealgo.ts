@@ -4,6 +4,8 @@ import { stdin as input, stdout as output } from "node:process";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, basename } from "node:path";
 import { homedir } from "node:os";
+import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
 import YAML from "yaml";
 
 type CliConfig = {
@@ -36,7 +38,24 @@ type KeySelector = {
   prefix?: string;
 };
 
+type DocsTopic = {
+  id: string;
+  title: string;
+  summary: string;
+  group: string;
+  file: string;
+};
+
+type DocsManifest = {
+  schemaVersion: number;
+  version: string;
+  updatedAt: string;
+  defaultTopic: string;
+  topics: DocsTopic[];
+};
+
 const CONFIG_PATH = join(homedir(), ".gamealgo", "cli.json");
+const DOCS_CACHE_ROOT = join(homedir(), ".gamealgo", "docs");
 const SCRIPT_EXTENSIONS = new Set([".js", ".lua"]);
 const FILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 
@@ -57,6 +76,10 @@ async function main(): Promise<void> {
     if (command === "whoami") {
       const client = await createClient(global);
       await printResult(await client.session(), global);
+      return;
+    }
+    if (command === "docs") {
+      await handleDocs(args, global);
       return;
     }
     if (command === "admin-key") {
@@ -157,6 +180,73 @@ async function login(args: string[], global: ReturnType<typeof parseGlobalFlags>
     gameId: session.principal.gameId,
     keyName: session.principal.keyName,
   }, global);
+}
+
+async function handleDocs(args: string[], global: ReturnType<typeof parseGlobalFlags>): Promise<void> {
+  const flags = parseFlags(args);
+  const topicId = String(args.shift() || "").trim();
+  if (args.length) throw new Error("usage: gamealgo docs [topic] [--open] [--json] [--host <admin-url>]");
+
+  const saved = await loadConfig();
+  const host = normalizeHost(global.host || saved?.host || "");
+  if (!host) throw new Error("--host is required before login; after login the saved Admin host is used");
+
+  const loaded = await loadDocsManifest(host);
+  const manifest = loaded.manifest;
+  const topic = topicId ? manifest.topics.find((item) => item.id === topicId) : null;
+  if (topicId && !topic) {
+    throw new Error(`Unknown docs topic: ${topicId}. Available topics: ${manifest.topics.map((item) => item.id).join(", ")}`);
+  }
+
+  const webUrl = docsWebUrl(host, topic?.id);
+  if (flags.open) {
+    openExternalUrl(webUrl);
+    await printResult({
+      ok: true,
+      opened: webUrl,
+      version: manifest.version,
+      ...(topic ? { topic: topic.id, title: topic.title } : {}),
+      cachedManifest: loaded.cached,
+    }, global);
+    return;
+  }
+
+  if (!topic) {
+    if (global.json) {
+      await printResult({
+        ok: true,
+        version: manifest.version,
+        updatedAt: manifest.updatedAt,
+        defaultTopic: manifest.defaultTopic,
+        cached: loaded.cached,
+        webUrl,
+        topics: manifest.topics,
+      }, global);
+      return;
+    }
+    printDocsIndex(manifest, webUrl);
+    if (loaded.cached) console.error("Warning: using cached documentation index because the Admin host could not be reached");
+    return;
+  }
+
+  const document = await loadDocsDocument(host, manifest, topic, loaded.cached);
+  if (global.json) {
+    await printResult({
+      ok: true,
+      version: manifest.version,
+      updatedAt: manifest.updatedAt,
+      topic: topic.id,
+      title: topic.title,
+      summary: topic.summary,
+      cached: document.cached,
+      webUrl,
+      rawUrl: docsRawUrl(host, topic.file),
+      content: document.content,
+    }, global);
+    return;
+  }
+  console.log(document.content.trimEnd());
+  if (document.cached) console.error("Warning: using cached documentation because the Admin host could not be reached");
 }
 
 async function createClient(global: ReturnType<typeof parseGlobalFlags>): Promise<GameAlgoAdminClient> {
@@ -715,7 +805,8 @@ async function handleMarketing(client: GameAlgoAdminClient, args: string[], glob
     };
     const apiToken = optionalString(flags["api-token"] || flags.apiToken);
     if (apiToken) body.apiToken = apiToken;
-    await printResult({ ok: true, ...(await client.putAdjustMarketing(body)) }, global);
+    const result = objectValue(await client.putAdjustMarketing(body));
+    await printResult({ ok: true, ...(result || {}) }, global);
     return;
   }
   if (sub === "sync") {
@@ -1129,6 +1220,157 @@ async function requestJson(host: string, path: string, init: CliRequestInit): Pr
   return json ?? null;
 }
 
+async function loadDocsManifest(host: string): Promise<{ manifest: DocsManifest; cached: boolean }> {
+  const cachePath = join(docsCacheDir(host), "manifest.json");
+  try {
+    const text = await requestTextUrl(`${docsContentBaseUrl(host)}manifest.json`);
+    const manifest = parseDocsManifest(text);
+    await writePrivateFile(cachePath, `${JSON.stringify(manifest, null, 2)}\n`);
+    return { manifest, cached: false };
+  } catch (networkError) {
+    try {
+      const manifest = parseDocsManifest(await readFile(cachePath, "utf8"));
+      return { manifest, cached: true };
+    } catch {
+      throw networkError;
+    }
+  }
+}
+
+async function loadDocsDocument(
+  host: string,
+  manifest: DocsManifest,
+  topic: DocsTopic,
+  preferCache: boolean,
+): Promise<{ content: string; cached: boolean }> {
+  const cachePath = join(docsCacheDir(host), manifest.version || "current", topic.file);
+  if (!preferCache) {
+    try {
+      const content = await requestTextUrl(docsRawUrl(host, topic.file));
+      await writePrivateFile(cachePath, content);
+      return { content, cached: false };
+    } catch {
+      // Fall through to the most recent cached copy.
+    }
+  }
+  try {
+    return { content: await readFile(cachePath, "utf8"), cached: true };
+  } catch {
+    if (preferCache) {
+      throw new Error(`Documentation topic is not cached and the Admin host is unavailable: ${topic.id}`);
+    }
+    throw new Error(`Unable to download documentation topic: ${topic.id}`);
+  }
+}
+
+async function requestTextUrl(url: string): Promise<string> {
+  let response: Response;
+  try {
+    response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+  } catch (error) {
+    if (isTimeoutError(error)) throw new Error(`Documentation request timed out: ${url}`);
+    throw new Error(`Documentation request failed: ${url}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`Documentation request returned ${response.status}: ${truncateBody(text)}`);
+  }
+  return text;
+}
+
+function parseDocsManifest(text: string): DocsManifest {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new Error("Documentation manifest is not valid JSON");
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Documentation manifest must be an object");
+  }
+  const body = value as Record<string, unknown>;
+  if (body.schemaVersion !== 1 || !Array.isArray(body.topics) || !body.topics.length) {
+    throw new Error("Documentation manifest schema is invalid");
+  }
+  const topics = body.topics.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error("Documentation manifest contains an invalid topic");
+    }
+    const topic = item as Record<string, unknown>;
+    const id = String(topic.id || "");
+    const file = String(topic.file || "");
+    if (!/^[a-z][a-z0-9-]{0,63}$/.test(id) || !/^[a-z][a-z0-9-]{0,63}\.md$/.test(file)) {
+      throw new Error(`Documentation manifest contains an unsafe topic: ${id || file}`);
+    }
+    return {
+      id,
+      title: String(topic.title || id),
+      summary: String(topic.summary || ""),
+      group: String(topic.group || "其他"),
+      file,
+    };
+  });
+  const ids = new Set(topics.map((topic) => topic.id));
+  if (ids.size !== topics.length) throw new Error("Documentation manifest contains duplicate topic ids");
+  const defaultTopic = String(body.defaultTopic || topics[0].id);
+  if (!ids.has(defaultTopic)) throw new Error("Documentation manifest defaultTopic does not exist");
+  return {
+    schemaVersion: 1,
+    version: String(body.version || "current"),
+    updatedAt: String(body.updatedAt || ""),
+    defaultTopic,
+    topics,
+  };
+}
+
+function docsCacheDir(host: string): string {
+  const key = createHash("sha256").update(normalizeHost(host)).digest("hex").slice(0, 16);
+  return join(DOCS_CACHE_ROOT, key);
+}
+
+function docsWebUrl(host: string, topicId?: string): string {
+  const url = new URL(`${normalizeHost(host)}/dashboard/docs/`);
+  if (topicId) url.searchParams.set("topic", topicId);
+  return url.toString();
+}
+
+function docsContentBaseUrl(host: string): string {
+  return `${normalizeHost(host)}/dashboard/docs/content/`;
+}
+
+function docsRawUrl(host: string, file: string): string {
+  return `${docsContentBaseUrl(host)}${encodeURIComponent(file)}`;
+}
+
+async function writePrivateFile(filePath: string, content: string): Promise<void> {
+  await mkdir(dirname(filePath), { recursive: true, mode: 0o700 });
+  await chmod(dirname(filePath), 0o700).catch(() => undefined);
+  await writeFile(filePath, content, { encoding: "utf8", mode: 0o600 });
+  await chmod(filePath, 0o600).catch(() => undefined);
+}
+
+function printDocsIndex(manifest: DocsManifest, webUrl: string): void {
+  console.log(`GameAlgo AI 文档 ${manifest.version}${manifest.updatedAt ? ` (${manifest.updatedAt})` : ""}`);
+  let currentGroup = "";
+  for (const topic of manifest.topics) {
+    if (topic.group !== currentGroup) {
+      currentGroup = topic.group;
+      console.log(`\n${currentGroup}`);
+    }
+    console.log(`  ${topic.id}\n    ${topic.title}：${topic.summary}`);
+  }
+  console.log(`\n读取文档: gamealgo docs <topic>`);
+  console.log(`网页目录: ${webUrl}`);
+}
+
+function openExternalUrl(url: string): void {
+  const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
+  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+  const child = spawn(command, args, { detached: true, stdio: "ignore" });
+  child.on("error", (error) => console.error(`Unable to open browser: ${error.message}`));
+  child.unref();
+}
+
 function parseFlags(args: string[]): Record<string, string | boolean> {
   const flags: Record<string, string | boolean> = {};
   for (let index = 0; index < args.length;) {
@@ -1376,6 +1618,12 @@ GameAlgo CLI
 Usage:
   gamealgo login --host <admin-url> --admin-key <game-admin-key>
   gamealgo whoami
+
+  gamealgo docs
+  gamealgo docs agent-onboarding
+  gamealgo docs report-packs --json
+  gamealgo docs experiment-integration-versions --open
+  gamealgo docs --host <admin-url>
 
   gamealgo experiment strategies
   gamealgo experiment strategies --include-archived

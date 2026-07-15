@@ -45,6 +45,12 @@ GameAlgo 有两类 key，名字接近但用途不同。
 
 推荐流程是：开发者只手工创建 `Game Admin Key`，然后把它交给 AI Agent。AI Agent 会用 CLI 检查当前游戏是否已有可用的 Client Game Key；没有时自动创建；需要写入 SDK 时，再通过 CLI 读取明文。
 
+CLI 通过 npm 安装和更新，不需要 AI Agent 拉取 GameAlgo Client 仓库：
+
+```bash
+npm install -g gamealgo-cli@latest
+```
+
 - 在 `Game Admin Key` 区域点击创建。
 - 用于 `gamealgo login`、AI Agent 和 CI。
 - CLI 请求会通过 `X-GameAlgo-Game-Admin-Key` 携带它。
@@ -265,6 +271,19 @@ AI Agent 应该输出：
 - 新手引导节奏
 - 玩法模式入口、奖励、解锁条件
 
+#### 实验版本与启动门槛
+
+有些实验依赖新 App 版本中新增的功能、参数或脚本执行逻辑。创建这类实验前，应先创建一个实验接入版本，并在 App 接入时上报该版本；提交实验时再指定所需的最低实验版本。平台只会让满足版本要求的用户参与实验和实验统计，避免不支持该功能的用户干扰结果。
+
+有些托管实验提交时，相关 App 版本还未发布，或者发布后的用户覆盖率仍然较低。此时可以配置启动门槛，包括最低覆盖率和最低用户数。平台会等待满足门槛后再开始实验窗口，而不是从提交任务的时间立即计时。
+
+两项配置解决的问题不同：
+
+- 最低实验版本：限定哪些用户可以参与实验及其统计。
+- 启动门槛：决定托管实验什么时候正式开始。
+
+开发者需要向 AI Agent 说明实验依赖了哪个 App 功能，并确认期望的覆盖率和最低用户数；版本创建、接入和实验配置可由 AI Agent 通过 CLI 完成。详细规则见[实验接入版本](./experiment-integration-versions.md)。
+
 你给 AI Agent 的目标可以这样写：
 
 ```text
@@ -316,7 +335,29 @@ gamealgo experiment run promote xrun_xxx --variant slower_ads --yes
 - AI Agent 可以查询事件统计，确认测试事件已进入平台。
 - AI Agent 可以拉取报表结果。
 
-## 9. 继续阅读
+## 9. 把 AI 接入入口交给开发 Agent
+
+以后不需要把整个 GameAlgo Client 仓库作为接入入口交给 AI。推荐发送对应环境的 AI 接入页面，并单独提供 Game Admin Key：
+
+| 环境 | AI 接入入口 |
+| --- | --- |
+| 国内 | `https://game-algo-admin.dictapis.cn/dashboard/agent-start.html` |
+| 海外 | `https://dirichlet.ai/algo_admin/dashboard/agent-start.html` |
+
+可以直接把下面这段话交给 AI：
+
+```text
+请按照 GameAlgo AI 接入入口完成当前游戏的 Activated 接入：
+
+<对应环境的 AI 接入入口>
+
+请直接检查并修改当前游戏仓库，不要只返回文档链接。
+Game Admin Key 请向我索取，不要把它写入客户端、日志或公开仓库。
+```
+
+AI 接入页会关联最新 AI 文档、`gamealgo-cli` npm 包和 [GameAlgo Client 仓库](https://github.com/sunyuhao-code/GameAlgoClient)。文档和 CLI 更新不要求 AI 拉取 Client 仓库；只有接入或检查 SDK 源码时才需要访问仓库。
+
+## 10. 继续阅读
 
 - [客户端接入指南](./integration-guide.md)
 - [Agent CLI 接入指南](./agent-cli.md)

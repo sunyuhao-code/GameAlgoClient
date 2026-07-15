@@ -125,9 +125,10 @@ Adjust Server Callback 的 trigger 选择 `Install`，并建议额外配置 `Rea
 
 接入测试时可以用 GameAlgo CLI 的事件统计命令确认事件是否已经进入数据表。这个命令使用游戏维度的 Game Admin Key，不使用客户端 Game Key。
 
-先登录 CLI：
+首次使用先安装 CLI，然后登录；更新 CLI 时再次执行安装命令即可：
 
 ```bash
+npm install -g gamealgo-cli@latest
 gamealgo login \
   --host <admin-host> \
   --admin-key ga_admin_xxx

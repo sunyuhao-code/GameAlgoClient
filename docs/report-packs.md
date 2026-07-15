@@ -266,6 +266,7 @@ Report Pack 的展示文案可以直接使用中文，包括顶层 `title`、`ta
 - `penetration` 用于计算事件 dataset 的去重实体渗透率。默认实体是 `userId`；`denominator` 可以是 `event_users`、`active_users` 或 `new_users`。`active_users` 和 `new_users` 使用 SDK context 作为分母，因此使用它们的报表只能按 `dt`、`user_segment`、实验字段或 `platform`、`appVersion` 等 SDK context 字段分组。
 - `calculations` 可以声明平台预置的计算模板。常见问题可以优先用模板配置，少写一层 dataset/report，也更不容易写错。
 - `reports` 定义可见报表查询。
+- 普通报表默认查询最近 7 天；Cohort 报表默认查询最近 14 天。平台会自动识别标准留存/LTV、`cohort_metric@1`、`cohort_matrix` 和以 `cohort_dt` 为 x 轴的报表。自定义普通报表可以在 report 上配置 `"defaultRangeDays": 14` 覆盖默认值，取值范围是 1 到 90。用户在控制台手动选择日期后，以手动范围为准。
 - `groupBy` 支持 `dt`、`user_segment`、dataset dimensions、`experiment.<strategy_name>` 和 `experiment`。`user_segment` 是平台内置用户类型，适用于 event/rollup 自定义报表，值为 `all`、`new`、`returning`；cohort 报表本身已经是新用户 cohort，不支持再按 `user_segment` 分组。
 - 当前 layout 使用顶层 `charts`、`groups`、`tabs`，以及可选的 `experimentViews`。`charts` 只定义图表，`groups[].charts` 只引用 chart id，`tabs[].groups` 只引用 group id，`experimentViews[].groups` 把已有 group 绑定到某个实验策略的详情页。
 - `groups` 会在 UI 上包裹一组相关图表，并拥有一组共享 selector。group 内的图表不一定都要使用每个 selector。
@@ -486,6 +487,8 @@ value_per_actor = measure_value / denominator_count
 | `{id}_cohort` | `cohort_dt`、`day_offset`、`scope`、`strategy`、`variant` |
 
 group 通过 `charts: ["new_user_max_level"]` 这类引用使用 calculation id；控制台会自动展开成一张趋势折线图和一张 cohort 矩阵，并给 group 增加 Experiment selector 和 Dx selector。`metric.value` 用来指定趋势图和矩阵单元格的指标。矩阵不会被 Dx selector 过滤；它会展示已成熟的 D0 到 Dn 列，未达到 `cohort_dt + day_offset <= endDate` 的列不会提前展示。
+
+`cohort_metric@1` 自动使用最近 14 天的 `cohort_dt` 作为默认展示范围。这里的 14 天是 cohort 起始日期范围，不会让尚未成熟的 Dx 提前出现。
 
 例如，新用户最大通关关卡 cohort：
 
