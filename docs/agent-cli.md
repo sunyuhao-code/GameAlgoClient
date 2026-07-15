@@ -73,6 +73,8 @@ gamealgo experiment integration-version create --title "广告频率参数" --me
 
 版本号是当前 App 构建已实现的实验能力，不是运行时配置版本。客户端不能运行时查询 latest。Debug Context 不会把版本标记为已观测；只有非 Debug Context 成功落库后，版本才会从 `draft` 变为 `observed` 并记录 `firstSeenAt`。版本创建后只能更新 `message`，`title` 和版本号不可改。
 
+什么时候需要创建新版本、旧客户端拿不到 Strategy 时的行为，以及 `requiredIntegrationVersion` 和托管启动门槛的职责边界，见 [实验接入版本](./experiment-integration-versions.md)。
+
 ```yaml
 strategyKey: ad_frequency
 displayName: 广告频率

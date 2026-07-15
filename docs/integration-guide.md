@@ -71,7 +71,7 @@ TapTap Maker / TapTap 小游戏使用 Lua SDK 从客户端直接访问国内 SDK
   - REST: `await client.fetchConfigFile("gameplay.json")`
 - 事件上报优先使用 SDK tracker。tracker 会内存批量队列、周期 flush，并重试失败批次。
 - 实验分组保存在配置拉取时创建的 SDK context 中，事件里不需要复制实验字段。
-- 发布 Strategy 时必须显式提交 `requiredIntegrationVersion`。不依赖客户端新增实验能力时填写 `0`；否则先由 AI Agent 通过 `gamealgo experiment integration-version create` 创建能力版本，把返回的整数固定到 SDK 初始化参数 `experimentIntegrationVersion`，再让 Strategy 引用该版本。不要让客户端运行时查询 latest。
+- 发布 Strategy 时必须显式提交 `requiredIntegrationVersion`。不依赖客户端新增实验能力时填写 `0`；否则先由 AI Agent 创建能力版本，把返回的整数固定到 SDK 初始化参数 `experimentIntegrationVersion`，再让 Strategy 引用该版本。低于最低版本的客户端不会收到这个 Strategy，必须继续使用游戏本地默认逻辑。完整语义、升级判断和托管实验覆盖率门槛见 [实验接入版本](./experiment-integration-versions.md)。
 - 如果接入 Adjust 等归因 SDK，归因结果异步返回后调用 SDK 的 `setAttribution` / REST helper。开发者可以每次 callback 都调用；同一份归因成功 ack 后 SDK 会跳过重复上报，归因变化或上次失败时会重试。直调 `/v1/attribution` 时才需要调用方自己处理 ack 去重。
 - 不要让 GameAlgo 网络请求阻塞游戏主流程。
 - GameAlgo 不可用时走本地默认逻辑。

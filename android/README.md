@@ -20,6 +20,8 @@ val sdk = GameAlgo.init(
 
 最后一个整数来自 `gamealgo experiment integration-version create`，表示这个 App 构建已经实现的实验参数能力。不要在运行时查询 latest；没有接入实验时可以继续使用两参数 `GameAlgo.init`，其版本为 `0`。
 
+关于何时创建新版本、Strategy 最低版本和旧客户端行为，见 [实验接入版本](../docs/experiment-integration-versions.md)。
+
 ## 使用方式
 
 ```kotlin

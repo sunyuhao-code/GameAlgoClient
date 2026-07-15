@@ -10,6 +10,8 @@ REST 请求和 SDK 使用同一套 Protocol v1 接口。
 https://game-algo-sdk.dictapis.cn
 ```
 
+`experimentIntegrationVersion` 是当前客户端构建已经实现的实验能力版本，不是 App 版本或运行时配置版本。版本必须固定在客户端构建中；完整说明见 [实验接入版本](./experiment-integration-versions.md)。
+
 ## 1. 鉴权
 
 每个请求都必须带上：

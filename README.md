@@ -50,11 +50,12 @@ gamealgo key reveal --name <runtime-name> --json
 
 1. [AI 接入流程](./docs/agent-onboarding.md)
 2. [客户端接入指南](./docs/integration-guide.md)
-3. [AI Agent 埋点接入手册](./docs/ai-tracking-manual.md)
-4. [不同类型游戏埋点建议](./docs/tracking-recommendations.md)
-5. [Report Pack 配置](./docs/report-packs.md)
-6. [Agent CLI 命令参考](./docs/agent-cli.md)
-7. [AI LTV 优化 Playbook](./docs/ai-ltv-optimization-playbook.md)
+3. [实验接入版本与最低版本](./docs/experiment-integration-versions.md)
+4. [AI Agent 埋点接入手册](./docs/ai-tracking-manual.md)
+5. [不同类型游戏埋点建议](./docs/tracking-recommendations.md)
+6. [Report Pack 配置](./docs/report-packs.md)
+7. [Agent CLI 命令参考](./docs/agent-cli.md)
+8. [AI LTV 优化 Playbook](./docs/ai-ltv-optimization-playbook.md)
 
 ### 不要这样做
 
