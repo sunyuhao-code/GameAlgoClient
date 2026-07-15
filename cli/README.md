@@ -132,6 +132,8 @@ gamealgo experiment strategy publish strategy.yaml --yes
 
 每次发布 Strategy 都必须显式填写 `requiredIntegrationVersion`。填写 `0` 表示该 Strategy 不依赖任何客户端实验能力版本；填写大于 `0` 的值时，必须引用已经通过 `integration-version create` 创建、且客户端确实已经实现的版本。Run 会继承 Strategy 的最低版本，不需要重复配置。
 
+版本升级判断、旧客户端行为和托管实验覆盖率门槛的完整说明见 [实验接入版本](../docs/experiment-integration-versions.md)。
+
 创建手动实验 Run：
 
 ```yaml
