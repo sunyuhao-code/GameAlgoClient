@@ -252,10 +252,10 @@ gamealgo script publish scripts/level-generator.js --message "level script" --js
 gamealgo experiment strategy publish strategy.yaml --yes
 gamealgo experiment run create level_generator run.yaml --yes
 gamealgo experiment run evaluate xrun_xxx --from 2026-07-01 --to 2026-07-07 --yes
-gamealgo experiment run promote xrun_xxx --variant better_levels --yes
+gamealgo experiment run promote xrun_xxx --variant better_levels --message "采用胜出关卡参数" --yes
 ```
 
-`strategy.yaml` 必须显式包含 `requiredIntegrationVersion`。没有客户端版本门槛时填写 `0`；需要新增参数、脚本输入或执行能力时，填写前一步创建并固化到客户端的版本号。
+`strategy.yaml` 必须显式包含 `requiredIntegrationVersion`。没有客户端版本门槛时填写 `0`；需要新增参数、脚本输入或执行能力时，填写前一步创建并固化到客户端的版本号。Run 配置必须明确写 `objectiveTemplate: ltv_proxy@1` 和一个有流量的 `baselineVariantId`。
 
 不要把 App 版本、Strategy 版本或脚本版本当成实验接入版本。详细的版本生命周期、兼容规则和托管实验覆盖率门槛见 [实验接入版本](./experiment-integration-versions.md)。
 

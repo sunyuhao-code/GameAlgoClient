@@ -403,7 +403,19 @@ async function handleExperimentStrategy(client: GameAlgoAdminClient, args: strin
     await printResult(await client.archiveExperimentV2Strategy(strategyKey, sub === "archive"), global);
     return;
   }
-  throw new Error("usage: gamealgo experiment strategy <show|publish|default|archive|restore>");
+  if (sub === "rollback") {
+    const flags = parseFlags(args);
+    const strategyKey = optionalString(flags.strategy || flags.key) || optionalString(args.shift());
+    const versionId = optionalString(flags.version || flags["version-id"]);
+    const message = requiredMessage(flags, "experiment strategy rollback");
+    if (!strategyKey || !versionId) {
+      throw new Error("usage: gamealgo experiment strategy rollback <strategyKey> --version-id <versionId> --message <reason> --yes");
+    }
+    await requireYes(flags, global, "experiment strategy rollback");
+    await printResult(await client.rollbackExperimentV2Strategy(strategyKey, versionId, message), global);
+    return;
+  }
+  throw new Error("usage: gamealgo experiment strategy <show|publish|default|archive|restore|rollback>");
 }
 
 async function handleExperimentRun(client: GameAlgoAdminClient, args: string[], global: ReturnType<typeof parseGlobalFlags>): Promise<void> {
@@ -416,6 +428,12 @@ async function handleExperimentRun(client: GameAlgoAdminClient, args: string[], 
     await requireYes(flags, global, "experiment run create");
     const body = await readObjectFile(filePath, "experiment run");
     if (!optionalString(body.displayName)) throw new Error("experiment run requires displayName");
+    if (optionalString(body.objectiveTemplate) !== "ltv_proxy@1") {
+      throw new Error("experiment run requires objectiveTemplate: ltv_proxy@1");
+    }
+    if (!optionalString(body.baselineVariantId)) {
+      throw new Error("experiment run requires explicit baselineVariantId");
+    }
     if ((optionalString(body.type) || "manual") !== "managed" && body.startCondition !== undefined) {
       throw new Error("experiment run startCondition is supported only when type is managed");
     }
@@ -435,6 +453,31 @@ async function handleExperimentRun(client: GameAlgoAdminClient, args: string[], 
     await printResult(response, global);
     return;
   }
+  if (sub === "status") {
+    const flags = parseFlags(args);
+    const runId = optionalString(flags.run || flags["run-id"] || flags.id) || optionalString(args.shift());
+    if (!runId) throw new Error("usage: gamealgo experiment run status <runId>");
+    const response = await client.getExperimentV2Run(runId) as { run?: Record<string, unknown> };
+    const run = response.run;
+    if (!run) throw new Error(`experiment run not found: ${runId}`);
+    await printResult({
+      run: {
+        id: run.id,
+        strategyKey: run.strategyKey,
+        displayName: run.displayName,
+        type: run.type,
+        status: run.status,
+        objective: run.objective,
+        baselineVariantId: run.baselineVariantId,
+        requiredIntegrationVersion: run.requiredIntegrationVersion,
+        startedAt: run.startedAt,
+        endedAt: run.endedAt,
+        promotedVariantId: run.promotedVariantId,
+        currentAssessment: run.currentAssessment ?? null,
+      },
+    }, global);
+    return;
+  }
   if (sub === "evaluate") {
     const flags = parseFlags(args);
     const runId = optionalString(flags.run || flags["run-id"] || flags.id) || optionalString(args.shift());
@@ -444,21 +487,33 @@ async function handleExperimentRun(client: GameAlgoAdminClient, args: string[], 
       from: optionalString(flags.from || flags.start || flags.startDate),
       to: optionalString(flags.to || flags.end || flags.endDate),
       days: optionalString(flags.days),
-      platform: optionalString(flags.platform),
     }), global);
     return;
   }
   if (sub === "report") {
     const flags = parseFlags(args);
     const runId = optionalString(flags.run || flags["run-id"] || flags.id) || optionalString(args.shift());
-    if (!runId) throw new Error("usage: gamealgo experiment run report <runId> [--report-id <id>]");
+    if (!runId) throw new Error("usage: gamealgo experiment run report <runId> [--round <number> | --report-id <id>]");
     const response = await client.getExperimentV2Run(runId) as { run?: { reports?: unknown[] } };
     const reports = Array.isArray(response.run?.reports) ? response.run.reports : [];
     const reportId = optionalString(flags.report || flags["report-id"] || flags.id);
-    const report = reportId
-      ? reports.map((item) => objectValue(item)).find((item) => item?.id === reportId || item?.evaluationId === reportId)
-      : objectValue(reports[reports.length - 1]);
-    if (!report) throw new Error(reportId ? `experiment run report not found: ${reportId}` : "experiment run has no reports");
+    const round = flags.round === undefined ? undefined : positiveInteger(flags.round, "round");
+    const latestReport = objectValue(reports[reports.length - 1]);
+    const report = reports
+      .map((item) => objectValue(item))
+      .find((item) => {
+        if (!item) return false;
+        if (reportId) return item.id === reportId || item.evaluationId === reportId;
+        if (round !== undefined) {
+          const managed = objectValue(objectValue(item.report)?.managed);
+          return Number(managed?.roundNumber ?? Number(managed?.roundIndex) + 1) === round;
+        }
+        return item === latestReport;
+      });
+    if (!report) {
+      const selector = reportId ? `: ${reportId}` : round !== undefined ? ` for round ${round}` : "";
+      throw new Error(`experiment run report not found${selector}`);
+    }
     await printResult({ runId, report }, global);
     return;
   }
@@ -466,32 +521,41 @@ async function handleExperimentRun(client: GameAlgoAdminClient, args: string[], 
     const flags = parseFlags(args);
     const runId = optionalString(flags.run || flags["run-id"] || flags.id) || optionalString(args.shift());
     const variantId = optionalString(flags.variant || flags["variant-id"]) || optionalString(args.shift());
-    if (!runId || !variantId) throw new Error("usage: gamealgo experiment run promote <runId> --variant <variantId> --yes");
+    if (!runId || !variantId) throw new Error("usage: gamealgo experiment run promote <runId> --variant <variantId> --message <reason> --yes");
+    const message = requiredMessage(flags, "experiment run promote");
     await requireYes(flags, global, "experiment run promote");
-    await printResult(await client.promoteExperimentV2Run(runId, variantId, optionalString(flags.message)), global);
+    await printResult(await client.promoteExperimentV2Run(runId, variantId, message), global);
     return;
   }
   if (sub === "cancel") {
     const flags = parseFlags(args);
     const runId = optionalString(flags.run || flags["run-id"] || flags.id) || optionalString(args.shift());
-    if (!runId) throw new Error("usage: gamealgo experiment run cancel <runId> --yes");
+    if (!runId) throw new Error("usage: gamealgo experiment run cancel <runId> --message <reason> --yes");
+    const message = requiredMessage(flags, "experiment run cancel");
     await requireYes(flags, global, "experiment run cancel");
-    await printResult(await client.cancelExperimentV2Run(runId), global);
+    await printResult(await client.cancelExperimentV2Run(runId, message), global);
     return;
   }
   if (sub === "traffic") {
     const flags = parseFlags(args);
     const runId = optionalString(flags.run || flags["run-id"] || flags.id) || optionalString(args.shift());
     const variantId = optionalString(flags.variant || flags["variant-id"]) || optionalString(args.shift());
-    if (!runId || !variantId) throw new Error("usage: gamealgo experiment run traffic <runId> <variantId> [--weight n] [--status running|paused] --yes");
+    if (!runId || !variantId) throw new Error("usage: gamealgo experiment run traffic <runId> <variantId> [--weight n] [--status running|paused] --message <reason> --yes");
+    const message = requiredMessage(flags, "experiment run traffic");
     await requireYes(flags, global, "experiment run traffic");
-    const body: Record<string, unknown> = {};
+    const body: Record<string, unknown> = { message };
     if (flags.weight !== undefined) body.weight = optionalNonNegativeInteger(flags.weight, "weight");
     if (flags.status !== undefined) body.status = optionalString(flags.status);
     await printResult(await client.updateExperimentV2VariantTraffic(runId, variantId, body), global);
     return;
   }
-  throw new Error("usage: gamealgo experiment run <create|show|evaluate|report|promote|cancel|traffic>");
+  throw new Error("usage: gamealgo experiment run <create|show|status|evaluate|report|promote|cancel|traffic>");
+}
+
+function requiredMessage(flags: Record<string, string | boolean>, action: string): string {
+  const message = optionalString(flags.message);
+  if (!message) throw new Error(`${action} requires --message <reason>`);
+  return message;
 }
 
 async function handleExperimentOverride(client: GameAlgoAdminClient, args: string[], global: ReturnType<typeof parseGlobalFlags>): Promise<void> {
@@ -1001,6 +1065,13 @@ class GameAlgoAdminClient {
     return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/strategies-v2/${encodeURIComponent(strategyKey)}/archive`, { archived });
   }
 
+  async rollbackExperimentV2Strategy(strategyKey: string, versionId: string, message: string) {
+    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/strategies-v2/${encodeURIComponent(strategyKey)}/rollback`, {
+      versionId,
+      message,
+    });
+  }
+
   async createExperimentV2Run(strategyKey: string, body: Record<string, unknown>) {
     return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/strategies-v2/${encodeURIComponent(strategyKey)}/runs`, body);
   }
@@ -1019,15 +1090,15 @@ class GameAlgoAdminClient {
     return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/experiment-runs-v2/${encodeURIComponent(runId)}/evaluate${suffix}`, {});
   }
 
-  async promoteExperimentV2Run(runId: string, variantId: string, message?: string) {
+  async promoteExperimentV2Run(runId: string, variantId: string, message: string) {
     return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/experiment-runs-v2/${encodeURIComponent(runId)}/promote`, {
       variantId,
-      ...(message ? { message } : {}),
+      message,
     });
   }
 
-  async cancelExperimentV2Run(runId: string) {
-    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/experiment-runs-v2/${encodeURIComponent(runId)}/cancel`, {});
+  async cancelExperimentV2Run(runId: string, message: string) {
+    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/experiment-runs-v2/${encodeURIComponent(runId)}/cancel`, { message });
   }
 
   async listExperimentV2Overrides(runId: string) {
@@ -1636,13 +1707,15 @@ Usage:
   gamealgo experiment strategy publish strategy.yaml --yes
   gamealgo experiment strategy default ad_frequency strategy.yaml --yes
   gamealgo experiment strategy archive ad_frequency --yes
+  gamealgo experiment strategy rollback ad_frequency --version-id xv_xxxxxxxxxxxxxxxx --message "回滚参数" --yes
   gamealgo experiment run create ad_frequency run.yaml --yes
   gamealgo experiment run show xrun_xxxxxxxxxxxxxxxx
+  gamealgo experiment run status xrun_xxxxxxxxxxxxxxxx
   gamealgo experiment run evaluate xrun_xxxxxxxxxxxxxxxx --from 2026-07-01 --to 2026-07-07 --yes
-  gamealgo experiment run report xrun_xxxxxxxxxxxxxxxx
-  gamealgo experiment run promote xrun_xxxxxxxxxxxxxxxx --variant bravo --yes
-  gamealgo experiment run cancel xrun_xxxxxxxxxxxxxxxx --yes
-  gamealgo experiment run traffic xrun_xxxxxxxxxxxxxxxx bravo --weight 0 --status paused --yes
+  gamealgo experiment run report xrun_xxxxxxxxxxxxxxxx --round 1
+  gamealgo experiment run promote xrun_xxxxxxxxxxxxxxxx --variant bravo --message "采用胜出组" --yes
+  gamealgo experiment run cancel xrun_xxxxxxxxxxxxxxxx --message "停止实验" --yes
+  gamealgo experiment run traffic xrun_xxxxxxxxxxxxxxxx bravo --weight 0 --status paused --message "暂停异常组" --yes
   gamealgo experiment override set xrun_xxxxxxxxxxxxxxxx --user user-1 --variant bravo --yes
   gamealgo experiment override list xrun_xxxxxxxxxxxxxxxx
 

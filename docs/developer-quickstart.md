@@ -299,8 +299,10 @@ gamealgo script publish scripts/ad-frequency.lua --message "ad frequency script"
 gamealgo experiment strategy publish strategy.yaml --yes
 gamealgo experiment run create ad_frequency run.yaml --yes
 gamealgo experiment run evaluate xrun_xxx --from 2026-07-01 --to 2026-07-07 --yes
-gamealgo experiment run promote xrun_xxx --variant slower_ads --yes
+gamealgo experiment run promote xrun_xxx --variant slower_ads --message "采用低频广告组" --yes
 ```
+
+Run 配置必须明确写 `objectiveTemplate: ltv_proxy@1` 和一个有流量的 `baselineVariantId`。平台会持续给出当前评估；托管实验完成计划轮次后，只有出现明确胜出组才更新默认参数，否则保留原默认参数。
 
 开发者需要确认：
 

@@ -63,7 +63,7 @@ gamealgo experiment strategy publish strategy.yaml --yes
 ```bash
 gamealgo experiment run create ad_frequency run.yaml --yes
 gamealgo experiment run evaluate xrun_xxx --from 2026-07-01 --to 2026-07-07 --yes
-gamealgo experiment run promote xrun_xxx --variant later_first_ad --yes
+gamealgo experiment run promote xrun_xxx --variant later_first_ad --message "采用延后首个广告组" --yes
 ```
 
 拉取可用报表：

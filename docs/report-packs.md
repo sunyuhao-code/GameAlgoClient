@@ -1068,7 +1068,7 @@ gamealgo report preview --pack gamealgo-report-pack.json --from 2026-06-14 --to 
 
 实验 v2 里有两个概念需要分开：
 
-- 实验目标：创建 run 时指定，例如 `ltv_proxy`。它是实验闭环和托管实验自动评估使用的固定目标，创建后不建议中途变更。
+- 实验目标：创建 run 时必须指定 `objectiveTemplate: ltv_proxy@1`。它是实验闭环和托管实验自动评估使用的固定目标，创建后不可变更。
 - 实验报表：Report Pack 里的 `experimentViews`。它负责在实验详情页展示辅助观察数据，例如 ARPU、留存、广告收入、关卡进度等。
 
 因此，`experimentViews` 不会改变托管实验的 winner 评分逻辑，也不会改变手动实验的目标定义。它的作用是让开发者和 AI Agent 在实验详情页看到更聚焦的证据，而不是打开完整日常看板后手动筛选。

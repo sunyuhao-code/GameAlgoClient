@@ -53,7 +53,7 @@ npm --silent run cli -- report manifest --json
 3. Agent 用 `key list/create/reveal` 获取当前游戏的 Client Game Key，用于运行时 SDK。
 4. Agent 拉取脚本、配置和 Report Pack，并按需发布脚本版本。
 5. Agent 创建或更新 Strategy，提交手动或托管 Run。
-6. 数据沉淀后，Agent 评估 Run，并通过 promote 把胜出组推为默认参数。
+6. Agent 用当前评估跟踪实验；手动实验确认正式报告后再 promote，托管实验由平台完成计划轮次并在证据明确时更新默认参数。
 7. 数据沉淀后，Agent 用 `report manifest` 和 `report result` 回收看板结果。
 8. Agent 根据报表继续调整实验或配置。
 
@@ -67,9 +67,10 @@ gamealgo key reveal --name tapmaker-client --json
 gamealgo script publish scripts/level-generator.js --message "level script" --json
 gamealgo experiment strategy publish strategy.yaml --yes --json
 gamealgo experiment run create ad_frequency run.yaml --yes --json
+gamealgo experiment run status xrun_xxx --json
 gamealgo experiment run evaluate xrun_xxx --from 2026-07-01 --to 2026-07-07 --yes --json
-gamealgo experiment run report xrun_xxx --json
-gamealgo experiment run promote xrun_xxx --variant bravo --yes --json
+gamealgo experiment run report xrun_xxx --round 1 --json
+gamealgo experiment run promote xrun_xxx --variant bravo --message "采用胜出组" --yes --json
 gamealgo experiment override set xrun_xxx --user user-1 --variant bravo --yes --json
 gamealgo report manifest --json
 gamealgo report result --from 2026-06-14 --to 2026-06-21 --group "Daily ARPU" --selector experiment=ad_frequency --timeout 60 --out reports/daily-arpu.json
@@ -116,7 +117,8 @@ Run 定义一次实验。手动实验由 Agent/开发者决定何时评估、推
 displayName: 广告频率第一轮
 type: manual
 platform: ios
-objective: ltv_proxy
+objectiveTemplate: ltv_proxy@1
+baselineVariantId: control
 variants:
   - variantId: control
     weight: 1
@@ -134,7 +136,8 @@ variants:
 displayName: 广告频率托管实验
 type: managed
 platform: ios
-objective: ltv_proxy
+objectiveTemplate: ltv_proxy@1
+baselineVariantId: alpha
 cycleDays: 7
 maxVariantsPerRound: 3
 # 可选；只适用于托管实验。
@@ -152,19 +155,24 @@ variants:
 
 托管实验的 `startCondition` 使用指定平台最近 24 小时的非 Debug Context：每个用户只取最新记录，`minCoverage` 要求实验接入版本达到 Strategy `requiredIntegrationVersion` 的用户占比，`minUsers` 要求窗口内去重用户数。两项同时配置时按 AND；等待期间继续使用 Strategy 默认参数，达标后才开始首轮。手动实验禁止配置该字段。用 `gamealgo experiment run show <runId> --json` 查看 `waiting_for_coverage` 状态和 `startConditionSnapshot`。
 
+`objectiveTemplate` 当前固定为 `ltv_proxy@1`，`baselineVariantId` 必须显式指定，并且该组必须有流量。托管实验只执行候选组决定的计划轮次，不会自动增加复赛轮次；最终没有明确胜出组时保持 Strategy 默认参数不变。
+
 实验报告里的 `LTV Proxy` 口径是：
 
 ```text
-LTV Proxy = DAU_ARPU * (1 + D1_RET + D2_RET + D3_RET + D4_RET)
+LTV Proxy = DAU_ARPU * (1 + D1_RET + D2_RET + D3_RET + D4_RET + D5_RET)
 ```
 
-`DAU_ARPU` 是实验窗口内收入 / 活跃用户天数；`D1_RET` 到 `D4_RET` 使用实验窗口内已经成熟的日期平均估算。平台不会为了等待 D5 额外拖长托管周期。
+`DAU_ARPU` 是实验窗口内收入 / 活跃用户天数；`D1_RET` 到 `D5_RET` 只使用评估时已经成熟的 cohort，并按 cohort 用户数加权。平台不会为了等待最后一天用户的 D5 额外拖长托管周期。
+
+`run status` 返回轻量状态和最新“当前评估”；`run report` 返回已落库的正式报告，可用 `--round N` 查询托管实验某一轮。当前评估用于跟踪趋势，不直接提前结束实验；正式结论在计划轮次结束时生成。
 
 ```bash
 gamealgo experiment strategies --json
 gamealgo experiment strategy show ad_frequency --json
 gamealgo experiment run show xrun_xxx --json
-gamealgo experiment run cancel xrun_xxx --yes
+gamealgo experiment run cancel xrun_xxx --message "停止实验" --yes
+gamealgo experiment strategy rollback ad_frequency --version-id xv_xxx --message "回滚线上参数" --yes
 ```
 
 `report preview` 用于本地 Report Pack 调试：CLI 会把本地 JSON 发给服务端执行一次查询，但不会保存 pack，也不会影响线上看板和正式缓存。
