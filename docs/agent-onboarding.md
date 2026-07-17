@@ -2,6 +2,8 @@
 
 这份文档给 AI Agent 使用。目标是：开发者把游戏仓库和 GameAlgo Client 仓库交给你后，你能主动完成接入，而不是把文档转发给开发者。
 
+GameAlgo Client SDK 源码仓库：<https://github.com/sunyuhao-code/GameAlgoClient>
+
 ## 0. 完成状态规则
 
 如果用户要求“接入 GameAlgo SDK”，默认目标是 Activated 接入。
@@ -40,6 +42,7 @@
 ```bash
 npm install -g gamealgo-cli@latest
 gamealgo help
+gamealgo --version
 ```
 
 根据开发者选择的环境使用对应 Admin host：
@@ -113,7 +116,7 @@ gamealgo key reveal --name production-client --json
 | 环境 | SDK / REST API | Admin / CLI |
 | --- | --- | --- |
 | 国内 | `https://game-algo-sdk.dictapis.cn` | `https://game-algo-admin.dictapis.cn` |
-| 海外 | `https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev` | `https://dirichlet.ai/algo_admin` |
+| 海外 | `https://dirichlet.ai/algo_sdk` | `https://dirichlet.ai/algo_admin` |
 
 游戏运行时只配置 SDK / REST API 地址。Admin host 只给 CLI、控制台和 CI 使用。
 

@@ -16,9 +16,12 @@ CLI 实现在 [../cli](../cli/README.md)。推荐安装后直接使用：
 ```bash
 npm install -g gamealgo-cli@latest
 gamealgo help
+gamealgo --version
 ```
 
 更新时再次执行 `npm install -g gamealgo-cli@latest`。安装、更新和日常使用都不需要拉取 GameAlgo Client 仓库；只有开发 CLI 本身时才需要源码。
+
+Client SDK 源码仓库：<https://github.com/sunyuhao-code/GameAlgoClient>
 
 AI Agent 可以直接从 Admin Host 读取最新文档，不需要拉取本仓库：
 
@@ -37,6 +40,8 @@ gamealgo docs report-packs --open
 ```
 
 CLI 会把已读取的文档缓存到 `~/.gamealgo/docs/`。Admin Host 临时不可用时会回退到本地缓存，并在 stderr 中提示当前使用的是缓存内容。
+
+登录凭据按游戏项目隔离。请在项目根目录运行 `gamealgo login`，CLI 会写入权限为 `600` 的 `.gamealgo/cli.json`，并从命令执行目录逐级向上查找该文件。`.gamealgo/` 会被自动忽略，不应提交到 Git；旧版全局文件 `~/.gamealgo/cli.json` 仅作为兜底。
 
 源码仓库内调试可以用 npm script；如果命令带 `--json`，必须使用 `npm --silent`：
 

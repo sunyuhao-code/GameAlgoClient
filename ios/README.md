@@ -79,6 +79,8 @@ sdk.configureAdjustServerCallbackParams { key, value in
 
 `GameAlgoSDK(...)` 会在后台刷新 `/v1/config` 并预加载配置文件。它也会在本地持久化存储中创建或复用 SDK 匿名 `userId`，因此老玩家更新后仍能保持稳定实验分组。`executor` 和 `config` 读取的是最新本地快照，所以玩法代码读取实验分组或调参值时不需要直接调用远端 API。
 
+`baseURL` 可以包含服务路径前缀，例如 `https://dirichlet.ai/algo_sdk`。SDK 会在该前缀后追加 `/v1/*`，不会把请求发送到域名根路径。
+
 GameAlgo 控制台 Configs 页面创建的文件也可以在需要时直接拉取：
 
 ```swift

@@ -37,6 +37,8 @@ await client.tracker.flush();
 
 `new GameAlgoRestClient(...)` 会在后台刷新 `/v1/config` 并预加载配置文件。它也会创建或复用 SDK 匿名 `userId`；如果希望 helper 跨启动持久化这个 ID，初始化时需要传入 `storage`。`executor` 和 `config` 读取的是最新本地快照，所以玩法逻辑读取实验分组或调参值时不需要直接调用远端 API。
 
+`baseUrl` 可以包含服务路径前缀，例如 `https://dirichlet.ai/algo_sdk`。Helper 会在该前缀后追加 `/v1/*`，不会把请求发送到域名根路径。
+
 GameAlgo 控制台 Configs 页面创建的文件也可以在需要时直接拉取：
 
 ```ts

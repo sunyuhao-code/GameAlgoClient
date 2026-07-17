@@ -54,7 +54,9 @@ type DocsManifest = {
   topics: DocsTopic[];
 };
 
-const CONFIG_PATH = join(homedir(), ".gamealgo", "cli.json");
+const GLOBAL_CONFIG_PATH = join(homedir(), ".gamealgo", "cli.json");
+const PROJECT_CONFIG_DIR = ".gamealgo";
+const PROJECT_CONFIG_FILE = "cli.json";
 const DOCS_CACHE_ROOT = join(homedir(), ".gamealgo", "docs");
 const SCRIPT_EXTENSIONS = new Set([".js", ".lua"]);
 const FILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
@@ -65,6 +67,15 @@ async function main(): Promise<void> {
   const command = args.shift();
   if (!command || command === "help" || command === "--help" || command === "-h") {
     printHelp();
+    return;
+  }
+  if (command === "version" || command === "--version" || command === "-V") {
+    const metadata = await loadPackageMetadata();
+    if (global.json) {
+      await printResult({ ok: true, name: metadata.name, version: metadata.version }, global);
+    } else {
+      console.log(metadata.version);
+    }
     return;
   }
 
@@ -173,12 +184,13 @@ async function login(args: string[], global: ReturnType<typeof parseGlobalFlags>
   if (session.principal.type !== "game_admin" || !session.principal.gameId) {
     throw new Error("admin key is not scoped to a game");
   }
-  await saveConfig({ host, adminKey });
+  const configPath = await saveConfig({ host, adminKey });
   await printResult({
     ok: true,
     host,
     gameId: session.principal.gameId,
     keyName: session.principal.keyName,
+    configPath,
   }, global);
 }
 
@@ -1489,18 +1501,57 @@ function requireFlagValue(args: string[], index: number, flag: string): string {
 }
 
 async function loadConfig(): Promise<CliConfig | null> {
-  try {
-    return JSON.parse(await readFile(CONFIG_PATH, "utf8")) as CliConfig;
-  } catch {
-    return null;
+  const localPath = await findProjectConfigPath(process.cwd());
+  const paths = localPath && localPath !== GLOBAL_CONFIG_PATH
+    ? [localPath, GLOBAL_CONFIG_PATH]
+    : [GLOBAL_CONFIG_PATH];
+  for (const configPath of paths) {
+    try {
+      return JSON.parse(await readFile(configPath, "utf8")) as CliConfig;
+    } catch {
+      // Try the next supported config location.
+    }
+  }
+  return null;
+}
+
+async function findProjectConfigPath(startDir: string): Promise<string | null> {
+  let currentDir = startDir;
+  while (true) {
+    const candidate = join(currentDir, PROJECT_CONFIG_DIR, PROJECT_CONFIG_FILE);
+    try {
+      await readFile(candidate, "utf8");
+      return candidate;
+    } catch {
+      const parentDir = dirname(currentDir);
+      if (parentDir === currentDir) return null;
+      currentDir = parentDir;
+    }
   }
 }
 
-async function saveConfig(config: CliConfig): Promise<void> {
-  await mkdir(dirname(CONFIG_PATH), { recursive: true, mode: 0o700 });
-  await chmod(dirname(CONFIG_PATH), 0o700).catch(() => undefined);
-  await writeFile(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
-  await chmod(CONFIG_PATH, 0o600).catch(() => undefined);
+async function saveConfig(config: CliConfig): Promise<string> {
+  const configDir = join(process.cwd(), PROJECT_CONFIG_DIR);
+  const configPath = join(configDir, PROJECT_CONFIG_FILE);
+  await mkdir(configDir, { recursive: true, mode: 0o700 });
+  await chmod(configDir, 0o700).catch(() => undefined);
+  await ensureProjectConfigIgnored(configDir);
+  await writeFile(configPath, JSON.stringify(config, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+  await chmod(configPath, 0o600).catch(() => undefined);
+  return configPath;
+}
+
+async function ensureProjectConfigIgnored(configDir: string): Promise<void> {
+  const ignorePath = join(configDir, ".gitignore");
+  try {
+    const existing = await readFile(ignorePath, "utf8");
+    const rules = existing.split(/\r?\n/).map((line) => line.trim());
+    if (rules.includes("*") || rules.includes(PROJECT_CONFIG_FILE) || rules.includes(`/${PROJECT_CONFIG_FILE}`)) return;
+    const separator = existing && !existing.endsWith("\n") ? "\n" : "";
+    await writeFile(ignorePath, `${existing}${separator}${PROJECT_CONFIG_FILE}\n`, { encoding: "utf8", mode: 0o600 });
+  } catch {
+    await writeFile(ignorePath, "*\n", { encoding: "utf8", mode: 0o600 });
+  }
 }
 
 async function readObjectFile(filePath: string, label: string): Promise<Record<string, unknown>> {
@@ -1682,11 +1733,24 @@ function contentTypeForFileName(name: string): string {
   return "text/plain; charset=utf-8";
 }
 
+async function loadPackageMetadata(): Promise<{ name: string; version: string }> {
+  const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as {
+    name?: unknown;
+    version?: unknown;
+  };
+  const name = typeof packageJson.name === "string" ? packageJson.name : "gamealgo-cli";
+  if (typeof packageJson.version !== "string" || !packageJson.version) {
+    throw new Error("CLI package version is missing");
+  }
+  return { name, version: packageJson.version };
+}
+
 function printHelp(): void {
   console.log(`
 GameAlgo CLI
 
 Usage:
+  gamealgo --version
   gamealgo login --host <admin-url> --admin-key <game-admin-key>
   gamealgo whoami
 

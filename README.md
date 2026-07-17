@@ -40,7 +40,7 @@ gamealgo key create --name <runtime-name> --json
 gamealgo key reveal --name <runtime-name> --json
 ```
 
-安装和更新 CLI 都使用 `npm install -g gamealgo-cli@latest`，不需要拉取 GameAlgo Client 仓库。`gamealgo docs` 从当前 Admin Host 获取最新 AI 文档；登录前显式传 `--host`，登录后 CLI 会使用已保存的 Host。需要网页阅读时使用 `gamealgo docs --open`。
+安装和更新 CLI 都使用 `npm install -g gamealgo-cli@latest`，不需要拉取 GameAlgo Client 仓库。请在每个游戏项目根目录执行 `gamealgo login`，凭据保存在项目的 `.gamealgo/cli.json`，不同游戏互不覆盖。`gamealgo docs` 从当前 Admin Host 获取最新 AI 文档；登录前显式传 `--host`，登录后 CLI 会使用已保存的 Host。需要网页阅读时使用 `gamealgo docs --open`。
 
 如果已有可用 Client Game Key，就复用或 reveal；如果没有，就创建。Client Game Key 格式为 `ga_live_*`，用于游戏运行时拉配置、拉配置文件、上报事件。
 
@@ -111,7 +111,7 @@ docs/       接入、埋点、报表和优化文档
 | 环境 | SDK / REST API | Admin / CLI |
 | --- | --- | --- |
 | 国内 | `https://game-algo-sdk.dictapis.cn` | `https://game-algo-admin.dictapis.cn` |
-| 海外 | `https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev` | `https://dirichlet.ai/algo_admin` |
+| 海外 | `https://dirichlet.ai/algo_sdk` | `https://dirichlet.ai/algo_admin` |
 
 客户端 SDK 只配置 SDK / REST API 地址。Admin / CLI 地址只给开发者、AI Agent 和 CI 使用。
 

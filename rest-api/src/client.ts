@@ -87,8 +87,9 @@ export class GameAlgoRestClient {
     this.storage = options.storage;
     this.scriptRuntime = options.scriptRuntime ?? new FunctionScriptRuntime();
     this.logger = resolveLogger(options.logger);
-    this.snapshotCacheKey = options.cacheKey ?? `gamealgo:v1:snapshot:${this.baseUrl.origin}:${this.gameKey.slice(0, 16)}`;
-    this.attributionAckCacheKey = `gamealgo:v1:attribution:${this.baseUrl.origin}:${this.gameKey.slice(0, 16)}`;
+    const baseCacheNamespace = normalizedBaseUrl(this.baseUrl);
+    this.snapshotCacheKey = options.cacheKey ?? `gamealgo:v1:snapshot:${baseCacheNamespace}:${this.gameKey.slice(0, 16)}`;
+    this.attributionAckCacheKey = `gamealgo:v1:attribution:${baseCacheNamespace}:${this.gameKey.slice(0, 16)}`;
     this.config = new GameAlgoConfigReader(() => this.snapshot);
     this.tracker = new GameAlgoEventTracker({
       uploadEvents: (events) => this.uploadEvents(events),
@@ -135,7 +136,7 @@ export class GameAlgoRestClient {
     if (!strategy) throw new Error("DDA strategy key is required");
     const existing = this.ddaControllers.get(strategy);
     if (existing) return existing;
-    const storageKey = `gamealgo:v1:dda:${this.baseUrl.origin}:${this.gameKey.slice(0, 16)}:${strategy}`;
+    const storageKey = `gamealgo:v1:dda:${normalizedBaseUrl(this.baseUrl)}:${this.gameKey.slice(0, 16)}:${strategy}`;
     const controller = new GameAlgoDDAController(this.executor(strategy), this.storage, storageKey, options, this.logger);
     this.ddaControllers.set(strategy, controller);
     return controller;
@@ -490,7 +491,13 @@ export class GameAlgoRestClient {
   }
 
   private url(path: string): URL {
-    return new URL(path, this.baseUrl);
+    const url = new URL(this.baseUrl);
+    const basePath = url.pathname.replace(/\/+$/, "");
+    const endpointPath = path.replace(/^\/+/, "");
+    url.pathname = `${basePath}/${endpointPath}`;
+    url.search = "";
+    url.hash = "";
+    return url;
   }
 
   private async requestJson<T>(url: URL, init: RequestInit): Promise<T> {
@@ -978,6 +985,10 @@ function normalizeFileName(name: string): string {
 
 function randomId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function normalizedBaseUrl(url: URL): string {
+  return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
 }
 
 function clean(value: string | undefined | null): string | undefined {

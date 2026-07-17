@@ -580,7 +580,7 @@ public actor GameAlgoSDK {
     }
 
     private func endpoint(_ path: String) throws -> URL {
-        guard let url = URL(string: path, relativeTo: baseURL)?.absoluteURL else {
+        guard let url = gameAlgoEndpoint(baseURL: baseURL, path: path) else {
             throw GameAlgoError.invalidURL(path)
         }
         return url
