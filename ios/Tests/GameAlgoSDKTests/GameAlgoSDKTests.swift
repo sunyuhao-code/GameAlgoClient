@@ -154,7 +154,7 @@ final class GameAlgoSDKTests: XCTestCase {
         ])
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
-            baseURL: URL(string: "https://gamealgo.test")!,
+            baseURL: URL(string: "https://gamealgo.test/algo_sdk")!,
             sdkVersion: "1.0.0",
             experimentIntegrationVersion: 7,
             httpClient: httpClient,
@@ -174,7 +174,7 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(requests.count, 1)
         XCTAssertEqual(requests[0].headers["X-GameAlgo-Key"], gameKey)
         XCTAssertEqual(requests[0].method, .post)
-        XCTAssertEqual(requests[0].url.absoluteString, "https://gamealgo.test/v1/config")
+        XCTAssertEqual(requests[0].url.absoluteString, "https://gamealgo.test/algo_sdk/v1/config")
         let requestPayload = try requestBody(requests[0])
         XCTAssertEqual(requestPayload["userId"] as? String, "u1")
         XCTAssertEqual(requestPayload["userCreatedAt"] as? String, "1970-01-01T00:16:40.000Z")
@@ -432,7 +432,7 @@ final class GameAlgoSDKTests: XCTestCase {
         try await httpClient.enqueueJSON(["ok": true, "accepted": 1])
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
-            baseURL: URL(string: "https://gamealgo.test")!,
+            baseURL: URL(string: "https://gamealgo.test/algo_sdk/")!,
             sdkVersion: "1.2.3",
             appVersion: "4.5.6",
             httpClient: httpClient,
@@ -455,7 +455,7 @@ final class GameAlgoSDKTests: XCTestCase {
 
         XCTAssertEqual(result.accepted, 1)
         XCTAssertEqual(requests[0].method, .post)
-        XCTAssertEqual(requests[0].url.absoluteString, "https://gamealgo.test/v1/events/batch")
+        XCTAssertEqual(requests[0].url.absoluteString, "https://gamealgo.test/algo_sdk/v1/events/batch")
         XCTAssertEqual(requests[0].headers["X-GameAlgo-Key"], gameKey)
         XCTAssertEqual(events?.first?["contextId"] as? String, "ctx-1")
         XCTAssertEqual(events?.first?["timestamp"] as? String, "2026-05-28T10:00:00.000Z")
@@ -474,7 +474,7 @@ final class GameAlgoSDKTests: XCTestCase {
         try await httpClient.enqueueJSON(["ok": true, "accepted": 1, "attributionHash": expectedHash])
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
-            baseURL: URL(string: "https://gamealgo.test")!,
+            baseURL: URL(string: "https://gamealgo.test/algo_sdk")!,
             httpClient: httpClient,
             userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
             userId: "u1",
@@ -508,7 +508,7 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(second.accepted, 0)
         XCTAssertEqual(first.attributionHash, second.attributionHash)
         XCTAssertEqual(requests.count, 1)
-        XCTAssertEqual(requests[0].url.absoluteString, "https://gamealgo.test/v1/attribution")
+        XCTAssertEqual(requests[0].url.absoluteString, "https://gamealgo.test/algo_sdk/v1/attribution")
         XCTAssertEqual(body["userId"] as? String, "u1")
         XCTAssertEqual(body["userCreatedAt"] as? String, "2026-05-28T10:00:00.000Z")
         XCTAssertEqual(body["platform"] as? String, "ios")

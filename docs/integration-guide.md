@@ -43,9 +43,11 @@ GameAlgo 目前有国内和海外两套环境：
 | 环境 | SDK / REST API | Admin / CLI |
 | --- | --- | --- |
 | 国内 | `https://game-algo-sdk.dictapis.cn` | `https://game-algo-admin.dictapis.cn` |
-| 海外 | `https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev` | `https://dirichlet.ai/algo_admin` |
+| 海外 | `https://dirichlet.ai/algo_sdk` | `https://dirichlet.ai/algo_admin` |
 
 客户端 SDK 的 `baseURL` / `baseUrl` 配置为 SDK host；CLI 和浏览器控制台使用 Admin host。不要把 Admin host 配到游戏客户端里。
+
+海外 SDK 地址包含 `/algo_sdk` 路径前缀，必须完整保留。iOS SDK 和 REST helper 会在该前缀后追加 `/v1/*`；不要自行用会把 `/v1/*` 解析到域名根路径的相对 URL 逻辑替换 SDK 请求实现。
 
 ## 3. 选择接入方式
 

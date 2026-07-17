@@ -18,6 +18,7 @@ CLI 使用游戏维度的 Game Admin Key 鉴权。这个 key 只绑定一个游�
 ```bash
 npm install -g gamealgo-cli@latest
 gamealgo help
+gamealgo --version
 ```
 
 更新 CLI 使用同一条命令：
@@ -27,6 +28,8 @@ npm install -g gamealgo-cli@latest
 ```
 
 安装和更新不需要拉取 GameAlgo Client 仓库。Node.js 版本需要为 24 或更高。
+
+Client SDK 源码仓库：<https://github.com/sunyuhao-code/GameAlgoClient>
 
 只有开发 CLI 本身时才需要源码仓库。源码内调试可以用 npm script，但涉及 `--json` 的命令必须加 `--silent`，避免 npm 自己的日志污染 JSON stdout：
 
@@ -53,7 +56,9 @@ gamealgo login \
   --admin-key ga_admin_xxx
 ```
 
-登录信息会写入本机 `~/.gamealgo/cli.json`，CLI 会把文件权限设置为 `600`。也可以通过环境变量临时传入：
+请在游戏项目根目录执行登录。登录信息会写入当前目录的 `.gamealgo/cli.json`，CLI 会把文件权限设置为 `600`，并自动忽略整个 `.gamealgo/` 目录，避免密钥被提交到 Git。后续命令会从当前目录逐级向上查找该文件，因此可以在项目子目录执行；不同游戏仓库的登录信息互不覆盖。
+
+旧版的 `~/.gamealgo/cli.json` 仍可作为未找到项目级配置时的兜底。也可以通过环境变量临时传入：
 
 ```bash
 GAMEALGO_ADMIN_HOST=<admin-host>
@@ -163,7 +168,8 @@ gamealgo experiment strategy publish strategy.yaml --yes
 displayName: 广告频率第一轮
 type: manual
 platform: ios
-objective: ltv_proxy
+objectiveTemplate: ltv_proxy@1
+baselineVariantId: control
 variants:
   - variantId: control
     weight: 1
@@ -189,15 +195,22 @@ gamealgo experiment run create ad_frequency run.yaml --yes
 gamealgo experiment strategies
 gamealgo experiment strategy show ad_frequency
 gamealgo experiment run show xrun_xxxxxxxxxxxxxxxx
+gamealgo experiment run status xrun_xxxxxxxxxxxxxxxx
 gamealgo experiment run evaluate xrun_xxxxxxxxxxxxxxxx --from 2026-07-01 --to 2026-07-07 --yes
 gamealgo experiment run report xrun_xxxxxxxxxxxxxxxx
-gamealgo experiment run promote xrun_xxxxxxxxxxxxxxxx --variant slower_ads --yes
+gamealgo experiment run promote xrun_xxxxxxxxxxxxxxxx --variant slower_ads --message "采用低频广告组" --yes
 ```
 
-`promote` 会把胜出的 variant 写回 Strategy 默认参数，并结束当前 Run。取消实验用：
+`baselineVariantId` 是本次评估的对照组，必须指向一个有流量的实验组。平台按小时更新“当前评估”；`report` 返回已生成的正式报告。`promote` 会把指定 variant 写回 Strategy 默认参数，并结束当前 Run。取消实验用：
 
 ```bash
-gamealgo experiment run cancel xrun_xxxxxxxxxxxxxxxx --yes
+gamealgo experiment run cancel xrun_xxxxxxxxxxxxxxxx --message "实验停止" --yes
+```
+
+回滚默认参数会创建一个新的参数版本，不会改写历史版本：
+
+```bash
+gamealgo experiment strategy rollback ad_frequency --version-id xv_xxxxxxxxxxxxxxxx --message "回滚线上参数" --yes
 ```
 
 调试指定用户/设备强制进某个实验组：
@@ -214,7 +227,8 @@ gamealgo experiment override delete xrun_xxxxxxxxxxxxxxxx --user user-1 --yes
 displayName: 广告频率托管实验
 type: managed
 platform: ios
-objective: ltv_proxy
+objectiveTemplate: ltv_proxy@1
+baselineVariantId: alpha
 cycleDays: 7
 maxVariantsPerRound: 3
 # 可选：仅托管实验支持。最近 24 小时同时满足两个门槛后才开始首轮。
@@ -231,6 +245,16 @@ variants:
 ```
 
 `minCoverage` 表示指定平台最近 24 小时内，实验接入版本达到 Strategy `requiredIntegrationVersion` 的去重用户占比；`minUsers` 表示同一窗口内的非 Debug 去重用户数。两项可单独配置，同时配置时必须同时满足。等待期间 Strategy 继续下发默认参数，满足门槛后平台才生成首轮时间窗并开始分流。手动实验不支持 `startCondition`，托管实验不配置时仍会立即启动。`experiment run show` 返回 `startConditionSnapshot`，可查看当前用户数、覆盖率和最近检查时间。
+
+托管实验只执行候选组数量决定的计划轮次，不会因为结果不显著而自动追加轮次。每轮结束都会生成正式报告；最后一轮只有在证据足够明确时才更新默认参数。没有明确胜出组时，实验正常完成，Strategy 默认参数保持不变。
+
+`ltv_proxy@1` 的标准口径为：
+
+```text
+LTV Proxy = DAU ARPU * (1 + D1 + D2 + D3 + D4 + D5)
+```
+
+其中 DAU ARPU 是实验窗口内总收入除以活跃用户天数；Dx 留存只使用截至评估时已经成熟的 cohort，并按 cohort 用户数加权。平台不会等待最后一天用户的 D5 成熟后再结束实验。
 
 所有会修改线上状态的实验命令都必须显式传 `--yes`。
 

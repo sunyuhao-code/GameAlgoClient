@@ -2,6 +2,8 @@
 
 这份文档给 AI Agent 使用。目标是：开发者把游戏仓库和 GameAlgo Client 仓库交给你后，你能主动完成接入，而不是把文档转发给开发者。
 
+GameAlgo Client SDK 源码仓库：<https://github.com/sunyuhao-code/GameAlgoClient>
+
 ## 0. 完成状态规则
 
 如果用户要求“接入 GameAlgo SDK”，默认目标是 Activated 接入。
@@ -40,6 +42,7 @@
 ```bash
 npm install -g gamealgo-cli@latest
 gamealgo help
+gamealgo --version
 ```
 
 根据开发者选择的环境使用对应 Admin host：
@@ -113,7 +116,7 @@ gamealgo key reveal --name production-client --json
 | 环境 | SDK / REST API | Admin / CLI |
 | --- | --- | --- |
 | 国内 | `https://game-algo-sdk.dictapis.cn` | `https://game-algo-admin.dictapis.cn` |
-| 海外 | `https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev` | `https://dirichlet.ai/algo_admin` |
+| 海外 | `https://dirichlet.ai/algo_sdk` | `https://dirichlet.ai/algo_admin` |
 
 游戏运行时只配置 SDK / REST API 地址。Admin host 只给 CLI、控制台和 CI 使用。
 
@@ -252,10 +255,10 @@ gamealgo script publish scripts/level-generator.js --message "level script" --js
 gamealgo experiment strategy publish strategy.yaml --yes
 gamealgo experiment run create level_generator run.yaml --yes
 gamealgo experiment run evaluate xrun_xxx --from 2026-07-01 --to 2026-07-07 --yes
-gamealgo experiment run promote xrun_xxx --variant better_levels --yes
+gamealgo experiment run promote xrun_xxx --variant better_levels --message "采用胜出关卡参数" --yes
 ```
 
-`strategy.yaml` 必须显式包含 `requiredIntegrationVersion`。没有客户端版本门槛时填写 `0`；需要新增参数、脚本输入或执行能力时，填写前一步创建并固化到客户端的版本号。
+`strategy.yaml` 必须显式包含 `requiredIntegrationVersion`。没有客户端版本门槛时填写 `0`；需要新增参数、脚本输入或执行能力时，填写前一步创建并固化到客户端的版本号。Run 配置必须明确写 `objectiveTemplate: ltv_proxy@1` 和一个有流量的 `baselineVariantId`。
 
 不要把 App 版本、Strategy 版本或脚本版本当成实验接入版本。详细的版本生命周期、兼容规则和托管实验覆盖率门槛见 [实验接入版本](./experiment-integration-versions.md)。
 

@@ -70,6 +70,32 @@ test("fetchConfig sends Protocol v1 headers and caches by ttl", async () => {
   assert.equal(requests[0].url, "https://gamealgo.test/v1/config");
 });
 
+test("base URL path prefix is preserved for Protocol v1 requests", async () => {
+  const requests: Request[] = [];
+  const client = createClient({
+    baseUrl: "https://dirichlet.ai/algo_sdk/",
+    gameKey,
+    autoStart: false,
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      return jsonResponse({
+        contextId: "ctx-prefixed",
+        gameId: "Mahjong",
+        environment: "live",
+        configVersion: "v1",
+        ttlSeconds: 60,
+        serverTime: "2026-05-28T10:00:00.000Z",
+        experiments: [],
+        configFiles: [],
+      });
+    },
+  });
+
+  await client.fetchConfig({ userId: "u1" });
+  assert.equal(requests[0].url, "https://dirichlet.ai/algo_sdk/v1/config");
+});
+
 test("fetchConfig can force refresh", async () => {
   let calls = 0;
   const client = createClient({

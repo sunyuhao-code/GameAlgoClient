@@ -9,7 +9,7 @@ GameAlgo 目前有国内和海外两套环境。开发者只需要告诉 AI Agen
 | 环境 | SDK / REST API | Admin / CLI | 给谁用 |
 | --- | --- | --- | --- |
 | 国内 | `https://game-algo-sdk.dictapis.cn` | `https://game-algo-admin.dictapis.cn` | 国内游戏、TapTap Maker / TapTap 小游戏 |
-| 海外 | `https://gamealgo-server-v2.gamealgo-sdk-1ea5b9.workers.dev` | `https://dirichlet.ai/algo_admin` | 海外游戏 |
+| 海外 | `https://dirichlet.ai/algo_sdk` | `https://dirichlet.ai/algo_admin` | 海外游戏 |
 
 客户端 SDK 只能配置 SDK / REST API 地址。Admin / CLI 地址只给开发者、AI Agent 和 CI 使用，不要配置到游戏客户端里。
 
@@ -299,8 +299,10 @@ gamealgo script publish scripts/ad-frequency.lua --message "ad frequency script"
 gamealgo experiment strategy publish strategy.yaml --yes
 gamealgo experiment run create ad_frequency run.yaml --yes
 gamealgo experiment run evaluate xrun_xxx --from 2026-07-01 --to 2026-07-07 --yes
-gamealgo experiment run promote xrun_xxx --variant slower_ads --yes
+gamealgo experiment run promote xrun_xxx --variant slower_ads --message "采用低频广告组" --yes
 ```
+
+Run 配置必须明确写 `objectiveTemplate: ltv_proxy@1` 和一个有流量的 `baselineVariantId`。平台会持续给出当前评估；托管实验完成计划轮次后，只有出现明确胜出组才更新默认参数，否则保留原默认参数。
 
 开发者需要确认：
 

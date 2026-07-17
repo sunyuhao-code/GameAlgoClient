@@ -158,7 +158,8 @@ Debug Context 可以用来验证配置和实验行为，但不会把版本标记
 displayName: 广告频率托管实验
 type: managed
 platform: ios
-objective: ltv_proxy
+objectiveTemplate: ltv_proxy@1
+baselineVariantId: control
 cycleDays: 7
 startCondition:
   minCoverage: 0.8
