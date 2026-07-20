@@ -34,6 +34,7 @@ export type ConfigResponse = {
 export type FetchConfigOptions = {
   userId?: string;
   userCreatedAt?: string;
+  userCreatedLocalAt?: string;
   sessionId?: string;
   platform?: Platform;
   sdkVersion?: string;
@@ -61,6 +62,7 @@ export type GameEvent = {
   eventType: string;
   isDebug?: boolean;
   timestamp?: string;
+  createdLocalAt?: string;
   payload?: EventPayload;
 };
 
@@ -98,6 +100,7 @@ export type GameAlgoRestClientOptions = {
   gameKey: string;
   userId?: string;
   userCreatedAt?: string;
+  userCreatedLocalAt?: string;
   sessionId?: string;
   sdkVersion?: string;
   appVersion?: string;
@@ -129,6 +132,7 @@ export type GameAlgoSnapshot = {
 export type GameAlgoUserIdentity = {
   userId: string;
   userCreatedAt: string;
+  userCreatedLocalAt: string;
 };
 
 export type TrackEventOptions = {
@@ -137,6 +141,7 @@ export type TrackEventOptions = {
   contextId?: string;
   isDebug?: boolean;
   timestamp?: string;
+  createdLocalAt?: string;
 };
 
 export type GameAlgoStorage = {

@@ -165,10 +165,12 @@ variants:
 实验报告里的 `LTV Proxy` 口径是：
 
 ```text
-LTV Proxy = NORMALIZED_DAU_ARPU * (1 + D1_RET + D2_RET + D3_RET + D4_RET + D5_RET)
+LTV Proxy (Dk) = STANDARDIZED_DAY_VALUE_D0 + ... + STANDARDIZED_DAY_VALUE_Dk
 ```
 
-`NORMALIZED_DAU_ARPU` 先按广告类型和用户本地日内曝光序号（第 1、2、3、4、5、6-10、11+ 次）分桶；每个桶使用本轮所有参与组在当前实验窗口内共同计算的参考 CPM。标准化广告收入是各桶 `广告曝光次数 * 对应桶参考 CPM / 1000` 的总和，再加上实际内购收入并除以活跃用户天数。这样既保留广告覆盖率和曝光深度的真实差异，又降低随机 CPM 分配对胜负的影响。实际收入、实际 ARPU 和各组实际综合 CPM 仍作为诊断指标展示。`D1_RET` 到 `D5_RET` 只使用评估时已经成熟的 cohort，并按 cohort 用户数加权；平台不会为了等待最后一天用户的 D5 额外拖长托管周期。
+`STANDARDIZED_DAY_VALUE_Dx` 使用所有在 Dx 已成熟的实验进入用户作为分母，未回访用户当日价值按 0 计入。广告曝光按广告类型和用户本地日内曝光序号（第 1、2、3、4、5、6-10、11+ 次）分桶，每个桶使用本轮所有参与组在当前实验窗口内共同计算的参考 CPM，再加上实际内购收入。
+
+所有实验组使用同一个 `k`。平台先计算 `k 上限 = min(14, 实验周期天数 - 3)`，再选择不超过上限、且每个参与组都至少有 10 个成熟进入用户的最大连续 Dx。平台不会为了等待窗口最后几天的用户成熟而延长实验。实际收入、实际 ARPU、实际综合 CPM、新用户留存和新用户 LTV 继续作为诊断指标展示，不参与主指标计算。
 
 `run status` 返回轻量状态和最新“当前评估”；`run report` 返回已落库的正式报告，可用 `--round N` 查询托管实验某一轮。当前评估用于跟踪趋势，不直接提前结束实验；正式结论在计划轮次结束时生成。
 
@@ -184,7 +186,7 @@ gamealgo experiment strategy rollback ad_frequency --version-id xv_xxx --message
 
 `events count` 用于 SDK 接入调试：它只查询当前游戏原始事件表里的固定事件计数，不需要传 `contextId`，也不接受自定义 SQL，不依赖 Report Pack 或标准中间表。先确认目标日期有事件，再继续看 Report Pack 计算结果。
 
-如果游戏接入了 Adjust，Agent 可以用 `marketing adjust configure` 保存当前游戏的 Adjust App Token 和 API Token。保存后用 `gamealgo marketing adjust get --json` 读取 `integration.callbackUrl`，把这个 URL 填到 Adjust Raw Data Export / Server Callback 配置里；URL 由服务端生成，Agent 不要自己拼。Adjust callback trigger 选择 `Install`，并建议额外配置一条 `Reattribution`；如果 UI 一次只能选一个 trigger，就两条 callback 都填同一个 URL。不要选择 `Session`、普通 `Event` 或 `Ad revenue`。之后用 `marketing adjust sync` 同步花费。国内游戏、TapTap Maker / TapTap 小游戏通常使用 `--currency CNY`，海外游戏按 Adjust 投放账户实际成本币种填写。GameAlgo 使用 Adjust `network_cost` 字段，按 campaign / country 粒度写入数据；Report Pack 可以引用 `marketing.overview@1` 和 `marketing.roi@1` 查看投放总览、ROAS、获客用户 LTV 和投放花费。
+如果游戏接入了 Adjust，Agent 可以用 `marketing adjust configure` 保存当前游戏的 Adjust App Token 和 API Token。保存后用 `gamealgo marketing adjust get --json` 读取 `integration.callbackUrl`，把这个 URL 填到 Adjust Raw Data Export / Server Callback 配置里；URL 由服务端生成，Agent 不要自己拼。Adjust callback trigger 选择 `Install`，并建议额外配置一条 `Reattribution`；如果 UI 一次只能选一个 trigger，就两条 callback 都填同一个 URL。不要选择 `Session`、普通 `Event` 或 `Ad revenue`。之后用 `marketing adjust sync` 同步花费。国内游戏、TapTap Maker / TapTap 小游戏通常使用 `--currency CNY`，海外游戏按 Adjust 投放账户实际成本币种填写。GameAlgo 使用 Adjust `network_cost` 字段，按 campaign / country 粒度写入数据；Report Pack 可以引用 `marketing.overview@1` 和 `marketing.roi@1` 查看投放总览、ROAS、获客用户 LTV、投放花费，以及渠道 D1-D14 累计 ROAS 同期群。
 
 TapTap Maker / TapTap 小游戏 / Lua SDK 使用 `rest` 作为 `platform`。不要扩展成 `tapmaker` 之类的新枚举；具体运行环境写到 `device` 中，例如：
 

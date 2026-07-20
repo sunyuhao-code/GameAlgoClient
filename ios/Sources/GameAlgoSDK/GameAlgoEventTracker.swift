@@ -149,13 +149,15 @@ public actor GameAlgoEventTracker {
         }
         let resolvedContextId = clean(contextId ?? self.contextId) ?? ""
 
+        let eventDate = now()
         let event = GameAlgoEvent(
             contextId: resolvedContextId,
             userId: resolvedUserId,
             sessionId: clean(sessionId) ?? self.sessionId,
             eventType: eventType,
             isDebug: isDebug,
-            timestamp: GameAlgoEventBatchUploader.isoTimestamp(now()),
+            timestamp: GameAlgoEventBatchUploader.isoTimestamp(eventDate),
+            createdLocalAt: GameAlgoEventBatchUploader.localTimestamp(eventDate),
             payload: normalizePayload(payload)
         )
         enqueue(event)
@@ -418,7 +420,8 @@ final class GameAlgoEventBatchUploader: GameAlgoEventBatchUploading, @unchecked 
             throw GameAlgoError.invalidEvents("Maximum 100 events per batch")
         }
 
-        let timestamp = Self.isoTimestamp(now())
+        let uploadDate = now()
+        let timestamp = Self.isoTimestamp(uploadDate)
         let normalizedEvents = events.map { event in
             var normalized = event
             if normalized.eventId?.isEmpty ?? true {
@@ -429,6 +432,10 @@ final class GameAlgoEventBatchUploader: GameAlgoEventBatchUploading, @unchecked 
             }
             if normalized.timestamp?.isEmpty ?? true {
                 normalized.timestamp = timestamp
+            }
+            if normalized.createdLocalAt?.isEmpty ?? true {
+                let eventDate = normalized.timestamp.flatMap(Self.date(from:)) ?? uploadDate
+                normalized.createdLocalAt = Self.localTimestamp(eventDate)
             }
             return normalized
         }
@@ -453,6 +460,25 @@ final class GameAlgoEventBatchUploader: GameAlgoEventBatchUploading, @unchecked 
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter.string(from: date)
+    }
+
+    static func localTimestamp(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSXXX"
+        return formatter.string(from: date)
+    }
+
+    private static func date(from value: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) {
+            return date
+        }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: value)
     }
 
     private func request(_ request: GameAlgoHTTPRequest) async throws -> GameAlgoHTTPResponse {

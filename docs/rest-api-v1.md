@@ -33,6 +33,8 @@ curl -s -X POST "https://game-algo-sdk.dictapis.cn/v1/config" \
   -d '{
     "userId": "user-001",
     "userCreatedAt": "2026-05-27T12:23:10Z",
+    "userCreatedLocalAt": "2026-05-27T20:23:10+08:00",
+    "createdLocalAt": "2026-05-28T18:00:00+08:00",
     "sessionId": "session-001",
     "platform": "rest",
     "sdkVersion": "1.0.0",
@@ -82,7 +84,7 @@ curl -s -X POST "https://game-algo-sdk.dictapis.cn/v1/config" \
 - 按 `ttlSeconds` 缓存响应
 - 保留上一次成功配置
 - 服务不可用时使用本地默认值
-- 直接调用 REST 时，需要发送稳定的 `userId/sessionId`、持久化的 `userCreatedAt` 和有排查价值的 `device` context；官方 helper 会自动补这些字段
+- 直接调用 REST 时，需要发送稳定的 `userId/sessionId`，并成对持久化 `userCreatedAt`（UTC）与 `userCreatedLocalAt`（带 offset 的本地时间）；每次配置请求还要发送 `createdLocalAt`。官方 helper 会自动处理这些字段
 
 ## 3. 拉取配置文件
 
@@ -109,6 +111,7 @@ curl -s -X POST "https://game-algo-sdk.dictapis.cn/v1/events/batch" \
         "eventType": "level_end",
         "isDebug": false,
         "timestamp": "2026-05-28T10:00:00Z",
+        "createdLocalAt": "2026-05-28T18:00:00+08:00",
         "payload": {
           "level_id": "level_1",
           "result": "win",
@@ -118,6 +121,8 @@ curl -s -X POST "https://game-algo-sdk.dictapis.cn/v1/events/batch" \
     ]
   }'
 ```
+
+`timestamp` 和 `createdLocalAt` 必须表示同一个事件发生时刻。前者统一使用 UTC，后者保留客户端本地日期和 UTC offset；请在事件产生时一起记录，不要在批量上传时重新生成。
 
 响应：
 

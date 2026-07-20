@@ -1,6 +1,7 @@
 package com.gamealgo.sdk;
 
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -116,9 +117,12 @@ public final class GameAlgoEventTracker implements AutoCloseable {
             resolvedIsDebug = isDebug;
         }
 
+        Date eventDate = new Date();
         GameAlgoEvent event = new GameAlgoEvent(resolvedContextId, resolvedUserId, resolvedSessionId, eventType)
                 .payload(normalizePayload(payload))
-                .isDebug(resolvedIsDebug);
+                .isDebug(resolvedIsDebug)
+                .timestamp(GameAlgoClient.isoTimestamp(eventDate))
+                .createdLocalAt(GameAlgoClient.localTimestamp(eventDate));
         enqueue(event);
         return true;
     }

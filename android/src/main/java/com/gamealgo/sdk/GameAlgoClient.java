@@ -24,6 +24,7 @@ public final class GameAlgoClient {
     public static final String DEFAULT_SDK_VERSION = "1.0.0";
     private static final String USER_ID_KEY = "gamealgo_user_id";
     private static final String USER_CREATED_AT_KEY = "gamealgo_user_created_at";
+    private static final String USER_CREATED_LOCAL_AT_KEY = "gamealgo_user_created_local_at";
 
     private final String gameKey;
     private final String baseUrl;
@@ -294,6 +295,8 @@ public final class GameAlgoClient {
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("userId", resolvedRequest.getUserId());
             body.put("userCreatedAt", resolvedRequest.getUserCreatedAt());
+            body.put("userCreatedLocalAt", userIdentity.getUserCreatedLocalAt());
+            body.put("createdLocalAt", localTimestamp(new Date()));
             body.put("sessionId", sessionId);
             body.put("platform", platform);
             body.put("sdkVersion", sdkVersion);
@@ -366,10 +369,15 @@ public final class GameAlgoClient {
             throw new GameAlgoException("Maximum 100 events per batch");
         }
 
-        String timestamp = isoTimestamp(new Date());
+        Date uploadDate = new Date();
+        String timestamp = isoTimestamp(uploadDate);
+        String createdLocalAt = localTimestamp(uploadDate);
         List<Object> normalizedEvents = new ArrayList<>();
         for (GameAlgoEvent event : events) {
-            normalizedEvents.add(event.toJson(timestamp));
+            String defaultCreatedLocalAt = isBlank(event.getTimestamp())
+                    ? createdLocalAt
+                    : localTimestamp(parseTimestamp(event.getTimestamp(), uploadDate));
+            normalizedEvents.add(event.toJson(timestamp, defaultCreatedLocalAt));
         }
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("events", normalizedEvents);
@@ -565,20 +573,26 @@ public final class GameAlgoClient {
             }
 
             String createdAt = null;
+            String createdLocalAt = null;
             if (cacheStorage != null) {
                 String existing = cacheStorage.getItem(USER_ID_KEY);
                 if (explicitUserId.equals(existing)) {
                     createdAt = cacheStorage.getItem(USER_CREATED_AT_KEY);
+                    createdLocalAt = cacheStorage.getItem(USER_CREATED_LOCAL_AT_KEY);
                 }
             }
             if (isBlank(createdAt)) {
                 createdAt = isoTimestamp(new Date());
             }
+            if (isBlank(createdLocalAt)) {
+                createdLocalAt = localTimestamp(parseTimestamp(createdAt, new Date()));
+            }
 
-            userIdentity = new GameAlgoUserIdentity(explicitUserId, createdAt);
+            userIdentity = new GameAlgoUserIdentity(explicitUserId, createdAt, createdLocalAt);
             if (cacheStorage != null) {
                 cacheStorage.setItem(USER_ID_KEY, userIdentity.getUserId());
                 cacheStorage.setItem(USER_CREATED_AT_KEY, createdAt);
+                cacheStorage.setItem(USER_CREATED_LOCAL_AT_KEY, createdLocalAt);
             }
             return userIdentity;
         }
@@ -590,20 +604,27 @@ public final class GameAlgoClient {
             String existing = cacheStorage.getItem(USER_ID_KEY);
             if (!isBlank(existing)) {
                 String createdAt = cacheStorage.getItem(USER_CREATED_AT_KEY);
+                String createdLocalAt = cacheStorage.getItem(USER_CREATED_LOCAL_AT_KEY);
                 if (isBlank(createdAt)) {
                     createdAt = isoTimestamp(new Date());
                     cacheStorage.setItem(USER_CREATED_AT_KEY, createdAt);
                 }
-                userIdentity = new GameAlgoUserIdentity(existing, createdAt);
+                if (isBlank(createdLocalAt)) {
+                    createdLocalAt = localTimestamp(parseTimestamp(createdAt, new Date()));
+                    cacheStorage.setItem(USER_CREATED_LOCAL_AT_KEY, createdLocalAt);
+                }
+                userIdentity = new GameAlgoUserIdentity(existing, createdAt, createdLocalAt);
                 return userIdentity;
             }
         }
 
         String createdAt = isoTimestamp(new Date());
-        userIdentity = new GameAlgoUserIdentity(java.util.UUID.randomUUID().toString(), createdAt);
+        String createdLocalAt = localTimestamp(new Date());
+        userIdentity = new GameAlgoUserIdentity(java.util.UUID.randomUUID().toString(), createdAt, createdLocalAt);
         if (cacheStorage != null) {
             cacheStorage.setItem(USER_ID_KEY, userIdentity.getUserId());
             cacheStorage.setItem(USER_CREATED_AT_KEY, createdAt);
+            cacheStorage.setItem(USER_CREATED_LOCAL_AT_KEY, createdLocalAt);
         }
         return userIdentity;
     }
@@ -891,10 +912,26 @@ public final class GameAlgoClient {
         }
     }
 
-    private static String isoTimestamp(Date date) {
+    static String isoTimestamp(Date date) {
         SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
         formatter.setTimeZone(TimeZone.getTimeZone("UTC"));
         return formatter.format(date);
+    }
+
+    static String localTimestamp(Date date) {
+        SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.US);
+        formatter.setTimeZone(TimeZone.getDefault());
+        return formatter.format(date);
+    }
+
+    private static Date parseTimestamp(String value, Date fallback) {
+        if (isBlank(value)) return fallback;
+        try {
+            SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSX", Locale.US);
+            return formatter.parse(value);
+        } catch (Exception ignored) {
+            return fallback;
+        }
     }
 
     private static String trimTrailingSlash(String value) {

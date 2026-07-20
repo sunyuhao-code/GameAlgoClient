@@ -784,7 +784,7 @@ Group selector 是只作用于当前 group 的 UI 控件：
 | `revenue.ltv@1` | 新用户 LTV cohort。包含内置 `LTV 趋势` 折线图（D0、D1、D2、D3、D7、D14）和 `新用户 LTV 矩阵` 表格（D0-D14）。控制台可通过运行时 Strategy 和 Dx selector 在全局 LTV 和分实验 LTV 之间切换。 | SDK context 行，以及收入事件。 |
 | `revenue.placement@1` | 广告变现和收入指标标准看板。会生成两个 group：`广告变现` 包含本地日期广告收入、广告位收入趋势、广告位收入/曝光占比、广告类型收入/曝光占比，所有图都支持用户类型 selector（全部/新用户/老用户）；`收入指标` 包含按广告类型的人均看广告数和整体 ARPU，并支持实验、用户类型、广告类型 selector。未选实验时，人均看广告数按 `ad_type` 拆线，ARPU 是一条总线；选中实验后，人均看广告数需要选择一个广告类型并按 variant 拆线，ARPU 也按 variant 拆线。 | 广告 SDK 确认实际产生收入的 `ad_view` 事件，必填 `placement`、`adType`、`revenue`、`currency`，可选 `network` 和 `mode`。广告失败、未填充、播放失败，或广告 SDK 没有确认产生收入的展示，不要上报到 `ad_view`。 |
 | `marketing.overview@1` | 投放总览看板。包含分天归因来源新用户堆积柱状图、获客用户 LTV、投放花费趋势、国家安装量分布和国家投放金额分布。 | 需要先上报 Adjust 归因（`/v1/attribution`），并在控制台或 CLI 配置 Adjust API Token + App Token 后同步花费。花费使用 Adjust `network_cost`，不是 `cost`。 |
-| `marketing.roi@1` | 投放 ROAS 看板。包含 network / campaign / country 粒度的 ROAS 趋势，其中国家趋势只展示投放金额 Top 10 国家。 | 需要先上报 Adjust 归因（`/v1/attribution`），并在控制台或 CLI 配置 Adjust API Token + App Token 后同步花费。 |
+| `marketing.roi@1` | 投放 ROAS 看板。包含 network / campaign / country 粒度的 ROAS 趋势，其中国家趋势只展示投放金额 Top 10 国家；同时提供按渠道和安装日期拆分的 D1-D14 累计 ROAS 同期群热力图。 | 需要先上报 Adjust 归因（`/v1/attribution`），并在控制台或 CLI 配置 Adjust API Token + App Token 后同步花费。 |
 
 不要引用未在上表出现的标准 ref。没有在上表列出的历史保留 ref 会被校验拒绝，避免页面生成没有 chart 的空 group。
 

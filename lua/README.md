@@ -54,6 +54,8 @@ TapTap Maker 接入时推荐优先使用 Maker 环境提供的稳定用户 ID，
 
 `Init` 会从客户端发起非阻塞的 `/v1/config` 请求。游戏逻辑应该保留本地默认值，只在远端配置可用时读取远端值。
 
+Lua SDK 会同时记录 UTC 时间和带 UTC offset 的客户端本地时间：用户身份持久化 `userCreatedAt` / `userCreatedLocalAt`，context 上报 `createdLocalAt`，事件上报 `timestamp` / `createdLocalAt`。这些字段由 SDK 自动维护；事件进入队列时即固定发生时间，延迟上传或重试不会改写。
+
 ## 实验
 
 ```lua

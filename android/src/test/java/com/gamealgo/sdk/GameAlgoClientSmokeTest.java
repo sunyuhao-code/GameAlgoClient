@@ -59,6 +59,8 @@ public final class GameAlgoClientSmokeTest {
         Map<String, Object> requestBody = requestBody(request);
         check("u1".equals(requestBody.get("userId")), "config body should include userId");
         check(requestBody.get("userCreatedAt") instanceof String && ((String) requestBody.get("userCreatedAt")).length() > 0, "config body should include userCreatedAt");
+        check(isLocalTimestamp(requestBody.get("userCreatedLocalAt")), "config body should include userCreatedLocalAt with offset");
+        check(isLocalTimestamp(requestBody.get("createdLocalAt")), "config body should include createdLocalAt with offset");
         check(requestBody.get("sessionId") instanceof String && ((String) requestBody.get("sessionId")).length() > 0, "config body should include sessionId");
         check("android".equals(requestBody.get("platform")), "config body should include platform");
         check("1.0.0".equals(requestBody.get("sdkVersion")), "config body should include sdkVersion");
@@ -389,6 +391,7 @@ public final class GameAlgoClientSmokeTest {
         check("ctx-1".equals(event.get("contextId")), "contextId should be preserved");
         check(Boolean.FALSE.equals(event.get("isDebug")), "isDebug should default false");
         check(event.get("timestamp") instanceof String, "timestamp should default");
+        check(isLocalTimestamp(event.get("createdLocalAt")), "createdLocalAt should default with offset");
         check(GameAlgoJson.asObject(event.get("payload"), "payload").isEmpty(), "payload should default empty");
     }
 
@@ -529,9 +532,11 @@ public final class GameAlgoClientSmokeTest {
         client.ready().get();
         check("legacy-user".equals(client.userId()), "legacy user id should be reused");
         check(cache.getItem("gamealgo_user_created_at") != null && cache.getItem("gamealgo_user_created_at").length() > 0, "legacy user createdAt should be backfilled");
+        check(isLocalTimestamp(cache.getItem("gamealgo_user_created_local_at")), "legacy user local createdAt should be backfilled");
         Map<String, Object> requestBody = requestBody(httpClient.requests.get(0));
         check("legacy-user".equals(requestBody.get("userId")), "config should use legacy user id");
         check(cache.getItem("gamealgo_user_created_at").equals(requestBody.get("userCreatedAt")), "config should include backfilled userCreatedAt");
+        check(cache.getItem("gamealgo_user_created_local_at").equals(requestBody.get("userCreatedLocalAt")), "config should include backfilled userCreatedLocalAt");
     }
 
     private static void testTrackerQueuesAndFlushesEvents() throws Exception {
@@ -578,6 +583,7 @@ public final class GameAlgoClientSmokeTest {
         check("u1".equals(first.get("userId")), "tracker should use identified user");
         check(first.get("sessionId").equals(second.get("sessionId")), "tracker should keep session id");
         check(Boolean.TRUE.equals(first.get("isDebug")), "tracker should preserve debug flag");
+        check(isLocalTimestamp(first.get("createdLocalAt")), "tracker should record local event time");
         Map<String, Object> firstPayload = GameAlgoJson.asObject(first.get("payload"), "payload");
         check(((Number) firstPayload.get("level")).doubleValue() == 3.0, "tracker should preserve payload value");
         check("session_end".equals(second.get("eventType")), "tracker should upload session_end");
@@ -742,6 +748,11 @@ public final class GameAlgoClientSmokeTest {
             builder.append(String.format("%02x", value & 0xff));
         }
         return builder.toString();
+    }
+
+    private static boolean isLocalTimestamp(Object value) {
+        return value instanceof String
+                && ((String) value).matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}[+-]\\d{2}:\\d{2}$");
     }
 
     private static void check(boolean condition, String message) {

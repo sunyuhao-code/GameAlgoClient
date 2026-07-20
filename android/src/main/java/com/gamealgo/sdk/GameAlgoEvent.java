@@ -12,6 +12,7 @@ public final class GameAlgoEvent {
     private final String eventType;
     private Boolean isDebug;
     private String timestamp;
+    private String createdLocalAt;
     private Map<String, Object> payload;
 
     public GameAlgoEvent(String contextId, String userId, String sessionId, String eventType) {
@@ -34,6 +35,11 @@ public final class GameAlgoEvent {
 
     public GameAlgoEvent timestamp(String timestamp) {
         this.timestamp = timestamp;
+        return this;
+    }
+
+    public GameAlgoEvent createdLocalAt(String createdLocalAt) {
+        this.createdLocalAt = createdLocalAt;
         return this;
     }
 
@@ -70,6 +76,10 @@ public final class GameAlgoEvent {
         return timestamp;
     }
 
+    public String getCreatedLocalAt() {
+        return createdLocalAt;
+    }
+
     public Map<String, Object> getPayload() {
         return Collections.unmodifiableMap(payload);
     }
@@ -79,10 +89,11 @@ public final class GameAlgoEvent {
                 .eventId(eventId)
                 .isDebug(isDebug)
                 .timestamp(timestamp)
+                .createdLocalAt(createdLocalAt)
                 .payload(payload);
     }
 
-    Map<String, Object> toJson(String defaultTimestamp) {
+    Map<String, Object> toJson(String defaultTimestamp, String defaultCreatedLocalAt) {
         Map<String, Object> object = new LinkedHashMap<>();
         object.put("eventId", isBlank(eventId) ? java.util.UUID.randomUUID().toString() : eventId);
         object.put("contextId", contextId);
@@ -91,6 +102,7 @@ public final class GameAlgoEvent {
         object.put("eventType", eventType);
         object.put("isDebug", isDebug == null ? Boolean.FALSE : isDebug);
         object.put("timestamp", isBlank(timestamp) ? defaultTimestamp : timestamp);
+        object.put("createdLocalAt", isBlank(createdLocalAt) ? defaultCreatedLocalAt : createdLocalAt);
         object.put("payload", payload);
         return object;
     }

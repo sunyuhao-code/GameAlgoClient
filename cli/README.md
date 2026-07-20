@@ -251,10 +251,12 @@ variants:
 `ltv_proxy@1` 的标准口径为：
 
 ```text
-LTV Proxy = DAU ARPU * (1 + D1 + D2 + D3 + D4 + D5)
+LTV Proxy (Dk) = STANDARDIZED_DAY_VALUE_D0 + ... + STANDARDIZED_DAY_VALUE_Dk
 ```
 
-其中 DAU ARPU 是实验窗口内总收入除以活跃用户天数；Dx 留存只使用截至评估时已经成熟的 cohort，并按 cohort 用户数加权。平台不会等待最后一天用户的 D5 成熟后再结束实验。
+`STANDARDIZED_DAY_VALUE_Dx` 使用所有在 Dx 已成熟的实验进入用户作为分母，未回访用户当日价值按 0 计入。广告曝光按广告类型和用户本地日内曝光序号分桶，每个桶使用本轮所有参与组在实验窗口内共同计算的参考 CPM，再加实际内购收入。
+
+所有实验组使用同一个 `k`。平台先计算 `k 上限 = min(14, 实验周期天数 - 3)`，再选择不超过上限、且每个参与组都至少有 10 个成熟进入用户的最大连续 Dx。实际收入、实际 ARPU、新用户留存和新用户 LTV 只作为诊断指标，不参与主指标计算。
 
 所有会修改线上状态的实验命令都必须显式传 `--yes`。
 
