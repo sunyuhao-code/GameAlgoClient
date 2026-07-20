@@ -187,7 +187,7 @@ npm --silent run cli -- report manifest --json
 - 对不同用户分层尝试不同生成策略。
 - 比较不同关卡组合对留存和收入的影响。
 
-如果要做系统化动态难度调整，参考 [关卡类游戏 DDA 实验框架](./dda-level-framework.md)。GameAlgo 建议把 DDA 作为实验系统上的标准用法：游戏提供 Adapter 和少量可调 knobs，平台通过实验比较不同 knobs 组合对 DAU ARPU、成熟日期平均 D1-D4 留存和 LTV proxy 的影响。
+如果要做系统化动态难度调整，参考 [关卡类游戏 DDA 实验框架](./dda-level-framework.md)。GameAlgo 建议把 DDA 作为实验系统上的标准用法：游戏提供 Adapter 和少量可调 knobs，平台通过实验比较不同 knobs 组合对标准化 DAU ARPU、成熟同期群 D1-D5 留存和 LTV proxy 的影响，同时保留实际收入、实际 ARPU 与实际综合 CPM 作为诊断数据。
 
 ### 玩法模式
 

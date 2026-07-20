@@ -168,14 +168,14 @@ D4 = assignment_day + 4
 
 ```text
 score =
-  DAU_ARPU
-  * (1 + D1_retention + D2_retention + D3_retention + D4_retention)
+  NORMALIZED_DAU_ARPU
+  * (1 + D1_retention + D2_retention + D3_retention + D4_retention + D5_retention)
 ```
 
 其中：
 
-- `DAU_ARPU` 是整个实验窗口内的收入 / 活跃用户天数，用来近似用户单活跃日收入。
-- `D1-D4 retention` 只使用实验窗口内已经成熟的日期来估算。例如 7 天窗口里，D4 只使用窗口前 3 天的 cohort。
+- `NORMALIZED_DAU_ARPU` 按广告类型和用户本地日内曝光序号分桶，每个桶使用本轮所有参与组在实验窗口内共同计算的参考 CPM；各组曝光按对应桶估值，再加实际内购收入并除以活跃用户天数。
+- `D1-D5 retention` 只使用实验窗口内已经成熟的同期群来估算。例如 7 天窗口结束时，D5 只使用窗口前 2 天已经成熟的 cohort。
 - 当前第一版默认每个留存日权重为 1，后续可以从历史数据学习更准确的留存价值权重。
 
 第一版不要求把留存精确换算成长期收入，只要求所有 variant 用同一套 score 口径可比。
@@ -185,9 +185,9 @@ score =
 托管实验不为了等待 D5 额外拉长周期。实验窗口结束后，平台等待数据延迟并直接生成报告；报告只纳入窗口内已经成熟的留存日期。
 
 ```text
-7 天实验窗口 -> 用 7 天窗口 DAU_ARPU
-             -> 用成熟日期平均估算 D1/D2/D3/D4
-             -> score = DAU_ARPU * (1 + D1 + D2 + D3 + D4)
+7 天实验窗口 -> 用 7 天窗口内共享的分桶 CPM 计算 NORMALIZED_DAU_ARPU
+             -> 用成熟同期群估算 D1/D2/D3/D4/D5
+             -> score = NORMALIZED_DAU_ARPU * (1 + D1 + D2 + D3 + D4 + D5)
 ```
 
 报表必须显示每个 Dx 使用了多少个成熟日期，避免把未成熟 cohort 当成完整结果。
@@ -294,8 +294,8 @@ DDA 行为计数默认只保存在本地，不会自动上报。需要分析时�
 
 主报表：
 
-- 按 variant 的 DAU ARPU。
-- 按 variant 的成熟日期平均 D1-D4 留存。
+- 按 variant 的标准化 DAU ARPU、实际 DAU ARPU 和实际综合 CPM。
+- 按 variant 的成熟同期群 D1-D5 留存。
 - LTV proxy score 排名。
 - 新用户 / 老用户拆分。
 
@@ -355,7 +355,7 @@ Adapter 内部再把这些 knobs 映射到原来的 `strategy`、`rank`、`tier`
 2. 自动生成候选 variants。
 3. 发布实验并记录版本。
 4. 按阶段分配流量。
-5. 计算 DAU ARPU * 成熟留存 multiplier 的 LTV proxy score。
+5. 计算标准化 DAU ARPU * 成熟留存 multiplier 的 LTV proxy score。
 6. 淘汰低分策略，保留高分策略。
 7. 生成下一轮候选。
 

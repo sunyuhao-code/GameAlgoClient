@@ -165,10 +165,10 @@ variants:
 实验报告里的 `LTV Proxy` 口径是：
 
 ```text
-LTV Proxy = DAU_ARPU * (1 + D1_RET + D2_RET + D3_RET + D4_RET + D5_RET)
+LTV Proxy = NORMALIZED_DAU_ARPU * (1 + D1_RET + D2_RET + D3_RET + D4_RET + D5_RET)
 ```
 
-`DAU_ARPU` 是实验窗口内收入 / 活跃用户天数；`D1_RET` 到 `D5_RET` 只使用评估时已经成熟的 cohort，并按 cohort 用户数加权。平台不会为了等待最后一天用户的 D5 额外拖长托管周期。
+`NORMALIZED_DAU_ARPU` 先按广告类型和用户本地日内曝光序号（第 1、2、3、4、5、6-10、11+ 次）分桶；每个桶使用本轮所有参与组在当前实验窗口内共同计算的参考 CPM。标准化广告收入是各桶 `广告曝光次数 * 对应桶参考 CPM / 1000` 的总和，再加上实际内购收入并除以活跃用户天数。这样既保留广告覆盖率和曝光深度的真实差异，又降低随机 CPM 分配对胜负的影响。实际收入、实际 ARPU 和各组实际综合 CPM 仍作为诊断指标展示。`D1_RET` 到 `D5_RET` 只使用评估时已经成熟的 cohort，并按 cohort 用户数加权；平台不会为了等待最后一天用户的 D5 额外拖长托管周期。
 
 `run status` 返回轻量状态和最新“当前评估”；`run report` 返回已落库的正式报告，可用 `--round N` 查询托管实验某一轮。当前评估用于跟踪趋势，不直接提前结束实验；正式结论在计划轮次结束时生成。
 
