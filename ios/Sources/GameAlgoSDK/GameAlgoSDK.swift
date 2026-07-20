@@ -343,6 +343,8 @@ public actor GameAlgoSDK {
             let requestBody = ConfigRequest(
                 userId: identity.userId,
                 userCreatedAt: resolvedUserCreatedAt,
+                userCreatedLocalAt: identity.userCreatedLocalAt,
+                createdLocalAt: GameAlgoEventBatchUploader.localTimestamp(now()),
                 sessionId: resolvedSessionId,
                 platform: resolvedPlatform,
                 sdkVersion: resolvedSDKVersion,
@@ -671,6 +673,8 @@ private struct ConfigCacheKey: Sendable, Equatable {
 private struct ConfigRequest: Encodable {
     let userId: String
     let userCreatedAt: String
+    let userCreatedLocalAt: String
+    let createdLocalAt: String
     let sessionId: String
     let platform: GameAlgoPlatform
     let sdkVersion: String

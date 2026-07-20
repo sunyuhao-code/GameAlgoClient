@@ -66,11 +66,14 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertTrue(ready)
         XCTAssertEqual(sdk.userId, "legacy-user")
         XCTAssertEqual(defaults.string(forKey: GameAlgoUserIdentityStore.legacyUserCreatedAtKey), "2026-05-28T10:00:00.000Z")
+        assertLocalTimestamp(defaults.string(forKey: GameAlgoUserIdentityStore.userCreatedLocalAtKey), sameInstantAs: "2026-05-28T10:00:00.000Z")
 
         let requests = await httpClient.requests
         let configRequest = try requestBody(requests[0])
         XCTAssertEqual(configRequest["userId"] as? String, "legacy-user")
         XCTAssertEqual(configRequest["userCreatedAt"] as? String, "2026-05-28T10:00:00.000Z")
+        assertLocalTimestamp(configRequest["userCreatedLocalAt"], sameInstantAs: "2026-05-28T10:00:00.000Z")
+        assertLocalTimestamp(configRequest["createdLocalAt"], sameInstantAs: "2026-05-28T10:00:00.000Z")
     }
 
     func testConfigureAdjustServerCallbackParamsUsesGameAlgoIdentity() throws {
@@ -178,6 +181,8 @@ final class GameAlgoSDKTests: XCTestCase {
         let requestPayload = try requestBody(requests[0])
         XCTAssertEqual(requestPayload["userId"] as? String, "u1")
         XCTAssertEqual(requestPayload["userCreatedAt"] as? String, "1970-01-01T00:16:40.000Z")
+        assertLocalTimestamp(requestPayload["userCreatedLocalAt"], sameInstantAs: "1970-01-01T00:16:40.000Z")
+        XCTAssertEqual(requestPayload["createdLocalAt"] as? String, requestPayload["userCreatedLocalAt"] as? String)
         XCTAssertFalse((requestPayload["sessionId"] as? String ?? "").isEmpty)
         XCTAssertEqual(requestPayload["platform"] as? String, "ios")
         XCTAssertEqual(requestPayload["sdkVersion"] as? String, "1.0.0")
@@ -459,6 +464,7 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(requests[0].headers["X-GameAlgo-Key"], gameKey)
         XCTAssertEqual(events?.first?["contextId"] as? String, "ctx-1")
         XCTAssertEqual(events?.first?["timestamp"] as? String, "2026-05-28T10:00:00.000Z")
+        assertLocalTimestamp(events?.first?["createdLocalAt"], sameInstantAs: "2026-05-28T10:00:00.000Z")
         XCTAssertEqual(events?.first?["isDebug"] as? Bool, false)
         XCTAssertEqual((events?.first?["payload"] as? [String: Any])?.count, 0)
     }
@@ -828,6 +834,21 @@ final class GameAlgoSDKTests: XCTestCase {
 
     private func requestBody(_ request: GameAlgoHTTPRequest) throws -> [String: Any] {
         try XCTUnwrap(JSONSerialization.jsonObject(with: request.body ?? Data()) as? [String: Any])
+    }
+
+    private func assertLocalTimestamp(_ value: Any?, sameInstantAs utcTimestamp: String? = nil) {
+        guard let value = value as? String else {
+            XCTFail("Expected a local timestamp string")
+            return
+        }
+        XCTAssertNotNil(value.range(
+            of: #"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$"#,
+            options: .regularExpression
+        ))
+        guard let utcTimestamp else { return }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        XCTAssertEqual(formatter.date(from: value), formatter.date(from: utcTimestamp))
     }
 }
 

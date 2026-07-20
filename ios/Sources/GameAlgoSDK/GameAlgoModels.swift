@@ -113,6 +113,7 @@ public struct GameAlgoEvent: Sendable, Equatable, Codable {
     public var eventType: String
     public var isDebug: Bool?
     public var timestamp: String?
+    public var createdLocalAt: String?
     public var payload: [String: JSONValue]
 
     public init(
@@ -123,6 +124,7 @@ public struct GameAlgoEvent: Sendable, Equatable, Codable {
         eventType: String,
         isDebug: Bool? = nil,
         timestamp: String? = nil,
+        createdLocalAt: String? = nil,
         payload: [String: JSONValue] = [:]
     ) {
         self.eventId = eventId
@@ -132,6 +134,7 @@ public struct GameAlgoEvent: Sendable, Equatable, Codable {
         self.eventType = eventType
         self.isDebug = isDebug
         self.timestamp = timestamp
+        self.createdLocalAt = createdLocalAt
         self.payload = payload
     }
 }

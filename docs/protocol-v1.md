@@ -107,6 +107,8 @@ Content-Type: application/json
 {
   "userId": "user-001",
   "userCreatedAt": "2026-05-27T12:23:10Z",
+  "userCreatedLocalAt": "2026-05-27T20:23:10+08:00",
+  "createdLocalAt": "2026-05-28T18:00:00+08:00",
   "sessionId": "session-001",
   "platform": "ios",
   "sdkVersion": "1.0.0",
@@ -129,6 +131,8 @@ Content-Type: application/json
 |------|------|------|
 | `userId` | 是 | 游戏用户 ID；没有账号体系时由 SDK 生成并持久化 |
 | `userCreatedAt` | 否 | `userId` 首次生成或绑定的时间；官方 SDK 会自动生成并持久化，用于 SDK context 分析 |
+| `userCreatedLocalAt` | 否 | 与 `userCreatedAt` 同一时刻的客户端本地时间，必须带 UTC offset；官方 SDK 自动生成并与用户身份一起持久化 |
+| `createdLocalAt` | 否 | 本次 context 创建时的客户端本地时间，必须带 UTC offset；官方 SDK 自动生成 |
 | `sessionId` | 是 | SDK 生成或游戏指定的会话 ID |
 | `platform` | 是 | `ios` / `android` / `rest` |
 | `sdkVersion` | 是 | SDK 版本 |
@@ -138,7 +142,7 @@ Content-Type: application/json
 | `isDebug` | 否 | Debug / QA 请求标记；设为 `true` 时 SDK context 会入库，但标准分析和看板默认过滤 |
 | `device` | 否 | 设备上下文；官方 SDK 会自动补基础设备信息，接入方可覆盖或追加字段；调试或排查用，不作为强身份。`device.country` 建议传 ISO 国家码，用于国家留存等标准看板 |
 
-服务端收到配置请求后会生成一条 SDK context 日志，记录可信 `gameId`、`userId`、`userCreatedAt`、`sessionId`、设备上下文和本次实验分配。后续事件只需要引用返回的 `contextId`，不再把设备信息复制到每条事件。
+服务端收到配置请求后会生成一条 SDK context 日志，记录可信 `gameId`、`userId`、UTC/本地创建时间、`sessionId`、设备上下文和本次实验分配。后续事件只需要引用返回的 `contextId`，不再把设备信息复制到每条事件。
 
 Strategy 必须显式声明最低 `requiredIntegrationVersion`；`0` 表示不设置客户端实验能力门槛。值大于 `0` 时必须引用已创建的版本，客户端未上报版本、版本未注册或版本低于要求时，服务端不会给该客户端下发该 Strategy。只有 `isDebug=false` 的 SDK context 成功写入后，服务端才会把对应接入版本标记为 `observed` 并记录首次观测时间；Debug / QA 请求不会改变版本状态。
 
@@ -239,6 +243,7 @@ Content-Type: application/json
       "eventType": "level_end",
       "isDebug": false,
       "timestamp": "2026-05-28T10:00:00Z",
+      "createdLocalAt": "2026-05-28T18:00:00+08:00",
       "payload": {
         "level_id": "level_12",
         "result": "success",
@@ -265,6 +270,7 @@ Content-Type: application/json
 - 事件不能携带客户端自填 `gameId` 或 `experiments`。
 - `contextId` 必须来自本 session 的 `/v1/config` 响应。
 - `isDebug=true` 数据默认入库，但分析看板默认过滤。
+- `timestamp` 是 UTC 事件发生时间；`createdLocalAt` 是同一时刻的客户端本地时间并带 UTC offset。官方 SDK 会在事件产生时同时记录，延迟批量上传不会改变这两个值。
 - 单批事件建议最多 100 条。
 - 重复 `eventId` 后续可用于去重，v1 可先不强制。
 - `payload` 是 flat object；字段值只允许 string / number / boolean / null。

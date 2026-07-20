@@ -40,6 +40,7 @@ local state_ = {
     isDebug = false,
     userId = nil,
     userCreatedAt = nil,
+    userCreatedLocalAt = nil,
     sessionId = nil,
     sessionStartMs = nil,
     contextId = nil,
@@ -66,6 +67,46 @@ end
 
 local function isoNow()
     return os.date("!%Y-%m-%dT%H:%M:%SZ")
+end
+
+local function localIsoNow(timestamp)
+    timestamp = timestamp or os.time()
+    local offset = os.date("%z", timestamp)
+    if type(offset) == "string" and offset:match("^[+-]%d%d%d%d$") then
+        offset = offset:sub(1, 3) .. ":" .. offset:sub(4, 5)
+    else
+        local localTime = os.date("*t", timestamp)
+        local utcTime = os.date("!*t", timestamp)
+        utcTime.isdst = localTime.isdst
+        local offsetSeconds = os.difftime(os.time(localTime), os.time(utcTime))
+        local sign = offsetSeconds >= 0 and "+" or "-"
+        local absoluteMinutes = math.floor(math.abs(offsetSeconds) / 60)
+        offset = string.format("%s%02d:%02d", sign, math.floor(absoluteMinutes / 60), absoluteMinutes % 60)
+    end
+    return os.date("%Y-%m-%dT%H:%M:%S", timestamp) .. offset
+end
+
+local function localIsoFromUtc(value)
+    if type(value) ~= "string" then return nil end
+    local year, month, day, hour, minute, second = value:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)")
+    if not year then return nil end
+    local interpretedAsLocal = os.time({
+        year = tonumber(year),
+        month = tonumber(month),
+        day = tonumber(day),
+        hour = tonumber(hour),
+        min = tonumber(minute),
+        sec = tonumber(second),
+        isdst = false,
+    })
+    if not interpretedAsLocal then return nil end
+    local utcParts = os.date("!*t", interpretedAsLocal)
+    local localParts = os.date("*t", interpretedAsLocal)
+    utcParts.isdst = localParts.isdst
+    local utcAsLocal = os.time(utcParts)
+    if not utcAsLocal then return nil end
+    local utcTimestamp = interpretedAsLocal + os.difftime(interpretedAsLocal, utcAsLocal)
+    return localIsoNow(utcTimestamp)
 end
 
 local function nowMs()
@@ -124,6 +165,11 @@ local function ensureIdentity(explicitUserId)
         if not state_.userCreatedAt then
             state_.userCreatedAt = storageGet("gamealgo_user_created_at") or isoNow()
         end
+        if not state_.userCreatedLocalAt then
+            state_.userCreatedLocalAt = storageGet("gamealgo_user_created_local_at")
+                or localIsoFromUtc(state_.userCreatedAt)
+                or localIsoNow()
+        end
     end
 
     if not state_.userId or state_.userId == "" then
@@ -132,8 +178,14 @@ local function ensureIdentity(explicitUserId)
     if not state_.userCreatedAt or state_.userCreatedAt == "" then
         state_.userCreatedAt = storageGet("gamealgo_user_created_at") or isoNow()
     end
+    if not state_.userCreatedLocalAt or state_.userCreatedLocalAt == "" then
+        state_.userCreatedLocalAt = storageGet("gamealgo_user_created_local_at")
+            or localIsoFromUtc(state_.userCreatedAt)
+            or localIsoNow()
+    end
     storageSet("gamealgo_user_id", state_.userId)
     storageSet("gamealgo_user_created_at", state_.userCreatedAt)
+    storageSet("gamealgo_user_created_local_at", state_.userCreatedLocalAt)
 end
 
 local function httpRequest(method, path, bodyTable, callback)
@@ -294,6 +346,8 @@ function GameAlgo.FetchConfig(callback)
     local request = {
         userId = state_.userId,
         userCreatedAt = state_.userCreatedAt,
+        userCreatedLocalAt = state_.userCreatedLocalAt,
+        createdLocalAt = localIsoNow(),
         sessionId = state_.sessionId,
         platform = state_.platform,
         sdkVersion = SDK_VERSION,
@@ -404,6 +458,7 @@ function GameAlgo.Track(eventType, payload)
         eventType = eventType,
         isDebug = state_.isDebug,
         timestamp = isoNow(),
+        createdLocalAt = localIsoNow(),
         payload = normalizePayload(payload),
     })
     return true
@@ -615,6 +670,7 @@ function GameAlgo.Snapshot()
     return {
         userId = state_.userId,
         userCreatedAt = state_.userCreatedAt,
+        userCreatedLocalAt = state_.userCreatedLocalAt,
         sessionId = state_.sessionId,
         contextId = state_.contextId,
         config = state_.config,

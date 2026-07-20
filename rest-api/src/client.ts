@@ -61,6 +61,7 @@ export class GameAlgoRestClient {
   private readonly attributionAckCacheKey: string;
   private readonly userIdKey = "gamealgo_user_id";
   private readonly userCreatedAtKey = "gamealgo_user_created_at";
+  private readonly userCreatedLocalAtKey = "gamealgo_user_created_local_at";
   private cachedConfig: { value: ConfigResponse; expiresAt: number; cacheKey: string } | null = null;
   private snapshot: GameAlgoSnapshot = { configFiles: new Map(), updatedAt: 0 };
   private currentIdentity: GameAlgoUserIdentity | null = null;
@@ -149,12 +150,18 @@ export class GameAlgoRestClient {
       if (this.currentIdentity?.userId === cleanExplicit) return this.currentIdentity;
       const existing = clean(await this.storage?.getItem(this.userIdKey));
       const existingCreatedAt = clean(await this.storage?.getItem(this.userCreatedAtKey));
+      const existingCreatedLocalAt = clean(await this.storage?.getItem(this.userCreatedLocalAtKey));
+      const createdAt = existing === cleanExplicit && existingCreatedAt ? existingCreatedAt : new Date(this.now()).toISOString();
       this.currentIdentity = {
         userId: cleanExplicit,
-        userCreatedAt: existing === cleanExplicit && existingCreatedAt ? existingCreatedAt : new Date(this.now()).toISOString(),
+        userCreatedAt: createdAt,
+        userCreatedLocalAt: existing === cleanExplicit && existingCreatedLocalAt
+          ? existingCreatedLocalAt
+          : localTimestamp(Date.parse(createdAt)),
       };
       await this.storage?.setItem(this.userIdKey, this.currentIdentity.userId);
       await this.storage?.setItem(this.userCreatedAtKey, this.currentIdentity.userCreatedAt);
+      await this.storage?.setItem(this.userCreatedLocalAtKey, this.currentIdentity.userCreatedLocalAt);
       return this.currentIdentity;
     }
     if (this.currentIdentity) return this.currentIdentity;
@@ -162,20 +169,25 @@ export class GameAlgoRestClient {
     const existing = clean(await this.storage?.getItem(this.userIdKey));
     if (existing) {
       const existingCreatedAt = clean(await this.storage?.getItem(this.userCreatedAtKey)) ?? new Date(this.now()).toISOString();
+      const existingCreatedLocalAt = clean(await this.storage?.getItem(this.userCreatedLocalAtKey)) ?? localTimestamp(Date.parse(existingCreatedAt));
       this.currentIdentity = {
         userId: existing,
         userCreatedAt: existingCreatedAt,
+        userCreatedLocalAt: existingCreatedLocalAt,
       };
       await this.storage?.setItem(this.userCreatedAtKey, existingCreatedAt);
+      await this.storage?.setItem(this.userCreatedLocalAtKey, existingCreatedLocalAt);
       return this.currentIdentity;
     }
 
     this.currentIdentity = {
       userId: randomId(),
       userCreatedAt: new Date(this.now()).toISOString(),
+      userCreatedLocalAt: localTimestamp(this.now()),
     };
     await this.storage?.setItem(this.userIdKey, this.currentIdentity.userId);
     await this.storage?.setItem(this.userCreatedAtKey, this.currentIdentity.userCreatedAt);
+    await this.storage?.setItem(this.userCreatedLocalAtKey, this.currentIdentity.userCreatedLocalAt);
     return this.currentIdentity;
   }
 
@@ -194,6 +206,9 @@ export class GameAlgoRestClient {
   async fetchConfig(options: FetchConfigOptions = {}): Promise<ConfigResponse> {
     const identity = await this.userIdentity(options.userId);
     const userCreatedAt = clean(options.userCreatedAt) ?? identity.userCreatedAt;
+    const userCreatedLocalAt = clean(options.userCreatedLocalAt)
+      ?? (clean(options.userCreatedAt) ? localTimestamp(Date.parse(userCreatedAt)) : identity.userCreatedLocalAt);
+    const createdLocalAt = localTimestamp(this.now());
     this.logUserId(identity.userId);
     this.tracker.identify(identity.userId, options.sessionId, userCreatedAt);
     const platform = options.platform ?? this.platform;
@@ -212,6 +227,7 @@ export class GameAlgoRestClient {
     const cacheKey = JSON.stringify({
       userId: identity.userId,
       userCreatedAt,
+      userCreatedLocalAt,
       sessionId,
       platform,
       sdkVersion,
@@ -237,6 +253,8 @@ export class GameAlgoRestClient {
         body: JSON.stringify({
           userId: identity.userId,
           userCreatedAt,
+          userCreatedLocalAt,
+          createdLocalAt,
           sessionId,
           platform,
           sdkVersion,
@@ -329,6 +347,7 @@ export class GameAlgoRestClient {
       eventId: event.eventId ?? randomId(),
       isDebug: Boolean(event.isDebug),
       timestamp: event.timestamp ?? new Date(this.now()).toISOString(),
+      createdLocalAt: event.createdLocalAt ?? localTimestamp(event.timestamp ? Date.parse(event.timestamp) : this.now()),
       payload: normalizePayload(event.payload ?? {}),
     }));
 
@@ -637,6 +656,7 @@ export class GameAlgoEventTracker {
       eventType,
       isDebug: options.isDebug ?? this.isDebug,
       timestamp: options.timestamp ?? new Date(this.now()).toISOString(),
+      createdLocalAt: options.createdLocalAt ?? localTimestamp(options.timestamp ? Date.parse(options.timestamp) : this.now()),
       payload: normalizePayload(payload),
     });
     return true;
@@ -952,13 +972,33 @@ export class GameAlgoConfigReader {
   }
 }
 
-export function createEvent(input: Omit<GameEvent, "eventId" | "timestamp"> & { eventId?: string; timestamp?: string }): GameEvent {
+export function createEvent(input: Omit<GameEvent, "eventId" | "timestamp" | "createdLocalAt"> & {
+  eventId?: string;
+  timestamp?: string;
+  createdLocalAt?: string;
+}): GameEvent {
+  const timestamp = input.timestamp ?? new Date().toISOString();
   return {
     ...input,
     eventId: input.eventId ?? randomId(),
-    timestamp: input.timestamp ?? new Date().toISOString(),
+    timestamp,
+    createdLocalAt: input.createdLocalAt ?? localTimestamp(Date.parse(timestamp)),
     payload: normalizePayload(input.payload ?? {}),
   };
+}
+
+function localTimestamp(timestamp: number): string {
+  const date = new Date(Number.isFinite(timestamp) ? timestamp : Date.now());
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absoluteOffset = Math.abs(offsetMinutes);
+  const offset = `${sign}${pad(Math.floor(absoluteOffset / 60))}:${pad(absoluteOffset % 60)}`;
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+    + `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${String(date.getMilliseconds()).padStart(3, "0")}${offset}`;
+}
+
+function pad(value: number): string {
+  return String(value).padStart(2, "0");
 }
 
 function scriptCacheKey(script: ConfigFileRef): string {

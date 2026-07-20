@@ -35,6 +35,8 @@ test("fetchConfig sends Protocol v1 headers and caches by ttl", async () => {
       const body = await request.json() as Record<string, unknown>;
       assert.equal(body.userId, "u1");
       assert.equal(body.userCreatedAt, "1970-01-01T00:00:01.000Z");
+      assertLocalTimestamp(body.userCreatedLocalAt);
+      assert.equal(body.createdLocalAt, body.userCreatedLocalAt);
       assert.equal(body.sessionId, client.tracker.currentSessionId());
       assert.equal(body.platform, "rest");
       assert.equal(body.sdkVersion, "1.0.0");
@@ -431,6 +433,8 @@ test("constructor generates and reuses anonymous user id when userId is omitted"
 
   assert.equal(firstIdentity.userId, secondIdentity.userId);
   assert.equal(firstIdentity.userCreatedAt, "2026-05-28T10:00:00.000Z");
+  assert.equal(firstIdentity.userCreatedLocalAt, secondIdentity.userCreatedLocalAt);
+  assertLocalTimestamp(firstIdentity.userCreatedLocalAt);
   assert.equal(configBodies[0].userId, firstIdentity.userId);
   assert.equal(configBodies[1].userId, firstIdentity.userId);
 });
@@ -469,9 +473,13 @@ test("constructor backfills createdAt for persisted legacy user id", async () =>
   const identity = await client.userIdentity();
   assert.equal(identity.userId, "legacy-user");
   assert.equal(identity.userCreatedAt, "2026-05-28T10:00:00.000Z");
+  assertLocalTimestamp(identity.userCreatedLocalAt);
   assert.equal(storage.getItem("gamealgo_user_created_at"), "2026-05-28T10:00:00.000Z");
+  assert.equal(storage.getItem("gamealgo_user_created_local_at"), identity.userCreatedLocalAt);
   assert.equal(configRequest.userId, "legacy-user");
   assert.equal(configRequest.userCreatedAt, "2026-05-28T10:00:00.000Z");
+  assert.equal(configRequest.userCreatedLocalAt, identity.userCreatedLocalAt);
+  assertLocalTimestamp(configRequest.createdLocalAt);
   client.tracker.close();
 });
 
@@ -511,6 +519,8 @@ test("uploadEvents fills timestamp and preserves payload fields", async () => {
       const body = await request.json() as { events: Array<Record<string, unknown>> };
       assert.equal(body.events[0].contextId, "ctx-1");
       assert.equal(body.events[0].timestamp, "2026-05-28T10:00:00.000Z");
+      assertLocalTimestamp(body.events[0].createdLocalAt);
+      assert.equal(Date.parse(body.events[0].createdLocalAt as string), Date.parse(body.events[0].timestamp as string));
       assert.deepEqual(body.events[0].payload, { reason: "manual" });
       return jsonResponse({ ok: true, accepted: 1 });
     },
@@ -685,6 +695,9 @@ test("tracker queues and flushes events after ready identifies user", async () =
   assert.equal(uploadedEvents[0].contextId, "ctx-1");
   assert.equal(uploadedEvents[0].sessionId, uploadedEvents[1].sessionId);
   assert.equal(uploadedEvents[0].eventType, "level_end");
+  assert.equal(uploadedEvents[0].timestamp, "2026-05-28T10:00:01.500Z");
+  assertLocalTimestamp(uploadedEvents[0].createdLocalAt);
+  assert.equal(Date.parse(uploadedEvents[0].createdLocalAt as string), Date.parse(uploadedEvents[0].timestamp as string));
   assert.equal(uploadedEvents[0].isDebug, true);
   assert.deepEqual(uploadedEvents[0].payload, { level: 3 });
   assert.equal(uploadedEvents[1].eventType, "session_end");
@@ -872,7 +885,14 @@ test("createEvent fills eventId and timestamp", () => {
   assert.equal(typeof event.eventId, "string");
   assert.equal(event.contextId, "ctx-1");
   assert.equal(typeof event.timestamp, "string");
+  assertLocalTimestamp(event.createdLocalAt);
+  assert.equal(Date.parse(event.createdLocalAt as string), Date.parse(event.timestamp as string));
 });
+
+function assertLocalTimestamp(value: unknown): asserts value is string {
+  assert.equal(typeof value, "string");
+  assert.match(value as string, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$/);
+}
 
 function jsonResponse(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {
