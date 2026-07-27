@@ -229,7 +229,8 @@ type: managed
 platform: ios
 objectiveTemplate: ltv_proxy@1
 baselineVariantId: alpha
-cycleDays: 7
+minWindowDays: 7
+maxWindowDays: 14
 maxVariantsPerRound: 3
 # 可选：仅托管实验支持。最近 24 小时同时满足两个门槛后才开始首轮。
 startCondition:
@@ -246,7 +247,7 @@ variants:
 
 `minCoverage` 表示指定平台最近 24 小时内，实验接入版本达到 Strategy `requiredIntegrationVersion` 的去重用户占比；`minUsers` 表示同一窗口内的非 Debug 去重用户数。两项可单独配置，同时配置时必须同时满足。等待期间 Strategy 继续下发默认参数，满足门槛后平台才生成首轮时间窗并开始分流。手动实验不支持 `startCondition`，托管实验不配置时仍会立即启动。`experiment run show` 返回 `startConditionSnapshot`，可查看当前用户数、覆盖率和最近检查时间。
 
-托管实验只执行候选组数量决定的计划轮次，不会因为结果不显著而自动追加轮次。每轮结束都会生成正式报告；最后一轮只有在证据足够明确时才更新默认参数。没有明确胜出组时，实验正常完成，Strategy 默认参数保持不变。
+托管实验只执行候选组数量决定的计划轮次，不会自动增加复赛轮次。每轮至少运行 `minWindowDays` 天；达到参考周期后若证据仍不明确，平台逐日延长，最长运行到 `maxWindowDays`。`minWindowDays` 支持 1～30 天，`maxWindowDays` 支持到 60 天且不能小于参考周期。达到最长周期仍无明确胜出组时结束本轮，Strategy 默认参数保持不变。
 
 `ltv_proxy@1` 的标准口径为：
 
@@ -256,7 +257,7 @@ LTV Proxy (Dk) = STANDARDIZED_DAY_VALUE_D0 + ... + STANDARDIZED_DAY_VALUE_Dk
 
 `STANDARDIZED_DAY_VALUE_Dx` 使用所有在 Dx 已成熟的实验进入用户作为分母，未回访用户当日价值按 0 计入。广告曝光按广告类型和用户本地日内曝光序号分桶，每个桶使用本轮所有参与组在实验窗口内共同计算的参考 CPM，再加实际内购收入。
 
-所有实验组使用同一个 `k`。平台先计算 `k 上限 = min(14, 实验周期天数 - 3)`，再选择不超过上限、且每个参与组都至少有 10 个成熟进入用户的最大连续 Dx。实际收入、实际 ARPU、新用户留存和新用户 LTV 只作为诊断指标，不参与主指标计算。
+所有实验组使用同一个 `k`。平台按参考周期固定 `k 上限 = min(14, minWindowDays - 3)`，再选择不超过上限、且每个参与组都至少有 10 个成熟进入用户的最大连续 Dx。延长只增加样本，不改变评分口径。平台用本轮真实用户和线上 MurmurHash 分流规则模拟大量随机 seed，估计当前游戏用户结构下的自然组间波动，并校正多实验组与逐日重复评估。实际收入、实际 ARPU、新用户留存和新用户 LTV 只作为诊断指标，不参与主指标计算。
 
 所有会修改线上状态的实验命令都必须显式传 `--yes`。
 

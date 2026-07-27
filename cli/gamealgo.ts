@@ -446,8 +446,19 @@ async function handleExperimentRun(client: GameAlgoAdminClient, args: string[], 
     if (!optionalString(body.baselineVariantId)) {
       throw new Error("experiment run requires explicit baselineVariantId");
     }
-    if ((optionalString(body.type) || "manual") !== "managed" && body.startCondition !== undefined) {
+    const runType = optionalString(body.type) || "manual";
+    if (runType !== "managed" && body.startCondition !== undefined) {
       throw new Error("experiment run startCondition is supported only when type is managed");
+    }
+    if (runType === "managed") {
+      const minWindowDays = Number(body.minWindowDays);
+      const maxWindowDays = Number(body.maxWindowDays);
+      if (!Number.isInteger(minWindowDays) || minWindowDays < 1 || minWindowDays > 30) {
+        throw new Error("managed experiment run requires minWindowDays between 1 and 30");
+      }
+      if (!Number.isInteger(maxWindowDays) || maxWindowDays < minWindowDays || maxWindowDays > 60) {
+        throw new Error("managed experiment run requires maxWindowDays between minWindowDays and 60");
+      }
     }
     await printResult(await client.createExperimentV2Run(strategyKey, body), global);
     return;
