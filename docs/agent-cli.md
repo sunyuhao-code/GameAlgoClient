@@ -143,7 +143,8 @@ type: managed
 platform: ios
 objectiveTemplate: ltv_proxy@1
 baselineVariantId: alpha
-cycleDays: 7
+minWindowDays: 7
+maxWindowDays: 14
 maxVariantsPerRound: 3
 # 可选；只适用于托管实验。
 startCondition:
@@ -160,6 +161,8 @@ variants:
 
 托管实验的 `startCondition` 使用指定平台最近 24 小时的非 Debug Context：每个用户只取最新记录，`minCoverage` 要求实验接入版本达到 Strategy `requiredIntegrationVersion` 的用户占比，`minUsers` 要求窗口内去重用户数。两项同时配置时按 AND；等待期间继续使用 Strategy 默认参数，达标后才开始首轮。手动实验禁止配置该字段。用 `gamealgo experiment run show <runId> --json` 查看 `waiting_for_coverage` 状态和 `startConditionSnapshot`。
 
+`minWindowDays` 是每轮参考周期，支持 1～30 天；`maxWindowDays` 是最长周期，支持到 60 天且不能小于参考周期。达到参考周期后，证据明确则完成本轮；证据不足则逐日延长。达到最长周期仍无明确胜出组时结束本轮并保持默认参数不变。
+
 `objectiveTemplate` 当前固定为 `ltv_proxy@1`，`baselineVariantId` 必须显式指定，并且该组必须有流量。托管实验只执行候选组决定的计划轮次，不会自动增加复赛轮次；最终没有明确胜出组时保持 Strategy 默认参数不变。
 
 实验报告里的 `LTV Proxy` 口径是：
@@ -170,9 +173,9 @@ LTV Proxy (Dk) = STANDARDIZED_DAY_VALUE_D0 + ... + STANDARDIZED_DAY_VALUE_Dk
 
 `STANDARDIZED_DAY_VALUE_Dx` 使用所有在 Dx 已成熟的实验进入用户作为分母，未回访用户当日价值按 0 计入。广告曝光按广告类型和用户本地日内曝光序号（第 1、2、3、4、5、6-10、11+ 次）分桶，每个桶使用本轮所有参与组在当前实验窗口内共同计算的参考 CPM，再加上实际内购收入。
 
-所有实验组使用同一个 `k`。平台先计算 `k 上限 = min(14, 实验周期天数 - 3)`，再选择不超过上限、且每个参与组都至少有 10 个成熟进入用户的最大连续 Dx。平台不会为了等待窗口最后几天的用户成熟而延长实验。实际收入、实际 ARPU、实际综合 CPM、新用户留存和新用户 LTV 继续作为诊断指标展示，不参与主指标计算。
+所有实验组使用同一个 `k`。平台按参考周期固定 `k 上限 = min(14, minWindowDays - 3)`，再选择不超过上限、且每个参与组都至少有 10 个成熟进入用户的最大连续 Dx。延长实验只增加样本，不改变指标定义。平台会将本轮真实用户按线上 MurmurHash 规则分配到大量随机 seed，估计当前游戏用户结构下的自然组间波动，并校正多实验组与逐日重复评估。实际收入、实际 ARPU、实际综合 CPM、新用户留存和新用户 LTV 继续作为诊断指标展示，不参与主指标计算。
 
-`run status` 返回轻量状态和最新“当前评估”；`run report` 返回已落库的正式报告，可用 `--round N` 查询托管实验某一轮。当前评估用于跟踪趋势，不直接提前结束实验；正式结论在计划轮次结束时生成。
+`run status` 返回轻量状态和最新“当前评估”；`run report` 返回已落库的正式报告，可用 `--round N` 查询托管实验某一轮。参考周期前的当前评估用于跟踪趋势；达到参考周期后，校正后的证据足够明确时可以完成本轮，否则自动延长至最长周期。
 
 ```bash
 gamealgo experiment strategies --json

@@ -160,7 +160,8 @@ type: managed
 platform: ios
 objectiveTemplate: ltv_proxy@1
 baselineVariantId: control
-cycleDays: 7
+minWindowDays: 7
+maxWindowDays: 14
 startCondition:
   minCoverage: 0.8
   minUsers: 100

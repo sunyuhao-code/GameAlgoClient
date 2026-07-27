@@ -302,7 +302,7 @@ gamealgo experiment run evaluate xrun_xxx --from 2026-07-01 --to 2026-07-07 --ye
 gamealgo experiment run promote xrun_xxx --variant slower_ads --message "采用低频广告组" --yes
 ```
 
-Run 配置必须明确写 `objectiveTemplate: ltv_proxy@1` 和一个有流量的 `baselineVariantId`。平台会持续给出当前评估；托管实验完成计划轮次后，只有出现明确胜出组才更新默认参数，否则保留原默认参数。
+Run 配置必须明确写 `objectiveTemplate: ltv_proxy@1` 和一个有流量的 `baselineVariantId`。托管实验还要配置参考周期 `minWindowDays` 和最长周期 `maxWindowDays`：达到参考周期后若结论不明确，平台会逐日延长，直到证据明确或达到最长周期。平台会持续给出当前评估；完成计划轮次后，只有出现明确胜出组才更新默认参数，否则保留原默认参数。
 
 开发者需要确认：
 
