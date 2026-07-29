@@ -93,7 +93,7 @@ TapTap Maker 客户端支持直接访问 GameAlgo HTTPS API：
 
 接入时把 `game-algo-sdk.dictapis.cn` 加入 Maker 网络白名单，并在客户端 `GameAlgo.Init` 中配置真实 Client Game Key。不需要开启多人模式，也不需要部署 GameAlgo 服务端代理。
 
-TapTap Maker 客户端初始化时，推荐优先使用 Maker 环境提供的稳定用户 ID，例如 `lobby:GetMyUserId()`，并传给 `GameAlgo.Init({ userId = tapUserId })`。拿不到时可以传 `nil`，SDK 会退回到本地匿名 ID。不要使用昵称、头像、手机号等可识别信息作为 `userId`。
+TapTap Maker 客户端初始化时，推荐优先使用 Maker 环境提供的稳定用户 ID，例如 `lobby:GetMyUserId()`。同时必须把游戏自己的持久化存档包装为 `storage` 传给 `GameAlgo.Init`：单机游戏使用本地存档，联网游戏使用当前玩家的服务端存档并在存档加载完成后初始化。Lua SDK 不会猜测游戏应使用哪种存档。拿不到 Maker 用户 ID 时可以传 `nil`，SDK 会把匿名 ID 持久化到该存档。不要使用昵称、头像、手机号等可识别信息作为 `userId`。
 
 ## 6. 推荐让 AI Agent 使用 CLI
 

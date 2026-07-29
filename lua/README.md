@@ -30,6 +30,17 @@ if lobby and lobby.GetMyUserId then
     tapUserId = tostring(lobby:GetMyUserId())
 end
 
+-- 必须接到游戏自己的持久化存档。单机游戏接本地存档，联网游戏接玩家服务端存档。
+-- GameSave.Get / GameSave.Set 是示例占位，请替换成当前游戏的真实存档接口。
+local gameAlgoStorage = {
+    getItem = function(key)
+        return GameSave.Get(key)
+    end,
+    setItem = function(key, value)
+        GameSave.Set(key, value)
+    end,
+}
+
 GameAlgo.Init({
     baseUrl = "https://game-algo-sdk.dictapis.cn",
     gameKey = "ga_live_xxx",
@@ -37,6 +48,7 @@ GameAlgo.Init({
     experimentIntegrationVersion = 3,
     platform = "rest",
     userId = tapUserId,
+    storage = gameAlgoStorage,
     device = {
         runtime = "taptap_mini_game",
         game = "your_game_id",
@@ -52,9 +64,32 @@ GameAlgo.Init({
 
 TapTap Maker 接入时推荐优先使用 Maker 环境提供的稳定用户 ID，例如 `lobby:GetMyUserId()`。这样同一个玩家跨会话、跨版本的实验分组和报表归因更稳定。不要使用昵称、头像、手机号等可识别信息作为 `userId`；如果当前运行时拿不到 Maker 用户 ID，可以传 `nil`，SDK 会退回到本地匿名 ID。
 
+### 持久化存储
+
+Lua SDK 强制要求传入 `storage`，因为 SDK 无法判断当前游戏应该使用 Maker 本地存档还是联网玩家存档。适配器必须同步提供以下一组接口：
+
+```lua
+local storage = {
+    getItem = function(key)
+        return YourGameSave.Get(key)
+    end,
+    setItem = function(key, value)
+        YourGameSave.Set(key, value)
+    end,
+}
+```
+
+也可以使用同语义的 `GetItem` / `SetItem`。适配器需要支持任意字符串 key，不要只保存一个固定字段。SDK 会通过它持久化匿名用户身份、`userCreatedAt`、脚本缓存和 DDA 状态。
+
+- 单机游戏：绑定到原有本地存档，并确保版本升级后仍保留。
+- 联网游戏：绑定到当前登录玩家的服务端存档；先完成玩家存档加载，再调用 `GameAlgo.Init`。
+- 切换玩家：必须切换到新玩家自己的存档适配器后重新初始化，不能复用上一名玩家的存档。
+
+缺少 `storage` 或适配器不具备读写接口时，`GameAlgo.Init` 会立即报错，不会发送配置和事件请求。
+
 `Init` 会从客户端发起非阻塞的 `/v1/config` 请求。游戏逻辑应该保留本地默认值，只在远端配置可用时读取远端值。
 
-Lua SDK 会同时记录 UTC 时间和带 UTC offset 的客户端本地时间：用户身份持久化 `userCreatedAt` / `userCreatedLocalAt`，context 上报 `createdLocalAt`，事件上报 `timestamp` / `createdLocalAt`。这些字段由 SDK 自动维护；事件进入队列时即固定发生时间，延迟上传或重试不会改写。
+Lua SDK 会同时记录 UTC 时间和带 UTC offset 的客户端本地时间：通过传入的 `storage` 持久化 `userCreatedAt` / `userCreatedLocalAt`，context 上报 `createdLocalAt`，事件上报 `timestamp` / `createdLocalAt`。这些字段由 SDK 自动维护；事件进入队列时即固定发生时间，延迟上传或重试不会改写。
 
 ## 实验
 

@@ -99,7 +99,7 @@ gamealgo events count \
 
 TapTap Maker 接入需要把 `game-algo-sdk.dictapis.cn` 加入网络白名单，并使用 `GameAlgo.lua`、`HttpTransport.lua`、`LuaScriptRuntime.lua`、`Sha256.lua` 与 `DDA.lua` 从客户端直接访问 GameAlgo，不需要开启多人模式或部署服务端代理。
 
-TapTap Maker 初始化时优先使用 Maker 环境提供的稳定用户 ID，例如 `lobby:GetMyUserId()`，并传给 `GameAlgo.Init({ userId = tapUserId })`。拿不到时可以传 `nil`，SDK 会退回到本地匿名 ID。不要使用昵称、头像、手机号等可识别信息作为 `userId`。
+TapTap Maker 初始化时优先使用 Maker 环境提供的稳定用户 ID，例如 `lobby:GetMyUserId()`。同时必须把游戏自己的持久化存档包装为 `storage` 传给 `GameAlgo.Init`：单机游戏接本地存档，联网游戏接当前玩家的服务端存档并在存档加载完成后初始化。拿不到 Maker 用户 ID 时可以传 `nil`，SDK 会把匿名 ID 写入该存档。不要使用昵称、头像、手机号等可识别信息作为 `userId`。
 
 国内游戏、TapTap Maker / TapTap 小游戏接入时，广告和付费事件的 `currency` 统一使用 `CNY`。不要默认使用 `USD`。
 

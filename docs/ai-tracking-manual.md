@@ -52,12 +52,18 @@ if lobby and lobby.GetMyUserId then
     tapUserId = tostring(lobby:GetMyUserId())
 end
 
+local gameAlgoStorage = {
+    getItem = function(key) return GameSave.Get(key) end,
+    setItem = function(key, value) GameSave.Set(key, value) end,
+}
+
 GameAlgo.Init({
     baseUrl = "https://game-algo-sdk.dictapis.cn",
     gameKey = "ga_live_xxx",
     appVersion = "1.0.0",
     platform = "rest",
     userId = tapUserId,
+    storage = gameAlgoStorage,
     device = {
         runtime = "taptap_mini_game",
         game = "your_game_id",
@@ -65,6 +71,8 @@ GameAlgo.Init({
     },
 })
 ```
+
+`GameSave.Get/Set` 是占位。Agent 必须接入游戏真实的持久化存档：单机游戏使用本地存档，联网游戏使用当前玩家的服务端存档，并在存档加载完成后调用 `GameAlgo.Init`。Lua SDK 强制要求同步的 `getItem/setItem`（或 `GetItem/SetItem`）适配器，不能使用只在当前进程有效的内存 table。
 
 不要上传手机号、邮箱、OAID、IDFA、TapID 等强身份字段。
 

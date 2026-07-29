@@ -214,12 +214,18 @@ if lobby and lobby.GetMyUserId then
     tapUserId = tostring(lobby:GetMyUserId())
 end
 
+local gameAlgoStorage = {
+    getItem = function(key) return GameSave.Get(key) end,
+    setItem = function(key, value) GameSave.Set(key, value) end,
+}
+
 GameAlgo.Init({
     baseUrl = "<sdk-host>",
     gameKey = "ga_live_xxx",
     appVersion = "1.0.0",
     platform = "rest",
     userId = tapUserId,
+    storage = gameAlgoStorage,
     device = {
         runtime = "taptap_mini_game",
         game = "your_game_id",
@@ -228,7 +234,9 @@ GameAlgo.Init({
 })
 ```
 
-如果拿不到 Maker 用户 ID，可以传 `nil`，SDK 会退回到本地匿名 ID。不要使用昵称、头像、手机号等可识别信息作为 `userId`。
+`GameSave.Get/Set` 是占位，Agent 必须替换为游戏现有的持久化存档：单机游戏使用本地存档，联网游戏使用当前玩家的服务端存档并在存档加载完成后初始化 SDK。Lua SDK 强制要求 `storage` 实现同步的 `getItem/setItem`（或 `GetItem/SetItem`），不能只传普通内存 table。缺少存储时 SDK 会拒绝初始化，避免 `userCreatedAt` 在每次启动时被重置。
+
+如果拿不到 Maker 用户 ID，可以传 `nil`，SDK 会在上述存档中持久化匿名 ID。不要使用昵称、头像、手机号等可识别信息作为 `userId`。
 
 国内游戏、TapTap Maker / TapTap 小游戏接入时，`ad_view` 和 `purchase` 的 `currency` 统一使用 `CNY`。不要默认使用 `USD`。
 

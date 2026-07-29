@@ -130,8 +130,8 @@ Content-Type: application/json
 | 字段 | 必填 | 说明 |
 |------|------|------|
 | `userId` | 是 | 游戏用户 ID；没有账号体系时由 SDK 生成并持久化 |
-| `userCreatedAt` | 否 | `userId` 首次生成或绑定的时间；官方 SDK 会自动生成并持久化，用于 SDK context 分析 |
-| `userCreatedLocalAt` | 否 | 与 `userCreatedAt` 同一时刻的客户端本地时间，必须带 UTC offset；官方 SDK 自动生成并与用户身份一起持久化 |
+| `userCreatedAt` | 否 | `userId` 首次生成或绑定的时间；官方 SDK 会自动生成，并通过调用方配置的持久化存储保存，用于 SDK context 分析 |
+| `userCreatedLocalAt` | 否 | 与 `userCreatedAt` 同一时刻的客户端本地时间，必须带 UTC offset；官方 SDK 自动生成，并通过调用方配置的持久化存储与用户身份一起保存 |
 | `createdLocalAt` | 否 | 本次 context 创建时的客户端本地时间，必须带 UTC offset；官方 SDK 自动生成 |
 | `sessionId` | 是 | SDK 生成或游戏指定的会话 ID |
 | `platform` | 是 | `ios` / `android` / `rest` |
