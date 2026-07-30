@@ -27,8 +27,8 @@ Report Pack 的看板建议按“业务问题”拆分，而不是按事件表�
 | Tab | 适合放的看板 | 推荐实现 |
 | --- | --- | --- |
 | `Overview` / 核心概览 | DAU、新用户、Session 数、平均 Session 时长、人均 Session、核心明细表 | 优先引用 `core.overview@1` |
-| `Retention` / 留存 | D1/D2/D3/D7 留存趋势、Cohort matrix、流失用户趋势、按实验 variant 的留存/流失对比 | 优先引用 `retention.cohort@1` 和 `churn.overview@1`，默认 Dx 建议 D1 |
-| `Revenue` / 收入 | 本地日期广告收入、按广告类型的人均看广告数、ARPU、广告位收入趋势、广告位收入/曝光占比、广告类型收入/曝光占比 | 优先引用 `revenue.placement@1`，自定义收入分析可补在同一 tab |
+| `Retention` / 留存 | D1/D2/D3/D7 留存趋势、Cohort matrix、按实验 variant 的留存对比 | 优先引用 `retention.cohort@1`，默认 Dx 建议 D1 |
+| `Revenue` / 收入 | 分广告位堆积的每日广告收入及收入合计趋势、按广告类型的人均看广告数、ARPU、广告位收入/曝光占比、广告类型收入/曝光占比 | 优先引用 `revenue.placement@1`，自定义收入分析可补在同一 tab |
 | `LTV` / 新用户价值 | LTV 趋势、LTV cohort matrix、按实验 variant 的 LTV 对比、新用户生命周期时长 | 可引用 `revenue.ltv@1`；如果 Revenue 页面不拥挤，也可以把 LTV 放在 Revenue 里 |
 | `Progression` / 进度 | 关卡/章节/对局通过率、最大进度均值、最大进度分布柱状图、失败率、重试次数、平均耗时 | 用自定义 dataset/report；非关卡游戏也可以用 Progression 表示用户推进深度 |
 | `Modes` / 玩法模式 | 模式渗透率、模式收入、模式 ARPU、模式完成率、模式流失 | 适合配置 `mode` dimension selector，也适合和实验 selector 组合 |
@@ -274,7 +274,7 @@ Report Pack 的展示文案可以直接使用中文，包括顶层 `title`、`ta
 - 一个 group 只能选择一种模式：`standard` 或 `charts`。`standard` 直接写 `"core.overview@1"` 这样的字符串。
 - 图表 `type` 支持 `line`、`bar`、`pie`、`table` 和 `cohort_matrix`。
 - 折线图使用结果列里的 `x`、`y` 和可选 `series`。
-- 柱状图也使用结果列里的 `x`、`y` 和可选 `series`，适合展示分关卡流失率、分广告位收入、分模式人数等离散维度对比。离散桶需要稳定顺序时，配置 `sort` 指向结果里的排序列，例如 `bucket_order`；`sortDirection` 支持 `asc` 和 `desc`，默认 `asc`。`barMode` 支持 `grouped`、`stacked` 和 `stacked100`；`stacked100` 适合展示版本覆盖率这类占比构成。
+- 柱状图也使用结果列里的 `x`、`y` 和可选 `series`，适合展示分关卡流失率、分广告位收入、分模式人数等离散维度对比。离散桶需要稳定顺序时，配置 `sort` 指向结果里的排序列，例如 `bucket_order`；`sortDirection` 支持 `asc` 和 `desc`，默认 `asc`。`barMode` 支持 `grouped`、`stacked` 和 `stacked100`；`stacked100` 适合展示版本覆盖率这类占比构成。柱状图配置 `showTotalLine: true` 后，会额外叠加一条按 x 汇总全部 series 的“合计”折线。
 - 饼图使用结果列里的 `label` 和 `value`。
 - 表格会渲染完整报表结果。
 - `cohort_matrix` 用来把长表 cohort 结果渲染成矩阵。它使用 `x` 作为行字段（通常是 `cohort_dt`），`series` 作为列字段（通常是 `day_offset`），`y` 作为单元格指标。选择实验后，如果结果里有 `variant` 列，矩阵会按 `variant + cohort_dt` 展示行。
@@ -778,12 +778,10 @@ Group selector 是只作用于当前 group 的 UI 控件：
 | --- | --- | --- |
 | `core.overview@1` | 总览流量和会话健康度。包含 DAU、新用户、会话数、平均会话时长、用户会话数的内置折线图，以及明细表。 | SDK context 行，以及 `session_end.payload.sessionDurationMs`。 |
 | `retention.cohort@1` | 按 cohort date 和 day offset 计算新用户留存。包含内置 `留存趋势` 折线图（D1、D2、D3、D7）和 `新用户留存矩阵` 表格（D0-D14）。控制台可通过运行时 Strategy 和 Dx selector 在全局留存和分实验留存之间切换。 | SDK context 行，以及后续用户活跃事件。 |
-| `retention.country@1` | 按国家计算最近 14 天新用户 D1-D7 留存。图表用 Dx selector 查看某一天留存，明细表展示每个国家各 Dx 的成熟天数、cohort 用户数和加权留存率。国家取 Top 20，其余归入 `其他`。 | SDK context 行。国家来源是 `device.country`，建议使用 ISO 国家码，例如 `US`、`CN`、`JP`。 |
-| `churn.overview@1` | 流失用户趋势。x 轴是用户最后一次活跃日期；全局态 series 是截至报表结束日期已经至少沉默 D3 / D7 / D14 的用户数。支持 Strategy 和 Dx selector；选中实验后用 Dx 选择 D3 / D7 / D14，并按 variant 拆线。 | `adn.dws_gamealgo_user_activity_df` 用户活跃快照。流失窗口由 `days_since_last_open` 计算。 |
 | `device.version_coverage@1` | 游戏版本覆盖率。按本地日期展示 `appVersion` 的 100% 堆积柱状图，窗口内 Top 10 版本单独展示，其余归入 `其他`。同一用户同一天只按最后一次 SDK context 的版本计数。 | SDK context 行里的 `appVersion`。 |
 | `revenue.ltv@1` | 新用户 LTV cohort。包含内置 `LTV 趋势` 折线图（D0、D1、D2、D3、D7、D14）和 `新用户 LTV 矩阵` 表格（D0-D14）。控制台可通过运行时 Strategy 和 Dx selector 在全局 LTV 和分实验 LTV 之间切换。 | SDK context 行，以及收入事件。 |
-| `revenue.placement@1` | 广告变现和收入指标标准看板。会生成两个 group：`广告变现` 包含本地日期广告收入、广告位收入趋势、广告位收入/曝光占比、广告类型收入/曝光占比，所有图都支持用户类型 selector（全部/新用户/老用户）；`收入指标` 包含按广告类型的人均看广告数和整体 ARPU，并支持实验、用户类型、广告类型 selector。未选实验时，人均看广告数按 `ad_type` 拆线，ARPU 是一条总线；选中实验后，人均看广告数需要选择一个广告类型并按 variant 拆线，ARPU 也按 variant 拆线。 | 广告 SDK 确认实际产生收入的 `ad_view` 事件，必填 `placement`、`adType`、`revenue`、`currency`，可选 `network` 和 `mode`。广告失败、未填充、播放失败，或广告 SDK 没有确认产生收入的展示，不要上报到 `ad_view`。 |
-| `marketing.overview@1` | 投放总览看板。包含分天归因来源新用户堆积柱状图、获客用户 LTV、投放花费趋势、国家安装量分布和国家投放金额分布。 | 需要先上报 Adjust 归因（`/v1/attribution`），并在控制台或 CLI 配置 Adjust API Token + App Token 后同步花费。花费使用 Adjust `network_cost`，不是 `cost`。 |
+| `revenue.placement@1` | 广告变现标准看板。只生成一个 `广告变现` group，依次展示三张全宽的“堆积柱 + 合计线”：按广告位拆分的每日广告收入、按广告类型拆分的用户人均看广告数，以及按广告收入/内购收入拆分的 ARPU；其后展示广告位和广告类型的收入/曝光占比。整个 group 支持用户类型 selector（全部/新用户/老用户）；实验详情页按实验组画总人均指标折线，不堆积互斥实验组。 | 广告 SDK 确认实际产生收入的 `ad_view` 事件，必填 `placement`、`adType`、`revenue`、`currency`，可选 `network` 和 `mode`。广告失败、未填充、播放失败，或广告 SDK 没有确认产生收入的展示，不要上报到 `ad_view`。 |
+| `marketing.overview@1` | 投放总览看板。包含分天归因来源新用户和分渠道投放花费两张“堆积柱 + 每日合计线”图、国家安装量与投放金额分布、分渠道分安装日留存与累计 ROAS 矩阵，以及渠道和国家质量汇总。 | 需要先上报 Adjust 归因（`/v1/attribution`），并在控制台或 CLI 配置 Adjust API Token + App Token 后同步花费。消耗、CPI 和 ROAS 使用 Adjust `network_cost`，不是 `cost`。 |
 | `marketing.roi@1` | 投放 ROAS 看板。包含 network / campaign / country 粒度的 ROAS 趋势，其中国家趋势只展示投放金额 Top 10 国家；同时提供按渠道和安装日期拆分的 D1-D14 累计 ROAS 同期群热力图。 | 需要先上报 Adjust 归因（`/v1/attribution`），并在控制台或 CLI 配置 Adjust API Token + App Token 后同步花费。 |
 
 不要引用未在上表出现的标准 ref。没有在上表列出的历史保留 ref 会被校验拒绝，避免页面生成没有 chart 的空 group。
@@ -818,16 +816,6 @@ Group selector 是只作用于当前 group 的 UI 控件：
 ```
 
 当前只推荐引用上表中的 ref。这些 ref 是平台已经实现的标准看板契约。保存 report pack 时只会记录 group 的 `standard`；标准看板背后的数据由平台准备。LTV 和留存看板会隐藏尚未成熟的 cohort/day 组合，例如 D7 只有在对应 cohort 已经过了 7 天后才会出现。
-
-如果需要使用 `retention.country@1`，SDK 初始化时建议在 `device` 里带上国家：
-
-```json
-{
-  "device": {
-    "country": "US"
-  }
-}
-```
 
 iOS SDK 接入时推荐使用 `Locale.current.region`：
 
