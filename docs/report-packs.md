@@ -26,7 +26,7 @@ Report Pack 的看板建议按“业务问题”拆分，而不是按事件表�
 
 | Tab | 适合放的看板 | 推荐实现 |
 | --- | --- | --- |
-| `Overview` / 核心概览 | DAU、新用户、Session 数、平均 Session 时长、人均 Session、核心明细表 | 优先引用 `core.overview@1` |
+| `Overview` / 核心概览 | DAU / WAU / MAU、DAU 生命周期构成、DAU 人均时长 | 优先引用 `core.overview@1` |
 | `Retention` / 留存 | D1/D2/D3/D7 留存趋势、Cohort matrix、按实验 variant 的留存对比 | 优先引用 `retention.cohort@1`，默认 Dx 建议 D1 |
 | `Revenue` / 收入 | 分广告位堆积的每日广告收入及收入合计趋势、按广告类型的人均看广告数、ARPU、广告位收入/曝光占比、广告类型收入/曝光占比 | 优先引用 `revenue.placement@1`，自定义收入分析可补在同一 tab |
 | `LTV` / 新用户价值 | LTV 趋势、LTV cohort matrix、按实验 variant 的 LTV 对比、新用户生命周期时长 | 可引用 `revenue.ltv@1`；如果 Revenue 页面不拥挤，也可以把 LTV 放在 Revenue 里 |
@@ -776,7 +776,7 @@ Group selector 是只作用于当前 group 的 UI 控件：
 
 | Ref | 用途 | 所需数据 |
 | --- | --- | --- |
-| `core.overview@1` | 总览流量和会话健康度。包含 DAU、新用户、会话数、平均会话时长、用户会话数的内置折线图，以及明细表。 | SDK context 行，以及 `session_end.payload.sessionDurationMs`。 |
+| `core.overview@1` | 总览活跃规模和使用时长。包含 DAU / WAU / MAU 趋势；按新用户、D1、D2-D3、D4-D7、D8-D14、D15-D30、D31+ 与未知拆分的每日 DAU 生命周期堆积图及 DAU 合计线；以及 DAU 人均时长。整个 group 支持用户类型 selector。 | SDK context 行，以及 `session_end.payload.sessionDurationMs`。生命周期按用户本地日期与 `user_created_dt` 的自然日差计算；创建日期缺失、异常或晚于活跃日期时归入“未知”。 |
 | `retention.cohort@1` | 按 cohort date 和 day offset 计算新用户留存。包含内置 `留存趋势` 折线图（D1、D2、D3、D7）和 `新用户留存矩阵` 表格（D0-D14）。控制台可通过运行时 Strategy 和 Dx selector 在全局留存和分实验留存之间切换。 | SDK context 行，以及后续用户活跃事件。 |
 | `device.version_coverage@1` | 游戏版本覆盖率。按本地日期展示 `appVersion` 的 100% 堆积柱状图，窗口内 Top 10 版本单独展示，其余归入 `其他`。同一用户同一天只按最后一次 SDK context 的版本计数。 | SDK context 行里的 `appVersion`。 |
 | `revenue.ltv@1` | 新用户 LTV cohort。包含内置 `LTV 趋势` 折线图（D0、D1、D2、D3、D7、D14）和 `新用户 LTV 矩阵` 表格（D0-D14）。控制台可通过运行时 Strategy 和 Dx selector 在全局 LTV 和分实验 LTV 之间切换。 | SDK context 行，以及收入事件。 |
