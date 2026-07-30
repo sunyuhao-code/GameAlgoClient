@@ -37,7 +37,7 @@ let sdk = GameAlgoSDK(
 
 `experimentIntegrationVersion` 来自 `gamealgo experiment integration-version create`。它表示这个 App 构建已经实现的实验参数能力，必须固定在构建中；不要在运行时查询 latest。没有接入实验时可保持默认值 `0`。
 
-关于何时创建新版本、Strategy 最低版本和旧客户端行为，见 [实验接入版本](../docs/experiment-integration-versions.md)。
+关于何时创建新版本、Strategy 最低版本和托管实验覆盖率门槛，运行 `gamealgo docs experiment-integration-versions --host <admin-host>` 查看当前平台规则。
 
 如果需要使用按国家拆分的标准留存看板，iOS 推荐用 `Locale.current.region` 取得 ISO 国家码并写入 `device.country`。
 
