@@ -87,8 +87,11 @@ GameAlgo.Init({
     gameKey = gameKey,
     baseUrl = baseUrl,
     experimentIntegrationVersion = 3,
+    storage = gameAlgoStorage,
 })
 ```
+
+Lua SDK 的 `gameAlgoStorage` 必须绑定游戏自己的持久化存档。单机游戏使用本地存档；联网游戏先加载当前玩家的服务端存档，再初始化 SDK。完整适配器接口见 [TapTap Maker / Lua SDK](../lua/README.md#持久化存储)。
 
 版本号必须随客户端代码发布并保持不变。客户端不能在运行时调用 `latest`，否则老客户端会把自己伪装成支持最新能力，最低版本保护将失效。
 

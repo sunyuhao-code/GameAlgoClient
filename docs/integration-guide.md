@@ -64,7 +64,7 @@ TapTap Maker / TapTap 小游戏使用 Lua SDK 从客户端直接访问国内 SDK
 
 - 在启动时，或依赖远端配置的玩法开始前，拉取 `/v1/config`。
 - 默认使用 SDK 生成的匿名 `userId`。该 ID 需要持久化到本地，让老玩家在多次启动和版本更新后保持稳定实验分组。Android core 和 REST helper 需要配置 `cacheStorage` / `storage` 才能持久化这个 ID。
-- TapTap Maker / TapTap 小游戏优先使用 Maker 环境提供的稳定用户 ID，例如 `lobby:GetMyUserId()`，并传给 Lua SDK 的 `GameAlgo.Init({ userId = tapUserId })`。拿不到时再使用 SDK 本地匿名 ID；不要使用昵称、头像、手机号等可识别信息作为 `userId`。
+- TapTap Maker / TapTap 小游戏优先使用 Maker 环境提供的稳定用户 ID，例如 `lobby:GetMyUserId()`。同时必须将游戏自己的持久化存档包装为 `storage` 传给 Lua SDK：单机游戏接本地存档，联网游戏接当前玩家的服务端存档并在存档加载完成后初始化。拿不到 Maker 用户 ID 时再使用 SDK 匿名 ID，该 ID 会保存到传入的存档；不要使用昵称、头像、手机号等可识别信息作为 `userId`。
 - 按 `ttlSeconds` 缓存配置。
 - 按 hash 或 `ETag` 缓存配置文件。
 - 需要时可以手动拉取 GameAlgo 控制台 Configs 页面里的文件：

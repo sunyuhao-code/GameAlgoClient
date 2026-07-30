@@ -26,7 +26,7 @@ local DDA = requireSdkModule("DDA")
 
 local GameAlgo = {}
 
-local SDK_VERSION = "1.2.0-lua"
+local SDK_VERSION = "1.3.0-lua"
 local DEFAULT_BASE_URL = "https://game-algo-sdk.dictapis.cn"
 
 local state_ = {
@@ -157,6 +157,31 @@ local function storageSet(key, value)
         if ok then return end
     end
     storage[key] = value
+end
+
+local function hasStorageMethod(storage, name)
+    local ok, method = pcall(function() return storage[name] end)
+    return ok and type(method) == "function"
+end
+
+local function validateStorage(storage)
+    if storage == nil then
+        error(
+            "options.storage is required; bind getItem(key) and setItem(key, value) "
+                .. "to the game's persistent local or online save storage"
+        )
+    end
+
+    local hasCamelCase = hasStorageMethod(storage, "getItem")
+        and hasStorageMethod(storage, "setItem")
+    local hasPascalCase = hasStorageMethod(storage, "GetItem")
+        and hasStorageMethod(storage, "SetItem")
+    if not hasCamelCase and not hasPascalCase then
+        error(
+            "options.storage must implement getItem(key)/setItem(key, value) "
+                .. "or GetItem(key)/SetItem(key, value)"
+        )
+    end
 end
 
 local function ensureIdentity(explicitUserId)
@@ -306,6 +331,7 @@ end
 ---@param options table
 function GameAlgo.Init(options)
     options = options or {}
+    validateStorage(options.storage)
     math.randomseed(os.time())
     state_.baseUrl = options.baseUrl or DEFAULT_BASE_URL
     state_.gameKey = options.gameKey
