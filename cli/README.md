@@ -176,18 +176,24 @@ variants:
     config:
       firstAdLevel: 4
       interval: 30
+    script:
+      versionId: sv_xxxxxxxxxxxxxxxx
   - variantId: slower_ads
     weight: 1
     config:
       firstAdLevel: 5
       interval: 45
+    script:
+      versionId: sv_xxxxxxxxxxxxxxxx
 ```
 
 ```bash
 gamealgo experiment run create ad_frequency run.yaml --yes
 ```
 
-如果要把当前默认参数也放进实验，需要显式配置 `variantId: default`；否则默认参数不参与流量。所有有流量的实验组数量必须至少为 2。
+Run 不会继承 Strategy 的脚本。每个需要执行脚本的 variant 都必须显式配置 `script.versionId`；省略 `script` 明确表示该组是 config-only。即使多个 variant 使用同一份脚本，也要在每个 variant 上重复填写同一个不可变 `versionId`。
+
+如果要把当前默认参数也放进实验，需要显式配置 `variantId: default`。`default` 会快照 Strategy 当前默认参数，因此不能写 `config`；如果默认组需要执行脚本，也必须在 `default` 上显式写 `script.versionId`。否则默认参数不参与流量。所有有流量的实验组数量必须至少为 2。
 
 查看、评估和完成实验闭环：
 
@@ -239,10 +245,13 @@ startCondition:
 variants:
   - variantId: alpha
     config: { firstAdLevel: 4, interval: 30 }
+    script: { versionId: sv_xxxxxxxxxxxxxxxx }
   - variantId: bravo
     config: { firstAdLevel: 5, interval: 30 }
+    script: { versionId: sv_xxxxxxxxxxxxxxxx }
   - variantId: charlie
     config: { firstAdLevel: 4, interval: 45 }
+    script: { versionId: sv_xxxxxxxxxxxxxxxx }
 ```
 
 `minCoverage` 表示指定平台最近 24 小时内，实验接入版本达到 Strategy `requiredIntegrationVersion` 的去重用户占比；`minUsers` 表示同一窗口内的非 Debug 去重用户数。两项可单独配置，同时配置时必须同时满足。等待期间 Strategy 继续下发默认参数，满足门槛后平台才生成首轮时间窗并开始分流。手动实验不支持 `startCondition`，托管实验不配置时仍会立即启动。`experiment run show` 返回 `startConditionSnapshot`，可查看当前用户数、覆盖率和最近检查时间。

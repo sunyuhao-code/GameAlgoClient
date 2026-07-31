@@ -446,6 +446,7 @@ async function handleExperimentRun(client: GameAlgoAdminClient, args: string[], 
     if (!optionalString(body.baselineVariantId)) {
       throw new Error("experiment run requires explicit baselineVariantId");
     }
+    validateExperimentRunVariantScripts(body.variants);
     const runType = optionalString(body.type) || "manual";
     if (runType !== "managed" && body.startCondition !== undefined) {
       throw new Error("experiment run startCondition is supported only when type is managed");
@@ -460,7 +461,9 @@ async function handleExperimentRun(client: GameAlgoAdminClient, args: string[], 
         throw new Error("managed experiment run requires maxWindowDays between minWindowDays and 60");
       }
     }
-    await printResult(await client.createExperimentV2Run(strategyKey, body), global);
+    const result = await client.createExperimentV2Run(strategyKey, body);
+    await printResult(result, global);
+    if (!global.json) printExperimentRunVariantScripts(result);
     return;
   }
   if (sub === "show" || sub === "get") {
@@ -1587,6 +1590,32 @@ function latestScriptVersionNames(value: unknown): string[] {
 
 function objectValue(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function validateExperimentRunVariantScripts(value: unknown): void {
+  if (!Array.isArray(value)) throw new Error("experiment run requires variants array");
+  for (let index = 0; index < value.length; index += 1) {
+    const variant = objectValue(value[index]);
+    if (!variant) throw new Error(`variants[${index}] must be an object`);
+    if (!Object.prototype.hasOwnProperty.call(variant, "script")) continue;
+    const script = objectValue(variant.script);
+    if (!script || !optionalString(script.versionId)) {
+      throw new Error(`variants[${index}].script requires versionId; omit script for a config-only variant`);
+    }
+  }
+}
+
+function printExperimentRunVariantScripts(value: unknown): void {
+  const run = objectValue(objectValue(value)?.run);
+  if (!run || !Array.isArray(run.variants)) return;
+  console.log("\nVariant execution:");
+  for (const item of run.variants) {
+    const variant = objectValue(item);
+    if (!variant) continue;
+    const variantId = optionalString(variant.variantId) ?? "(unknown)";
+    const versionId = optionalString(objectValue(variant.script)?.versionId);
+    console.log(`  ${variantId}: ${versionId ? `script ${versionId}` : "config-only"}`);
+  }
 }
 
 async function readJsonFile(filePath: string): Promise<unknown> {
