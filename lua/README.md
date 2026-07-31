@@ -10,16 +10,6 @@ TapTap Maker 客户端支持直接访问 GameAlgo HTTPS API。接入时把以下
 
 `client_main.lua` 是可直接参考的初始化示例。
 
-## 网络白名单
-
-在 Maker 项目网络白名单中加入 SDK 域名：
-
-```text
-game-algo-sdk.dictapis.cn
-```
-
-SDK 固定访问这个域名下的 `/v1/config`、`/v1/config-files/*`、`/v1/scripts/*` 和 `/v1/events/batch`。
-
 ## 客户端配置
 
 ```lua
