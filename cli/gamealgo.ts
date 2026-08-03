@@ -440,8 +440,9 @@ async function handleExperimentRun(client: GameAlgoAdminClient, args: string[], 
     await requireYes(flags, global, "experiment run create");
     const body = await readObjectFile(filePath, "experiment run");
     if (!optionalString(body.displayName)) throw new Error("experiment run requires displayName");
-    if (optionalString(body.objectiveTemplate) !== "ltv_proxy@1") {
-      throw new Error("experiment run requires objectiveTemplate: ltv_proxy@1");
+    const objectiveTemplate = optionalString(body.objectiveTemplate);
+    if (!objectiveTemplate || !["ltv_proxy@1", "active_days@1"].includes(objectiveTemplate)) {
+      throw new Error("experiment run requires objectiveTemplate: ltv_proxy@1 or active_days@1");
     }
     if (!optionalString(body.baselineVariantId)) {
       throw new Error("experiment run requires explicit baselineVariantId");
@@ -543,6 +544,21 @@ async function handleExperimentRun(client: GameAlgoAdminClient, args: string[], 
     await printResult({ runId, report }, global);
     return;
   }
+  if (sub === "objective") {
+    const flags = parseFlags(args);
+    const runId = optionalString(flags.run || flags["run-id"] || flags.id) || optionalString(args.shift());
+    const objectiveTemplate = optionalString(flags.objective || flags["objective-template"]);
+    if (!runId || !objectiveTemplate) {
+      throw new Error("usage: gamealgo experiment run objective <runId> --objective <ltv_proxy@1|active_days@1> --message <reason> --yes");
+    }
+    if (!["ltv_proxy@1", "active_days@1"].includes(objectiveTemplate)) {
+      throw new Error("experiment objective must be ltv_proxy@1 or active_days@1");
+    }
+    const message = requiredMessage(flags, "experiment run objective");
+    await requireYes(flags, global, "experiment run objective");
+    await printResult(await client.updateExperimentV2RunObjective(runId, objectiveTemplate, message), global);
+    return;
+  }
   if (sub === "promote") {
     const flags = parseFlags(args);
     const runId = optionalString(flags.run || flags["run-id"] || flags.id) || optionalString(args.shift());
@@ -575,7 +591,7 @@ async function handleExperimentRun(client: GameAlgoAdminClient, args: string[], 
     await printResult(await client.updateExperimentV2VariantTraffic(runId, variantId, body), global);
     return;
   }
-  throw new Error("usage: gamealgo experiment run <create|show|status|evaluate|report|promote|cancel|traffic>");
+  throw new Error("usage: gamealgo experiment run <create|show|status|evaluate|report|objective|promote|cancel|traffic>");
 }
 
 function requiredMessage(flags: Record<string, string | boolean>, action: string): string {
@@ -1125,6 +1141,13 @@ class GameAlgoAdminClient {
 
   async cancelExperimentV2Run(runId: string, message: string) {
     return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/experiment-runs-v2/${encodeURIComponent(runId)}/cancel`, { message });
+  }
+
+  async updateExperimentV2RunObjective(runId: string, objectiveTemplate: string, message: string) {
+    return await this.patch(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/experiment-runs-v2/${encodeURIComponent(runId)}/objective`, {
+      objectiveTemplate,
+      message,
+    });
   }
 
   async listExperimentV2Overrides(runId: string) {
@@ -1817,6 +1840,7 @@ Usage:
   gamealgo experiment run status xrun_xxxxxxxxxxxxxxxx
   gamealgo experiment run evaluate xrun_xxxxxxxxxxxxxxxx --from 2026-07-01 --to 2026-07-07 --yes
   gamealgo experiment run report xrun_xxxxxxxxxxxxxxxx --round 1
+  gamealgo experiment run objective xrun_xxxxxxxxxxxxxxxx --objective active_days@1 --message "改为关注活跃天数" --yes
   gamealgo experiment run promote xrun_xxxxxxxxxxxxxxxx --variant bravo --message "采用胜出组" --yes
   gamealgo experiment run cancel xrun_xxxxxxxxxxxxxxxx --message "停止实验" --yes
   gamealgo experiment run traffic xrun_xxxxxxxxxxxxxxxx bravo --weight 0 --status paused --message "暂停异常组" --yes
