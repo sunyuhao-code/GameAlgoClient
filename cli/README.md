@@ -209,10 +209,21 @@ gamealgo experiment run promote xrun_xxxxxxxxxxxxxxxx --variant slower_ads --mes
 
 `baselineVariantId` 是本次评估的对照组，必须指向一个有流量的实验组。平台按小时更新“当前评估”；`report` 返回已生成的正式报告。`promote` 会把指定 variant 写回 Strategy 默认参数，并结束当前 Run。取消实验用：
 
-`objectiveTemplate` 必须显式选择，并在 Run 创建后保持不变：
+`objectiveTemplate` 必须显式选择：
 
 - `ltv_proxy@1`：优化标准化累计用户价值。
 - `active_days@1`：优化用户活跃天数，口径为 `1 + D1 回访率 + ... + Dk 回访率`。D0 记为 1 个活跃日，每个 Dx 只使用已经成熟到该天的实验进入用户，未回访用户按 0 计入。
+
+实验结束前可以显式修改追踪目标。修改不会重置实验分流、时间窗口、参数或脚本；平台会把当前评估标记为过期，并在下一轮评估中使用新目标重算已有实验窗口。托管实验一旦已有完成的轮次就不能修改目标，因为前后轮次不能使用不同的优选依据。
+
+```bash
+gamealgo experiment run objective xrun_xxxxxxxxxxxxxxxx \
+  --objective active_days@1 \
+  --message "改为关注用户活跃天数" \
+  --yes
+```
+
+已生成的正式轮次报告保留生成时的旧目标，不会被改写。
 
 ```bash
 gamealgo experiment run cancel xrun_xxxxxxxxxxxxxxxx --message "实验停止" --yes
