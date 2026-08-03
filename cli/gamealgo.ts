@@ -440,8 +440,9 @@ async function handleExperimentRun(client: GameAlgoAdminClient, args: string[], 
     await requireYes(flags, global, "experiment run create");
     const body = await readObjectFile(filePath, "experiment run");
     if (!optionalString(body.displayName)) throw new Error("experiment run requires displayName");
-    if (optionalString(body.objectiveTemplate) !== "ltv_proxy@1") {
-      throw new Error("experiment run requires objectiveTemplate: ltv_proxy@1");
+    const objectiveTemplate = optionalString(body.objectiveTemplate);
+    if (!objectiveTemplate || !["ltv_proxy@1", "active_days@1"].includes(objectiveTemplate)) {
+      throw new Error("experiment run requires objectiveTemplate: ltv_proxy@1 or active_days@1");
     }
     if (!optionalString(body.baselineVariantId)) {
       throw new Error("experiment run requires explicit baselineVariantId");

@@ -209,6 +209,11 @@ gamealgo experiment run promote xrun_xxxxxxxxxxxxxxxx --variant slower_ads --mes
 
 `baselineVariantId` 是本次评估的对照组，必须指向一个有流量的实验组。平台按小时更新“当前评估”；`report` 返回已生成的正式报告。`promote` 会把指定 variant 写回 Strategy 默认参数，并结束当前 Run。取消实验用：
 
+`objectiveTemplate` 必须显式选择，并在 Run 创建后保持不变：
+
+- `ltv_proxy@1`：优化标准化累计用户价值。
+- `active_days@1`：优化用户活跃天数，口径为 `1 + D1 回访率 + ... + Dk 回访率`。D0 记为 1 个活跃日，每个 Dx 只使用已经成熟到该天的实验进入用户，未回访用户按 0 计入。
+
 ```bash
 gamealgo experiment run cancel xrun_xxxxxxxxxxxxxxxx --message "实验停止" --yes
 ```
@@ -267,6 +272,8 @@ LTV Proxy (Dk) = STANDARDIZED_DAY_VALUE_D0 + ... + STANDARDIZED_DAY_VALUE_Dk
 `STANDARDIZED_DAY_VALUE_Dx` 使用所有在 Dx 已成熟的实验进入用户作为分母，未回访用户当日价值按 0 计入。广告曝光按广告类型和用户本地日内曝光序号分桶，每个桶使用本轮所有参与组在实验窗口内共同计算的参考 CPM，再加实际内购收入。
 
 所有实验组使用同一个 `k`。平台按参考周期固定 `k 上限 = min(14, minWindowDays - 3)`，再选择不超过上限、且每个参与组都至少有 10 个成熟进入用户的最大连续 Dx。延长只增加样本，不改变评分口径。平台用本轮真实用户和线上 MurmurHash 分流规则模拟大量随机 seed，估计当前游戏用户结构下的自然组间波动，并校正多实验组与逐日重复评估。实际收入、实际 ARPU、新用户留存和新用户 LTV 只作为诊断指标，不参与主指标计算。
+
+`active_days@1` 使用相同的共同成熟 `k`、随机化检验和正式胜出规则，收入和 LTV 指标仍作为诊断数据展示，但不参与主指标排序。
 
 所有会修改线上状态的实验命令都必须显式传 `--yes`。
 
