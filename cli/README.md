@@ -207,7 +207,7 @@ gamealgo experiment run report xrun_xxxxxxxxxxxxxxxx
 gamealgo experiment run promote xrun_xxxxxxxxxxxxxxxx --variant slower_ads --message "采用低频广告组" --yes
 ```
 
-`baselineVariantId` 是本次评估的对照组，必须指向一个有流量的实验组。平台按小时更新“当前评估”；`report` 返回已生成的正式报告。`promote` 会把指定 variant 写回 Strategy 默认参数，并结束当前 Run。取消实验用：
+`baselineVariantId` 是本次评估的对照组，必须指向一个有流量的实验组。平台按小时更新“当前评估”；`report` 返回已生成的正式报告。`promote` 可在手动或托管 Run 仍处于运行中时提前人工推全，不要求平台已经给出正式 winner。它会立即结束 Run，把指定 variant 的 `config` / `script` 写回 Strategy 默认参数，并淘汰其他实验组；必须通过 `--message` 记录人工推全原因。取消实验用：
 
 `objectiveTemplate` 必须显式选择：
 
