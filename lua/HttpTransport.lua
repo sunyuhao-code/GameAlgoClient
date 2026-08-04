@@ -18,6 +18,14 @@ end
 ---@param callback fun(error:string|nil,response:table|nil)
 function HttpTransport.Request(request, callback)
     callback = callback or function() end
+    local okHttp, httpManager = pcall(function()
+        return http
+    end)
+    if not okHttp or httpManager == nil then
+        callback("http client unavailable in this runtime", nil)
+        return nil
+    end
+
     local method = tostring(request.method or "GET"):upper()
     local httpMethod = METHOD_MAP[method]
     if not httpMethod then
@@ -25,7 +33,7 @@ function HttpTransport.Request(request, callback)
         return nil
     end
 
-    local client = http:Create()
+    local client = httpManager:Create()
         :SetUrl(request.url)
         :SetMethod(httpMethod)
         :SetTimeout(request.timeoutMs or 10000)

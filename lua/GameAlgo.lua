@@ -26,7 +26,7 @@ local DDA = requireSdkModule("DDA")
 
 local GameAlgo = {}
 
-local SDK_VERSION = "1.3.0-lua"
+local SDK_VERSION = "1.3.1-lua"
 local DEFAULT_BASE_URL = "https://game-algo-sdk.dictapis.cn"
 
 local state_ = {
