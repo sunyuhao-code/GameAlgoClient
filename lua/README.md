@@ -213,3 +213,32 @@ end)
 ```
 
 客户端 HTTP 请求由 `HttpTransport.lua` 异步执行，不依赖游戏服务端连接状态，也不要求在 update loop 中轮询网络请求。
+
+### Maker HTTP 全局变量兼容性
+
+TapTap Maker / UrhoX 的 `http` 可能由 Lua 全局环境的元表动态提供。普通的 `http` 访问可以正常触发元表查找，但 `rawget(_G, "http")` 会绕过元表并错误返回 `nil`，最终导致 SDK 报 `http client unavailable in this runtime`。
+
+**禁止使用下面的方式检测 HTTP 能力：**
+
+```lua
+if rawget(_G, "http") == nil then
+    -- 错误：Maker 中可能把可用的 http 判断为不存在。
+end
+```
+
+如果自定义 HTTP transport，必须通过普通全局访问并用 `pcall` 安全探测：
+
+```lua
+local okHttp, httpManager = pcall(function()
+    return http
+end)
+
+if not okHttp or httpManager == nil then
+    callback("http client unavailable in this runtime", nil)
+    return nil
+end
+
+local client = httpManager:Create()
+```
+
+官方 `HttpTransport.lua` 已包含这一兼容处理。接入游戏时应整体使用官方文件，不要额外添加基于 `rawget(_G, "http")` 的本地兜底补丁。
