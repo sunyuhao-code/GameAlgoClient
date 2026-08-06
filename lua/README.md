@@ -161,7 +161,7 @@ local enabled = GameAlgo.ConfigValue("ads.rewarded.enabled", true, "gameplay.jso
 
 ## 事件
 
-事件会先进入内存队列。如果配置还没准备好，`Flush` 会等待拿到 `contextId` 后再上传。
+事件会先进入内存队列。如果配置还没准备好，`Flush` 会等待拿到 `contextId` 后再上传。`GameAlgo.TrackAd` 在广告事件入队后会立即尝试 `Flush`，尽量避免玩家看完广告后很快退出或进程被终止而丢失尚未上传的 `ad_view`；连续触发时 SDK 会等待当前请求完成后继续提交，不会并发修改事件队列。
 
 ```lua
 GameAlgo.TrackLevelEnd({

@@ -26,7 +26,7 @@ local DDA = requireSdkModule("DDA")
 
 local GameAlgo = {}
 
-local SDK_VERSION = "1.3.1-lua"
+local SDK_VERSION = "1.3.2-lua"
 local DEFAULT_BASE_URL = "https://game-algo-sdk.dictapis.cn"
 
 local state_ = {
@@ -49,6 +49,9 @@ local state_ = {
     scripts = {},
     ddaControllers = {},
     queue = {},
+    flushing = false,
+    flushRequested = false,
+    pendingFlushCallbacks = {},
     maxBatchSize = 100,
     preloadConfigFiles = true,
     storage = nil,
@@ -536,7 +539,9 @@ function GameAlgo.TrackAd(placement, adType, revenue, currency, network, payload
     merged.revenue = revenue
     merged.currency = currency
     if network and network ~= "" then merged.network = network end
-    return GameAlgo.Track("ad_view", merged)
+    local tracked = GameAlgo.Track("ad_view", merged)
+    if tracked then GameAlgo.Flush(nil) end
+    return tracked
 end
 
 function GameAlgo.TrackPurchase(productId, revenue, currency, payload)
@@ -560,6 +565,11 @@ function GameAlgo.Flush(callback)
         if callback then callback("context not ready", nil) end
         return
     end
+    if state_.flushing then
+        state_.flushRequested = true
+        if callback then table.insert(state_.pendingFlushCallbacks, callback) end
+        return
+    end
     if #state_.queue == 0 then
         if callback then callback(nil, { ok = true, accepted = 0 }) end
         return
@@ -569,17 +579,38 @@ function GameAlgo.Flush(callback)
     for _, event in ipairs(batch) do
         event.contextId = state_.contextId
     end
+    state_.flushing = true
     httpRequest("POST", "/v1/events/batch", { events = batch }, function(error, result)
+        state_.flushing = false
+        local flushRequested = state_.flushRequested
+        local pendingCallbacks = state_.pendingFlushCallbacks
+        state_.flushRequested = false
+        state_.pendingFlushCallbacks = {}
+
         if error then
             for i = #batch, 1, -1 do
                 table.insert(state_.queue, 1, batch[i])
             end
             log("flush failed: " .. tostring(error))
             if callback then callback(error, nil) end
+            for _, pendingCallback in ipairs(pendingCallbacks) do
+                pendingCallback(error, nil)
+            end
             return
         end
         log("flush ok: accepted=" .. tostring(result and result.accepted or #batch))
         if callback then callback(nil, result) end
+        if flushRequested then
+            GameAlgo.Flush(function(nextError, nextResult)
+                for _, pendingCallback in ipairs(pendingCallbacks) do
+                    pendingCallback(nextError, nextResult)
+                end
+            end)
+        else
+            for _, pendingCallback in ipairs(pendingCallbacks) do
+                pendingCallback(nil, { ok = true, accepted = 0 })
+            end
+        end
     end)
 end
 
