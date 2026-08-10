@@ -578,20 +578,7 @@ async function handleExperimentRun(client: GameAlgoAdminClient, args: string[], 
     await printResult(await client.cancelExperimentV2Run(runId, message), global);
     return;
   }
-  if (sub === "traffic") {
-    const flags = parseFlags(args);
-    const runId = optionalString(flags.run || flags["run-id"] || flags.id) || optionalString(args.shift());
-    const variantId = optionalString(flags.variant || flags["variant-id"]) || optionalString(args.shift());
-    if (!runId || !variantId) throw new Error("usage: gamealgo experiment run traffic <runId> <variantId> [--weight n] [--status running|paused] --message <reason> --yes");
-    const message = requiredMessage(flags, "experiment run traffic");
-    await requireYes(flags, global, "experiment run traffic");
-    const body: Record<string, unknown> = { message };
-    if (flags.weight !== undefined) body.weight = optionalNonNegativeInteger(flags.weight, "weight");
-    if (flags.status !== undefined) body.status = optionalString(flags.status);
-    await printResult(await client.updateExperimentV2VariantTraffic(runId, variantId, body), global);
-    return;
-  }
-  throw new Error("usage: gamealgo experiment run <create|show|status|evaluate|report|objective|promote|cancel|traffic>");
+  throw new Error("usage: gamealgo experiment run <create|show|status|evaluate|report|objective|promote|cancel>");
 }
 
 function requiredMessage(flags: Record<string, string | boolean>, action: string): string {
@@ -1160,10 +1147,6 @@ class GameAlgoAdminClient {
 
   async deleteExperimentV2Override(runId: string, userId: string) {
     return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/experiment-runs-v2/${encodeURIComponent(runId)}/overrides/delete`, { userId });
-  }
-
-  async updateExperimentV2VariantTraffic(runId: string, variantId: string, body: Record<string, unknown>) {
-    return await this.patch(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/experiment-runs-v2/${encodeURIComponent(runId)}/variants/${encodeURIComponent(variantId)}/traffic`, body);
   }
 
   async listConfigFiles() {
@@ -1843,7 +1826,6 @@ Usage:
   gamealgo experiment run objective xrun_xxxxxxxxxxxxxxxx --objective active_days@1 --message "改为关注活跃天数" --yes
   gamealgo experiment run promote xrun_xxxxxxxxxxxxxxxx --variant bravo --message "采用胜出组" --yes
   gamealgo experiment run cancel xrun_xxxxxxxxxxxxxxxx --message "停止实验" --yes
-  gamealgo experiment run traffic xrun_xxxxxxxxxxxxxxxx bravo --weight 0 --status paused --message "暂停异常组" --yes
   gamealgo experiment override set xrun_xxxxxxxxxxxxxxxx --user user-1 --variant bravo --yes
   gamealgo experiment override list xrun_xxxxxxxxxxxxxxxx
 

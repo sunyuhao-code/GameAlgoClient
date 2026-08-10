@@ -177,6 +177,8 @@ GameAlgo.Flush()
 
 `GameAlgo.TrackAd` 上报的是 `ad_view`，只用于广告 SDK 确认实际产生收入的有效曝光。用户看了一部分广告后跳过，但广告 SDK 已确认本次曝光有效并产生收入，也应该调用 `TrackAd`；广告加载失败、未填充、播放失败，或广告 SDK 没有确认产生收入的展示，不要调用 `TrackAd`。
 
+TapTap Maker 的 `ShowRewardVideoAd` 关闭回调必须和“是否获得奖励”分开处理：**只要进入 `onClose` 回调，就调用一次 `GameAlgo.TrackAd`，不能放在 `if result.success then` 里面。** `result.success` 只表示用户是否完整看完广告、游戏是否应该发放奖励；用户提前关闭时通常仍然已经形成有效曝光和收入，也必须上报。加载失败、无填充或播放失败发生在展示前，不属于 `onClose` 有效曝光，只记录诊断事件。
+
 TapTap Maker / TapTap 小游戏接入时，广告和付费事件的 `currency` 统一使用 `CNY`。不要默认使用 `USD`。
 
 TapTap Maker 的广告回调 `result.extra` 中通常会包含内部广告 `trackId`。这是 GameAlgo 把 Maker 游戏埋点和内部广告收入数据串起来的关键字段。Maker 游戏上报 `ad_view` 时必须尽量把 `trackId` 放进 payload；广告收入可以先填 `0`，后续平台通过 `trackId` 回补真实收入。
@@ -188,18 +190,16 @@ sdk:ShowRewardVideoAd(function(result)
     result = result or {}
     local trackId = GameAlgo.ExtractAdTrackId(result)
 
-    -- exposureSuccess 由游戏根据 Maker 回调语义判断。
-    if exposureSuccess then
-        GameAlgo.TrackAd("classic_revive", "reward", 0, "CNY", "taptap", {
-            round = round,
-            wave = wave,
-            score = score,
-            kills = totalKills,
-            reviveCount = reviveCount,
-            action = result.success and "completed" or "skipped",
-            trackId = trackId,
-        })
-    end
+    -- 这是广告关闭回调：无论 result.success 是否为 true，都上报本次曝光。
+    GameAlgo.TrackAd("classic_revive", "reward", 0, "CNY", "taptap", {
+        round = round,
+        wave = wave,
+        score = score,
+        kills = totalKills,
+        reviveCount = reviveCount,
+        action = result.success and "completed" or "skipped",
+        trackId = trackId,
+    })
 
     if not trackId then
         GameAlgo.TrackEvent("ad_no_track_id", {
