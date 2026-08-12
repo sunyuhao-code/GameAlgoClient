@@ -436,7 +436,7 @@ async function handleExperimentRun(client: GameAlgoAdminClient, args: string[], 
     const flags = parseFlags(args);
     const strategyKey = optionalString(flags.strategy || flags.key) || optionalString(args.shift());
     const filePath = optionalString(flags.file || flags.input) || optionalString(args.shift());
-    if (!strategyKey || !filePath) throw new Error("usage: gamealgo experiment run create <strategyKey> <run.yaml> --yes");
+    if (!strategyKey || !filePath) throw new Error("usage: gamealgo experiment run create <strategyKey> <run.yaml> [--manual] --yes");
     await requireYes(flags, global, "experiment run create");
     const body = await readObjectFile(filePath, "experiment run");
     if (!optionalString(body.displayName)) throw new Error("experiment run requires displayName");
@@ -448,7 +448,24 @@ async function handleExperimentRun(client: GameAlgoAdminClient, args: string[], 
       throw new Error("experiment run requires explicit baselineVariantId");
     }
     validateExperimentRunVariantScripts(body.variants);
-    const runType = optionalString(body.type) || "manual";
+    const fileRunType = optionalString(body.type);
+    const flagRunType = optionalString(flags.type);
+    const manualFlag = flags.manual === true;
+    if (fileRunType && fileRunType !== "managed" && fileRunType !== "manual") {
+      throw new Error("experiment run type must be managed or manual");
+    }
+    if (flagRunType && flagRunType !== "managed" && flagRunType !== "manual") {
+      throw new Error("--type must be managed or manual");
+    }
+    if (manualFlag && flagRunType && flagRunType !== "manual") {
+      throw new Error("--manual conflicts with --type managed");
+    }
+    const requestedRunType = manualFlag ? "manual" : flagRunType;
+    if (requestedRunType && fileRunType && requestedRunType !== fileRunType) {
+      throw new Error(`experiment run type conflict: file uses ${fileRunType}, CLI requests ${requestedRunType}`);
+    }
+    const runType = requestedRunType || fileRunType || "managed";
+    body.type = runType;
     if (runType !== "managed" && body.startCondition !== undefined) {
       throw new Error("experiment run startCondition is supported only when type is managed");
     }
@@ -461,6 +478,8 @@ async function handleExperimentRun(client: GameAlgoAdminClient, args: string[], 
       if (!Number.isInteger(maxWindowDays) || maxWindowDays < minWindowDays || maxWindowDays > 60) {
         throw new Error("managed experiment run requires maxWindowDays between minWindowDays and 60");
       }
+    } else {
+      process.stderr.write("Warning: creating a manual experiment. The platform will not automatically extend, conclude, or promote it; use manual mode only when the developer will manage the experiment decision.\n");
     }
     const result = await client.createExperimentV2Run(strategyKey, body);
     await printResult(result, global);
@@ -1818,7 +1837,7 @@ Usage:
   gamealgo experiment strategy default ad_frequency strategy.yaml --yes
   gamealgo experiment strategy archive ad_frequency --yes
   gamealgo experiment strategy rollback ad_frequency --version-id xv_xxxxxxxxxxxxxxxx --message "回滚参数" --yes
-  gamealgo experiment run create ad_frequency run.yaml --yes
+  gamealgo experiment run create ad_frequency run.yaml [--manual] --yes
   gamealgo experiment run show xrun_xxxxxxxxxxxxxxxx
   gamealgo experiment run status xrun_xxxxxxxxxxxxxxxx
   gamealgo experiment run evaluate xrun_xxxxxxxxxxxxxxxx --from 2026-07-01 --to 2026-07-07 --yes

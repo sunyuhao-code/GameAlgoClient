@@ -161,15 +161,17 @@ gamealgo experiment strategy publish strategy.yaml --yes
 
 版本升级判断、Strategy 最低版本和托管实验覆盖率门槛的完整说明可通过 `gamealgo docs experiment-integration-versions` 获取。
 
-创建手动实验 Run：
+默认创建托管实验 Run。除非开发者具备专业的实验设计和统计判断能力，并且会持续人工管理实验，否则不要使用手动实验：
 
 ```yaml
 # run.yaml
-displayName: 广告频率第一轮
-type: manual
+displayName: 广告频率托管实验
 platform: ios
 objectiveTemplate: ltv_proxy@1
 baselineVariantId: control
+minWindowDays: 7
+maxWindowDays: 14
+maxVariantsPerRound: 2
 variants:
   - variantId: control
     weight: 1
@@ -191,11 +193,13 @@ variants:
 gamealgo experiment run create ad_frequency run.yaml --yes
 ```
 
+CLI 在未声明 `type` 时默认提交 `managed`。托管实验由平台管理轮次、在参考周期后判断是否需要延长，并在证据明确时完成后续轮次和推全；缺少 `minWindowDays` 或 `maxWindowDays` 会直接拒绝创建，不会静默套用周期。
+
 Run 不会继承 Strategy 的脚本。每个需要执行脚本的 variant 都必须显式配置 `script.versionId`；省略 `script` 明确表示该组是 config-only。即使多个 variant 使用同一份脚本，也要在每个 variant 上重复填写同一个不可变 `versionId`。
 
 如果要把当前默认参数也放进实验，需要显式配置 `variantId: default`。`default` 会快照 Strategy 当前默认参数，因此不能写 `config`；如果默认组需要执行脚本，也必须在 `default` 上显式写 `script.versionId`。否则默认参数不参与流量。所有有流量的实验组数量必须至少为 2。
 
-Run 创建后，用户不能修改 variant、权重或启停状态，否则同一用户可能换组，前后数据也无法按同一实验口径比较。手动实验的分流在整个 Run 内固定；需要改变时，先取消当前 Run，再使用新的 variant 和权重创建新 Run。托管实验只允许平台在轮次结束后按既定流程切换下一轮候选，用户同样不能干预流量。手动实验只表示由用户决定何时评估、推全或取消，不表示可以修改运行中的分流配置。
+Run 创建后，用户不能修改 variant、权重或启停状态，否则同一用户可能换组，前后数据也无法按同一实验口径比较。托管实验只允许平台在轮次结束后按既定流程切换下一轮候选，用户不能干预流量。需要改变候选或分流时，先取消当前 Run，再创建新 Run。
 
 查看、评估和完成实验闭环：
 
@@ -231,6 +235,22 @@ gamealgo experiment run objective xrun_xxxxxxxxxxxxxxxx \
 gamealgo experiment run cancel xrun_xxxxxxxxxxxxxxxx --message "实验停止" --yes
 ```
 
+### 高级用法：手动实验
+
+手动实验不会自动延长、形成最终结论或推全。只有开发者能够自行决定采集周期、判断统计证据并负责完成实验闭环时才使用。必须通过以下任一方式显式开启：
+
+```bash
+gamealgo experiment run create ad_frequency manual-run.yaml --manual --yes
+```
+
+或者在 Run 文件中明确填写：
+
+```yaml
+type: manual
+```
+
+手动 Run 不配置 `minWindowDays`、`maxWindowDays` 和 `startCondition`。其分流同样在整个 Run 内固定；需要调整分流时，取消当前 Run 后重新创建。
+
 回滚默认参数会创建一个新的参数版本，不会改写历史版本：
 
 ```bash
@@ -245,31 +265,13 @@ gamealgo experiment override list xrun_xxxxxxxxxxxxxxxx
 gamealgo experiment override delete xrun_xxxxxxxxxxxxxxxx --user user-1 --yes
 ```
 
-托管实验也是创建 `type: managed` 的 Run，平台会按轮次自动调整流量并最终推全胜出组：
+托管实验可以使用 `startCondition` 等待接入版本覆盖率和用户数达到门槛：
 
 ```yaml
-displayName: 广告频率托管实验
-type: managed
-platform: ios
-objectiveTemplate: ltv_proxy@1
-baselineVariantId: alpha
-minWindowDays: 7
-maxWindowDays: 14
-maxVariantsPerRound: 3
 # 可选：仅托管实验支持。最近 24 小时同时满足两个门槛后才开始首轮。
 startCondition:
   minCoverage: 0.8
   minUsers: 100
-variants:
-  - variantId: alpha
-    config: { firstAdLevel: 4, interval: 30 }
-    script: { versionId: sv_xxxxxxxxxxxxxxxx }
-  - variantId: bravo
-    config: { firstAdLevel: 5, interval: 30 }
-    script: { versionId: sv_xxxxxxxxxxxxxxxx }
-  - variantId: charlie
-    config: { firstAdLevel: 4, interval: 45 }
-    script: { versionId: sv_xxxxxxxxxxxxxxxx }
 ```
 
 `minCoverage` 表示指定平台最近 24 小时内，实验接入版本达到 Strategy `requiredIntegrationVersion` 的去重用户占比；`minUsers` 表示同一窗口内的非 Debug 去重用户数。两项可单独配置，同时配置时必须同时满足。等待期间 Strategy 继续下发默认参数，满足门槛后平台才生成首轮时间窗并开始分流。手动实验不支持 `startCondition`，托管实验不配置时仍会立即启动。`experiment run show` 返回 `startConditionSnapshot`，可查看当前用户数、覆盖率和最近检查时间。
