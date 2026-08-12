@@ -15,11 +15,6 @@ TapTap Maker 客户端支持直接访问 GameAlgo HTTPS API。接入时把以下
 ```lua
 local GameAlgo = require("GameAlgo")
 
-local tapUserId = nil
-if lobby and lobby.GetMyUserId then
-    tapUserId = tostring(lobby:GetMyUserId())
-end
-
 -- 必须接到游戏自己的持久化存档。单机游戏接本地存档，联网游戏接玩家服务端存档。
 -- GameSave.Get / GameSave.Set 是示例占位，请替换成当前游戏的真实存档接口。
 local gameAlgoStorage = {
@@ -37,7 +32,6 @@ GameAlgo.Init({
     appVersion = "1.0.0",
     experimentIntegrationVersion = 3,
     platform = "rest",
-    userId = tapUserId,
     storage = gameAlgoStorage,
     device = {
         runtime = "taptap_mini_game",
@@ -52,7 +46,7 @@ GameAlgo.Init({
 
 关于何时创建新版本、Strategy 最低版本和托管实验覆盖率门槛，运行 `gamealgo docs experiment-integration-versions --host <admin-host>` 查看当前平台规则。
 
-TapTap Maker 接入时推荐优先使用 Maker 环境提供的稳定用户 ID，例如 `lobby:GetMyUserId()`。这样同一个玩家跨会话、跨版本的实验分组和报表归因更稳定。不要使用昵称、头像、手机号等可识别信息作为 `userId`；如果当前运行时拿不到 Maker 用户 ID，可以传 `nil`，SDK 会退回到本地匿名 ID。
+Lua SDK 会自动调用 Maker 环境的 `lobby:GetMyUserId()` 作为稳定用户 ID，游戏接入代码不需要读取或传入该值。如果当前运行时拿不到 Maker 用户 ID，SDK 会从 `storage` 读取已有匿名 ID，或生成并持久化一个新的匿名 ID。只有非 Maker 环境确实具有自己的稳定账号 ID 时才需要显式传入 `userId`；不要使用昵称、头像、手机号等可识别信息作为 `userId`。
 
 ### 持久化存储
 

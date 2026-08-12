@@ -26,7 +26,7 @@ local DDA = requireSdkModule("DDA")
 
 local GameAlgo = {}
 
-local SDK_VERSION = "1.3.2-lua"
+local SDK_VERSION = "1.3.3-lua"
 local DEFAULT_BASE_URL = "https://game-algo-sdk.dictapis.cn"
 
 local state_ = {
@@ -185,6 +185,23 @@ local function validateStorage(storage)
                 .. "or GetItem(key)/SetItem(key, value)"
         )
     end
+end
+
+local function resolveMakerUserId()
+    -- Maker exposes some globals through the Lua environment metatable, so the
+    -- lookup must preserve the environment's normal index behavior.
+    local okLobby, makerLobby = pcall(function() return lobby end)
+    if not okLobby or makerLobby == nil then return nil end
+
+    local okGetter, getter = pcall(function() return makerLobby.GetMyUserId end)
+    if not okGetter or type(getter) ~= "function" then return nil end
+
+    local okUserId, userId = pcall(function() return makerLobby:GetMyUserId() end)
+    if not okUserId or userId == nil then return nil end
+
+    local normalized = tostring(userId)
+    if normalized == "" then return nil end
+    return normalized
 end
 
 local function ensureIdentity(explicitUserId)
@@ -354,7 +371,11 @@ function GameAlgo.Init(options)
     state_.preloadConfigFiles = options.preloadConfigFiles ~= false
     state_.sessionId = options.sessionId or randomId("ga_session")
     state_.sessionStartMs = nowMs()
-    ensureIdentity(options.userId)
+    local resolvedUserId = options.userId
+    if resolvedUserId == nil or resolvedUserId == "" then
+        resolvedUserId = resolveMakerUserId()
+    end
+    ensureIdentity(resolvedUserId)
     if type(state_.transport.Start) == "function" then state_.transport.Start(options.transportOptions) end
     if not state_.gameKey or state_.gameKey == "" then
         log("missing gameKey; config and event requests will be rejected")
