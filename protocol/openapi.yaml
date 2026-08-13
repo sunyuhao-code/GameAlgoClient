@@ -121,6 +121,32 @@ paths:
         "500":
           $ref: "#/components/responses/ServerError"
 
+  /v1/context-identifiers:
+    post:
+      summary: Sync one asynchronous SDK/device identifier for the active user and context.
+      operationId: syncContextIdentifier
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContextIdentifierRequest"
+      responses:
+        "200":
+          description: Accepted identifier update or deletion.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContextIdentifierResponse"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/MissingGameKey"
+        "403":
+          $ref: "#/components/responses/InvalidGameKey"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
 components:
   securitySchemes:
     gameKey:
@@ -396,6 +422,57 @@ components:
           type: integer
           minimum: 0
         attributionHash:
+          type: string
+
+    ContextIdentifierRequest:
+      type: object
+      required:
+        - userId
+        - sessionId
+        - contextId
+        - platform
+        - identifierType
+        - identifierValue
+      properties:
+        userId:
+          type: string
+          minLength: 1
+          description: GameAlgo userId; this is also the GameAlgo device identifier.
+        sessionId:
+          type: string
+          minLength: 1
+        contextId:
+          type: string
+          minLength: 1
+        platform:
+          type: string
+          enum: [ios, android, rest]
+        identifierType:
+          type: string
+          enum: [adjust_adid, firebase_app_instance_id, gaid]
+        identifierValue:
+          type: [string, "null"]
+          description: Null clears the latest mapping for this identifier type.
+        observedAt:
+          type: string
+          format: date-time
+        identifierHash:
+          type: string
+          pattern: "^sha256:[a-f0-9]{64}$"
+
+    ContextIdentifierResponse:
+      type: object
+      required:
+        - ok
+        - accepted
+        - identifierHash
+      properties:
+        ok:
+          type: boolean
+        accepted:
+          type: integer
+          minimum: 0
+        identifierHash:
           type: string
 
     ErrorResponse:

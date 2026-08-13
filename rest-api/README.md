@@ -47,6 +47,16 @@ const gameplay = await client.fetchConfigFile("gameplay.json");
 
 helper 默认会把 user id、配置拉取、实验分组、配置文件和脚本预加载状态输出到 `console.log`。传入 `logger: false` 可以关闭日志，也可以传入自定义 logger 函数。
 
+异步取得设备标识后可以分别上报，不需要等待三个值同时返回：
+
+```ts
+await client.setAdjustAdid(adjustAdid);
+await client.setFirebaseAppInstanceId(appInstanceId);
+await client.setGoogleAdvertisingId(gaid);
+```
+
+Helper 会自动关联当前 `contextId` 和 GameAlgo `userId`，并按标识类型分别做 ACK 去重。`userId` 本身就是 GameAlgo 设备标识，不需要再传一个 `gamealgoDeviceId`。用户撤回授权或标识不可用时传 `null`，用于清除旧映射。
+
 如果实验分组包含 `script`，`executor.execute(state)` 会执行预加载脚本。只有 config 的实验会直接把 config 作为 execution payload 返回。
 
 ## DDA 行为窗口
@@ -190,7 +200,28 @@ curl -s -X POST "https://gamealgo.example.com/v1/events/batch" \
 - 测试设备或 QA 包设置 `isDebug=true`
 - 业务字段放在扁平的 `payload` object 中
 
-## 5. 标准事件
+## 5. 上报异步设备标识
+
+无法使用 helper 时，可在 `/v1/config` 已返回 `contextId` 后直接调用：
+
+```bash
+curl -s -X POST "https://gamealgo.example.com/v1/context-identifiers" \
+  -H "X-GameAlgo-Key: ga_live_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": "user-001",
+    "sessionId": "session-001",
+    "contextId": "ctx-001",
+    "platform": "android",
+    "identifierType": "firebase_app_instance_id",
+    "identifierValue": "firebase-instance-id",
+    "observedAt": "2026-08-13T10:00:00Z"
+  }'
+```
+
+`identifierType` 只允许 `adjust_adid`、`firebase_app_instance_id`、`gaid`。传 `identifierValue: null` 表示清除该类型的旧映射。不要把这些标识放入普通事件 payload；只在用户授权且符合应用隐私政策时采集。
+
+## 6. 标准事件
 
 推荐事件类型：
 
@@ -221,7 +252,7 @@ _button_click
 _tutorial_skip
 ```
 
-## 6. 错误响应
+## 7. 错误响应
 
 ```json
 {
@@ -241,7 +272,7 @@ _tutorial_skip
 | 429 | `rate_limited` |
 | 500 | `server_error` |
 
-## 7. 接入检查清单
+## 8. 接入检查清单
 
 - 已配置有效 `gameKey`。
 - `/v1/config` 能返回实验和配置文件。
@@ -253,7 +284,7 @@ _tutorial_skip
 - QA 包设置 `isDebug=true`。
 - 客户端运行时只使用 `ga_live_*`。QA/测试环境如需区分，可以创建单独命名的 Client Game Key，并设置 `isDebug=true`。
 
-## 8. Node 示例
+## 9. Node 示例
 
 ```bash
 GAMEALGO_BASE_URL=https://gamealgo.example.com \

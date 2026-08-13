@@ -12,6 +12,8 @@ export type {
   ConfigFileRef,
   ConfigFileResponse,
   ConfigResponse,
+  ContextIdentifierResponse,
+  ContextIdentifierType,
   EventBatchResponse,
   ExperimentAssignment,
   FetchConfigOptions,

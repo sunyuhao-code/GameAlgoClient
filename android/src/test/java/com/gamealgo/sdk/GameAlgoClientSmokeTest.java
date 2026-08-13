@@ -21,6 +21,7 @@ public final class GameAlgoClientSmokeTest {
         testUploadEventsFillsDefaults();
         testSetAttributionPostsOnceUntilItChanges();
         testSetAttributionNormalizesAdjustNoConsentAsUnknown();
+        testContextIdentifierSettersUploadIndependentlyAndDeduplicate();
         testTrackerBuffersEventsUntilContextIsReady();
         testTrackerQueuesAndFlushesEvents();
         testCustomEventsPreservePayload();
@@ -472,6 +473,53 @@ public final class GameAlgoClientSmokeTest {
 
         Map<String, Object> body = requestBody(httpClient.requests.get(0));
         check("unknown".equals(body.get("status")), "no-consent attribution should be unknown");
+    }
+
+    private static void testContextIdentifierSettersUploadIndependentlyAndDeduplicate() throws Exception {
+        String adjustHash = sha256("{\"identifierType\":\"adjust_adid\",\"identifierValue\":\"adjust-1\"}");
+        String firebaseHash = sha256("{\"identifierType\":\"firebase_app_instance_id\",\"identifierValue\":\"firebase-1\"}");
+        String gaidHash = sha256("{\"identifierType\":\"gaid\",\"identifierValue\":null}");
+        FakeHttpClient httpClient = new FakeHttpClient();
+        httpClient.enqueue(jsonResponse(configJson("v1")));
+        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":1,\"identifierHash\":\"" + adjustHash + "\"}"));
+        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":1,\"identifierHash\":\"" + firebaseHash + "\"}"));
+        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":1,\"identifierHash\":\"" + gaidHash + "\"}"));
+        MemoryCacheStorage cache = new MemoryCacheStorage();
+        GameAlgoClient client = new GameAlgoClient(
+                "ga_live_test_key_0123456789abcdef",
+                "https://gamealgo.test/algo_sdk",
+                "1.0.0",
+                null,
+                "android",
+                httpClient,
+                new FakeScriptRuntime(),
+                cache,
+                null,
+                GameAlgoLogger.console(),
+                false
+        );
+
+        client.fetchConfig("u1");
+        GameAlgoContextIdentifierResponse first = client.setAdjustAdid("adjust-1");
+        GameAlgoContextIdentifierResponse duplicate = client.setAdjustAdid("adjust-1");
+        client.setFirebaseAppInstanceId("firebase-1");
+        client.setGoogleAdvertisingId("00000000-0000-0000-0000-000000000000");
+
+        check(first.getAccepted() == 1, "first context identifier should upload");
+        check(duplicate.getAccepted() == 0, "duplicate context identifier should use ack cache");
+        check(httpClient.requests.size() == 4, "config plus three identifier requests should be sent");
+        List<String> types = new ArrayList<>();
+        for (int index = 1; index < httpClient.requests.size(); index++) {
+            GameAlgoHttpRequest request = httpClient.requests.get(index);
+            check("https://gamealgo.test/algo_sdk/v1/context-identifiers".equals(request.getUrl().toString()), "context identifier URL should match Protocol v1");
+            types.add((String) requestBody(request).get("identifierType"));
+        }
+        check(types.equals(Arrays.asList("adjust_adid", "firebase_app_instance_id", "gaid")), "identifier types should upload independently");
+        Map<String, Object> adjustBody = requestBody(httpClient.requests.get(1));
+        Map<String, Object> gaidBody = requestBody(httpClient.requests.get(3));
+        check("ctx-1".equals(adjustBody.get("contextId")), "context identifier should include current contextId");
+        check("u1".equals(adjustBody.get("userId")), "context identifier should include GameAlgo userId");
+        check(gaidBody.containsKey("identifierValue") && gaidBody.get("identifierValue") == null, "zero GAID should become a deletion");
     }
 
     private static void testTrackerBuffersEventsUntilContextIsReady() throws Exception {

@@ -198,6 +198,18 @@ public struct GameAlgoUserAttributionResponse: Sendable, Equatable, Codable {
     }
 }
 
+public struct GameAlgoContextIdentifierResponse: Sendable, Equatable, Codable {
+    public let ok: Bool
+    public let accepted: Int
+    public let identifierHash: String
+
+    public init(ok: Bool, accepted: Int, identifierHash: String) {
+        self.ok = ok
+        self.accepted = accepted
+        self.identifierHash = identifierHash
+    }
+}
+
 public struct GameAlgoExecutionResult: Sendable, Equatable {
     public let payload: JSONValue
     public let diagnostics: JSONValue

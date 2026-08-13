@@ -1,6 +1,8 @@
 import type {
   ConfigFileResponse,
   ConfigResponse,
+  ContextIdentifierResponse,
+  ContextIdentifierType,
   EventBatchResponse,
   EventPayload,
   EventPayloadValue,
@@ -59,6 +61,7 @@ export class GameAlgoRestClient {
   private readonly logger?: (message: string) => void;
   private readonly snapshotCacheKey: string;
   private readonly attributionAckCacheKey: string;
+  private readonly contextIdentifierAckCacheKey: string;
   private readonly userIdKey = "gamealgo_user_id";
   private readonly userCreatedAtKey = "gamealgo_user_created_at";
   private readonly userCreatedLocalAtKey = "gamealgo_user_created_local_at";
@@ -91,6 +94,7 @@ export class GameAlgoRestClient {
     const baseCacheNamespace = normalizedBaseUrl(this.baseUrl);
     this.snapshotCacheKey = options.cacheKey ?? `gamealgo:v1:snapshot:${baseCacheNamespace}:${this.gameKey.slice(0, 16)}`;
     this.attributionAckCacheKey = `gamealgo:v1:attribution:${baseCacheNamespace}:${this.gameKey.slice(0, 16)}`;
+    this.contextIdentifierAckCacheKey = `gamealgo:v1:context-identifier:${baseCacheNamespace}:${this.gameKey.slice(0, 16)}`;
     this.config = new GameAlgoConfigReader(() => this.snapshot);
     this.tracker = new GameAlgoEventTracker({
       uploadEvents: (events) => this.uploadEvents(events),
@@ -403,6 +407,55 @@ export class GameAlgoRestClient {
       await this.storage?.setItem(ackKey, response.attributionHash);
     }
     this.log(`attribution synced: provider=${provider}, accepted=${response.accepted}`);
+    return response;
+  }
+
+  async setAdjustAdid(value: string | null, observedAt?: string): Promise<ContextIdentifierResponse> {
+    return this.setContextIdentifier("adjust_adid", value, observedAt);
+  }
+
+  async setFirebaseAppInstanceId(value: string | null, observedAt?: string): Promise<ContextIdentifierResponse> {
+    return this.setContextIdentifier("firebase_app_instance_id", value, observedAt);
+  }
+
+  async setGoogleAdvertisingId(value: string | null, observedAt?: string): Promise<ContextIdentifierResponse> {
+    return this.setContextIdentifier("gaid", value, observedAt);
+  }
+
+  private async setContextIdentifier(
+    identifierType: ContextIdentifierType,
+    value: string | null,
+    observedAt?: string,
+  ): Promise<ContextIdentifierResponse> {
+    if (!this.snapshot.config && this.readyPromise) await this.readyPromise;
+    const contextId = clean(this.snapshot.config?.contextId);
+    if (!contextId) throw new Error("config context is not ready");
+
+    const identity = await this.userIdentity();
+    const identifierValue = normalizeContextIdentifier(identifierType, value);
+    const identifierHash = await sha256(JSON.stringify({ identifierType, identifierValue }));
+    const ackKey = `${this.contextIdentifierAckCacheKey}:${identifierType}`;
+    if (await this.storage?.getItem(ackKey) === identifierHash) {
+      this.log(`context identifier already synced: type=${identifierType}`);
+      return { ok: true, accepted: 0, identifierHash };
+    }
+
+    const response = await this.requestJson<ContextIdentifierResponse>(this.url("/v1/context-identifiers"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        userId: identity.userId,
+        sessionId: this.tracker.currentSessionId(),
+        contextId,
+        platform: this.platform,
+        identifierType,
+        identifierValue,
+        observedAt: clean(observedAt) ?? new Date(this.now()).toISOString(),
+        identifierHash,
+      }),
+    });
+    await this.storage?.setItem(ackKey, response.identifierHash);
+    this.log(`context identifier synced: type=${identifierType}, accepted=${response.accepted}`);
     return response;
   }
 
@@ -1034,6 +1087,13 @@ function normalizedBaseUrl(url: URL): string {
 function clean(value: string | undefined | null): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function normalizeContextIdentifier(type: ContextIdentifierType, value: string | null): string | null {
+  const cleaned = clean(value);
+  if (!cleaned) return null;
+  if (type === "gaid" && /^0{8}-0{4}-0{4}-0{4}-0{12}$/i.test(cleaned)) return null;
+  return cleaned;
 }
 
 function normalizeExperimentIntegrationVersion(value: number | undefined): number {

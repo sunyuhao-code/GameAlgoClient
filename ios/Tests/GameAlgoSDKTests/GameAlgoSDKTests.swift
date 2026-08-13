@@ -554,6 +554,50 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(body["status"] as? String, "unknown")
     }
 
+    func testContextIdentifierSettersUploadIndependentlyAndDeduplicate() async throws {
+        let suiteName = "GameAlgoSDKTests.contextIdentifiers.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let adjustHash = GameAlgoSHA256.hash("{\"identifierType\":\"adjust_adid\",\"identifierValue\":\"adjust-1\"}")
+        let firebaseHash = GameAlgoSHA256.hash("{\"identifierType\":\"firebase_app_instance_id\",\"identifierValue\":\"firebase-1\"}")
+        let gaidHash = GameAlgoSHA256.hash("{\"identifierType\":\"gaid\",\"identifierValue\":null}")
+        let httpClient = MockHTTPClient()
+        try await httpClient.enqueueJSON(configResponse(version: "v1"))
+        try await httpClient.enqueueJSON(["ok": true, "accepted": 1, "identifierHash": adjustHash])
+        try await httpClient.enqueueJSON(["ok": true, "accepted": 1, "identifierHash": firebaseHash])
+        try await httpClient.enqueueJSON(["ok": true, "accepted": 1, "identifierHash": gaidHash])
+        let sdk = GameAlgoSDK(
+            gameKey: gameKey,
+            baseURL: URL(string: "https://gamealgo.test/algo_sdk")!,
+            httpClient: httpClient,
+            userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
+            userId: "u1",
+            _autoStart: false,
+            now: { Date(timeIntervalSince1970: 1_779_962_400) }
+        )
+
+        _ = try await sdk.fetchConfig(userId: "u1")
+        let first = try await sdk.setAdjustAdid("adjust-1")
+        let duplicate = try await sdk.setAdjustAdid("adjust-1")
+        _ = try await sdk.setFirebaseAppInstanceId("firebase-1")
+        _ = try await sdk.setGoogleAdvertisingId("00000000-0000-0000-0000-000000000000")
+
+        let requests = await httpClient.requests
+        let identifierRequests = Array(requests.dropFirst())
+        let bodies = try identifierRequests.map(requestBody)
+        XCTAssertEqual(first.accepted, 1)
+        XCTAssertEqual(duplicate.accepted, 0)
+        XCTAssertEqual(identifierRequests.count, 3)
+        XCTAssertTrue(identifierRequests.allSatisfy { $0.url.absoluteString == "https://gamealgo.test/algo_sdk/v1/context-identifiers" })
+        XCTAssertEqual(bodies.compactMap { $0["identifierType"] as? String }, ["adjust_adid", "firebase_app_instance_id", "gaid"])
+        XCTAssertEqual(bodies[0]["contextId"] as? String, "ctx-1")
+        XCTAssertEqual(bodies[0]["userId"] as? String, "u1")
+        XCTAssertTrue(bodies[2]["identifierValue"] is NSNull)
+        XCTAssertEqual(bodies[2]["identifierHash"] as? String, gaidHash)
+    }
+
     func testTrackerQueuesAndFlushesEventsAfterReadyIdentifiesUser() async throws {
         let suiteName = "GameAlgoSDKTests.tracker.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
