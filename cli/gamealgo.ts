@@ -123,6 +123,10 @@ async function main(): Promise<void> {
       await handleEvents(client, args, global);
       return;
     }
+    if (command === "integration") {
+      await handleIntegration(client, args, global);
+      return;
+    }
     if (command === "marketing") {
       await handleMarketing(client, args, global);
       return;
@@ -866,8 +870,39 @@ async function handleReport(client: GameAlgoAdminClient, args: string[], global:
 
 async function handleEvents(client: GameAlgoAdminClient, args: string[], global: ReturnType<typeof parseGlobalFlags>): Promise<void> {
   const sub = args.shift();
-  if (sub !== "count") throw new Error("usage: gamealgo events count [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--event-type level_end]");
   const flags = parseFlags(args);
+  if (sub === "list") {
+    if (args.length) throw new Error("usage: gamealgo events list [--days 30] [--no-diagnostics]");
+    const days = Number(flags.days || 30);
+    if (!Number.isInteger(days) || days < 1 || days > 90) throw new Error("--days must be an integer between 1 and 90");
+    await writeEventCatalogOutput(
+      await client.listEventCatalog(days, flags["no-diagnostics"] !== true),
+      flags,
+      global,
+    );
+    return;
+  }
+  if (sub === "get") {
+    const eventType = args.shift();
+    if (!eventType || args.length) throw new Error("usage: gamealgo events get <eventType>");
+    await writeEventCatalogOutput(await client.getEventCatalog(eventType), flags, global);
+    return;
+  }
+  if (sub === "apply") {
+    const filePath = args.shift();
+    if (!filePath || args.length) throw new Error("usage: gamealgo events apply <events.yaml>");
+    const content = await readObjectFile(filePath, "event catalog");
+    await writeEventCatalogOutput(await client.applyEventCatalog(content), flags, global);
+    return;
+  }
+  if (sub === "deprecate") {
+    const eventType = args.shift();
+    if (!eventType || args.length) throw new Error("usage: gamealgo events deprecate <eventType> [--yes]");
+    if (!flags.yes && !(await confirm(`Deprecate event ${eventType}?`))) throw new Error("Cancelled");
+    await writeEventCatalogOutput(await client.deprecateEventCatalog(eventType), flags, global);
+    return;
+  }
+  if (sub !== "count") throw new Error("usage: gamealgo events <list|get|apply|deprecate|count>");
   const timeoutMs = reportTimeoutMs(flags);
   const startedAt = Date.now();
   const stopProgress = startProgress("Querying event counts", timeoutMs);
@@ -890,6 +925,51 @@ async function handleEvents(client: GameAlgoAdminClient, args: string[], global:
     return;
   }
   await printResult(outputValue, global);
+}
+
+async function writeEventCatalogOutput(
+  value: unknown,
+  flags: Record<string, string | boolean>,
+  global: ReturnType<typeof parseGlobalFlags>,
+): Promise<void> {
+  if (flags.out) {
+    const filePath = String(flags.out);
+    const content = filePath.endsWith(".json") ? JSON.stringify(value, null, 2) + "\n" : YAML.stringify(value);
+    await writeTextFile(filePath, content);
+    await printResult({ ok: true, out: filePath }, global);
+    return;
+  }
+  await printResult(value, global);
+}
+
+async function handleIntegration(client: GameAlgoAdminClient, args: string[], global: ReturnType<typeof parseGlobalFlags>): Promise<void> {
+  const sub = args.shift();
+  const flags = parseFlags(args);
+  if (args.length) throw new Error("unexpected positional arguments for integration command");
+  const environment = integrationEnvironment(flags.environment);
+  const platform = integrationPlatform(flags.platform);
+
+  if (sub === "get-plan" || sub === "plan") {
+    const response = await client.getIntegrationPlan(environment, platform);
+    await writeIntegrationOutput(response, flags, global);
+    return;
+  }
+
+  throw new Error("usage: gamealgo integration get-plan --environment <domestic|overseas> --platform <ios|android|maker|rest>");
+}
+
+async function writeIntegrationOutput(
+  value: unknown,
+  flags: Record<string, string | boolean>,
+  global: ReturnType<typeof parseGlobalFlags>,
+): Promise<void> {
+  if (flags.out) {
+    if (typeof flags.out !== "string") throw new Error("--out requires a file path");
+    await writeTextFile(flags.out, JSON.stringify(value, null, 2) + "\n");
+    await printResult({ ok: true, out: flags.out }, global);
+    return;
+  }
+  await printResult(value, global);
 }
 
 async function handleMarketing(client: GameAlgoAdminClient, args: string[], global: ReturnType<typeof parseGlobalFlags>): Promise<void> {
@@ -1239,6 +1319,28 @@ class GameAlgoAdminClient {
 
   async countEvents(body: Record<string, unknown>, options: { timeoutMs?: number } = {}) {
     return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/events/count`, body, options);
+  }
+
+  async listEventCatalog(days = 30, diagnostics = true) {
+    const params = new URLSearchParams({ days: String(days), diagnostics: diagnostics ? "1" : "0" });
+    return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/events/catalog?${params.toString()}`);
+  }
+
+  async getEventCatalog(eventType: string) {
+    return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/events/catalog/${encodeURIComponent(eventType)}`);
+  }
+
+  async applyEventCatalog(content: Record<string, unknown>) {
+    return await this.put(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/events/catalog`, content);
+  }
+
+  async deprecateEventCatalog(eventType: string) {
+    return await this.post(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/events/catalog/${encodeURIComponent(eventType)}/deprecate`, {});
+  }
+
+  async getIntegrationPlan(environment: string, platform: string) {
+    const params = new URLSearchParams({ environment, platform });
+    return await this.get(`/admin/v1/games/${encodeURIComponent(await this.gameId())}/integration/plan?${params.toString()}`);
   }
 
   async getAdjustMarketing() {
@@ -1782,6 +1884,18 @@ function normalizeHost(value: string): string {
   return value.trim().replace(/\/+$/, "");
 }
 
+function integrationEnvironment(value: unknown): "domestic" | "overseas" {
+  const environment = optionalString(value);
+  if (environment === "domestic" || environment === "overseas") return environment;
+  throw new Error("--environment must be domestic or overseas");
+}
+
+function integrationPlatform(value: unknown): "ios" | "android" | "maker" | "rest" {
+  const platform = optionalString(value);
+  if (platform === "ios" || platform === "android" || platform === "maker" || platform === "rest") return platform;
+  throw new Error("--platform must be ios, android, maker, or rest");
+}
+
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
@@ -1824,6 +1938,8 @@ Usage:
   gamealgo docs report-packs --json
   gamealgo docs experiment-integration-versions --open
   gamealgo docs --host <admin-url>
+
+  gamealgo integration get-plan --environment domestic --platform maker --out gamealgo-integration-plan.json
 
   gamealgo experiment strategies
   gamealgo experiment strategies --include-archived
@@ -1873,6 +1989,10 @@ Usage:
 
   gamealgo events count --from 2026-06-23 --to 2026-06-23
   gamealgo events count --from 2026-06-23 --to 2026-06-23 --event-type level_end
+  gamealgo events list --days 30
+  gamealgo events get level_start
+  gamealgo events apply gamealgo-events.yaml
+  gamealgo events deprecate old_event --yes
 
   gamealgo marketing adjust get
   gamealgo marketing adjust configure --api-token <token> --app-token <app-token> --platform ios --currency USD
