@@ -1,6 +1,6 @@
 {
   "name": "gamealgo-cli",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "GameAlgo command-line client for AI agents and game developers",
   "type": "module",
   "bin": {
