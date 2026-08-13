@@ -611,6 +611,56 @@ test("setAttribution normalizes Adjust no-consent attribution as unknown", async
   assert.equal(requests.length, 1);
 });
 
+test("context identifier setters upload independently and deduplicate each type", async () => {
+  const storage = new MapStorage();
+  const identifiers: Array<Record<string, unknown>> = [];
+  const client = createClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    userId: "u1",
+    storage,
+    autoStart: false,
+    now: () => Date.parse("2026-05-28T10:00:00.000Z"),
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      if (request.url.endsWith("/v1/config")) {
+        return jsonResponse({
+          contextId: "ctx-1",
+          gameId: "Mahjong",
+          environment: "live",
+          configVersion: "v1",
+          ttlSeconds: 60,
+          serverTime: "2026-05-28T10:00:00.000Z",
+          experiments: [],
+          configFiles: [],
+        });
+      }
+      assert.equal(request.url, "https://gamealgo.test/v1/context-identifiers");
+      const body = await request.json() as Record<string, unknown>;
+      identifiers.push(body);
+      return jsonResponse({ ok: true, accepted: 1, identifierHash: body.identifierHash });
+    },
+  });
+
+  await client.fetchConfig({ userId: "u1" });
+  const first = await client.setAdjustAdid("adjust-1");
+  const duplicate = await client.setAdjustAdid("adjust-1");
+  await client.setFirebaseAppInstanceId("firebase-1");
+  await client.setGoogleAdvertisingId("00000000-0000-0000-0000-000000000000");
+
+  assert.equal(first.accepted, 1);
+  assert.equal(duplicate.accepted, 0);
+  assert.equal(identifiers.length, 3);
+  assert.deepEqual(identifiers.map((item) => item.identifierType), [
+    "adjust_adid",
+    "firebase_app_instance_id",
+    "gaid",
+  ]);
+  assert.equal(identifiers[2].identifierValue, null);
+  assert.equal(identifiers[0].contextId, "ctx-1");
+  assert.equal(identifiers[0].userId, "u1");
+});
+
 test("tracker buffers events until context is ready", async () => {
   let uploadedEvents: Array<Record<string, unknown>> = [];
   const client = createClient({

@@ -95,6 +95,14 @@ export type UserAttributionResponse = {
   attributionHash: string;
 };
 
+export type ContextIdentifierType = "adjust_adid" | "firebase_app_instance_id" | "gaid";
+
+export type ContextIdentifierResponse = {
+  ok: boolean;
+  accepted: number;
+  identifierHash: string;
+};
+
 export type GameAlgoRestClientOptions = {
   baseUrl: string;
   gameKey: string;

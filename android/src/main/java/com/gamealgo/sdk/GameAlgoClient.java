@@ -37,6 +37,7 @@ public final class GameAlgoClient {
     private final GameAlgoCacheStorage cacheStorage;
     private final String snapshotCacheKey;
     private final String attributionAckCacheKey;
+    private final String contextIdentifierAckCacheKey;
     private final GameAlgoLogger logger;
     private final GameAlgoSnapshotStore snapshotStore;
     private final GameAlgoConfigReader configReader;
@@ -150,6 +151,7 @@ public final class GameAlgoClient {
         this.cacheStorage = cacheStorage;
         this.snapshotCacheKey = cacheKey == null ? "gamealgo:v1:snapshot:" + this.baseUrl + ":" + gameKey.substring(0, Math.min(16, gameKey.length())) : cacheKey;
         this.attributionAckCacheKey = "gamealgo:v1:attribution:" + this.baseUrl + ":" + gameKey.substring(0, Math.min(16, gameKey.length()));
+        this.contextIdentifierAckCacheKey = "gamealgo:v1:context-identifier:" + this.baseUrl + ":" + gameKey.substring(0, Math.min(16, gameKey.length()));
         this.logger = logger;
         this.snapshotStore = new GameAlgoSnapshotStore();
         this.configReader = new GameAlgoConfigReader(snapshotStore);
@@ -461,6 +463,92 @@ public final class GameAlgoClient {
         return response;
     }
 
+    public GameAlgoContextIdentifierResponse setAdjustAdid(String value) throws GameAlgoException {
+        return setContextIdentifierAfterReady("adjust_adid", value, null);
+    }
+
+    public GameAlgoContextIdentifierResponse setAdjustAdid(String value, String observedAt) throws GameAlgoException {
+        return setContextIdentifierAfterReady("adjust_adid", value, observedAt);
+    }
+
+    public GameAlgoContextIdentifierResponse setFirebaseAppInstanceId(String value) throws GameAlgoException {
+        return setContextIdentifierAfterReady("firebase_app_instance_id", value, null);
+    }
+
+    public GameAlgoContextIdentifierResponse setFirebaseAppInstanceId(String value, String observedAt) throws GameAlgoException {
+        return setContextIdentifierAfterReady("firebase_app_instance_id", value, observedAt);
+    }
+
+    public GameAlgoContextIdentifierResponse setGoogleAdvertisingId(String value) throws GameAlgoException {
+        return setContextIdentifierAfterReady("gaid", value, null);
+    }
+
+    public GameAlgoContextIdentifierResponse setGoogleAdvertisingId(String value, String observedAt) throws GameAlgoException {
+        return setContextIdentifierAfterReady("gaid", value, observedAt);
+    }
+
+    private GameAlgoContextIdentifierResponse setContextIdentifierAfterReady(String type, String value, String observedAt) throws GameAlgoException {
+        try {
+            readyFuture.get();
+        } catch (Exception error) {
+            Throwable cause = error instanceof java.util.concurrent.ExecutionException && error.getCause() != null
+                    ? error.getCause()
+                    : error;
+            if (cause instanceof GameAlgoException) {
+                throw (GameAlgoException) cause;
+            }
+            throw new GameAlgoException("config context is not ready", cause);
+        }
+        return setContextIdentifier(type, value, observedAt);
+    }
+
+    private synchronized GameAlgoContextIdentifierResponse setContextIdentifier(String type, String value, String observedAt) throws GameAlgoException {
+        GameAlgoConfigResponse config = snapshotStore.snapshot().getConfig();
+        if (config == null || isBlank(config.getContextId())) {
+            throw new GameAlgoException("config context is not ready");
+        }
+
+        String normalizedValue = normalizeContextIdentifier(type, value);
+        Map<String, Object> hashPayload = new LinkedHashMap<>();
+        hashPayload.put("identifierType", type);
+        hashPayload.put("identifierValue", normalizedValue);
+        String identifierHash = sha256(GameAlgoJson.stringify(stableJsonValue(hashPayload)));
+        String ackKey = contextIdentifierAckCacheKey + ":" + type;
+        if (cacheStorage != null && identifierHash.equals(cacheStorage.getItem(ackKey))) {
+            log("context identifier already synced: type=" + type);
+            return new GameAlgoContextIdentifierResponse(true, 0, identifierHash);
+        }
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("userId", userIdentity().getUserId());
+        body.put("sessionId", tracker.currentSessionId());
+        body.put("contextId", config.getContextId());
+        body.put("platform", defaultPlatform);
+        body.put("identifierType", type);
+        body.put("identifierValue", normalizedValue);
+        body.put("observedAt", isBlank(observedAt) ? isoTimestamp(new Date()) : observedAt.trim());
+        body.put("identifierHash", identifierHash);
+
+        GameAlgoContextIdentifierResponse response = parseContextIdentifierResponse(parseJsonObject(request(
+                endpoint("/v1/context-identifiers", null),
+                GameAlgoHttpMethod.POST,
+                GameAlgoJson.stringify(body).getBytes(StandardCharsets.UTF_8)
+        )));
+        if (cacheStorage != null) {
+            cacheStorage.setItem(ackKey, response.getIdentifierHash());
+        }
+        log("context identifier synced: type=" + type + ", accepted=" + response.getAccepted());
+        return response;
+    }
+
+    private static String normalizeContextIdentifier(String type, String value) {
+        String normalized = clean(value);
+        if ("gaid".equals(type) && "00000000-0000-0000-0000-000000000000".equalsIgnoreCase(normalized)) {
+            return null;
+        }
+        return normalized;
+    }
+
     private static String normalizeAttributionStatus(String provider, String rawStatus, Map<String, Object> attribution) {
         String status = canonicalAttributionValue(rawStatus);
         if ("organic".equals(status)) {
@@ -753,6 +841,14 @@ public final class GameAlgoClient {
                 GameAlgoJson.boolValue(object, "ok", false),
                 GameAlgoJson.intValue(object, "accepted", true),
                 GameAlgoJson.stringValue(object, "attributionHash", true)
+        );
+    }
+
+    private GameAlgoContextIdentifierResponse parseContextIdentifierResponse(Map<String, Object> object) throws GameAlgoException {
+        return new GameAlgoContextIdentifierResponse(
+                GameAlgoJson.boolValue(object, "ok", false),
+                GameAlgoJson.intValue(object, "accepted", true),
+                GameAlgoJson.stringValue(object, "identifierHash", true)
         );
     }
 

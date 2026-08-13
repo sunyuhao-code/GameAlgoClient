@@ -105,6 +105,16 @@ SDK 会在 `/v1/config` 请求里自动带上 UTC `userCreatedAt`、本地 `user
 
 如果接入 Adjust 等归因 SDK，在每次归因 callback 返回后都可以调用 `setAttribution`。SDK 会自动带上 `platform=android`，并保存服务端返回的 `attributionHash`；同一份归因已经成功 ack 后不会重复上传，归因变化或上次失败时会重试。开发者不需要自己维护重试状态或 `attributionHash`。
 
+Adjust ADID、Firebase App Instance ID 和 Google Advertising ID 通常会在不同时间异步返回。谁先返回就单独调用对应 setter：
+
+```kotlin
+sdk.setAdjustAdid(adjustAdid)
+sdk.setFirebaseAppInstanceId(appInstanceId)
+sdk.setGoogleAdvertisingId(gaid)
+```
+
+这三个无依赖 core API 会等待配置 context 并执行网络请求，Android App 应从自己的后台 executor 或 coroutine 调用，不要阻塞主线程。SDK 会自动关联当前 `contextId` 和 GameAlgo `userId`，并按标识类型分别做 ACK 去重；不需要额外传 `gamealgoDeviceId`，因为 `userId` 本身就是 GameAlgo 设备标识。用户撤回授权、标识不可用或 GAID 为全零值时传 `null`，服务端会记录清除操作。只在取得用户授权且符合应用隐私政策时采集这些标识。
+
 事件业务字段通过 `payload` 发送。后续由游戏自己的 report pack 声明哪些 payload 字段会成为报表维度或指标。实验分组存储在 `/v1/config` 创建的 SDK context 中，不会复制到每条事件。
 
 ## 检查

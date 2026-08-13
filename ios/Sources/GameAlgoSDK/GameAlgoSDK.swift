@@ -20,6 +20,7 @@ public actor GameAlgoSDK {
     private let userIdentityStore: GameAlgoUserIdentityStore
     private let snapshotCacheKey: String
     private let attributionAckCacheKey: String
+    private let contextIdentifierAckCacheKey: String
     private let now: @Sendable () -> Date
     private let logger: GameAlgoLogHandler?
     private let snapshotStore: GameAlgoSnapshotStore
@@ -146,6 +147,7 @@ public actor GameAlgoSDK {
         self.userIdentityStore = userIdentityStore
         self.snapshotCacheKey = cacheKey ?? "gamealgo:v1:snapshot:\(baseURL.absoluteString):\(gameKey.prefix(16))"
         self.attributionAckCacheKey = "gamealgo:v1:attribution:\(baseURL.absoluteString):\(gameKey.prefix(16))"
+        self.contextIdentifierAckCacheKey = "gamealgo:v1:context-identifier:\(baseURL.absoluteString):\(gameKey.prefix(16))"
         self.now = now
         self.logger = logger
         self.snapshotStore = snapshotStore
@@ -475,6 +477,58 @@ public actor GameAlgoSDK {
         return response
     }
 
+    public func setAdjustAdid(_ value: String?, observedAt: String? = nil) async throws -> GameAlgoContextIdentifierResponse {
+        try await setContextIdentifier(type: "adjust_adid", value: value, observedAt: observedAt)
+    }
+
+    public func setFirebaseAppInstanceId(_ value: String?, observedAt: String? = nil) async throws -> GameAlgoContextIdentifierResponse {
+        try await setContextIdentifier(type: "firebase_app_instance_id", value: value, observedAt: observedAt)
+    }
+
+    public func setGoogleAdvertisingId(_ value: String?, observedAt: String? = nil) async throws -> GameAlgoContextIdentifierResponse {
+        try await setContextIdentifier(type: "gaid", value: value, observedAt: observedAt)
+    }
+
+    private func setContextIdentifier(type: String, value: String?, observedAt: String?) async throws -> GameAlgoContextIdentifierResponse {
+        if snapshotStore.snapshot().config == nil, let readyTask = readyTaskStore.get() {
+            try await readyTask.value
+        }
+        guard let contextId = clean(snapshotStore.snapshot().config?.contextId) else {
+            throw GameAlgoError.encodingFailed("config context is not ready")
+        }
+
+        let normalizedValue = normalizeContextIdentifier(type: type, value: value)
+        let identifierHash = stableContextIdentifierHash(type: type, value: normalizedValue)
+        let ackKey = "\(contextIdentifierAckCacheKey):\(type)"
+        if userIdentityStore.string(forKey: ackKey) == identifierHash {
+            log("context identifier already synced: type=\(type)")
+            return GameAlgoContextIdentifierResponse(ok: true, accepted: 0, identifierHash: identifierHash)
+        }
+
+        let identity = userIdentityStore.identity(now: now())
+        let requestBody = ContextIdentifierRequest(
+            userId: identity.userId,
+            sessionId: await tracker.currentSessionId(),
+            contextId: contextId,
+            platform: defaultPlatform,
+            identifierType: type,
+            identifierValue: normalizedValue,
+            observedAt: clean(observedAt) ?? GameAlgoEventBatchUploader.isoTimestamp(now()),
+            identifierHash: identifierHash
+        )
+        let response: GameAlgoContextIdentifierResponse = try await requestJSON(
+            GameAlgoHTTPRequest(
+                url: try endpoint("/v1/context-identifiers"),
+                method: .post,
+                headers: ["content-type": "application/json"],
+                body: try encode(requestBody)
+            )
+        )
+        userIdentityStore.setString(response.identifierHash, forKey: ackKey)
+        log("context identifier synced: type=\(type), accepted=\(response.accepted)")
+        return response
+    }
+
     public func clearConfigCache() {
         cachedConfig = nil
     }
@@ -698,6 +752,44 @@ private struct AttributionRequest: Encodable {
     let attributionHash: String
 }
 
+private struct ContextIdentifierRequest: Encodable {
+    let userId: String
+    let sessionId: String
+    let contextId: String
+    let platform: GameAlgoPlatform
+    let identifierType: String
+    let identifierValue: String?
+    let observedAt: String
+    let identifierHash: String
+
+    private enum CodingKeys: String, CodingKey {
+        case userId
+        case sessionId
+        case contextId
+        case platform
+        case identifierType
+        case identifierValue
+        case observedAt
+        case identifierHash
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(userId, forKey: .userId)
+        try container.encode(sessionId, forKey: .sessionId)
+        try container.encode(contextId, forKey: .contextId)
+        try container.encode(platform, forKey: .platform)
+        try container.encode(identifierType, forKey: .identifierType)
+        if let identifierValue {
+            try container.encode(identifierValue, forKey: .identifierValue)
+        } else {
+            try container.encodeNil(forKey: .identifierValue)
+        }
+        try container.encode(observedAt, forKey: .observedAt)
+        try container.encode(identifierHash, forKey: .identifierHash)
+    }
+}
+
 private struct CachedConfig: Sendable {
     let key: ConfigCacheKey
     let value: GameAlgoConfigResponse
@@ -750,6 +842,42 @@ private func stableAttributionHash(
         attributedAt: attributedAt ?? ""
     )
     let data = (try? encoder.encode(payload)) ?? Data()
+    return GameAlgoSHA256.hash(String(data: data, encoding: .utf8) ?? "")
+}
+
+private func normalizeContextIdentifier(type: String, value: String?) -> String? {
+    guard let value else { return nil }
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.isEmpty { return nil }
+    if type == "gaid" && trimmed.lowercased() == "00000000-0000-0000-0000-000000000000" {
+        return nil
+    }
+    return trimmed
+}
+
+private func stableContextIdentifierHash(type: String, value: String?) -> String {
+    struct ContextIdentifierHashPayload: Encodable {
+        let identifierType: String
+        let identifierValue: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case identifierType
+            case identifierValue
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(identifierType, forKey: .identifierType)
+            if let identifierValue {
+                try container.encode(identifierValue, forKey: .identifierValue)
+            } else {
+                try container.encodeNil(forKey: .identifierValue)
+            }
+        }
+    }
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let data = (try? encoder.encode(ContextIdentifierHashPayload(identifierType: type, identifierValue: value))) ?? Data()
     return GameAlgoSHA256.hash(String(data: data, encoding: .utf8) ?? "")
 }
 
