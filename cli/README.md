@@ -71,6 +71,21 @@ GAMEALGO_GAME_ADMIN_KEY=ga_admin_xxx
 gamealgo whoami
 ```
 
+## 接入计划
+
+登录后先让 CLI 根据开发者明确指定的环境和平台生成完整接入计划。CLI 不自动猜测环境或平台：
+
+```bash
+gamealgo integration get-plan \
+  --environment domestic \
+  --platform maker \
+  --out gamealgo-integration-plan.json
+```
+
+支持的环境是 `domestic`、`overseas`；支持的平台是 `ios`、`android`、`maker`、`rest`。计划包含正确地址、强制初始化规则、核心事件、广告/归因/实验条件项、验收标准和按需参考文档。
+
+计划同时包含接入完成后必须逐项执行的人工验收清单。不能只根据命令执行成功或生产报表有数据来判断接入已经完成。
+
 ## 最新文档
 
 AI Agent 可以通过 CLI 从 Admin Host 获取最新文档，不需要拉取本仓库：
@@ -311,6 +326,8 @@ gamealgo config publish configs/gameplay.json
 ## Report Pack
 
 ```bash
+gamealgo events list --days 30 --json
+gamealgo events apply gamealgo-events.yaml --json
 gamealgo report pull --out gamealgo-report-pack.json
 gamealgo report validate gamealgo-report-pack.json
 gamealgo report publish gamealgo-report-pack.json
@@ -318,7 +335,7 @@ gamealgo report publish gamealgo-report-pack.json
 
 每个游戏只有一个当前 Report Pack。`publish` 会整体覆盖上一次提交的配置，不需要传版本号；配置历史由游戏项目自己的 Git 管理。
 
-`report validate` 和 Admin 控制台保存时使用同一套服务端校验逻辑。
+`report validate` 和 `report publish` 使用同一套服务端元数据校验逻辑，只检查配置结构、事件词典与生成 SQL，不查询线上数据。凡是 Report Pack 顶层 `events` 引用的标准事件或自定义事件，其字段都必须已经登记、未废弃且字段类型一致；只引用标准看板和纯 marketing dataset 时，不需要重复登记平台内部字段。
 
 ## Adjust 投放花费
 
@@ -409,6 +426,59 @@ gamealgo report preview \
 查询进度和耗时会输出到 stderr，不会污染 `--json` 的 stdout。返回结果包含 `columns`、`rows`、`rowCount`、chart 元信息、date range、selector、缓存信息和 `cli.elapsedMs`，适合 Agent 直接分析。
 
 ## 事件上报调试
+
+### 先查看并维护事件词典
+
+开始新增埋点或设计报表前，Agent 必须先查看当前游戏已经登记和实际上报的埋点：
+
+```bash
+gamealgo events list --days 30
+```
+
+列表会展示埋点描述、生效版本、创建时间、状态和字段定义，并根据近 30 天非调试数据给出事件级诊断：
+
+- 线上出现但词典未登记；
+- 词典已登记但近期未观测；
+- 埋点已废弃但线上仍在上报。
+
+诊断只检查埋点是否存在，不根据线上 payload 自动推断字段或字段类型。字段必须由开发 Agent 显式登记后再用于 Report Pack。标准事件同样可以维护词典并追加游戏业务字段，例如在 `level_end.payload` 中增加关卡、章节或玩法信息。
+
+Report Pack 的 `events.<eventType>.fields` 字段 ID 必须与词典字段名一致，`path` 只描述 payload 中的实际 JSON 路径。例如词典登记 `ad_type` 后，Report Pack 可以用 `"path": "$.adType"` 读取驼峰字段，但字段类型必须与词典一致。
+
+用 YAML 或 JSON 增量登记埋点：
+
+```yaml
+events:
+  level_end:
+    desc: 玩家结束关卡
+    effectiveVersion: 1.2.0
+    category: progression
+    source: standard
+    fields:
+      level_id:
+        type: string
+        required: true
+        desc: 关卡 ID
+        effectiveVersion: 1.2.0
+      chapter_id:
+        type: string
+        required: false
+        desc: 游戏追加的章节 ID
+```
+
+```bash
+gamealgo events apply gamealgo-events.yaml
+gamealgo events get level_end
+```
+
+规则：
+
+- 埋点必须填写 `desc`，`effectiveVersion` 可省略；创建时间由平台首次登记时生成。
+- 字段必须填写 `type` 和 `desc`，`effectiveVersion` 可省略；字段创建时间由平台生成。
+- 标准事件使用 `source: standard`，自定义事件使用 `source: custom`；两者都可以登记游戏追加的 payload 字段。
+- `apply` 只新增或更新文件中出现的埋点和字段，不会删除其他已有定义。
+- 不再使用的埋点需要显式废弃：`gamealgo events deprecate old_event --yes`。
+- 再次 `apply` 已废弃埋点会将其恢复为启用状态。
 
 接入 SDK 后，Agent 可以用 `events count` 检查某天事件是否已经进入原始事件表：
 

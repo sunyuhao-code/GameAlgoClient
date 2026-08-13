@@ -23,10 +23,13 @@ gamealgo docs agent-onboarding --host <admin-host>
 
 ```bash
 gamealgo login --host <admin-host> --admin-key <ga_admin_xxx>
+gamealgo integration get-plan --environment <domestic|overseas> --platform <ios|android|maker|rest> --out gamealgo-integration-plan.json
 gamealgo key list --json
 gamealgo key create --name <runtime-name> --json
 gamealgo key reveal --name <runtime-name> --json
 ```
+
+AI Agent 必须先执行 `integration get-plan`，并按返回的完整清单完成接入和人工验收。不要依赖只读某一份 README 后自行推断其他平台规则。
 
 凭据保存在当前游戏项目的 `.gamealgo/cli.json`，不同游戏互不覆盖。需要其他主题时使用：
 
