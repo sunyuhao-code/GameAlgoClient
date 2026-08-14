@@ -44,7 +44,7 @@ GameAlgo.Init({
 
 `experimentIntegrationVersion` 来自 `gamealgo experiment integration-version create`，表示当前小游戏版本支持的实验参数能力。它需要固定在发布代码中，不能在运行时查询 latest；没有接入实验时可省略，默认是 `0`。
 
-关于何时创建新版本、Strategy 最低版本和托管实验覆盖率门槛，运行 `gamealgo docs experiment-integration-versions --host <admin-host>` 查看当前平台规则。
+关于何时创建新版本、Strategy 最低版本和托管实验覆盖率门槛，运行 `gamealgo docs experiments --host <admin-host>` 查看当前平台规则。
 
 Lua SDK 会自动调用 Maker 环境的 `lobby:GetMyUserId()` 作为稳定用户 ID，游戏接入代码不需要读取或传入该值。如果当前运行时拿不到 Maker 用户 ID，SDK 会从 `storage` 读取已有匿名 ID，或生成并持久化一个新的匿名 ID。只有非 Maker 环境确实具有自己的稳定账号 ID 时才需要显式传入 `userId`；不要使用昵称、头像、手机号等可识别信息作为 `userId`。
 

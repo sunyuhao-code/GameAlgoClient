@@ -16,7 +16,9 @@ GameAlgo Client 是公开客户端仓库，包含 iOS SDK、Android SDK、REST h
 ```bash
 npm install -g gamealgo-cli@latest
 gamealgo --version
-gamealgo docs agent-onboarding --host <admin-host>
+gamealgo help --host <admin-host>
+gamealgo docs sdk-integration --host <admin-host>
+gamealgo listapi --host <admin-host>
 ```
 
 开发者通常只需要提供游戏维度的 Game Admin Key，格式为 `ga_admin_*`。在游戏项目根目录登录后，AI Agent 应通过 CLI 创建或读取运行时使用的 `ga_live_*`，完成 SDK 接入、事件验证、Report Pack 和实验配置。
@@ -24,23 +26,19 @@ gamealgo docs agent-onboarding --host <admin-host>
 ```bash
 gamealgo login --host <admin-host> --admin-key <ga_admin_xxx>
 gamealgo integration get-plan --environment <domestic|overseas> --platform <ios|android|maker|rest> --out gamealgo-integration-plan.json
-gamealgo key list --json
-gamealgo key create --name <runtime-name> --json
-gamealgo key reveal --name <runtime-name> --json
 ```
 
 AI Agent 必须先执行 `integration get-plan`，并按返回的完整清单完成接入和人工验收。不要依赖只读某一份 README 后自行推断其他平台规则。
 
-凭据保存在当前游戏项目的 `.gamealgo/cli.json`，不同游戏互不覆盖。需要其他主题时使用：
+凭据保存在当前游戏项目的 `.gamealgo/cli.json`，不同游戏互不覆盖。CLI 命令说明不在本仓库重复维护，每次通过 Server 获取最新版本：
 
 ```bash
-gamealgo docs --host <admin-host>
-gamealgo docs integration-guide --host <admin-host>
-gamealgo docs ai-tracking-manual --host <admin-host>
-gamealgo docs report-packs --host <admin-host>
-gamealgo docs experiment-integration-versions --host <admin-host>
-gamealgo docs agent-cli --host <admin-host>
+gamealgo help
+gamealgo help report publish
+gamealgo experiment run create --help
 ```
+
+`gamealgo help` 不使用本地缓存；需要 AI 在本地搜索完整命令手册时，显式执行 `gamealgo help --out gamealgo-cli-help.md`。接入流程和业务规则使用 `gamealgo docs`，公开 SDK 函数使用 `gamealgo listapi` 或 `gamealgo docs api <function-name>`。
 
 ## SDK 入口
 
@@ -48,7 +46,7 @@ gamealgo docs agent-cli --host <admin-host>
 - [Android SDK](./android/README.md)
 - [REST helper](./rest-api/README.md)
 - [TapTap Maker / Lua SDK](./lua/README.md)
-- [CLI](./cli/README.md)
+- [客户端示例](./examples/README.md)
 - [Protocol OpenAPI](./protocol/openapi.yaml)
 
 海外 SDK 地址包含 `/algo_sdk` 路径前缀，必须完整保留。客户端只能配置 `ga_live_*`；`ga_admin_*` 只允许用于开发机器、AI Agent 或 CI。
