@@ -31,6 +31,16 @@ client.tracker.trackSessionEnd();
 await client.tracker.flush();
 ```
 
+Helper 从 `rest-api/src/index.ts` 导出：
+
+- `GameAlgoRestClient`
+- `GameAlgoApiError`
+- `GameAlgoEventTracker`
+- `GameAlgoExperimentExecutor`
+- `GameAlgoConfigReader`
+- `createEvent`
+- Protocol v1 TypeScript 类型
+
 `ga_live_xxx` 只是示例占位。实际接入必须使用真实 `ga_live_*`；如果当前没有真实 key，AI Agent 应使用 `ga_admin_*` 通过 GameAlgo CLI 创建或读取，不要提交占位 key 后声称接入完成。
 
 `experimentIntegrationVersion` 来自 `gamealgo experiment integration-version create`，表示当前构建已经实现的实验参数能力。它必须固定在构建配置中，不能在运行时查询 latest；没有接入实验时默认是 `0`。
@@ -81,6 +91,8 @@ const decision = await dda.decide({ mode: "normal", progressionNo: 43 });
 helper 会在 `/v1/config` 请求里自动带上 `userCreatedAt` 和基础 `device` context。接入方可以在 `new GameAlgoRestClient(...)` 或 `fetchConfig` 中传入 `device` / `deviceId`，用于追加 App 自定义字段或覆盖默认值。
 
 `tracker` 会把事件排入内存队列，每批最多上传 100 条，每 30 秒 flush 一次，并保留失败批次等待下次重试。如果配置 context 还没准备好，事件会继续留在本地，`flush` 会在上传前填入当前 `contextId`。事件业务字段通过 `payload` 发送。后续由游戏自己的 report pack 声明哪些字段会成为报表维度或指标。实验分组存储在 `/v1/config` 创建的 SDK context 中，不会复制到每条事件。
+
+Tracker 不负责跨进程持久化事件队列或托管宿主进程生命周期。需要严格保证送达的后端接入方，应在 Helper 外层增加持久化队列，并在进程退出前显式 flush。
 
 ## 1. 鉴权
 

@@ -7,8 +7,7 @@
     "gamealgo": "dist/gamealgo.js"
   },
   "files": [
-    "dist/",
-    "cli/README.md"
+    "dist/"
   ],
   "publishConfig": {
     "access": "public"

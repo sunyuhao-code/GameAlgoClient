@@ -44,6 +44,7 @@ type DocsTopic = {
   summary: string;
   group: string;
   file: string;
+  hidden: boolean;
 };
 
 type DocsManifest = {
@@ -54,10 +55,53 @@ type DocsManifest = {
   topics: DocsTopic[];
 };
 
+type DocsApiPlatform = "lua" | "ios" | "android" | "rest";
+
+type DocsApiEntry = {
+  name: string;
+  symbols: string[];
+  platforms: DocsApiPlatform[];
+  summary: string;
+  content: string;
+};
+
+type CliHelpOption = {
+  name: string;
+  description: string;
+};
+
+type CliHelpCommand = {
+  path: string;
+  group: string;
+  summary: string;
+  usage: string;
+  description?: string;
+  aliases?: string[];
+  options?: CliHelpOption[];
+  notes?: string[];
+  examples?: string[];
+  sinceVersion?: string;
+  internal?: boolean;
+};
+
+type CliHelpCatalog = {
+  schemaVersion: 1;
+  version: string;
+  updatedAt: string;
+  cliPackage: string;
+  groups: Array<{ id: string; title: string; description?: string }>;
+  commonOptions: CliHelpOption[];
+  commands: CliHelpCommand[];
+};
+
 const GLOBAL_CONFIG_PATH = join(homedir(), ".gamealgo", "cli.json");
 const PROJECT_CONFIG_DIR = ".gamealgo";
 const PROJECT_CONFIG_FILE = "cli.json";
 const DOCS_CACHE_ROOT = join(homedir(), ".gamealgo", "docs");
+const DEFAULT_CLI_HELP_HOSTS = [
+  "https://game-algo-admin.dictapis.cn",
+  "https://dirichlet.ai/algo_admin",
+];
 const SCRIPT_EXTENSIONS = new Set([".js", ".lua"]);
 const FILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 
@@ -65,10 +109,6 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const global = parseGlobalFlags(args);
   const command = args.shift();
-  if (!command || command === "help" || command === "--help" || command === "-h") {
-    printHelp();
-    return;
-  }
   if (command === "version" || command === "--version" || command === "-V") {
     const metadata = await loadPackageMetadata();
     if (global.json) {
@@ -80,6 +120,16 @@ async function main(): Promise<void> {
   }
 
   try {
+    if (!command || command === "help" || command === "--help" || command === "-h") {
+      await handleHelp(args, global);
+      return;
+    }
+    const helpFlagIndex = args.findIndex((arg) => arg === "--help" || arg === "-h");
+    if (helpFlagIndex >= 0) {
+      args.splice(helpFlagIndex, 1);
+      await handleHelp([command, ...args], global);
+      return;
+    }
     if (command === "login") {
       await login(args, global);
       return;
@@ -91,6 +141,10 @@ async function main(): Promise<void> {
     }
     if (command === "docs") {
       await handleDocs(args, global);
+      return;
+    }
+    if (command === "listapi") {
+      await handleDocs(["api", "list", ...args], global);
       return;
     }
     if (command === "admin-key") {
@@ -177,6 +231,255 @@ function parseGlobalFlags(args: string[]) {
   return global;
 }
 
+async function handleHelp(args: string[], global: ReturnType<typeof parseGlobalFlags>): Promise<void> {
+  const flags = parseFlags(args);
+  const query = normalizeCliHelpQuery(args.join(" "));
+  const saved = await loadConfig();
+  const configuredHost = normalizeHost(global.host || saved?.host || "");
+  const loaded = await loadCliHelpCatalog(configuredHost ? [configuredHost] : DEFAULT_CLI_HELP_HOSTS);
+  const packageMetadata = await loadPackageMetadata();
+  const visibleCommands = loaded.catalog.commands.filter((command) => !command.internal);
+  const selection = selectCliHelpCommands(visibleCommands, query);
+  if (!selection.length) {
+    const suggestions = suggestCliHelpCommands(visibleCommands, query);
+    const suffix = suggestions.length ? ` Did you mean: ${suggestions.join(", ")}` : "";
+    throw new Error(`Unknown CLI command: ${query}.${suffix}`);
+  }
+
+  const detail = query && selection.length === 1 && cliHelpCommandMatchesInvocation(selection[0], query)
+    ? selection[0]
+    : undefined;
+  const markdown = detail
+    ? formatCliHelpCommand(detail, loaded.catalog.commonOptions)
+    : formatCliHelpIndex(loaded.catalog, selection, query);
+  const out = optionalString(flags.out);
+  if (flags.out === true) throw new Error("--out requires a file path");
+  if (out) {
+    const payload = out.toLowerCase().endsWith(".json")
+      ? `${JSON.stringify(cliHelpResult(loaded, packageMetadata.version, query, selection, detail), null, 2)}\n`
+      : `${markdown.trimEnd()}\n`;
+    await writeTextFile(out, payload);
+    await printResult({ ok: true, out, source: loaded.url, version: loaded.catalog.version }, global);
+    return;
+  }
+  if (global.json) {
+    await printResult(cliHelpResult(loaded, packageMetadata.version, query, selection, detail), global);
+    return;
+  }
+  console.log(markdown.trimEnd());
+}
+
+async function loadCliHelpCatalog(hosts: string[]): Promise<{ catalog: CliHelpCatalog; host: string; url: string }> {
+  const failures: string[] = [];
+  for (const candidate of hosts) {
+    const host = normalizeHost(candidate);
+    const url = `${docsContentBaseUrl(host)}cli-commands.json`;
+    try {
+      return { catalog: parseCliHelpCatalog(await requestLiveTextUrl(url)), host, url };
+    } catch (error) {
+      failures.push(`${host}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  throw new Error(`Unable to load the current CLI help from the Server. ${failures.join(" | ")}`);
+}
+
+async function requestLiveTextUrl(url: string): Promise<string> {
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      cache: "no-store",
+      headers: { "Cache-Control": "no-cache" },
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (error) {
+    if (isTimeoutError(error)) throw new Error(`Help request timed out: ${url}`);
+    throw new Error(`Help request failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const text = await response.text();
+  if (!response.ok) throw new Error(`Help request returned ${response.status}: ${truncateBody(text)}`);
+  return text;
+}
+
+function parseCliHelpCatalog(text: string): CliHelpCatalog {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new Error("CLI command catalog is not valid JSON");
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("CLI command catalog must be an object");
+  }
+  const body = value as Record<string, unknown>;
+  if (body.schemaVersion !== 1 || !Array.isArray(body.groups) || !Array.isArray(body.commands)) {
+    throw new Error("CLI command catalog schema is invalid");
+  }
+  const groups = body.groups.map((item) => {
+    const group = objectValue(item);
+    const id = optionalString(group?.id);
+    const title = optionalString(group?.title);
+    if (!id || !title) throw new Error("CLI command catalog contains an invalid group");
+    return { id, title, description: optionalString(group?.description) };
+  });
+  const groupIds = new Set(groups.map((group) => group.id));
+  const commands = body.commands.map((item) => parseCliHelpCommand(item, groupIds));
+  const paths = new Set(commands.map((command) => normalizeCliHelpQuery(command.path)));
+  if (paths.size !== commands.length) throw new Error("CLI command catalog contains duplicate command paths");
+  const commonOptions = Array.isArray(body.commonOptions)
+    ? body.commonOptions.map((item) => parseCliHelpOption(item, "common option"))
+    : [];
+  return {
+    schemaVersion: 1,
+    version: String(body.version || "current"),
+    updatedAt: String(body.updatedAt || ""),
+    cliPackage: String(body.cliPackage || "gamealgo-cli"),
+    groups,
+    commonOptions,
+    commands,
+  };
+}
+
+function parseCliHelpCommand(value: unknown, groupIds: Set<string>): CliHelpCommand {
+  const command = objectValue(value);
+  const path = optionalString(command?.path);
+  const group = optionalString(command?.group);
+  const summary = optionalString(command?.summary);
+  const usage = optionalString(command?.usage);
+  if (!path || !group || !summary || !usage || !groupIds.has(group)) {
+    throw new Error(`CLI command catalog contains an invalid command: ${path || "unknown"}`);
+  }
+  const options = Array.isArray(command?.options)
+    ? command.options.map((item) => parseCliHelpOption(item, path))
+    : undefined;
+  return {
+    path,
+    group,
+    summary,
+    usage,
+    description: optionalString(command?.description),
+    aliases: stringArray(command?.aliases),
+    options,
+    notes: stringArray(command?.notes),
+    examples: stringArray(command?.examples),
+    sinceVersion: optionalString(command?.sinceVersion),
+    internal: command?.internal === true,
+  };
+}
+
+function parseCliHelpOption(value: unknown, owner: string): CliHelpOption {
+  const option = objectValue(value);
+  const name = optionalString(option?.name);
+  const description = optionalString(option?.description);
+  if (!name || !description) throw new Error(`CLI command catalog contains an invalid option for ${owner}`);
+  return { name, description };
+}
+
+function stringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const result = value.map(optionalString).filter((item): item is string => Boolean(item));
+  return result.length ? result : undefined;
+}
+
+function normalizeCliHelpQuery(value: string): string {
+  return value.trim().replace(/^gamealgo\s+/i, "").replace(/\s+/g, " ").toLowerCase();
+}
+
+function selectCliHelpCommands(commands: CliHelpCommand[], query: string): CliHelpCommand[] {
+  if (!query) return commands;
+  const exact = commands.filter((command) => (
+    normalizeCliHelpQuery(command.path) === query
+    || command.aliases?.some((alias) => normalizeCliHelpQuery(alias) === query)
+  ));
+  if (exact.length) return exact;
+
+  const invocationMatches = commands
+    .filter((command) => cliHelpCommandMatchesInvocation(command, query))
+    .sort((left, right) => normalizeCliHelpQuery(right.path).length - normalizeCliHelpQuery(left.path).length);
+  if (invocationMatches.length) return [invocationMatches[0]];
+
+  return commands.filter((command) => (
+    normalizeCliHelpQuery(command.path).startsWith(`${query} `)
+    || command.aliases?.some((alias) => normalizeCliHelpQuery(alias).startsWith(`${query} `))
+  ));
+}
+
+function cliHelpCommandMatchesInvocation(command: CliHelpCommand, query: string): boolean {
+  const paths = [command.path, ...(command.aliases || [])].map(normalizeCliHelpQuery);
+  return paths.some((path) => query === path || query.startsWith(`${path} `));
+}
+
+function suggestCliHelpCommands(commands: CliHelpCommand[], query: string): string[] {
+  return commands
+    .map((command) => ({ command, score: docsApiSimilarity(query, normalizeCliHelpQuery(command.path)) }))
+    .filter((item) => item.score >= 0.35)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 5)
+    .map((item) => item.command.path);
+}
+
+function formatCliHelpIndex(catalog: CliHelpCatalog, commands: CliHelpCommand[], query: string): string {
+  const lines = [`# GameAlgo CLI 命令`, "", `目录版本：${catalog.version} · 更新于 ${catalog.updatedAt}`, ""];
+  for (const group of catalog.groups) {
+    const grouped = commands.filter((command) => command.group === group.id);
+    if (!grouped.length) continue;
+    lines.push(`## ${group.title}`, "");
+    if (group.description) lines.push(group.description, "");
+    for (const command of grouped) lines.push(`- \`gamealgo ${command.path}\`：${command.summary}`);
+    lines.push("");
+  }
+  if (query) lines.push(`继续查询：\`gamealgo help <完整命令>\``);
+  else lines.push("查询单条命令：`gamealgo help <命令路径>`");
+  lines.push("显式保存当次最新文档：`gamealgo help --out gamealgo-cli-help.md`");
+  return lines.join("\n");
+}
+
+function formatCliHelpCommand(command: CliHelpCommand, commonOptions: CliHelpOption[]): string {
+  const lines = [
+    `# gamealgo ${command.path}`,
+    "",
+    command.summary,
+    "",
+    "## 用法",
+    "",
+    "```bash",
+    command.usage,
+    "```",
+  ];
+  if (command.description) lines.push("", "## 说明", "", command.description);
+  const options = [...(command.options || []), ...commonOptions];
+  if (options.length) {
+    lines.push("", "## 参数与选项", "");
+    for (const option of options) lines.push(`- \`${option.name}\`：${option.description}`);
+  }
+  if (command.notes?.length) {
+    lines.push("", "## 约束", "");
+    for (const note of command.notes) lines.push(`- ${note}`);
+  }
+  if (command.examples?.length) {
+    lines.push("", "## 示例", "");
+    for (const example of command.examples) lines.push("```bash", example, "```");
+  }
+  return lines.join("\n");
+}
+
+function cliHelpResult(
+  loaded: { catalog: CliHelpCatalog; host: string; url: string },
+  cliVersion: string,
+  query: string,
+  commands: CliHelpCommand[],
+  detail?: CliHelpCommand,
+) {
+  return {
+    ok: true,
+    cliVersion,
+    catalogVersion: loaded.catalog.version,
+    updatedAt: loaded.catalog.updatedAt,
+    source: loaded.url,
+    query: query || null,
+    ...(detail ? { command: detail, commonOptions: loaded.catalog.commonOptions } : { commands }),
+  };
+}
+
 async function login(args: string[], global: ReturnType<typeof parseGlobalFlags>): Promise<void> {
   const flags = parseFlags(args);
   const host = normalizeHost(String(flags.host || global.host || ""));
@@ -201,7 +504,10 @@ async function login(args: string[], global: ReturnType<typeof parseGlobalFlags>
 async function handleDocs(args: string[], global: ReturnType<typeof parseGlobalFlags>): Promise<void> {
   const flags = parseFlags(args);
   const topicId = String(args.shift() || "").trim();
-  if (args.length) throw new Error("usage: gamealgo docs [topic] [--open] [--json] [--host <admin-url>]");
+  const apiQuery = topicId === "api" ? args.join(" ").trim() : "";
+  if (topicId !== "api" && args.length) {
+    throw new Error("usage: gamealgo docs [topic] [--open] [--json] [--host <admin-url>]");
+  }
 
   const saved = await loadConfig();
   const host = normalizeHost(global.host || saved?.host || "");
@@ -209,9 +515,16 @@ async function handleDocs(args: string[], global: ReturnType<typeof parseGlobalF
 
   const loaded = await loadDocsManifest(host);
   const manifest = loaded.manifest;
-  const topic = topicId ? manifest.topics.find((item) => item.id === topicId) : null;
+  const visibleTopics = manifest.topics.filter((item) => !item.hidden);
+  const resolvedTopicId = topicId === "api" ? "public-sdk-api" : topicId;
+  const topic = resolvedTopicId
+    ? manifest.topics.find((item) => item.id === resolvedTopicId && (topicId === "api" || !item.hidden))
+    : null;
   if (topicId && !topic) {
-    throw new Error(`Unknown docs topic: ${topicId}. Available topics: ${manifest.topics.map((item) => item.id).join(", ")}`);
+    if (topicId === "api") {
+      throw new Error("The Admin host does not publish the public SDK API index yet");
+    }
+    throw new Error(`Unknown docs topic: ${topicId}. Available topics: ${visibleTopics.map((item) => item.id).join(", ")}`);
   }
 
   const webUrl = docsWebUrl(host, topic?.id);
@@ -236,7 +549,7 @@ async function handleDocs(args: string[], global: ReturnType<typeof parseGlobalF
         defaultTopic: manifest.defaultTopic,
         cached: loaded.cached,
         webUrl,
-        topics: manifest.topics,
+        topics: visibleTopics,
       }, global);
       return;
     }
@@ -246,6 +559,19 @@ async function handleDocs(args: string[], global: ReturnType<typeof parseGlobalF
   }
 
   const document = await loadDocsDocument(host, manifest, topic, loaded.cached);
+  if (topicId === "api") {
+    await printDocsApiResult({
+      query: apiQuery,
+      platform: parseDocsApiPlatform(flags.platform),
+      manifest,
+      topic,
+      document,
+      webUrl,
+      host,
+      global,
+    });
+    return;
+  }
   if (global.json) {
     await printResult({
       ok: true,
@@ -263,6 +589,176 @@ async function handleDocs(args: string[], global: ReturnType<typeof parseGlobalF
   }
   console.log(document.content.trimEnd());
   if (document.cached) console.error("Warning: using cached documentation because the Admin host could not be reached");
+}
+
+function parseDocsApiPlatform(value: string | boolean | undefined): DocsApiPlatform | undefined {
+  if (value === undefined || value === false || value === "") return undefined;
+  const platform = String(value).trim().toLowerCase();
+  if (platform === "maker") return "lua";
+  if (platform === "lua" || platform === "ios" || platform === "android" || platform === "rest") {
+    return platform;
+  }
+  throw new Error("--platform must be lua, maker, ios, android, or rest");
+}
+
+async function printDocsApiResult(options: {
+  query: string;
+  platform?: DocsApiPlatform;
+  manifest: DocsManifest;
+  topic: DocsTopic;
+  document: { content: string; cached: boolean };
+  webUrl: string;
+  host: string;
+  global: ReturnType<typeof parseGlobalFlags>;
+}): Promise<void> {
+  const { query, platform, manifest, topic, document, webUrl, host, global } = options;
+  const entries = parseDocsApiEntries(document.content).filter((entry) => !platform || entry.platforms.includes(platform));
+  if (!entries.length) {
+    throw new Error(platform ? `No public SDK APIs are documented for platform: ${platform}` : "Public SDK API document has no indexed entries");
+  }
+
+  const normalizedQuery = normalizeDocsApiQuery(query);
+  const listMode = !normalizedQuery || normalizedQuery === "list" || normalizedQuery === "ls";
+  if (listMode) {
+    if (global.json) {
+      await printResult({
+        ok: true,
+        version: manifest.version,
+        updatedAt: manifest.updatedAt,
+        topic: topic.id,
+        cached: document.cached,
+        webUrl,
+        rawUrl: docsRawUrl(host, topic.file),
+        ...(platform ? { platform } : {}),
+        apis: entries.map(({ name, symbols, platforms, summary }) => ({ name, symbols, platforms, summary })),
+      }, global);
+      return;
+    }
+    console.log(`GameAlgo 公开 SDK API ${manifest.version}${platform ? ` · ${platform}` : ""}`);
+    for (const entry of entries) {
+      console.log(`\n${entry.name}  [${entry.platforms.join(", ")}]`);
+      console.log(`  ${entry.symbols.join(" / ")}`);
+      console.log(`  ${entry.summary}`);
+    }
+    console.log(`\n查询函数: gamealgo docs api <函数名>${platform ? ` --platform ${platform}` : ""}`);
+    if (document.cached) console.error("Warning: using cached documentation because the Admin host could not be reached");
+    return;
+  }
+
+  const matches = findDocsApiEntries(entries, query);
+  if (!matches.length) {
+    const suggestions = suggestDocsApiEntries(entries, query);
+    const suffix = suggestions.length ? ` Did you mean: ${suggestions.join(", ")}` : "";
+    throw new Error(`Unknown public SDK API: ${query}.${suffix}`);
+  }
+  if (global.json) {
+    await printResult({
+      ok: true,
+      version: manifest.version,
+      updatedAt: manifest.updatedAt,
+      topic: topic.id,
+      query,
+      cached: document.cached,
+      webUrl,
+      rawUrl: docsRawUrl(host, topic.file),
+      ...(platform ? { platform } : {}),
+      matches,
+    }, global);
+    return;
+  }
+  console.log(matches.map((entry) => entry.content.trim()).join("\n\n"));
+  if (document.cached) console.error("Warning: using cached documentation because the Admin host could not be reached");
+}
+
+function parseDocsApiEntries(content: string): DocsApiEntry[] {
+  const headings = [...content.matchAll(/^###\s+(.+)$/gm)];
+  const entries: DocsApiEntry[] = [];
+  for (let index = 0; index < headings.length; index += 1) {
+    const heading = headings[index];
+    const start = heading.index ?? 0;
+    const end = headings[index + 1]?.index ?? content.length;
+    const section = content.slice(start, end).trim();
+    const symbols = parseDocsApiMetadataList(section, "API");
+    if (!symbols.length) continue;
+    const platforms = parseDocsApiMetadataList(section, "平台")
+      .map((item) => item.toLowerCase())
+      .filter((item): item is DocsApiPlatform => item === "lua" || item === "ios" || item === "android" || item === "rest");
+    const summaryMatch = section.match(/^-\s*用途[：:]\s*(.+)$/m);
+    entries.push({
+      name: stripInlineMarkdown(heading[1]),
+      symbols,
+      platforms: [...new Set(platforms)],
+      summary: stripInlineMarkdown(summaryMatch?.[1] || ""),
+      content: section,
+    });
+  }
+  return entries;
+}
+
+function parseDocsApiMetadataList(section: string, key: string): string[] {
+  const match = section.match(new RegExp(`^-\\s*${key}[：:]\\s*(.+)$`, "m"));
+  if (!match) return [];
+  const inlineCode = [...match[1].matchAll(/`([^`]+)`/g)].map((item) => item[1].trim()).filter(Boolean);
+  if (inlineCode.length) return inlineCode;
+  return match[1].split(/[,，]/).map((item) => stripInlineMarkdown(item)).filter(Boolean);
+}
+
+function stripInlineMarkdown(value: string): string {
+  return value.replace(/[`*]/g, "").trim();
+}
+
+function normalizeDocsApiQuery(value: string): string {
+  return stripInlineMarkdown(value)
+    .replace(/\(.*\)$/, "")
+    .replace(/\s+/g, "")
+    .toLowerCase();
+}
+
+function docsApiSearchTerms(entry: DocsApiEntry): string[] {
+  return [entry.name, ...entry.symbols, ...entry.symbols.map((symbol) => symbol.split(/[.#]/).pop() || symbol)]
+    .map(normalizeDocsApiQuery)
+    .filter(Boolean);
+}
+
+function findDocsApiEntries(entries: DocsApiEntry[], query: string): DocsApiEntry[] {
+  const needle = normalizeDocsApiQuery(query);
+  const exact = entries.filter((entry) => docsApiSearchTerms(entry).includes(needle));
+  if (exact.length) return exact;
+  return entries.filter((entry) => (
+    docsApiSearchTerms(entry).some((term) => term.includes(needle))
+    || normalizeDocsApiQuery(entry.summary).includes(needle)
+  ));
+}
+
+function suggestDocsApiEntries(entries: DocsApiEntry[], query: string): string[] {
+  const needle = normalizeDocsApiQuery(query);
+  return entries
+    .map((entry) => {
+      const terms = docsApiSearchTerms(entry);
+      const score = Math.max(...terms.map((term) => docsApiSimilarity(needle, term)));
+      return { entry, score };
+    })
+    .filter((item) => item.score >= 0.35)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 5)
+    .map(({ entry }) => entry.symbols[0] || entry.name);
+}
+
+function docsApiSimilarity(left: string, right: string): number {
+  if (!left || !right) return 0;
+  if (left.includes(right) || right.includes(left)) {
+    return Math.min(left.length, right.length) / Math.max(left.length, right.length) + 0.5;
+  }
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    const current = [leftIndex];
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      const substitution = previous[rightIndex - 1] + (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1);
+      current[rightIndex] = Math.min(previous[rightIndex] + 1, current[rightIndex - 1] + 1, substitution);
+    }
+    previous.splice(0, previous.length, ...current);
+  }
+  return 1 - previous[right.length] / Math.max(left.length, right.length);
 }
 
 async function createClient(global: ReturnType<typeof parseGlobalFlags>): Promise<GameAlgoAdminClient> {
@@ -1532,6 +2028,7 @@ function parseDocsManifest(text: string): DocsManifest {
       summary: String(topic.summary || ""),
       group: String(topic.group || "其他"),
       file,
+      hidden: topic.hidden === true,
     };
   });
   const ids = new Set(topics.map((topic) => topic.id));
@@ -1576,7 +2073,7 @@ async function writePrivateFile(filePath: string, content: string): Promise<void
 function printDocsIndex(manifest: DocsManifest, webUrl: string): void {
   console.log(`GameAlgo AI 文档 ${manifest.version}${manifest.updatedAt ? ` (${manifest.updatedAt})` : ""}`);
   let currentGroup = "";
-  for (const topic of manifest.topics) {
+  for (const topic of manifest.topics.filter((item) => !item.hidden)) {
     if (topic.group !== currentGroup) {
       currentGroup = topic.group;
       console.log(`\n${currentGroup}`);
@@ -1922,85 +2419,6 @@ async function loadPackageMetadata(): Promise<{ name: string; version: string }>
     throw new Error("CLI package version is missing");
   }
   return { name, version: packageJson.version };
-}
-
-function printHelp(): void {
-  console.log(`
-GameAlgo CLI
-
-Usage:
-  gamealgo --version
-  gamealgo login --host <admin-url> --admin-key <game-admin-key>
-  gamealgo whoami
-
-  gamealgo docs
-  gamealgo docs agent-onboarding
-  gamealgo docs report-packs --json
-  gamealgo docs experiment-integration-versions --open
-  gamealgo docs --host <admin-url>
-
-  gamealgo integration get-plan --environment domestic --platform maker --out gamealgo-integration-plan.json
-
-  gamealgo experiment strategies
-  gamealgo experiment strategies --include-archived
-  gamealgo experiment integration-version latest
-  gamealgo experiment integration-version list
-  gamealgo experiment integration-version get --version 3
-  gamealgo experiment integration-version create --title "关卡动态难度" --message "客户端已接入难度参数"
-  gamealgo experiment integration-version update --version 3 --message "补充支持新参数"
-  gamealgo experiment strategy show ad_frequency
-  gamealgo experiment strategy publish strategy.yaml --yes
-  gamealgo experiment strategy default ad_frequency strategy.yaml --yes
-  gamealgo experiment strategy archive ad_frequency --yes
-  gamealgo experiment strategy rollback ad_frequency --version-id xv_xxxxxxxxxxxxxxxx --message "回滚参数" --yes
-  gamealgo experiment run create ad_frequency run.yaml [--manual] --yes
-  gamealgo experiment run show xrun_xxxxxxxxxxxxxxxx
-  gamealgo experiment run status xrun_xxxxxxxxxxxxxxxx
-  gamealgo experiment run evaluate xrun_xxxxxxxxxxxxxxxx --from 2026-07-01 --to 2026-07-07 --yes
-  gamealgo experiment run report xrun_xxxxxxxxxxxxxxxx --round 1
-  gamealgo experiment run objective xrun_xxxxxxxxxxxxxxxx --objective active_days@1 --message "改为关注活跃天数" --yes
-  gamealgo experiment run promote xrun_xxxxxxxxxxxxxxxx --variant bravo --message "采用胜出组" --yes
-  gamealgo experiment run cancel xrun_xxxxxxxxxxxxxxxx --message "停止实验" --yes
-  gamealgo experiment override set xrun_xxxxxxxxxxxxxxxx --user user-1 --variant bravo --yes
-  gamealgo experiment override list xrun_xxxxxxxxxxxxxxxx
-
-  gamealgo key list
-  gamealgo key create --name tapmaker-proxy
-  gamealgo key reveal --name tapmaker-proxy
-  gamealgo key revoke --name tapmaker-proxy --yes
-
-  gamealgo script list
-  gamealgo script versions level-generator.js
-  gamealgo script pull level-generator.js --out scripts/
-  gamealgo script pull --all --out scripts/
-  gamealgo script publish scripts/level-generator.js --message "initial version"
-
-  gamealgo config list
-  gamealgo config pull gameplay.json --out configs/
-  gamealgo config pull --all --out configs/
-  gamealgo config publish configs/gameplay.json
-
-  gamealgo report pull --out gamealgo-report-pack-v1.json
-  gamealgo report validate gamealgo-report-pack-v1.json
-  gamealgo report publish gamealgo-report-pack-v1.json
-  gamealgo report manifest
-  gamealgo report result --from 2026-06-14 --to 2026-06-21 --tab Revenue --group "Daily ARPU" --selector experiment=ad_frequency --timeout 60 --out report-result.json
-  gamealgo report preview --pack gamealgo-report-pack-v1.json --from 2026-06-14 --to 2026-06-21 --group "Daily ARPU" --timeout 60 --out preview-result.json
-
-  gamealgo events count --from 2026-06-23 --to 2026-06-23
-  gamealgo events count --from 2026-06-23 --to 2026-06-23 --event-type level_end
-  gamealgo events list --days 30
-  gamealgo events get level_start
-  gamealgo events apply gamealgo-events.yaml
-  gamealgo events deprecate old_event --yes
-
-  gamealgo marketing adjust get
-  gamealgo marketing adjust configure --api-token <token> --app-token <app-token> --platform ios --currency USD
-  gamealgo marketing adjust sync --from 2026-06-01 --to 2026-06-07 --timeout 60
-
-Internal bootstrap:
-  gamealgo admin-key create --host <admin-url> --admin-token <root-token> --game Mahjong --name ai-agent
-`.trim());
 }
 
 await main();
