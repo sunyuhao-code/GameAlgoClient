@@ -23,10 +23,12 @@ local HttpTransport = requireSdkModule("HttpTransport")
 local LuaScriptRuntime = requireSdkModule("LuaScriptRuntime")
 local Sha256 = requireSdkModule("Sha256")
 local DDA = requireSdkModule("DDA")
+local MakerAutoStorage = requireSdkModule("MakerAutoStorage")
 
 local GameAlgo = {}
+local unpackArgs = table.unpack or unpack
 
-local SDK_VERSION = "1.3.3-lua"
+local SDK_VERSION = "1.4.0-lua"
 local DEFAULT_BASE_URL = "https://game-algo-sdk.dictapis.cn"
 
 local state_ = {
@@ -55,6 +57,11 @@ local state_ = {
     maxBatchSize = 100,
     preloadConfigFiles = true,
     storage = nil,
+    storageReady = false,
+    initializationComplete = false,
+    fetchConfigRequested = false,
+    pendingFetchConfigCallbacks = {},
+    pendingTracks = {},
     logger = nil,
     transport = HttpTransport,
 }
@@ -133,58 +140,15 @@ end
 local function storageGet(key)
     local storage = state_.storage
     if not storage then return nil end
-    if type(storage.getItem) == "function" then
-        local ok, value = pcall(storage.getItem, key)
-        if ok then return value end
-        ok, value = pcall(function() return storage:getItem(key) end)
-        if ok then return value end
-    end
-    if type(storage.GetItem) == "function" then
-        local ok, value = pcall(function() return storage:GetItem(key) end)
-        if ok then return value end
-    end
-    return storage[key]
+    local ok, value = pcall(function() return storage:GetItem(key) end)
+    if ok then return value end
+    return nil
 end
 
 local function storageSet(key, value)
     local storage = state_.storage
     if not storage then return end
-    if type(storage.setItem) == "function" then
-        local ok = pcall(storage.setItem, key, value)
-        if ok then return end
-        ok = pcall(function() storage:setItem(key, value) end)
-        if ok then return end
-    end
-    if type(storage.SetItem) == "function" then
-        local ok = pcall(function() storage:SetItem(key, value) end)
-        if ok then return end
-    end
-    storage[key] = value
-end
-
-local function hasStorageMethod(storage, name)
-    local ok, method = pcall(function() return storage[name] end)
-    return ok and type(method) == "function"
-end
-
-local function validateStorage(storage)
-    if storage == nil then
-        error(
-            "options.storage is required; bind getItem(key) and setItem(key, value) "
-                .. "to the game's persistent local or online save storage"
-        )
-    end
-
-    local hasCamelCase = hasStorageMethod(storage, "getItem")
-        and hasStorageMethod(storage, "setItem")
-    local hasPascalCase = hasStorageMethod(storage, "GetItem")
-        and hasStorageMethod(storage, "SetItem")
-    if not hasCamelCase and not hasPascalCase then
-        error(
-            "options.storage must implement getItem(key)/setItem(key, value) "
-                .. "or GetItem(key)/SetItem(key, value)"
-        )
-    end
+    pcall(function() storage:SetItem(key, value) end)
 end
 
 local function resolveMakerUserId()
@@ -348,10 +312,68 @@ local function chunkEvents()
     return batch
 end
 
+local function enqueueTrack(eventType, payload, timestamp, createdLocalAt)
+    table.insert(state_.queue, {
+        eventId = randomId("ga_event"),
+        contextId = state_.contextId or "",
+        userId = state_.userId,
+        sessionId = state_.sessionId,
+        eventType = eventType,
+        isDebug = state_.isDebug,
+        timestamp = timestamp or isoNow(),
+        createdLocalAt = createdLocalAt or localIsoNow(),
+        payload = normalizePayload(payload),
+    })
+end
+
+local function flushAutomaticStorage()
+    if not state_.storage or type(state_.storage.Flush) ~= "function" then return end
+    state_.storage:Flush(function(error)
+        if error then log("automatic storage flush failed: " .. tostring(error)) end
+    end)
+end
+
+local function completeInitialization(options)
+    if state_.initializationComplete then return end
+    state_.storageReady = true
+    state_.initializationComplete = true
+
+    local resolvedUserId = options.userId
+    if resolvedUserId == nil or resolvedUserId == "" then
+        resolvedUserId = resolveMakerUserId()
+    end
+    ensureIdentity(resolvedUserId)
+
+    for _, controller in pairs(state_.ddaControllers) do
+        if type(controller._Hydrate) == "function" then controller._Hydrate() end
+    end
+    for _, pending in ipairs(state_.pendingTracks) do
+        enqueueTrack(pending.eventType, pending.payload, pending.timestamp, pending.createdLocalAt)
+    end
+    state_.pendingTracks = {}
+
+    if type(state_.transport.Start) == "function" then state_.transport.Start(options.transportOptions) end
+    if not state_.gameKey or state_.gameKey == "" then
+        log("missing gameKey; config and event requests will be rejected")
+    end
+    log("initialized: userId=" .. state_.userId .. ", sessionId=" .. state_.sessionId)
+    flushAutomaticStorage()
+
+    if state_.fetchConfigRequested then
+        local callbacks = state_.pendingFetchConfigCallbacks
+        state_.pendingFetchConfigCallbacks = {}
+        GameAlgo.FetchConfig(function(error, config)
+            for _, callback in ipairs(callbacks) do callback(error, config) end
+        end)
+    end
+end
+
 ---@param options table
 function GameAlgo.Init(options)
     options = options or {}
-    validateStorage(options.storage)
+    if options.storage ~= nil then
+        error("options.storage is not supported; TapTap Maker storage is managed automatically by the Lua SDK")
+    end
     math.randomseed(os.time())
     state_.baseUrl = options.baseUrl or DEFAULT_BASE_URL
     state_.gameKey = options.gameKey
@@ -364,26 +386,36 @@ function GameAlgo.Init(options)
     state_.timezone = options.timezone
     state_.device = options.device or {}
     state_.isDebug = options.isDebug == true
-    state_.storage = options.storage
     state_.logger = options.logger
     state_.transport = options.transport or HttpTransport
     state_.maxBatchSize = options.maxBatchSize or 100
     state_.preloadConfigFiles = options.preloadConfigFiles ~= false
     state_.sessionId = options.sessionId or randomId("ga_session")
     state_.sessionStartMs = nowMs()
-    local resolvedUserId = options.userId
-    if resolvedUserId == nil or resolvedUserId == "" then
-        resolvedUserId = resolveMakerUserId()
-    end
-    ensureIdentity(resolvedUserId)
-    if type(state_.transport.Start) == "function" then state_.transport.Start(options.transportOptions) end
-    if not state_.gameKey or state_.gameKey == "" then
-        log("missing gameKey; config and event requests will be rejected")
-    end
-    log("initialized: userId=" .. state_.userId .. ", sessionId=" .. state_.sessionId)
-    if options.autoFetch ~= false then
-        GameAlgo.FetchConfig(nil)
-    end
+    state_.userId = nil
+    state_.userCreatedAt = nil
+    state_.userCreatedLocalAt = nil
+    state_.contextId = nil
+    state_.config = nil
+    state_.configFiles = {}
+    state_.scripts = {}
+    state_.ddaControllers = {}
+    state_.queue = {}
+    state_.pendingTracks = {}
+    state_.flushing = false
+    state_.flushRequested = false
+    state_.pendingFlushCallbacks = {}
+    state_.storageReady = false
+    state_.initializationComplete = false
+    state_.fetchConfigRequested = options.autoFetch ~= false
+    state_.pendingFetchConfigCallbacks = {}
+
+    local storage, storageError = MakerAutoStorage.New({
+        logger = log,
+    })
+    if not storage then error(storageError) end
+    state_.storage = storage
+    storage:OnReady(function() completeInitialization(options) end)
     return GameAlgo
 end
 
@@ -392,6 +424,11 @@ function GameAlgo.Update()
 end
 
 function GameAlgo.FetchConfig(callback)
+    if not state_.storageReady then
+        state_.fetchConfigRequested = true
+        if type(callback) == "function" then table.insert(state_.pendingFetchConfigCallbacks, callback) end
+        return
+    end
     ensureIdentity()
     local request = {
         userId = state_.userId,
@@ -499,18 +536,17 @@ end
 
 function GameAlgo.Track(eventType, payload)
     if not eventType or eventType == "" then return false end
+    if not state_.storageReady then
+        table.insert(state_.pendingTracks, {
+            eventType = eventType,
+            payload = normalizePayload(payload),
+            timestamp = isoNow(),
+            createdLocalAt = localIsoNow(),
+        })
+        return true
+    end
     ensureIdentity()
-    table.insert(state_.queue, {
-        eventId = randomId("ga_event"),
-        contextId = state_.contextId or "",
-        userId = state_.userId,
-        sessionId = state_.sessionId,
-        eventType = eventType,
-        isDebug = state_.isDebug,
-        timestamp = isoNow(),
-        createdLocalAt = localIsoNow(),
-        payload = normalizePayload(payload),
-    })
+    enqueueTrack(eventType, payload, nil, nil)
     return true
 end
 
@@ -582,6 +618,11 @@ function GameAlgo.TrackSessionEnd(payload)
 end
 
 function GameAlgo.Flush(callback)
+    flushAutomaticStorage()
+    if not state_.storageReady then
+        if callback then callback("storage not ready", nil) end
+        return
+    end
     if not state_.contextId or state_.contextId == "" then
         if callback then callback("context not ready", nil) end
         return
@@ -722,14 +763,75 @@ function GameAlgo.DDA(key, options)
     if state_.ddaControllers[key] then return state_.ddaControllers[key] end
     options = options or {}
     local gameKeyPrefix = tostring(state_.gameKey or "anonymous"):sub(1, 16)
-    local controller = DDA.New({
-        executor = GameAlgo.Executor(key),
-        storageKey = options.storageKey or ("gamealgo:v1:dda:" .. gameKeyPrefix .. ":" .. key),
-        recentWindowSize = options.recentWindowSize,
-        storageGet = storageGet,
-        storageSet = storageSet,
-    })
+    local storageKey = options.storageKey or ("gamealgo:v1:dda:" .. gameKeyPrefix .. ":" .. key)
+    local actual = nil
+    local pending = {}
+    local controller = {}
+
+    local function queueOrRun(method, ...)
+        if actual then return actual[method](...) end
+        table.insert(pending, { method = method, args = { ... } })
+    end
+
+    function controller._Hydrate()
+        if actual or not state_.storageReady then return end
+        actual = DDA.New({
+            executor = GameAlgo.Executor(key),
+            storageKey = storageKey,
+            recentWindowSize = options.recentWindowSize,
+            storageGet = storageGet,
+            storageSet = storageSet,
+        })
+        local operations = pending
+        pending = {}
+        for _, operation in ipairs(operations) do
+            local ok, operationError = pcall(function()
+                actual[operation.method](unpackArgs(operation.args))
+            end)
+            if not ok then log("deferred DDA operation failed: " .. tostring(operationError)) end
+        end
+    end
+
+    function controller.RecordBehavior(behaviorType, amount)
+        return queueOrRun("RecordBehavior", behaviorType, amount)
+    end
+
+    function controller.CompleteStep(stepId)
+        return queueOrRun("CompleteStep", stepId)
+    end
+
+    function controller.Reset(scope)
+        return queueOrRun("Reset", scope)
+    end
+
+    function controller.Snapshot(context)
+        if actual then return actual.Snapshot(context) end
+        return {
+            context = type(context) == "table" and context or {},
+            behavior = {
+                current = {},
+                recent = {},
+                lifetime = {},
+                recentSteps = {},
+                completedSteps = 0,
+                windowSize = tonumber(options.recentWindowSize) or 10,
+            },
+            diagnostics = { storageReady = false },
+        }
+    end
+
+    function controller.Decide(context)
+        if actual then return actual.Decide(context) end
+        return {
+            adjustment = "keep",
+            payload = { adjustment = "keep" },
+            diagnostics = { fallback = true, reason = "storage_not_ready" },
+            isFallback = true,
+        }
+    end
+
     state_.ddaControllers[key] = controller
+    controller._Hydrate()
     return controller
 end
 
@@ -755,6 +857,8 @@ function GameAlgo.Snapshot()
         configFiles = state_.configFiles,
         scripts = state_.scripts,
         queuedEvents = #state_.queue,
+        pendingEvents = #state_.pendingTracks,
+        storage = state_.storage and state_.storage:Diagnostics() or nil,
     }
 end
 
