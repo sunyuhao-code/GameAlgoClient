@@ -3,8 +3,8 @@ export {
   GameAlgoConfigReader,
   GameAlgoEventTracker,
   GameAlgoExperimentExecutor,
-  FunctionScriptRuntime,
   GameAlgoRestClient,
+  RustProcessScriptRuntime,
   createEvent,
 } from "./client.ts";
 export { GameAlgoDDAController } from "./dda.ts";

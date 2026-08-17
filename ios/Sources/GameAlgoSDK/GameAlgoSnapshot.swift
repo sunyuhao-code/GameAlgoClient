@@ -134,7 +134,11 @@ public final class GameAlgoExperimentExecutor: @unchecked Sendable {
                 assignment: assignment
             )
         }
-        guard let file = snapshot.configFiles[script.name] else {
+        guard let versionId = script.versionId?.trimmingCharacters(in: .whitespacesAndNewlines), !versionId.isEmpty else {
+            log("execute skipped: script versionId missing: \(assignment.key) -> \(script.name)")
+            return nil
+        }
+        guard let file = snapshot.configFiles["script:\(versionId)"] else {
             log("execute skipped: script not loaded: \(assignment.key) -> \(script.name)")
             return nil
         }

@@ -36,6 +36,7 @@ public final class GameAlgoClient {
     private final GameAlgoScriptRuntime scriptRuntime;
     private final GameAlgoCacheStorage cacheStorage;
     private final String snapshotCacheKey;
+    private final String legacySnapshotCacheKey;
     private final String attributionAckCacheKey;
     private final String contextIdentifierAckCacheKey;
     private final GameAlgoLogger logger;
@@ -149,13 +150,25 @@ public final class GameAlgoClient {
         this.httpClient = httpClient == null ? new UrlConnectionGameAlgoHttpClient() : httpClient;
         this.scriptRuntime = scriptRuntime == null ? new UnavailableGameAlgoScriptRuntime() : scriptRuntime;
         this.cacheStorage = cacheStorage;
-        this.snapshotCacheKey = cacheKey == null ? "gamealgo:v1:snapshot:" + this.baseUrl + ":" + gameKey.substring(0, Math.min(16, gameKey.length())) : cacheKey;
-        this.attributionAckCacheKey = "gamealgo:v1:attribution:" + this.baseUrl + ":" + gameKey.substring(0, Math.min(16, gameKey.length()));
-        this.contextIdentifierAckCacheKey = "gamealgo:v1:context-identifier:" + this.baseUrl + ":" + gameKey.substring(0, Math.min(16, gameKey.length()));
+        String explicitUserId = initialRequest == null ? null : initialRequest.getUserId();
+        String userScope = resolveInitialUserScope(cacheStorage, explicitUserId);
+        String gameKeyHash = sha256Unchecked(gameKey).substring("sha256:".length());
+        String namespace = this.baseUrl + ":" + gameKeyHash + ":" + userScope;
+        this.legacySnapshotCacheKey = "gamealgo:v1:snapshot:" + this.baseUrl + ":" + gameKey.substring(0, Math.min(16, gameKey.length()));
+        this.snapshotCacheKey = cacheKey == null ? "gamealgo:v1:snapshot:" + namespace : cacheKey;
+        this.attributionAckCacheKey = "gamealgo:v1:attribution:" + namespace;
+        this.contextIdentifierAckCacheKey = "gamealgo:v1:context-identifier:" + namespace;
         this.logger = logger;
         this.snapshotStore = new GameAlgoSnapshotStore();
         this.configReader = new GameAlgoConfigReader(snapshotStore);
-        this.tracker = new GameAlgoEventTracker(this);
+        this.tracker = new GameAlgoEventTracker(
+                this,
+                100,
+                1000,
+                30000L,
+                cacheStorage,
+                "gamealgo:v1:event-queue:" + namespace
+        );
         this.readyFuture = autoStart ? initializeAsync(initialRequest == null ? new GameAlgoFetchConfigRequest(null) : initialRequest) : CompletableFuture.completedFuture(null);
     }
 
@@ -273,6 +286,8 @@ public final class GameAlgoClient {
         ConfigCacheKey cacheKey = new ConfigCacheKey(
                 resolvedRequest.getUserId(),
                 resolvedRequest.getUserCreatedAt(),
+                resolvedRequest.getAccountUserId(),
+                resolvedRequest.getAccountUserCreatedAt(),
                 sessionId,
                 platform,
                 sdkVersion,
@@ -298,6 +313,12 @@ public final class GameAlgoClient {
             body.put("userId", resolvedRequest.getUserId());
             body.put("userCreatedAt", resolvedRequest.getUserCreatedAt());
             body.put("userCreatedLocalAt", userIdentity.getUserCreatedLocalAt());
+            if (!isBlank(resolvedRequest.getAccountUserId())) {
+                body.put("accountUserId", resolvedRequest.getAccountUserId());
+            }
+            if (!isBlank(resolvedRequest.getAccountUserCreatedAt())) {
+                body.put("accountUserCreatedAt", resolvedRequest.getAccountUserCreatedAt());
+            }
             body.put("createdLocalAt", localTimestamp(new Date()));
             body.put("sessionId", sessionId);
             body.put("platform", platform);
@@ -360,6 +381,41 @@ public final class GameAlgoClient {
         snapshotStore.updateConfigFile(file, System.currentTimeMillis());
         persistSnapshot();
         log("config file loaded: " + file.getName() + " (" + file.getContentType() + ")");
+        return file;
+    }
+
+    private synchronized GameAlgoConfigFile fetchScriptFile(GameAlgoConfigFileRef script) throws GameAlgoException {
+        if (isBlank(script.getVersionId())) {
+            throw new GameAlgoException("script.versionId is required for " + script.getName());
+        }
+        if (isBlank(script.getUrl())) {
+            throw new GameAlgoException("script.url is required for " + script.getName() + "@" + script.getVersionId());
+        }
+        if (script.getHash() == null || !script.getHash().matches("(?i)^sha256:[a-f0-9]{64}$")) {
+            throw new GameAlgoException("script.hash is invalid for " + script.getName() + "@" + script.getVersionId());
+        }
+        final URL scriptUrl;
+        try {
+            scriptUrl = new URL(new URL(baseUrl + "/"), script.getUrl());
+        } catch (MalformedURLException error) {
+            throw new GameAlgoException("script.url is invalid for " + script.getName() + "@" + script.getVersionId(), error);
+        }
+        GameAlgoHttpResponse response = request(scriptUrl, GameAlgoHttpMethod.GET, null);
+        String contentType = response.getHeader("content-type");
+        String content = new String(response.getBody(), StandardCharsets.UTF_8);
+        if (!script.getHash().equalsIgnoreCase(sha256(content))) {
+            throw new GameAlgoException("script.hash does not match downloaded content for "
+                    + script.getName() + "@" + script.getVersionId());
+        }
+        GameAlgoConfigFile file = new GameAlgoConfigFile(
+                scriptCacheKey(script),
+                content,
+                contentType == null ? (script.getContentType() == null ? "application/octet-stream" : script.getContentType()) : contentType,
+                response.getHeader("etag")
+        );
+        snapshotStore.updateConfigFile(file, System.currentTimeMillis());
+        persistSnapshot();
+        log("script loaded: " + script.getName() + "@" + script.getVersionId());
         return file;
     }
 
@@ -617,16 +673,16 @@ public final class GameAlgoClient {
         }
         for (GameAlgoExperimentAssignment assignment : config.getExperiments()) {
             if (assignment.getScript() != null) {
-                fetchConfigFile(assignment.getScript().getName());
-                loadedNames.add(assignment.getScript().getName());
+                fetchScriptFile(assignment.getScript());
+                loadedNames.add(scriptCacheKey(assignment.getScript()));
             }
         }
         if (!loadedNames.isEmpty()) {
             log("all config files loaded");
         }
         for (GameAlgoExperimentAssignment assignment : config.getExperiments()) {
-            if (assignment.getScript() != null && snapshotStore.snapshot().getConfigFiles().containsKey(assignment.getScript().getName())) {
-                log("script loaded: " + assignment.getKey() + " -> " + assignment.getScript().getName());
+            if (assignment.getScript() != null && snapshotStore.snapshot().getConfigFiles().containsKey(scriptCacheKey(assignment.getScript()))) {
+                log("script ready: " + assignment.getKey() + " -> " + assignment.getScript().getName() + "@" + assignment.getScript().getVersionId());
             }
         }
         tracker.setAssignments(config.getExperiments());
@@ -636,9 +692,11 @@ public final class GameAlgoClient {
     private synchronized GameAlgoFetchConfigRequest requestWithResolvedUser(GameAlgoFetchConfigRequest request) throws GameAlgoException {
         GameAlgoUserIdentity identity = userIdentity(request.getUserId());
         logUserId(identity.getUserId());
-        tracker.identify(identity.getUserId(), request.getSessionId(), identity.getUserCreatedAt());
+        tracker.identify(identity.getUserId(), request.getSessionId(), identity.getUserCreatedAt(), request.getAccountUserId());
         GameAlgoFetchConfigRequest resolved = new GameAlgoFetchConfigRequest(identity.getUserId())
                 .userCreatedAt(identity.getUserCreatedAt())
+                .accountUserId(request.getAccountUserId())
+                .accountUserCreatedAt(request.getAccountUserCreatedAt())
                 .sessionId(request.getSessionId())
                 .platform(request.getPlatform())
                 .sdkVersion(request.getSdkVersion())
@@ -722,6 +780,13 @@ public final class GameAlgoClient {
             return;
         }
         String raw = cacheStorage.getItem(snapshotCacheKey);
+        if (isBlank(raw) && !snapshotCacheKey.equals(legacySnapshotCacheKey)) {
+            raw = cacheStorage.getItem(legacySnapshotCacheKey);
+            if (!isBlank(raw)) {
+                cacheStorage.setItem(snapshotCacheKey, raw);
+                cacheStorage.removeItem(legacySnapshotCacheKey);
+            }
+        }
         if (raw == null || raw.length() == 0) {
             return;
         }
@@ -821,6 +886,7 @@ public final class GameAlgoClient {
         }
         Map<String, Object> file = GameAlgoJson.asObject(value, fieldName);
         return new GameAlgoConfigFileRef(
+                GameAlgoJson.stringValue(file, "versionId", false),
                 GameAlgoJson.stringValue(file, "name", true),
                 GameAlgoJson.stringValue(file, "url", true),
                 GameAlgoJson.stringValue(file, "hash", true),
@@ -958,12 +1024,20 @@ public final class GameAlgoClient {
 
     private Map<String, Object> configFileRefToJson(GameAlgoConfigFileRef file) {
         Map<String, Object> object = new LinkedHashMap<>();
+        object.put("versionId", file.getVersionId());
         object.put("name", file.getName());
         object.put("url", file.getUrl());
         object.put("hash", file.getHash());
         object.put("contentType", file.getContentType());
         object.put("updatedAt", file.getUpdatedAt());
         return object;
+    }
+
+    static String scriptCacheKey(GameAlgoConfigFileRef script) {
+        if (script == null || isBlank(script.getVersionId())) {
+            return "script:missing:" + (script == null ? "unknown" : script.getName());
+        }
+        return "script:" + script.getVersionId();
     }
 
     private URL endpoint(String path, Map<String, String> query) throws GameAlgoException {
@@ -1136,6 +1210,31 @@ public final class GameAlgoClient {
         }
     }
 
+    private static String sha256Unchecked(String input) {
+        try {
+            return sha256(input);
+        } catch (GameAlgoException error) {
+            throw new IllegalStateException(error.getMessage(), error);
+        }
+    }
+
+    private static String resolveInitialUserScope(GameAlgoCacheStorage storage, String explicitUserId) {
+        if (!isBlank(explicitUserId)) return explicitUserId.trim();
+        if (storage == null) return "anonymous";
+        try {
+            String existing = storage.getItem(USER_ID_KEY);
+            if (!isBlank(existing)) return existing;
+            String generated = java.util.UUID.randomUUID().toString();
+            Date now = new Date();
+            storage.setItem(USER_ID_KEY, generated);
+            storage.setItem(USER_CREATED_AT_KEY, isoTimestamp(now));
+            storage.setItem(USER_CREATED_LOCAL_AT_KEY, localTimestamp(now));
+            return generated;
+        } catch (GameAlgoException error) {
+            throw new IllegalStateException("Unable to initialize GameAlgo user identity", error);
+        }
+    }
+
     private void logUserId(String userId) {
         if (didLogUserId) {
             return;
@@ -1171,6 +1270,8 @@ public final class GameAlgoClient {
     private static final class ConfigCacheKey {
         private final String userId;
         private final String userCreatedAt;
+        private final String accountUserId;
+        private final String accountUserCreatedAt;
         private final String sessionId;
         private final String platform;
         private final String sdkVersion;
@@ -1180,9 +1281,11 @@ public final class GameAlgoClient {
         private final Map<String, Object> device;
         private final Boolean isDebug;
 
-        private ConfigCacheKey(String userId, String userCreatedAt, String sessionId, String platform, String sdkVersion, String appVersion, int experimentIntegrationVersion, String timezone, Map<String, Object> device, Boolean isDebug) {
+        private ConfigCacheKey(String userId, String userCreatedAt, String accountUserId, String accountUserCreatedAt, String sessionId, String platform, String sdkVersion, String appVersion, int experimentIntegrationVersion, String timezone, Map<String, Object> device, Boolean isDebug) {
             this.userId = userId;
             this.userCreatedAt = userCreatedAt;
+            this.accountUserId = accountUserId;
+            this.accountUserCreatedAt = accountUserCreatedAt;
             this.sessionId = sessionId;
             this.platform = platform;
             this.sdkVersion = sdkVersion;
@@ -1204,6 +1307,8 @@ public final class GameAlgoClient {
             ConfigCacheKey that = (ConfigCacheKey) other;
             return equalsNullable(userId, that.userId)
                     && equalsNullable(userCreatedAt, that.userCreatedAt)
+                    && equalsNullable(accountUserId, that.accountUserId)
+                    && equalsNullable(accountUserCreatedAt, that.accountUserCreatedAt)
                     && equalsNullable(sessionId, that.sessionId)
                     && equalsNullable(platform, that.platform)
                     && equalsNullable(sdkVersion, that.sdkVersion)
@@ -1218,6 +1323,8 @@ public final class GameAlgoClient {
         public int hashCode() {
             int result = hashNullable(userId);
             result = 31 * result + hashNullable(userCreatedAt);
+            result = 31 * result + hashNullable(accountUserId);
+            result = 31 * result + hashNullable(accountUserCreatedAt);
             result = 31 * result + hashNullable(sessionId);
             result = 31 * result + hashNullable(platform);
             result = 31 * result + hashNullable(sdkVersion);

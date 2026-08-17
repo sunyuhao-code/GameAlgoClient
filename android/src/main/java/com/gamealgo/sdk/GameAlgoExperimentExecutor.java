@@ -89,7 +89,11 @@ public final class GameAlgoExperimentExecutor {
             return new GameAlgoExecutionResult(assignment.getConfig(), diagnostics, assignment);
         }
 
-        GameAlgoConfigFile scriptFile = snapshot.getConfigFiles().get(assignment.getScript().getName());
+        if (assignment.getScript().getVersionId() == null || assignment.getScript().getVersionId().trim().isEmpty()) {
+            log("execute skipped: script versionId missing: " + assignment.getKey() + " -> " + assignment.getScript().getName());
+            return null;
+        }
+        GameAlgoConfigFile scriptFile = snapshot.getConfigFiles().get(GameAlgoClient.scriptCacheKey(assignment.getScript()));
         if (scriptFile == null) {
             log("execute skipped: script not loaded: " + assignment.getKey() + " -> " + assignment.getScript().getName());
             return null;

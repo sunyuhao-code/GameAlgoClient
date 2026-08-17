@@ -1,5 +1,7 @@
 # Web 游戏 Demo
 
+该示例默认连接国内 GameAlgo 环境，因此广告和付费示例使用 `CNY`。海外游戏应上报变现平台实际返回的币种。
+
 `web-game-demo` 是一个静态浏览器游戏，用于端到端验证 SDK 埋点链路。它使用公开的 Protocol v1 REST 接口：
 
 - `POST /v1/config`

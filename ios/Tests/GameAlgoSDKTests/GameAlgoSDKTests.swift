@@ -2,6 +2,50 @@ import XCTest
 @testable import GameAlgoSDK
 
 final class GameAlgoSDKTests: XCTestCase {
+    func testSharedProtocolFixtureDecodesAndExecutesByImmutableScriptVersion() async throws {
+        let fixtureRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("protocol/fixtures")
+        let configData = try Data(contentsOf: fixtureRoot.appendingPathComponent("config-response.json"))
+        let scriptData = try Data(contentsOf: fixtureRoot.appendingPathComponent("script-fixture.js"))
+        let httpClient = FixtureHTTPClient(configData: configData, scriptData: scriptData)
+        let sdk = GameAlgoSDK(
+            gameKey: gameKey,
+            baseURL: URL(string: "https://gamealgo.test")!,
+            httpClient: httpClient,
+            cacheStorage: nil,
+            userId: "fixture-user"
+        )
+
+        let ready = await sdk.waitForReady()
+        XCTAssertTrue(ready)
+        XCTAssertEqual(sdk.executor("difficulty").execute(.object([:]))?.payload, .object(["level": .number(2)]))
+    }
+
+    func testRustRuntimeBlocksIndirectFunctionConstructors() throws {
+        let runtime = RustGameAlgoScriptRuntime()
+        let input = GameAlgoScriptInput(
+            state: .object([:]),
+            config: .object([:]),
+            meta: .init(
+                gameId: "fixture",
+                userId: "fixture-user",
+                environment: .live,
+                strategy: "fixture",
+                experimentId: "fixture",
+                variant: "control"
+            )
+        )
+
+        XCTAssertThrowsError(try runtime.execute(
+            script: "function execute() { return { payload: (function() {}).constructor('return 7')() }; }",
+            input: input
+        ))
+    }
+
     private let gameKey = "ga_live_test_key_0123456789abcdef"
 
     func testConstructorUsesPersistedAnonymousUserIdByDefault() async throws {
@@ -136,6 +180,38 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(requests.count, 1)
         XCTAssertEqual(events?[0]["contextId"] as? String, "ctx-1")
         XCTAssertEqual(events?[0]["eventType"] as? String, "level_end")
+    }
+
+    func testTrackerKeepsBoundEventsAcrossSessionsAndDropsUnboundOldEvents() async throws {
+        let uploader = QueueEventUploader(failures: 0)
+        let tracker = GameAlgoEventTracker(uploader: uploader, flushInterval: 0)
+        await tracker.identify(
+            userId: "u1",
+            sessionId: "session-1",
+            userCreatedAt: "2026-05-28T10:00:00.000Z"
+        )
+        let queuedOldUnbound = await tracker.track("old_unbound")
+        XCTAssertTrue(queuedOldUnbound)
+
+        await tracker.newSession("session-2")
+        await tracker.setContextId("ctx-2")
+        let queuedBoundSession2 = await tracker.track("bound_session_2")
+        XCTAssertTrue(queuedBoundSession2)
+
+        await tracker.newSession("session-3")
+        let queuedNewUnbound = await tracker.track("new_unbound")
+        XCTAssertTrue(queuedNewUnbound)
+        await tracker.setContextId("ctx-3")
+        await tracker.flush()
+
+        let uploaded = await uploader.uploadedEvents()
+        XCTAssertEqual(uploaded.count, 2)
+        XCTAssertEqual(uploaded[0].eventType, "bound_session_2")
+        XCTAssertEqual(uploaded[0].contextId, "ctx-2")
+        XCTAssertEqual(uploaded[0].sessionId, "session-2")
+        XCTAssertEqual(uploaded[1].eventType, "new_unbound")
+        XCTAssertEqual(uploaded[1].contextId, "ctx-3")
+        XCTAssertEqual(uploaded[1].sessionId, "session-3")
     }
 
     func testFetchConfigSendsProtocolHeadersAndCachesByTTL() async throws {
@@ -343,8 +419,9 @@ final class GameAlgoSDKTests: XCTestCase {
                 "variant": "variant-a",
                 "config": ["difficulty": "hard"],
                 "script": [
+                    "versionId": "sv_level_generator",
                     "name": "level-generator.js",
-                    "url": "https://gamealgo.test/v1/config-files/level-generator.js",
+                    "url": "/v1/scripts/sv_level_generator",
                     "hash": GameAlgoSHA256.hash(script),
                 ],
             ]],
@@ -650,6 +727,48 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(levelPayload?["level"] as? Double, 3)
     }
 
+    func testTrackerPersistsAfterThreeFailuresAndRestoresAfterRestart() async throws {
+        let storage = MemoryCacheStorage()
+        let failingUploader = QueueEventUploader(failures: 3)
+        let firstTracker = GameAlgoEventTracker(
+            uploader: failingUploader,
+            flushInterval: 0,
+            storage: storage,
+            persistenceKey: "test-event-queue"
+        )
+        await firstTracker.identify(
+            userId: "anonymous-user",
+            sessionId: "session-1",
+            userCreatedAt: "2026-05-28T10:00:00.000Z",
+            accountUserId: "account-user"
+        )
+        await firstTracker.setContextId("ctx-1")
+        let didTrack = await firstTracker.trackLevelEnd(payload: .object(["level": .number(7)]))
+        XCTAssertTrue(didTrack)
+
+        await firstTracker.flush()
+        await firstTracker.flush()
+        await firstTracker.flush()
+
+        let jsonl = try XCTUnwrap(storage.value(cacheKey: "test-event-queue"))
+        let persisted = try JSONDecoder().decode(GameAlgoEvent.self, from: Data(jsonl.utf8))
+        XCTAssertEqual(persisted.contextId, "ctx-1")
+        XCTAssertEqual(persisted.accountUserId, "account-user")
+
+        let recoveredUploader = QueueEventUploader(failures: 0)
+        let restoredTracker = GameAlgoEventTracker(
+            uploader: recoveredUploader,
+            flushInterval: 0,
+            storage: storage,
+            persistenceKey: "test-event-queue"
+        )
+        await restoredTracker.flush()
+        let uploaded = await recoveredUploader.uploadedEvents()
+        XCTAssertEqual(uploaded.count, 1)
+        XCTAssertEqual(uploaded.first?.eventType, "level_end")
+        XCTAssertNil(storage.value(cacheKey: "test-event-queue"))
+    }
+
     func testCustomEventsPreservePayload() async throws {
         let suiteName = "GameAlgoSDKTests.customEventExperiments.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -935,6 +1054,63 @@ private actor MockHTTPClient: GameAlgoHTTPClient {
     }
 }
 
+private actor FixtureHTTPClient: GameAlgoHTTPClient {
+    private let configData: Data
+    private let scriptData: Data
+
+    init(configData: Data, scriptData: Data) {
+        self.configData = configData
+        self.scriptData = scriptData
+    }
+
+    func send(_ request: GameAlgoHTTPRequest) async throws -> GameAlgoHTTPResponse {
+        if request.url.path.hasSuffix("/v1/config") {
+            return GameAlgoHTTPResponse(
+                statusCode: 200,
+                headers: ["content-type": "application/json"],
+                body: configData
+            )
+        }
+        if request.url.path.contains("/v1/scripts/") {
+            return GameAlgoHTTPResponse(
+                statusCode: 200,
+                headers: ["content-type": "application/javascript"],
+                body: scriptData
+            )
+        }
+        if request.url.path.contains("/v1/config-files/") {
+            return GameAlgoHTTPResponse(
+                statusCode: 200,
+                headers: ["content-type": "application/json"],
+                body: Data("{}".utf8)
+            )
+        }
+        throw GameAlgoError.networkFailed("unexpected fixture URL: \(request.url.path)")
+    }
+}
+
+private actor QueueEventUploader: GameAlgoEventBatchUploading {
+    private var remainingFailures: Int
+    private var uploaded: [GameAlgoEvent] = []
+
+    init(failures: Int) {
+        remainingFailures = failures
+    }
+
+    func uploadEvents(_ events: [GameAlgoEvent]) async throws -> GameAlgoEventBatchResponse {
+        if remainingFailures > 0 {
+            remainingFailures -= 1
+            throw GameAlgoError.networkFailed("simulated offline transport")
+        }
+        uploaded.append(contentsOf: events)
+        return GameAlgoEventBatchResponse(ok: true, accepted: events.count)
+    }
+
+    func uploadedEvents() -> [GameAlgoEvent] {
+        uploaded
+    }
+}
+
 private final class TestClock: @unchecked Sendable {
     private var date: Date
     private let lock = NSLock()
@@ -981,6 +1157,29 @@ private final class MemoryCacheStorage: GameAlgoCacheStorage, @unchecked Sendabl
         lock.lock()
         values.removeValue(forKey: cacheKey)
         lock.unlock()
+    }
+
+    func loadValue(cacheKey: String) throws -> String? {
+        lock.lock()
+        let data = values[cacheKey]
+        lock.unlock()
+        return data.flatMap { String(data: $0, encoding: .utf8) }
+    }
+
+    func saveValue(_ value: String, cacheKey: String) throws {
+        lock.lock()
+        values[cacheKey] = Data(value.utf8)
+        lock.unlock()
+    }
+
+    func removeValue(cacheKey: String) throws {
+        lock.lock()
+        values.removeValue(forKey: cacheKey)
+        lock.unlock()
+    }
+
+    func value(cacheKey: String) -> String? {
+        try? loadValue(cacheKey: cacheKey)
     }
 }
 

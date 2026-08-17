@@ -4,6 +4,15 @@ public protocol GameAlgoCacheStorage: Sendable {
     func loadSnapshot(cacheKey: String) throws -> GameAlgoSnapshot?
     func saveSnapshot(_ snapshot: GameAlgoSnapshot, cacheKey: String) throws
     func removeSnapshot(cacheKey: String) throws
+    func loadValue(cacheKey: String) throws -> String?
+    func saveValue(_ value: String, cacheKey: String) throws
+    func removeValue(cacheKey: String) throws
+}
+
+public extension GameAlgoCacheStorage {
+    func loadValue(cacheKey: String) throws -> String? { nil }
+    func saveValue(_ value: String, cacheKey: String) throws {}
+    func removeValue(cacheKey: String) throws {}
 }
 
 public final class GameAlgoUserDefaultsCacheStorage: GameAlgoCacheStorage, @unchecked Sendable {
@@ -25,6 +34,18 @@ public final class GameAlgoUserDefaultsCacheStorage: GameAlgoCacheStorage, @unch
     }
 
     public func removeSnapshot(cacheKey: String) throws {
+        userDefaults.removeObject(forKey: cacheKey)
+    }
+
+    public func loadValue(cacheKey: String) throws -> String? {
+        userDefaults.string(forKey: cacheKey)
+    }
+
+    public func saveValue(_ value: String, cacheKey: String) throws {
+        userDefaults.set(value, forKey: cacheKey)
+    }
+
+    public func removeValue(cacheKey: String) throws {
         userDefaults.removeObject(forKey: cacheKey)
     }
 }

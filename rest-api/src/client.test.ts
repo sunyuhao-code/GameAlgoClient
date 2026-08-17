@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { GameAlgoApiError, GameAlgoRestClient, createEvent } from "./client.ts";
 import { GameAlgoDDAController } from "./dda.ts";
 import type { GameAlgoRestClientOptions } from "./types.ts";
@@ -13,6 +15,32 @@ type TestClientOptions = GameAlgoRestClientOptions & {
 function createClient(options: TestClientOptions): GameAlgoRestClient {
   return new GameAlgoRestClient(options);
 }
+
+function scriptHash(content: string): string {
+  return `sha256:${createHash("sha256").update(content, "utf8").digest("hex")}`;
+}
+
+test("shared protocol fixture decodes and executes by immutable script version", async () => {
+  const fixture = JSON.parse(readFileSync(new URL("../../protocol/fixtures/config-response.json", import.meta.url), "utf8"));
+  const script = readFileSync(new URL("../../protocol/fixtures/script-fixture.js", import.meta.url), "utf8");
+  const client = createClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    userId: "fixture-user",
+    sdkVersion: "fixture",
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      if (request.url.endsWith("/v1/scripts/sv_fixture_001")) {
+        return new Response(script, { headers: { "content-type": "application/javascript" } });
+      }
+      return jsonResponse(fixture);
+    },
+  });
+
+  assert.equal(await client.waitForReady(), true);
+  assert.deepEqual((await client.executor("difficulty").execute({}))?.payload, { level: 2 });
+  assert.equal(client.snapshotValue().configFiles.has("script:sv_fixture_001"), true);
+});
 
 test("fetchConfig sends Protocol v1 headers and caches by ttl", async () => {
   let calls = 0;
@@ -225,7 +253,7 @@ function execute(input) {
     sdkVersion: "1.0.0",
     fetchImpl: async (input, init) => {
       const request = new Request(input, init);
-      if (request.url.includes("/v1/config-files/level-generator.js")) {
+      if (request.url === "https://gamealgo.test/v1/scripts/sv_level_generator") {
         return new Response(script, {
           headers: { "content-type": "text/plain; charset=utf-8" },
         });
@@ -243,9 +271,10 @@ function execute(input) {
           variant: "variant-a",
           config: { difficulty: "hard" },
           script: {
+            versionId: "sv_level_generator",
             name: "level-generator.js",
-            url: "https://gamealgo.test/v1/config-files/level-generator.js",
-            hash: "",
+            url: "/v1/scripts/sv_level_generator",
+            hash: await scriptHash(script),
           },
         }],
         configFiles: [],
@@ -302,7 +331,7 @@ function execute(input) {
             versionId: "sv_test_script",
             name: "level-generator.js",
             url: "https://gamealgo.test/v1/scripts/sv_test_script",
-            hash: "",
+            hash: await scriptHash(script),
           },
         }],
         configFiles: [],
@@ -474,8 +503,10 @@ test("constructor backfills createdAt for persisted legacy user id", async () =>
   assert.equal(identity.userId, "legacy-user");
   assert.equal(identity.userCreatedAt, "2026-05-28T10:00:00.000Z");
   assertLocalTimestamp(identity.userCreatedLocalAt);
-  assert.equal(storage.getItem("gamealgo_user_created_at"), "2026-05-28T10:00:00.000Z");
-  assert.equal(storage.getItem("gamealgo_user_created_local_at"), identity.userCreatedLocalAt);
+  const identityPrefix = `gamealgo:v1:identity:https://gamealgo.test:${createHash("sha256").update(gameKey).digest("hex")}`;
+  assert.equal(storage.getItem(`${identityPrefix}:created-at`), "2026-05-28T10:00:00.000Z");
+  assert.equal(storage.getItem(`${identityPrefix}:created-local-at`), identity.userCreatedLocalAt);
+  assert.equal(storage.getItem("gamealgo_user_id"), undefined);
   assert.equal(configRequest.userId, "legacy-user");
   assert.equal(configRequest.userCreatedAt, "2026-05-28T10:00:00.000Z");
   assert.equal(configRequest.userCreatedLocalAt, identity.userCreatedLocalAt);
@@ -689,6 +720,112 @@ test("tracker buffers events until context is ready", async () => {
   assert.equal(uploadedEvents[0].contextId, "ctx-1");
   assert.equal(uploadedEvents[0].eventType, "level_end");
   client.tracker.close();
+});
+
+test("tracker binds context once and preserves it across same-session refreshes", async () => {
+  let uploadedEvents: Array<Record<string, unknown>> = [];
+  const client = createClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    autoStart: false,
+    eventFlushIntervalMs: 0,
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      const body = await request.json() as { events: Array<Record<string, unknown>> };
+      uploadedEvents = body.events;
+      return jsonResponse({ ok: true, accepted: body.events.length });
+    },
+  });
+
+  client.tracker.identify("u1", "s1");
+  client.tracker.trackLevelStart({ level: 1 });
+  client.tracker.setContextId("ctx-1");
+  client.tracker.setContextId("ctx-2");
+  client.tracker.trackLevelEnd({ level: 1 });
+  await client.tracker.flush();
+
+  assert.deepEqual(uploadedEvents.map((event) => event.contextId), ["ctx-1", "ctx-2"]);
+  client.tracker.close();
+});
+
+test("new session drops only unbound events from the previous session", async () => {
+  let uploadedEvents: Array<Record<string, unknown>> = [];
+  const client = createClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    autoStart: false,
+    eventFlushIntervalMs: 0,
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      const body = await request.json() as { events: Array<Record<string, unknown>> };
+      uploadedEvents = body.events;
+      return jsonResponse({ ok: true, accepted: body.events.length });
+    },
+  });
+
+  client.tracker.identify("u1", "s1");
+  client.tracker.trackEvent("unbound");
+  client.tracker.setContextId("ctx-1");
+  client.tracker.trackEvent("bound");
+  client.tracker.setContextId("");
+  client.tracker.trackEvent("drop_me");
+  client.tracker.newSession("s2");
+  client.tracker.setContextId("ctx-2");
+  client.tracker.trackEvent("new_session");
+  await client.tracker.flush();
+
+  assert.deepEqual(uploadedEvents.map((event) => event.eventType), ["_unbound", "_bound", "_new_session"]);
+  assert.deepEqual(uploadedEvents.map((event) => event.contextId), ["ctx-1", "ctx-1", "ctx-2"]);
+  client.tracker.close();
+});
+
+test("tracker persists the full queue after three failures and restores it until ack", async () => {
+  const storage = new MapStorage();
+  let attempts = 0;
+  const first = createClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    userId: "u1",
+    storage,
+    autoStart: false,
+    eventFlushIntervalMs: 0,
+    fetchImpl: async () => {
+      attempts += 1;
+      throw new Error("offline");
+    },
+  });
+  first.tracker.identify("u1", "s1");
+  first.tracker.setContextId("ctx-1");
+  first.tracker.trackLevelEnd({ level: 2 });
+  for (let index = 0; index < 3; index += 1) {
+    await assert.rejects(first.tracker.flush(), /offline/);
+  }
+  assert.equal(attempts, 3);
+  const persistenceKey = storage.keys().find((key) => key.includes(":event-queue:"));
+  assert.ok(persistenceKey);
+  assert.match(storage.getItem(persistenceKey!) ?? "", /"eventType":"level_end"/);
+  first.tracker.close();
+
+  let restoredEvents: Array<Record<string, unknown>> = [];
+  const second = createClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    userId: "u1",
+    storage,
+    autoStart: false,
+    eventFlushIntervalMs: 0,
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      const body = await request.json() as { events: Array<Record<string, unknown>> };
+      restoredEvents = body.events;
+      return jsonResponse({ ok: true, accepted: body.events.length });
+    },
+  });
+  await second.tracker.flush();
+  assert.equal(restoredEvents.length, 1);
+  assert.equal(restoredEvents[0].contextId, "ctx-1");
+  assert.equal(storage.getItem(persistenceKey!), undefined);
+  second.tracker.close();
 });
 
 test("tracker queues and flushes events after ready identifies user", async () => {
@@ -970,5 +1107,9 @@ class MapStorage {
 
   removeItem(key: string): void {
     this.values.delete(key);
+  }
+
+  keys(): string[] {
+    return [...this.values.keys()];
   }
 }

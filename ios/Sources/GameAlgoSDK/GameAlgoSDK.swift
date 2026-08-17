@@ -11,6 +11,8 @@ public actor GameAlgoSDK {
     private let defaultPlatform: GameAlgoPlatform
     private let defaultSDKVersion: String
     private let defaultAppVersion: String?
+    private let defaultAccountUserId: String?
+    private let defaultAccountUserCreatedAt: String?
     private let experimentIntegrationVersion: Int
     private let defaultIsDebug: Bool
     private let httpClient: any GameAlgoHTTPClient
@@ -19,6 +21,7 @@ public actor GameAlgoSDK {
     private let ddaControllerStore: GameAlgoDDAControllerStore
     private let userIdentityStore: GameAlgoUserIdentityStore
     private let snapshotCacheKey: String
+    private let legacySnapshotCacheKey: String
     private let attributionAckCacheKey: String
     private let contextIdentifierAckCacheKey: String
     private let now: @Sendable () -> Date
@@ -40,10 +43,12 @@ public actor GameAlgoSDK {
         baseURL: URL,
         sdkVersion: String = GameAlgoSDK.defaultSDKVersion,
         appVersion: String? = nil,
+        accountUserId: String? = nil,
+        accountUserCreatedAt: String? = nil,
         experimentIntegrationVersion: Int = 0,
         platform: GameAlgoPlatform = .ios,
         httpClient: any GameAlgoHTTPClient = URLSessionGameAlgoHTTPClient(),
-        scriptRuntime: any GameAlgoScriptRuntime = JavaScriptCoreGameAlgoScriptRuntime(),
+        scriptRuntime: any GameAlgoScriptRuntime = RustGameAlgoScriptRuntime(),
         cacheStorage: (any GameAlgoCacheStorage)? = GameAlgoUserDefaultsCacheStorage(),
         ddaStorage: (any GameAlgoDDAStorage)? = GameAlgoUserDefaultsDDAStorage(),
         userIdentityStore: GameAlgoUserIdentityStore = GameAlgoUserIdentityStore(),
@@ -66,6 +71,8 @@ public actor GameAlgoSDK {
             baseURL: baseURL,
             sdkVersion: sdkVersion,
             appVersion: appVersion,
+            accountUserId: accountUserId,
+            accountUserCreatedAt: accountUserCreatedAt,
             experimentIntegrationVersion: experimentIntegrationVersion,
             platform: platform,
             httpClient: httpClient,
@@ -95,10 +102,12 @@ public actor GameAlgoSDK {
         baseURL: URL,
         sdkVersion: String = GameAlgoSDK.defaultSDKVersion,
         appVersion: String? = nil,
+        accountUserId: String? = nil,
+        accountUserCreatedAt: String? = nil,
         experimentIntegrationVersion: Int = 0,
         platform: GameAlgoPlatform = .ios,
         httpClient: any GameAlgoHTTPClient = URLSessionGameAlgoHTTPClient(),
-        scriptRuntime: any GameAlgoScriptRuntime = JavaScriptCoreGameAlgoScriptRuntime(),
+        scriptRuntime: any GameAlgoScriptRuntime = RustGameAlgoScriptRuntime(),
         cacheStorage: (any GameAlgoCacheStorage)? = GameAlgoUserDefaultsCacheStorage(),
         ddaStorage: (any GameAlgoDDAStorage)? = GameAlgoUserDefaultsDDAStorage(),
         userIdentityStore: GameAlgoUserIdentityStore = GameAlgoUserIdentityStore(),
@@ -118,7 +127,10 @@ public actor GameAlgoSDK {
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         let snapshotStore = GameAlgoSnapshotStore()
-        let initialIdentity = userIdentityStore.identity(now: now())
+        let initialIdentity = userIdentityStore.identity(userId: userId, now: now())
+        let gameKeyHash = GameAlgoSHA256.hash(gameKey).replacingOccurrences(of: "sha256:", with: "")
+        let userScope = Self.clean(userId) ?? initialIdentity.userId
+        let namespace = "\(baseURL.absoluteString):\(gameKeyHash):\(userScope)"
         let eventUploader = GameAlgoEventBatchUploader(
             gameKey: gameKey,
             baseURL: baseURL,
@@ -132,6 +144,8 @@ public actor GameAlgoSDK {
         self.baseURL = baseURL
         self.defaultSDKVersion = sdkVersion
         self.defaultAppVersion = appVersion
+        self.defaultAccountUserId = Self.clean(accountUserId)
+        self.defaultAccountUserCreatedAt = Self.clean(accountUserCreatedAt)
         precondition(experimentIntegrationVersion >= 0, "experimentIntegrationVersion must be a non-negative integer")
         self.experimentIntegrationVersion = experimentIntegrationVersion
         self.defaultPlatform = platform
@@ -141,13 +155,14 @@ public actor GameAlgoSDK {
         self.cacheStorage = cacheStorage
         self.ddaControllerStore = GameAlgoDDAControllerStore(
             storage: ddaStorage,
-            storagePrefix: "gamealgo:v1:dda:\(baseURL.absoluteString):\(gameKey.prefix(16))",
+            storagePrefix: "gamealgo:v1:dda:\(namespace)",
             logger: logger
         )
         self.userIdentityStore = userIdentityStore
-        self.snapshotCacheKey = cacheKey ?? "gamealgo:v1:snapshot:\(baseURL.absoluteString):\(gameKey.prefix(16))"
-        self.attributionAckCacheKey = "gamealgo:v1:attribution:\(baseURL.absoluteString):\(gameKey.prefix(16))"
-        self.contextIdentifierAckCacheKey = "gamealgo:v1:context-identifier:\(baseURL.absoluteString):\(gameKey.prefix(16))"
+        self.legacySnapshotCacheKey = "gamealgo:v1:snapshot:\(baseURL.absoluteString):\(gameKey.prefix(16))"
+        self.snapshotCacheKey = cacheKey ?? "gamealgo:v1:snapshot:\(namespace)"
+        self.attributionAckCacheKey = "gamealgo:v1:attribution:\(namespace)"
+        self.contextIdentifierAckCacheKey = "gamealgo:v1:context-identifier:\(namespace)"
         self.now = now
         self.logger = logger
         self.snapshotStore = snapshotStore
@@ -160,6 +175,8 @@ public actor GameAlgoSDK {
             flushInterval: eventFlushInterval,
             isDebug: isDebug,
             initialIdentity: initialIdentity,
+            storage: cacheStorage,
+            persistenceKey: "gamealgo:v1:event-queue:\(namespace)",
             logger: logger,
             now: now
         )
@@ -170,6 +187,8 @@ public actor GameAlgoSDK {
                 platform: platform,
                 sdkVersion: sdkVersion,
                 appVersion: appVersion,
+                accountUserId: accountUserId,
+                accountUserCreatedAt: accountUserCreatedAt,
                 deviceId: deviceId,
                 timezone: timezone,
                 device: device,
@@ -215,6 +234,8 @@ public actor GameAlgoSDK {
         platform: GameAlgoPlatform,
         sdkVersion: String,
         appVersion: String? = nil,
+        accountUserId: String? = nil,
+        accountUserCreatedAt: String? = nil,
         deviceId: String? = nil,
         timezone: String? = nil,
         device: [String: JSONValue] = [:],
@@ -230,7 +251,8 @@ public actor GameAlgoSDK {
                 sdkVersion: sdkVersion,
                 appVersion: appVersion,
                 timezone: timezone,
-                userCreatedAt: identity.userCreatedAt
+                userCreatedAt: identity.userCreatedAt,
+                accountUserId: accountUserId
             )
             await self.tracker.markSessionStarted()
             await self.loadCachedSnapshot()
@@ -241,6 +263,8 @@ public actor GameAlgoSDK {
                     platform: platform,
                     sdkVersion: sdkVersion,
                     appVersion: appVersion,
+                    accountUserId: accountUserId,
+                    accountUserCreatedAt: accountUserCreatedAt,
                     deviceId: deviceId,
                     timezone: timezone,
                     device: device,
@@ -288,6 +312,8 @@ public actor GameAlgoSDK {
         platform: GameAlgoPlatform? = nil,
         sdkVersion: String? = nil,
         appVersion: String? = nil,
+        accountUserId: String? = nil,
+        accountUserCreatedAt: String? = nil,
         deviceId: String? = nil,
         timezone: String? = nil,
         device: [String: JSONValue] = [:],
@@ -300,6 +326,8 @@ public actor GameAlgoSDK {
         let resolvedPlatform = platform ?? defaultPlatform
         let resolvedSDKVersion = sdkVersion ?? defaultSDKVersion
         let resolvedAppVersion = appVersion ?? defaultAppVersion
+        let resolvedAccountUserId = Self.clean(accountUserId) ?? defaultAccountUserId
+        let resolvedAccountUserCreatedAt = Self.clean(accountUserCreatedAt) ?? defaultAccountUserCreatedAt
         let resolvedIsDebug = isDebug ?? defaultIsDebug
         await tracker.identify(
             userId: identity.userId,
@@ -308,20 +336,23 @@ public actor GameAlgoSDK {
             sdkVersion: resolvedSDKVersion,
             appVersion: resolvedAppVersion,
             timezone: timezone,
-            userCreatedAt: identity.userCreatedAt
+            userCreatedAt: identity.userCreatedAt,
+            accountUserId: resolvedAccountUserId
         )
         let resolvedSessionId = await tracker.currentSessionId()
-        let resolvedTimezone = clean(timezone) ?? TimeZone.current.identifier
+        let resolvedTimezone = Self.clean(timezone) ?? TimeZone.current.identifier
         var resolvedDevice = defaultDeviceContext()
         for (key, value) in device {
             resolvedDevice[key] = value
         }
-        if let deviceId = clean(deviceId) {
+        if let deviceId = Self.clean(deviceId) {
             resolvedDevice["deviceId"] = .string(deviceId)
         }
         let cacheKey = ConfigCacheKey(
             userId: identity.userId,
             userCreatedAt: resolvedUserCreatedAt,
+            accountUserId: resolvedAccountUserId,
+            accountUserCreatedAt: resolvedAccountUserCreatedAt,
             sessionId: resolvedSessionId,
             platform: resolvedPlatform,
             sdkVersion: resolvedSDKVersion,
@@ -346,6 +377,8 @@ public actor GameAlgoSDK {
                 userId: identity.userId,
                 userCreatedAt: resolvedUserCreatedAt,
                 userCreatedLocalAt: identity.userCreatedLocalAt,
+                accountUserId: resolvedAccountUserId,
+                accountUserCreatedAt: resolvedAccountUserCreatedAt,
                 createdLocalAt: GameAlgoEventBatchUploader.localTimestamp(now()),
                 sessionId: resolvedSessionId,
                 platform: resolvedPlatform,
@@ -416,23 +449,52 @@ public actor GameAlgoSDK {
         return file
     }
 
+    private func fetchScriptFile(_ script: GameAlgoConfigFileRef) async throws -> GameAlgoConfigFile {
+        guard let versionId = Self.clean(script.versionId) else {
+            throw GameAlgoError.decodingFailed("script.versionId is required for \(script.name)")
+        }
+        guard script.hash.range(of: #"^sha256:[a-fA-F0-9]{64}$"#, options: .regularExpression) != nil else {
+            throw GameAlgoError.decodingFailed("script.hash is invalid for \(script.name)@\(versionId)")
+        }
+        guard let scriptURL = URL(string: script.url.relativeString, relativeTo: baseURL)?.absoluteURL else {
+            throw GameAlgoError.decodingFailed("script.url is invalid for \(script.name)@\(versionId)")
+        }
+        let response = try await request(GameAlgoHTTPRequest(url: scriptURL, method: .get))
+        guard let content = String(data: response.body, encoding: .utf8) else {
+            throw GameAlgoError.decodingFailed("Script file is not valid UTF-8")
+        }
+        guard GameAlgoSHA256.hash(content).lowercased() == script.hash.lowercased() else {
+            throw GameAlgoError.decodingFailed("script.hash does not match downloaded content for \(script.name)@\(versionId)")
+        }
+        let file = GameAlgoConfigFile(
+            name: scriptCacheKey(script),
+            content: content,
+            contentType: response.header("content-type") ?? script.contentType ?? "application/octet-stream",
+            etag: response.header("etag")
+        )
+        snapshotStore.updateConfigFile(file, updatedAt: now())
+        persistSnapshot()
+        log("script loaded: \(script.name)@\(versionId)")
+        return file
+    }
+
     public func uploadEvents(_ events: [GameAlgoEvent]) async throws -> GameAlgoEventBatchResponse {
         try await eventUploader.uploadEvents(events)
     }
 
     public func setAttribution(_ attribution: GameAlgoUserAttribution) async throws -> GameAlgoUserAttributionResponse {
-        guard let provider = clean(attribution.provider) else {
+        guard let provider = Self.clean(attribution.provider) else {
             throw GameAlgoError.encodingFailed("provider is required")
         }
         let identity = userIdentityStore.identity(userId: attribution.userId, now: now())
         let platform = attribution.platform ?? defaultPlatform
         let status = normalizeAttributionStatus(
             provider: provider,
-            rawStatus: clean(attribution.status),
+            rawStatus: Self.clean(attribution.status),
             attribution: attribution.attribution
         )
-        let attributedAt = clean(attribution.attributedAt)
-        let attributionHash = clean(attribution.attributionHash) ?? stableAttributionHash(
+        let attributedAt = Self.clean(attribution.attributedAt)
+        let attributionHash = Self.clean(attribution.attributionHash) ?? stableAttributionHash(
             platform: platform,
             provider: provider,
             status: status,
@@ -446,7 +508,7 @@ public actor GameAlgoSDK {
         }
 
         let resolvedSessionId: String
-        if let sessionId = clean(attribution.sessionId) {
+        if let sessionId = Self.clean(attribution.sessionId) {
             resolvedSessionId = sessionId
         } else {
             resolvedSessionId = await tracker.currentSessionId()
@@ -454,9 +516,9 @@ public actor GameAlgoSDK {
 
         let requestBody = AttributionRequest(
             userId: identity.userId,
-            userCreatedAt: clean(attribution.userCreatedAt) ?? identity.userCreatedAt,
+            userCreatedAt: Self.clean(attribution.userCreatedAt) ?? identity.userCreatedAt,
             sessionId: resolvedSessionId,
-            contextId: clean(attribution.contextId) ?? snapshotStore.snapshot().config?.contextId,
+            contextId: Self.clean(attribution.contextId) ?? snapshotStore.snapshot().config?.contextId,
             platform: platform,
             provider: provider,
             status: status,
@@ -493,7 +555,7 @@ public actor GameAlgoSDK {
         if snapshotStore.snapshot().config == nil, let readyTask = readyTaskStore.get() {
             try await readyTask.value
         }
-        guard let contextId = clean(snapshotStore.snapshot().config?.contextId) else {
+        guard let contextId = Self.clean(snapshotStore.snapshot().config?.contextId) else {
             throw GameAlgoError.encodingFailed("config context is not ready")
         }
 
@@ -513,7 +575,7 @@ public actor GameAlgoSDK {
             platform: defaultPlatform,
             identifierType: type,
             identifierValue: normalizedValue,
-            observedAt: clean(observedAt) ?? GameAlgoEventBatchUploader.isoTimestamp(now()),
+            observedAt: Self.clean(observedAt) ?? GameAlgoEventBatchUploader.isoTimestamp(now()),
             identifierHash: identifierHash
         )
         let response: GameAlgoContextIdentifierResponse = try await requestJSON(
@@ -539,6 +601,8 @@ public actor GameAlgoSDK {
         platform: GameAlgoPlatform?,
         sdkVersion: String?,
         appVersion: String?,
+        accountUserId: String?,
+        accountUserCreatedAt: String?,
         deviceId: String?,
         timezone: String?,
         device: [String: JSONValue],
@@ -550,6 +614,8 @@ public actor GameAlgoSDK {
             platform: platform,
             sdkVersion: sdkVersion,
             appVersion: appVersion,
+            accountUserId: accountUserId,
+            accountUserCreatedAt: accountUserCreatedAt,
             deviceId: deviceId,
             timezone: timezone,
             device: device,
@@ -557,13 +623,21 @@ public actor GameAlgoSDK {
         )
 
         let names: [String]
+        let scripts: [GameAlgoConfigFileRef]
         switch preloadConfigFiles {
         case .all:
-            names = Array(Set(config.configFiles.map(\.name) + config.experiments.compactMap { $0.script?.name }))
+            names = Array(Set(config.configFiles.map(\.name)))
+            var byVersion: [String: GameAlgoConfigFileRef] = [:]
+            for script in config.experiments.compactMap({ $0.script }) {
+                byVersion[scriptCacheKey(script)] = script
+            }
+            scripts = Array(byVersion.values)
         case .none:
             names = []
+            scripts = []
         case let .names(selected):
             names = selected
+            scripts = []
         }
 
         if names.isEmpty {
@@ -578,12 +652,17 @@ public actor GameAlgoSDK {
                     _ = try await self.fetchConfigFile(name)
                 }
             }
+            for script in scripts {
+                group.addTask {
+                    _ = try await self.fetchScriptFile(script)
+                }
+            }
             try await group.waitForAll()
         }
         let loadedFiles = Set(snapshotStore.snapshot().configFiles.keys)
         for assignment in config.experiments {
-            if let script = assignment.script, loadedFiles.contains(script.name) {
-                log("script loaded: \(assignment.key) -> \(script.name)")
+            if let script = assignment.script, loadedFiles.contains(scriptCacheKey(script)) {
+                log("script ready: \(assignment.key) -> \(script.name)@\(script.versionId ?? "missing")")
             }
         }
         if !names.isEmpty {
@@ -594,9 +673,15 @@ public actor GameAlgoSDK {
     }
 
     private func loadCachedSnapshot() {
-        guard let cacheStorage, let snapshot = try? cacheStorage.loadSnapshot(cacheKey: snapshotCacheKey) else {
-            return
+        guard let cacheStorage else { return }
+        var snapshot = try? cacheStorage.loadSnapshot(cacheKey: snapshotCacheKey)
+        if snapshot == nil, legacySnapshotCacheKey != snapshotCacheKey,
+           let legacy = try? cacheStorage.loadSnapshot(cacheKey: legacySnapshotCacheKey) {
+            snapshot = legacy
+            try? cacheStorage.saveSnapshot(legacy, cacheKey: snapshotCacheKey)
+            try? cacheStorage.removeSnapshot(cacheKey: legacySnapshotCacheKey)
         }
+        guard let snapshot else { return }
         snapshotStore.replace(snapshot)
         log("cached snapshot loaded")
     }
@@ -683,7 +768,7 @@ public actor GameAlgoSDK {
         logger?("[GameAlgoSDK] \(message)")
     }
 
-    private func clean(_ value: String?) -> String? {
+    private nonisolated static func clean(_ value: String?) -> String? {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
@@ -714,6 +799,8 @@ public actor GameAlgoSDK {
 private struct ConfigCacheKey: Sendable, Equatable {
     let userId: String
     let userCreatedAt: String
+    let accountUserId: String?
+    let accountUserCreatedAt: String?
     let sessionId: String
     let platform: GameAlgoPlatform
     let sdkVersion: String
@@ -728,6 +815,8 @@ private struct ConfigRequest: Encodable {
     let userId: String
     let userCreatedAt: String
     let userCreatedLocalAt: String
+    let accountUserId: String?
+    let accountUserCreatedAt: String?
     let createdLocalAt: String
     let sessionId: String
     let platform: GameAlgoPlatform
@@ -816,6 +905,13 @@ private final class GameAlgoReadyTaskStore: @unchecked Sendable {
 private struct APIErrorPayload: Decodable {
     let error: String?
     let message: String?
+}
+
+private func scriptCacheKey(_ script: GameAlgoConfigFileRef) -> String {
+    guard let versionId = script.versionId?.trimmingCharacters(in: .whitespacesAndNewlines), !versionId.isEmpty else {
+        return "script:missing:\(script.name)"
+    }
+    return "script:\(versionId)"
 }
 
 private func stableAttributionHash(

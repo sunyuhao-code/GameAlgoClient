@@ -34,6 +34,7 @@ public struct GameAlgoExperimentAssignment: Sendable, Equatable, Codable {
 }
 
 public struct GameAlgoConfigFileRef: Sendable, Equatable, Codable {
+    public let versionId: String?
     public let name: String
     public let url: URL
     public let hash: String
@@ -41,12 +42,14 @@ public struct GameAlgoConfigFileRef: Sendable, Equatable, Codable {
     public let updatedAt: String?
 
     public init(
+        versionId: String? = nil,
         name: String,
         url: URL,
         hash: String,
         contentType: String? = nil,
         updatedAt: String? = nil
     ) {
+        self.versionId = versionId
         self.name = name
         self.url = url
         self.hash = hash
@@ -114,6 +117,7 @@ public struct GameAlgoEvent: Sendable, Equatable, Codable {
     public var isDebug: Bool?
     public var timestamp: String?
     public var createdLocalAt: String?
+    public var accountUserId: String?
     public var payload: [String: JSONValue]
 
     public init(
@@ -125,6 +129,7 @@ public struct GameAlgoEvent: Sendable, Equatable, Codable {
         isDebug: Bool? = nil,
         timestamp: String? = nil,
         createdLocalAt: String? = nil,
+        accountUserId: String? = nil,
         payload: [String: JSONValue] = [:]
     ) {
         self.eventId = eventId
@@ -135,6 +140,7 @@ public struct GameAlgoEvent: Sendable, Equatable, Codable {
         self.isDebug = isDebug
         self.timestamp = timestamp
         self.createdLocalAt = createdLocalAt
+        self.accountUserId = accountUserId
         self.payload = payload
     }
 }

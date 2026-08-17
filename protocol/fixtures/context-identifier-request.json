@@ -1,0 +1,10 @@
+{
+  "userId": "ga_user_fixture_001",
+  "sessionId": "session_fixture_001",
+  "contextId": "ctx_fixture_001",
+  "platform": "android",
+  "identifierType": "adjust_adid",
+  "identifierValue": "adjust_fixture_001",
+  "observedAt": "2026-08-17T12:03:00.000Z",
+  "identifierHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+}

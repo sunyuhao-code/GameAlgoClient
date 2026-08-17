@@ -1,15 +1,28 @@
 package com.gamealgo.sdk;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.junit.Test;
 
 public final class GameAlgoClientSmokeTest {
     public static void main(String[] args) throws Exception {
+        runAll();
+    }
+
+    @Test
+    public void smokeSuite() throws Exception {
+        runAll();
+    }
+
+    private static void runAll() throws Exception {
+        testSharedProtocolFixtureDecodesAndUsesImmutableScriptVersion();
         testFetchConfigSendsHeadersAndCaches();
         testFetchConfigFile();
         testConstructorPreloadsConfigFilesAndExposesLocalExecutorAndConfigReaders();
@@ -23,10 +36,45 @@ public final class GameAlgoClientSmokeTest {
         testSetAttributionNormalizesAdjustNoConsentAsUnknown();
         testContextIdentifierSettersUploadIndependentlyAndDeduplicate();
         testTrackerBuffersEventsUntilContextIsReady();
+        testTrackerKeepsBoundEventsAcrossSessionsAndDropsUnboundOldEvents();
+        testTrackerPersistsAfterThreeFailuresAndRestoresAfterRestart();
         testTrackerQueuesAndFlushesEvents();
         testCustomEventsPreservePayload();
         testTrackAdUploadsStandardAdViewPayload();
         testDDAControllerPersistsBehaviorWindowAndReturnsDecision();
+    }
+
+    private static void testSharedProtocolFixtureDecodesAndUsesImmutableScriptVersion() throws Exception {
+        String config = new String(Files.readAllBytes(Paths.get("../protocol/fixtures/config-response.json")), StandardCharsets.UTF_8);
+        String script = new String(Files.readAllBytes(Paths.get("../protocol/fixtures/script-fixture.js")), StandardCharsets.UTF_8);
+        FakeHttpClient httpClient = new FakeHttpClient();
+        httpClient.enqueue(jsonResponse(config));
+        httpClient.enqueue(jsonResponse("{}"));
+        httpClient.enqueue(new GameAlgoHttpResponse(
+                200,
+                headers("application/javascript"),
+                script.getBytes(StandardCharsets.UTF_8)
+        ));
+        GameAlgoClient client = new GameAlgoClient(
+                "ga_live_test_key_0123456789abcdef",
+                "https://gamealgo.test",
+                "fixture",
+                null,
+                "android",
+                httpClient,
+                new FakeScriptRuntime(),
+                null,
+                null,
+                GameAlgoLogger.console(),
+                new GameAlgoFetchConfigRequest("fixture-user")
+        );
+
+        client.ready().get();
+        GameAlgoExecutionResult result = client.executor("difficulty").execute(new LinkedHashMap<String, Object>());
+        check(result != null, "shared fixture script should execute");
+        check(((Number) GameAlgoJson.readPath(result.getPayload(), "level")).intValue() == 2, "shared fixture config should decode");
+        check("https://gamealgo.test/v1/scripts/sv_fixture_001".equals(httpClient.requests.get(2).getUrl().toString()),
+                "shared fixture must load the immutable script version URL");
     }
 
     private static void testFetchConfigSendsHeadersAndCaches() throws Exception {
@@ -68,8 +116,11 @@ public final class GameAlgoClientSmokeTest {
         check(((Number) requestBody.get("experimentIntegrationVersion")).intValue() == 7, "config body should inherit the initialized experimentIntegrationVersion");
         check(Boolean.FALSE.equals(requestBody.get("isDebug")), "config body should default isDebug=false");
         Map<String, Object> device = GameAlgoJson.asObject(requestBody.get("device"), "device");
-        check("java".equals(device.get("runtime")), "config body should include default device runtime");
-        check(device.get("javaVersion") instanceof String, "config body should include java version");
+        String runtime = (String) device.get("runtime");
+        check("android".equals(runtime) || "java".equals(runtime), "config body should include default device runtime");
+        if ("java".equals(runtime)) {
+            check(device.get("javaVersion") instanceof String, "Java fallback context should include java version");
+        }
     }
 
     private static void testFetchConfigFile() throws Exception {
@@ -209,7 +260,7 @@ public final class GameAlgoClientSmokeTest {
                 + "\"experimentId\":\"exp-level-generator-001\","
                 + "\"variant\":\"variant-a\","
                 + "\"config\":{\"difficulty\":\"hard\"},"
-                + "\"script\":{\"name\":\"level-generator.js\",\"url\":\"https://gamealgo.test/v1/config-files/level-generator.js\",\"hash\":\"" + sha256(script) + "\"}"
+                + "\"script\":{\"versionId\":\"sv_level_generator\",\"name\":\"level-generator.js\",\"url\":\"/v1/scripts/sv_level_generator\",\"hash\":\"" + sha256(script) + "\"}"
                 + "}],"
                 + "\"configFiles\":[]"
                 + "}"));
@@ -558,6 +609,121 @@ public final class GameAlgoClientSmokeTest {
         check("ctx-1".equals(event.get("contextId")), "tracker should fill context id at flush");
         check("level_end".equals(event.get("eventType")), "tracker should preserve event type");
         client.tracker().close();
+    }
+
+    private static void testTrackerKeepsBoundEventsAcrossSessionsAndDropsUnboundOldEvents() throws Exception {
+        FakeHttpClient httpClient = new FakeHttpClient();
+        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":2}"));
+        GameAlgoClient client = new GameAlgoClient(
+                "ga_live_test_key_0123456789abcdef",
+                "https://gamealgo.test",
+                "1.2.3",
+                "4.5.6",
+                "android",
+                httpClient,
+                new FakeScriptRuntime(),
+                null,
+                null,
+                GameAlgoLogger.console(),
+                false
+        );
+
+        GameAlgoEventTracker tracker = client.tracker();
+        tracker.identify("u1", "session-1", "2026-05-28T10:00:00.000Z");
+        check(tracker.track("old_unbound"), "old session event should initially queue");
+
+        tracker.newSession();
+        String session2 = tracker.currentSessionId();
+        tracker.setContextId("ctx-2");
+        check(tracker.track("bound_session_2"), "bound session event should queue");
+
+        tracker.newSession();
+        String session3 = tracker.currentSessionId();
+        check(tracker.track("new_unbound"), "new session event should queue before context is ready");
+        tracker.setContextId("ctx-3");
+        tracker.flush();
+
+        Map<String, Object> body = requestBody(httpClient.requests.get(0));
+        List<Object> events = GameAlgoJson.asArray(body.get("events"), "events");
+        check(events.size() == 2, "flush should contain the bound old event and current session event only");
+        Map<String, Object> first = GameAlgoJson.asObject(events.get(0), "events[0]");
+        Map<String, Object> second = GameAlgoJson.asObject(events.get(1), "events[1]");
+        check("bound_session_2".equals(first.get("eventType")), "unbound event from session 1 should be dropped");
+        check("ctx-2".equals(first.get("contextId")) && session2.equals(first.get("sessionId")),
+                "bound event should preserve its original context and session");
+        check("new_unbound".equals(second.get("eventType")), "current session event should remain queued");
+        check("ctx-3".equals(second.get("contextId")) && session3.equals(second.get("sessionId")),
+                "current session event should bind only to the current context");
+        tracker.close();
+    }
+
+    private static void testTrackerPersistsAfterThreeFailuresAndRestoresAfterRestart() throws Exception {
+        MemoryCacheStorage storage = new MemoryCacheStorage();
+        FakeHttpClient failingHttpClient = new FakeHttpClient();
+        failingHttpClient.enqueueError(new java.io.IOException("offline-1"));
+        failingHttpClient.enqueueError(new java.io.IOException("offline-2"));
+        failingHttpClient.enqueueError(new java.io.IOException("offline-3"));
+        GameAlgoClient failingClient = new GameAlgoClient(
+                "ga_live_test_key_0123456789abcdef",
+                "https://gamealgo.test",
+                "1.0.0",
+                null,
+                "android",
+                failingHttpClient,
+                new FakeScriptRuntime(),
+                null,
+                null,
+                GameAlgoLogger.console(),
+                false
+        );
+        GameAlgoEventTracker firstTracker = new GameAlgoEventTracker(
+                failingClient, 100, 1000, 0L, storage, "test-event-queue"
+        );
+        firstTracker.identify("anonymous-user", "session-1", "2026-05-28T10:00:00.000Z", "account-user");
+        firstTracker.setContextId("ctx-1");
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("level", 7);
+        check(firstTracker.trackLevelEnd(payload), "tracker should queue the event before failures");
+
+        for (int attempt = 0; attempt < 3; attempt += 1) {
+            try {
+                firstTracker.flush();
+                throw new AssertionError("flush should fail while transport is offline");
+            } catch (GameAlgoException expected) {
+                // The third failure persists the full unsent queue.
+            }
+        }
+        String jsonl = storage.getItem("test-event-queue");
+        check(jsonl != null && jsonl.length() > 0, "third failure should persist JSONL");
+        Map<String, Object> persisted = GameAlgoJson.asObject(GameAlgoJson.parse(jsonl), "persisted event");
+        check("ctx-1".equals(persisted.get("contextId")), "persisted event should retain contextId");
+        check("account-user".equals(persisted.get("accountUserId")), "persisted event should retain account identity");
+        firstTracker.close();
+
+        FakeHttpClient recoveredHttpClient = new FakeHttpClient();
+        recoveredHttpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":1}"));
+        GameAlgoClient recoveredClient = new GameAlgoClient(
+                "ga_live_test_key_0123456789abcdef",
+                "https://gamealgo.test",
+                "1.0.0",
+                null,
+                "android",
+                recoveredHttpClient,
+                new FakeScriptRuntime(),
+                null,
+                null,
+                GameAlgoLogger.console(),
+                false
+        );
+        GameAlgoEventTracker restoredTracker = new GameAlgoEventTracker(
+                recoveredClient, 100, 1000, 0L, storage, "test-event-queue"
+        );
+        restoredTracker.flush();
+        Map<String, Object> recoveredBody = requestBody(recoveredHttpClient.requests.get(0));
+        List<Object> recoveredEvents = GameAlgoJson.asArray(recoveredBody.get("events"), "events");
+        check(recoveredEvents.size() == 1, "restarted tracker should upload the persisted event once");
+        check(storage.getItem("test-event-queue") == null, "successful ACK should clear persisted JSONL");
+        restoredTracker.close();
     }
 
     private static void testConstructorBackfillsCreatedAtForPersistedLegacyUserId() throws Exception {

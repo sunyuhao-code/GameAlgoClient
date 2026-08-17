@@ -4,7 +4,7 @@
     "level_end": {
       "fields": {
         "level_no": { "path": "$.levelNo", "type": "number" },
-        "success": { "path": "$.success", "type": "string" },
+        "success": { "path": "$.success", "type": "boolean" },
         "duration_ms": { "path": "$.durationMs", "type": "number" },
         "score": { "path": "$.score", "type": "number" }
       }
@@ -42,7 +42,7 @@
         "avg_score": { "agg": "avg", "field": "score" },
         "success_rate": {
           "agg": "ratio",
-          "numerator": { "field": "success", "op": "eq", "value": "true" },
+          "numerator": { "field": "success", "op": "eq", "value": true },
           "denominator": { "op": "all" }
         }
       }

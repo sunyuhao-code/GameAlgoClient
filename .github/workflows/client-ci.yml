@@ -1,0 +1,83 @@
+name: Client SDK CI
+
+on:
+  pull_request:
+  push:
+    branches: [master, main]
+
+jobs:
+  rest-ios-lua:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios,aarch64-apple-darwin,x86_64-apple-darwin
+      - run: cargo test --locked --manifest-path runtime/rust/Cargo.toml
+      - run: npm run check
+      - run: runtime/rust/build-apple-xcframework.sh
+      - run: swift test --package-path ios
+      - run: brew install lua luarocks
+      - run: luarocks install lua-cjson
+      - run: lua lua/tests/GameAlgoContractTest.lua
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+      - uses: android-actions/setup-android@v3
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: armv7-linux-androideabi,aarch64-linux-android,x86_64-linux-android
+      - run: cargo install cargo-ndk --locked
+      - run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
+      - run: echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - run: ./gradlew --no-daemon clean testReleaseUnitTest verifyReleaseAar :sample:assembleRelease publishReleasePublicationToLocalReleaseRepository assembleDebugAndroidTest
+        working-directory: android
+      - name: Generate release checksums
+        run: |
+          find build/outputs/aar build/repo -type f -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > build/SHA256SUMS
+          sha256sum --check build/SHA256SUMS
+        working-directory: android
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gamealgo-android
+          path: |
+            android/build/outputs/aar/*.aar
+            android/build/repo/**
+            android/build/SHA256SUMS
+
+  android-instrumentation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+      - uses: android-actions/setup-android@v3
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-linux-android
+      - run: cargo install cargo-ndk --locked
+      - run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018" "system-images;android-35;google_apis;x86_64"
+      - run: echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          script: cd android && ./gradlew --no-daemon connectedDebugAndroidTest

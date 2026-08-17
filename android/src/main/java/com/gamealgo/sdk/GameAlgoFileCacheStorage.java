@@ -43,6 +43,7 @@ public final class GameAlgoFileCacheStorage implements GameAlgoCacheStorage {
         try (OutputStream output = new FileOutputStream(fileForKey(key))) {
             output.write(value.getBytes(StandardCharsets.UTF_8));
         } catch (IOException error) {
+            if (temporary.exists()) temporary.delete();
             throw new GameAlgoException("Failed to write cache: " + error.getMessage(), error);
         }
     }

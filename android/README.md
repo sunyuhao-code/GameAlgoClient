@@ -97,7 +97,9 @@ SDK 会在每个请求里发送 `X-GameAlgo-Key`，按 `ttlSeconds` 缓存 `/v1/
 
 SDK 会在 `/v1/config` 请求里自动带上 UTC `userCreatedAt`、本地 `userCreatedLocalAt`、context 本地时间 `createdLocalAt` 和基础 `device` context。两个本地时间都包含 UTC offset；接入方不需要手工维护。接入方可以在完整 `GameAlgoClient` 构造函数或 `fetchConfig` 里通过 `GameAlgoFetchConfigRequest` 传入 `device` 或 `deviceId`，用于追加 App 自定义字段或覆盖默认值。
 
-`tracker()` 会把事件排入内存队列，每批最多上传 100 条，每 30 秒 flush 一次，并保留失败批次等待下次重试。如果配置 context 还没准备好，事件会继续留在本地，`flush` 会在上传前填入当前 `contextId`。`fetchConfig`、`fetchConfigFile` 和 `uploadEvents` 在这个 core 包里是阻塞方法；Android App 应该在自己的后台 executor 或 coroutine 层调用这些底层方法。
+`tracker()` 会把事件排入内存队列，每批最多上传 100 条，每 30 秒 flush 一次，并保留失败批次等待下次重试。配置 `GameAlgoCacheStorage` 后，连续 3 次上传失败会把完整未发送队列按 JSON Lines 写入当前 Game Key 和匿名用户隔离的本地存储；下次启动自动恢复，服务端 ACK 后删除持久化副本。未配置 storage 时只能提供进程内 best-effort 队列。正常运行不会每条事件落盘，强制终止前的未失败内存事件仍可能丢失。事件入队时即固定 `sessionId` 和已有的 `contextId`；同一 session 刷新 context 不会重绑旧事件，切换 session 只会丢弃上一 session 尚未绑定 context 的事件。`fetchConfig`、`fetchConfigFile` 和 `uploadEvents` 在这个 core 包里是阻塞方法；Android App 应该在自己的后台 executor 或 coroutine 层调用这些底层方法。
+
+`userId` 始终是 GameAlgo 生成并持久化的匿名设备标识，用于现有实验分流和报表。游戏已经登录的业务用户可以在 `GameAlgoFetchConfigRequest` 中额外传入 `accountUserId`，已知注册时间时再传 `accountUserCreatedAt`；两者不会覆盖匿名 `userId`。context 保存完整账号身份，后续事件自动携带 `accountUserId`。
 
 `trackAd` 上报的是 `ad_view`，只用于广告 SDK 确认实际产生收入的有效曝光。用户看了一部分广告后跳过，但广告 SDK 已确认本次曝光有效并产生收入，也应该调用 `trackAd`；广告加载失败、未填充、播放失败，或广告 SDK 没有确认产生收入的展示，不要调用 `trackAd`。
 

@@ -245,7 +245,7 @@ async function rewardAd() {
     placement: "rewarded_after_level",
     adType: "reward",
     revenue: 0.018,
-    currency: "USD",
+    currency: "CNY",
     network: "demo_network",
     levelNo: state.levelNo,
   });
@@ -258,7 +258,7 @@ async function purchasePack() {
   queueEvent("purchase", {
     productId: "demo_starter_pack",
     revenue: 4.99,
-    currency: "USD",
+    currency: "CNY",
     levelNo: state.levelNo,
   });
   logEvent("purchase", "demo_starter_pack");

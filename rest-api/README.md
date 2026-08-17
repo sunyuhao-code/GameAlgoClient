@@ -67,7 +67,7 @@ await client.setGoogleAdvertisingId(gaid);
 
 Helper 会自动关联当前 `contextId` 和 GameAlgo `userId`，并按标识类型分别做 ACK 去重。`userId` 本身就是 GameAlgo 设备标识，不需要再传一个 `gamealgoDeviceId`。用户撤回授权或标识不可用时传 `null`，用于清除旧映射。
 
-如果实验分组包含 `script`，`executor.execute(state)` 会执行预加载脚本。只有 config 的实验会直接把 config 作为 execution payload 返回。
+如果实验分组包含 `script`，`executor.execute(state)` 会通过统一的 Rust + QuickJS 进程沙箱执行配置里精确引用的不可变脚本版本。Helper 使用 `script.url` 下载、按 `versionId` 隔离缓存，并在执行前校验 SHA-256；不会按文件名回退到最新脚本。默认从 `GAMEALGO_SCRIPT_RUNTIME_BIN` 或已知构建路径定位 `gamealgo-script-runtime`，也可通过 `scriptRuntimeBinaryPath` 显式指定。脚本只能读取传入的 JSON，不能访问网络、文件、系统环境、时钟或随机数，并受执行时间、内存、栈及输入输出大小限制。只有 config 的实验会直接把 config 作为 execution payload 返回。
 
 ## DDA 行为窗口
 
@@ -90,9 +90,9 @@ const decision = await dda.decide({ mode: "normal", progressionNo: 43 });
 
 helper 会在 `/v1/config` 请求里自动带上 `userCreatedAt` 和基础 `device` context。接入方可以在 `new GameAlgoRestClient(...)` 或 `fetchConfig` 中传入 `device` / `deviceId`，用于追加 App 自定义字段或覆盖默认值。
 
-`tracker` 会把事件排入内存队列，每批最多上传 100 条，每 30 秒 flush 一次，并保留失败批次等待下次重试。如果配置 context 还没准备好，事件会继续留在本地，`flush` 会在上传前填入当前 `contextId`。事件业务字段通过 `payload` 发送。后续由游戏自己的 report pack 声明哪些字段会成为报表维度或指标。实验分组存储在 `/v1/config` 创建的 SDK context 中，不会复制到每条事件。
+`tracker` 会把事件排入内存队列，每批最多上传 100 条，每 30 秒 flush 一次，并保留失败批次等待下次重试。连续 3 次上传失败后，Helper 会把完整未发送队列按 JSON Lines 写入传入的 `storage`，并按完整 Game Key 的 SHA-256 和匿名用户隔离；下次启动自动恢复，服务端 ACK 后删除持久化副本。未传 `storage` 时只能提供进程内 best-effort 队列。正常运行不会每条事件落盘，强制终止前的未失败内存事件仍可能丢失。事件入队时即固定 `sessionId` 和已有的 `contextId`；同一 session 刷新 context 不会重绑旧事件，切换 session 只会丢弃上一 session 尚未绑定 context 的事件。事件业务字段通过 `payload` 发送。后续由游戏自己的 report pack 声明哪些字段会成为报表维度或指标。实验分组存储在 `/v1/config` 创建的 SDK context 中，不会复制到每条事件。
 
-Tracker 不负责跨进程持久化事件队列或托管宿主进程生命周期。需要严格保证送达的后端接入方，应在 Helper 外层增加持久化队列，并在进程退出前显式 flush。
+`userId` 始终是 GameAlgo 生成并持久化的匿名设备标识，用于现有实验分流和报表。游戏已经登录的业务用户可以在 client options 或 `fetchConfig` 中额外传入 `accountUserId`，已知注册时间时再传 `accountUserCreatedAt`；两者不会覆盖匿名 `userId`。context 保存完整账号身份，后续事件自动携带 `accountUserId`。
 
 ## 1. 鉴权
 

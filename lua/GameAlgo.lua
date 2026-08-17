@@ -43,6 +43,8 @@ local state_ = {
     userId = nil,
     userCreatedAt = nil,
     userCreatedLocalAt = nil,
+    accountUserId = nil,
+    accountUserCreatedAt = nil,
     sessionId = nil,
     sessionStartMs = nil,
     contextId = nil,
@@ -62,6 +64,8 @@ local state_ = {
     fetchConfigRequested = false,
     pendingFetchConfigCallbacks = {},
     pendingTracks = {},
+    consecutiveFlushFailures = 0,
+    queuePersistenceActive = false,
     logger = nil,
     transport = HttpTransport,
 }
@@ -151,6 +155,22 @@ local function storageSet(key, value)
     pcall(function() storage:SetItem(key, value) end)
 end
 
+local function gameStorageNamespace()
+    return "gamealgo:v2:game:" .. Sha256.hex(tostring(state_.gameKey or "anonymous"))
+end
+
+local function identityStorageKey(name)
+    return gameStorageNamespace() .. ":identity:" .. tostring(name)
+end
+
+local function userStorageNamespace()
+    return gameStorageNamespace() .. ":user:" .. Sha256.hex(tostring(state_.userId or "anonymous"))
+end
+
+local function queueStorageKey()
+    return userStorageNamespace() .. ":events:jsonl"
+end
+
 local function resolveMakerUserId()
     -- Maker exposes some globals through the Lua environment metatable, so the
     -- lookup must preserve the environment's normal index behavior.
@@ -170,31 +190,57 @@ end
 
 local function ensureIdentity(explicitUserId)
     if explicitUserId and explicitUserId ~= "" then
-        state_.userId = explicitUserId
+        state_.userId = tostring(explicitUserId)
         if not state_.userCreatedAt then
-            state_.userCreatedAt = storageGet("gamealgo_user_created_at") or isoNow()
+            state_.userCreatedAt = storageGet(identityStorageKey("user_created_at"))
+                or storageGet("gamealgo_user_created_at")
+                or isoNow()
         end
         if not state_.userCreatedLocalAt then
-            state_.userCreatedLocalAt = storageGet("gamealgo_user_created_local_at")
+            state_.userCreatedLocalAt = storageGet(identityStorageKey("user_created_local_at"))
+                or storageGet("gamealgo_user_created_local_at")
                 or localIsoFromUtc(state_.userCreatedAt)
                 or localIsoNow()
         end
     end
 
     if not state_.userId or state_.userId == "" then
-        state_.userId = storageGet("gamealgo_user_id") or randomId("ga_user")
+        state_.userId = storageGet(identityStorageKey("user_id"))
+            or storageGet("gamealgo_user_id")
+            or randomId("ga_user")
     end
     if not state_.userCreatedAt or state_.userCreatedAt == "" then
-        state_.userCreatedAt = storageGet("gamealgo_user_created_at") or isoNow()
+        state_.userCreatedAt = storageGet(identityStorageKey("user_created_at"))
+            or storageGet("gamealgo_user_created_at")
+            or isoNow()
     end
     if not state_.userCreatedLocalAt or state_.userCreatedLocalAt == "" then
-        state_.userCreatedLocalAt = storageGet("gamealgo_user_created_local_at")
+        state_.userCreatedLocalAt = storageGet(identityStorageKey("user_created_local_at"))
+            or storageGet("gamealgo_user_created_local_at")
             or localIsoFromUtc(state_.userCreatedAt)
             or localIsoNow()
     end
-    storageSet("gamealgo_user_id", state_.userId)
-    storageSet("gamealgo_user_created_at", state_.userCreatedAt)
-    storageSet("gamealgo_user_created_local_at", state_.userCreatedLocalAt)
+    storageSet(identityStorageKey("user_id"), state_.userId)
+    storageSet(identityStorageKey("user_created_at"), state_.userCreatedAt)
+    storageSet(identityStorageKey("user_created_local_at"), state_.userCreatedLocalAt)
+end
+
+local function ensureAccountIdentity(explicitAccountUserId, explicitCreatedAt)
+    local accountUserId = explicitAccountUserId
+    if accountUserId == nil or accountUserId == "" then accountUserId = resolveMakerUserId() end
+    if accountUserId == nil or accountUserId == "" then
+        state_.accountUserId = nil
+        state_.accountUserCreatedAt = nil
+        return
+    end
+
+    state_.accountUserId = tostring(accountUserId)
+    local accountKey = identityStorageKey("account_created_at:" .. Sha256.hex(state_.accountUserId))
+    state_.accountUserCreatedAt = explicitCreatedAt
+        or storageGet(accountKey)
+    if state_.accountUserCreatedAt and state_.accountUserCreatedAt ~= "" then
+        storageSet(accountKey, state_.accountUserCreatedAt)
+    end
 end
 
 local function httpRequest(method, path, bodyTable, callback)
@@ -238,9 +284,47 @@ local function rawHttpRequest(method, url, callback)
     }, callback)
 end
 
+local function snapshotJsonValue(value, seen, path)
+    local valueType = type(value)
+    if value == nil or valueType == "string" or valueType == "boolean" then return value, nil end
+    if valueType == "number" then
+        if value ~= value or value == math.huge or value == -math.huge then
+            return nil, tostring(path) .. " contains a non-finite number"
+        end
+        return value, nil
+    end
+    if valueType ~= "table" then
+        return nil, tostring(path) .. " contains unsupported " .. valueType
+    end
+    if seen[value] then return nil, tostring(path) .. " contains a cycle" end
+
+    seen[value] = true
+    local copy = {}
+    for key, item in pairs(value) do
+        local keyType = type(key)
+        if keyType ~= "string" and keyType ~= "number" then
+            seen[value] = nil
+            return nil, tostring(path) .. " contains unsupported key type " .. keyType
+        end
+        if keyType == "number" and (key < 1 or key % 1 ~= 0) then
+            seen[value] = nil
+            return nil, tostring(path) .. " contains a non-positive or fractional array key"
+        end
+        local itemCopy, itemError = snapshotJsonValue(item, seen, tostring(path) .. "." .. tostring(key))
+        if itemError then
+            seen[value] = nil
+            return nil, itemError
+        end
+        copy[key] = itemCopy
+    end
+    seen[value] = nil
+    return copy, nil
+end
+
 local function normalizePayload(payload)
-    if type(payload) == "table" then return payload end
-    return {}
+    if payload == nil then return {}, nil end
+    if type(payload) ~= "table" then return nil, "payload must be a table" end
+    return snapshotJsonValue(payload, {}, "payload")
 end
 
 local function decodeJsonObject(value)
@@ -269,11 +353,15 @@ end
 local function scriptCacheKey(script)
     if not script then return nil end
     if script.versionId and script.versionId ~= "" then return "version:" .. tostring(script.versionId) end
-    if script.name and script.name ~= "" then return "name:" .. tostring(script.name) end
     return nil
 end
 
 local function scriptStorageKey(script)
+    local key = scriptCacheKey(script)
+    return key and (gameStorageNamespace() .. ":script:" .. key) or nil
+end
+
+local function legacyScriptStorageKey(script)
     local key = scriptCacheKey(script)
     return key and ("gamealgo_lua_script_" .. key) or nil
 end
@@ -306,24 +394,78 @@ end
 
 local function chunkEvents()
     local batch = {}
-    while #state_.queue > 0 and #batch < state_.maxBatchSize do
-        table.insert(batch, table.remove(state_.queue, 1))
+    local remaining = {}
+    for _, event in ipairs(state_.queue) do
+        if #batch < state_.maxBatchSize and event.contextId and event.contextId ~= "" then
+            table.insert(batch, event)
+        else
+            table.insert(remaining, event)
+        end
     end
+    state_.queue = remaining
     return batch
 end
 
+local function persistEventQueue()
+    if not state_.storageReady or not state_.userId then return end
+    if #state_.queue == 0 then
+        storageSet(queueStorageKey(), "")
+        return
+    end
+    local lines = {}
+    for _, event in ipairs(state_.queue) do
+        local ok, encoded = pcall(cjson.encode, event)
+        if ok then table.insert(lines, encoded) end
+    end
+    storageSet(queueStorageKey(), table.concat(lines, "\n"))
+end
+
+local function restoreEventQueue()
+    local encoded = storageGet(queueStorageKey())
+    if type(encoded) ~= "string" or encoded == "" then return end
+    local restored = 0
+    for line in encoded:gmatch("[^\r\n]+") do
+        local ok, event = pcall(cjson.decode, line)
+        if ok and type(event) == "table" and event.eventId and event.contextId and event.contextId ~= "" then
+            table.insert(state_.queue, event)
+            restored = restored + 1
+        end
+    end
+    if restored > 0 then
+        state_.queuePersistenceActive = true
+        log("restored persisted events: " .. tostring(restored))
+    else
+        storageSet(queueStorageKey(), "")
+    end
+end
+
+local function bindQueuedEvents(contextId, sessionId)
+    if not contextId or contextId == "" then return end
+    for _, event in ipairs(state_.queue) do
+        if (not event.contextId or event.contextId == "") and event.sessionId == sessionId then
+            event.contextId = contextId
+        end
+    end
+    if state_.queuePersistenceActive then persistEventQueue() end
+end
+
 local function enqueueTrack(eventType, payload, timestamp, createdLocalAt)
+    local payloadCopy, payloadError = normalizePayload(payload)
+    if payloadError then return false, payloadError end
     table.insert(state_.queue, {
         eventId = randomId("ga_event"),
         contextId = state_.contextId or "",
         userId = state_.userId,
+        accountUserId = state_.accountUserId,
         sessionId = state_.sessionId,
         eventType = eventType,
         isDebug = state_.isDebug,
         timestamp = timestamp or isoNow(),
         createdLocalAt = createdLocalAt or localIsoNow(),
-        payload = normalizePayload(payload),
+        payload = payloadCopy,
     })
+    if state_.queuePersistenceActive then persistEventQueue() end
+    return true, nil
 end
 
 local function flushAutomaticStorage()
@@ -338,17 +480,16 @@ local function completeInitialization(options)
     state_.storageReady = true
     state_.initializationComplete = true
 
-    local resolvedUserId = options.userId
-    if resolvedUserId == nil or resolvedUserId == "" then
-        resolvedUserId = resolveMakerUserId()
-    end
-    ensureIdentity(resolvedUserId)
+    ensureIdentity(options.userId)
+    ensureAccountIdentity(options.accountUserId, options.accountUserCreatedAt)
+    restoreEventQueue()
 
     for _, controller in pairs(state_.ddaControllers) do
         if type(controller._Hydrate) == "function" then controller._Hydrate() end
     end
     for _, pending in ipairs(state_.pendingTracks) do
-        enqueueTrack(pending.eventType, pending.payload, pending.timestamp, pending.createdLocalAt)
+        local tracked, trackError = enqueueTrack(pending.eventType, pending.payload, pending.timestamp, pending.createdLocalAt)
+        if not tracked then log("pending event dropped: " .. tostring(trackError)) end
     end
     state_.pendingTracks = {}
 
@@ -356,7 +497,9 @@ local function completeInitialization(options)
     if not state_.gameKey or state_.gameKey == "" then
         log("missing gameKey; config and event requests will be rejected")
     end
-    log("initialized: userId=" .. state_.userId .. ", sessionId=" .. state_.sessionId)
+    log("initialized: userId=" .. state_.userId
+        .. ", accountUserId=" .. tostring(state_.accountUserId or "-")
+        .. ", sessionId=" .. state_.sessionId)
     flushAutomaticStorage()
 
     if state_.fetchConfigRequested then
@@ -395,6 +538,8 @@ function GameAlgo.Init(options)
     state_.userId = nil
     state_.userCreatedAt = nil
     state_.userCreatedLocalAt = nil
+    state_.accountUserId = nil
+    state_.accountUserCreatedAt = nil
     state_.contextId = nil
     state_.config = nil
     state_.configFiles = {}
@@ -402,6 +547,8 @@ function GameAlgo.Init(options)
     state_.ddaControllers = {}
     state_.queue = {}
     state_.pendingTracks = {}
+    state_.consecutiveFlushFailures = 0
+    state_.queuePersistenceActive = false
     state_.flushing = false
     state_.flushRequested = false
     state_.pendingFlushCallbacks = {}
@@ -434,6 +581,8 @@ function GameAlgo.FetchConfig(callback)
         userId = state_.userId,
         userCreatedAt = state_.userCreatedAt,
         userCreatedLocalAt = state_.userCreatedLocalAt,
+        accountUserId = state_.accountUserId,
+        accountUserCreatedAt = state_.accountUserCreatedAt,
         createdLocalAt = localIsoNow(),
         sessionId = state_.sessionId,
         platform = state_.platform,
@@ -452,6 +601,7 @@ function GameAlgo.FetchConfig(callback)
         end
         state_.config = config
         state_.contextId = config and config.contextId or nil
+        bindQueuedEvents(state_.contextId, state_.sessionId)
         log("config fetched: version=" .. tostring(config and config.configVersion or "unknown"))
         if callback then callback(nil, config) end
         if state_.preloadConfigFiles and config then
@@ -472,17 +622,19 @@ function GameAlgo.FetchScript(script, callback)
     if type(script) ~= "table" then callback("invalid script reference", nil) return end
     if not isLuaScript(script) then callback("unsupported Lua SDK script type: " .. tostring(script.name), nil) return end
     local cacheKey = scriptCacheKey(script)
-    if not cacheKey then callback("script versionId or name is required", nil) return end
+    if not cacheKey then callback("script versionId is required", nil) return end
 
     local cached = state_.scripts[cacheKey]
     if cached then callback(nil, cached) return end
 
     local persisted = storageGet(scriptStorageKey(script))
+        or storageGet(legacyScriptStorageKey(script))
     if persisted and persisted ~= "" then
         local valid = verifyScript(script, persisted)
         if valid then
             local file = { name = script.name, versionId = script.versionId, content = persisted, contentType = script.contentType, hash = script.hash }
             state_.scripts[cacheKey] = file
+            storageSet(scriptStorageKey(script), persisted)
             log("script cache ready: " .. tostring(script.name) .. "@" .. tostring(script.versionId or "name"))
             callback(nil, file)
             return
@@ -536,18 +688,22 @@ end
 
 function GameAlgo.Track(eventType, payload)
     if not eventType or eventType == "" then return false end
+    local payloadCopy, payloadError = normalizePayload(payload)
+    if payloadError then
+        log("event rejected: " .. tostring(eventType) .. " " .. tostring(payloadError))
+        return false, payloadError
+    end
     if not state_.storageReady then
         table.insert(state_.pendingTracks, {
             eventType = eventType,
-            payload = normalizePayload(payload),
+            payload = payloadCopy,
             timestamp = isoNow(),
             createdLocalAt = localIsoNow(),
         })
         return true
     end
     ensureIdentity()
-    enqueueTrack(eventType, payload, nil, nil)
-    return true
+    return enqueueTrack(eventType, payloadCopy, nil, nil)
 end
 
 function GameAlgo.TrackEvent(name, payload)
@@ -590,7 +746,8 @@ function GameAlgo.TrackAd(placement, adType, revenue, currency, network, payload
         payload = network
         network = nil
     end
-    local merged = normalizePayload(payload)
+    local merged, payloadError = normalizePayload(payload)
+    if payloadError then return false, payloadError end
     merged.placement = placement
     merged.adType = adType
     merged.revenue = revenue
@@ -602,7 +759,8 @@ function GameAlgo.TrackAd(placement, adType, revenue, currency, network, payload
 end
 
 function GameAlgo.TrackPurchase(productId, revenue, currency, payload)
-    local merged = normalizePayload(payload)
+    local merged, payloadError = normalizePayload(payload)
+    if payloadError then return false, payloadError end
     if productId then merged.productId = productId end
     if revenue ~= nil then merged.revenue = revenue end
     if currency then merged.currency = currency end
@@ -610,7 +768,8 @@ function GameAlgo.TrackPurchase(productId, revenue, currency, payload)
 end
 
 function GameAlgo.TrackSessionEnd(payload)
-    local merged = normalizePayload(payload)
+    local merged, payloadError = normalizePayload(payload)
+    if payloadError then return false, payloadError end
     if merged.sessionDurationMs == nil and state_.sessionStartMs then
         merged.sessionDurationMs = nowMs() - state_.sessionStartMs
     end
@@ -621,10 +780,6 @@ function GameAlgo.Flush(callback)
     flushAutomaticStorage()
     if not state_.storageReady then
         if callback then callback("storage not ready", nil) end
-        return
-    end
-    if not state_.contextId or state_.contextId == "" then
-        if callback then callback("context not ready", nil) end
         return
     end
     if state_.flushing then
@@ -638,8 +793,9 @@ function GameAlgo.Flush(callback)
     end
 
     local batch = chunkEvents()
-    for _, event in ipairs(batch) do
-        event.contextId = state_.contextId
+    if #batch == 0 then
+        if callback then callback("context not ready", nil) end
+        return
     end
     state_.flushing = true
     httpRequest("POST", "/v1/events/batch", { events = batch }, function(error, result)
@@ -653,12 +809,24 @@ function GameAlgo.Flush(callback)
             for i = #batch, 1, -1 do
                 table.insert(state_.queue, 1, batch[i])
             end
+            state_.consecutiveFlushFailures = state_.consecutiveFlushFailures + 1
+            if state_.consecutiveFlushFailures >= 3 then
+                state_.queuePersistenceActive = true
+                persistEventQueue()
+                flushAutomaticStorage()
+            end
             log("flush failed: " .. tostring(error))
             if callback then callback(error, nil) end
             for _, pendingCallback in ipairs(pendingCallbacks) do
                 pendingCallback(error, nil)
             end
             return
+        end
+        state_.consecutiveFlushFailures = 0
+        if state_.queuePersistenceActive then
+            persistEventQueue()
+            flushAutomaticStorage()
+            if #state_.queue == 0 then state_.queuePersistenceActive = false end
         end
         log("flush ok: accepted=" .. tostring(result and result.accepted or #batch))
         if callback then callback(nil, result) end
@@ -674,6 +842,22 @@ function GameAlgo.Flush(callback)
             end
         end
     end)
+end
+
+function GameAlgo.NewSession(sessionId, callback)
+    local nextSessionId = sessionId or randomId("ga_session")
+    local retained = {}
+    for _, event in ipairs(state_.queue) do
+        if event.contextId and event.contextId ~= "" then table.insert(retained, event) end
+    end
+    state_.queue = retained
+    state_.sessionId = nextSessionId
+    state_.sessionStartMs = nowMs()
+    state_.contextId = nil
+    state_.config = nil
+    if state_.queuePersistenceActive then persistEventQueue() end
+    GameAlgo.FetchConfig(callback)
+    return nextSessionId
 end
 
 function GameAlgo.Executor(key)
@@ -713,9 +897,11 @@ function GameAlgo.Executor(key)
                 log("execute skipped: script not loaded: " .. tostring(item.key) .. " -> " .. tostring(item.script.name))
                 return nil
             end
+            local inputCopy = normalizePayload(input)
+            local configCopy = normalizePayload(item.config)
             local scriptInput = {
-                state = normalizePayload(input),
-                config = normalizePayload(item.config),
+                state = inputCopy or {},
+                config = configCopy or {},
                 meta = {
                     gameId = state_.config and state_.config.gameId or "",
                     userId = state_.userId or "",
@@ -762,8 +948,8 @@ function GameAlgo.DDA(key, options)
     if key == "" then error("DDA strategy key is required") end
     if state_.ddaControllers[key] then return state_.ddaControllers[key] end
     options = options or {}
-    local gameKeyPrefix = tostring(state_.gameKey or "anonymous"):sub(1, 16)
-    local storageKey = options.storageKey or ("gamealgo:v1:dda:" .. gameKeyPrefix .. ":" .. key)
+    local storageKey = options.storageKey or (userStorageNamespace() .. ":dda:" .. key)
+    local legacyStorageKey = "gamealgo:v1:dda:" .. tostring(state_.gameKey or "anonymous"):sub(1, 16) .. ":" .. key
     local actual = nil
     local pending = {}
     local controller = {}
@@ -775,6 +961,10 @@ function GameAlgo.DDA(key, options)
 
     function controller._Hydrate()
         if actual or not state_.storageReady then return end
+        if storageGet(storageKey) == nil then
+            local legacyValue = storageGet(legacyStorageKey)
+            if legacyValue ~= nil then storageSet(storageKey, legacyValue) end
+        end
         actual = DDA.New({
             executor = GameAlgo.Executor(key),
             storageKey = storageKey,
@@ -851,6 +1041,8 @@ function GameAlgo.Snapshot()
         userId = state_.userId,
         userCreatedAt = state_.userCreatedAt,
         userCreatedLocalAt = state_.userCreatedLocalAt,
+        accountUserId = state_.accountUserId,
+        accountUserCreatedAt = state_.accountUserCreatedAt,
         sessionId = state_.sessionId,
         contextId = state_.contextId,
         config = state_.config,
