@@ -1,3 +1,9 @@
 node_modules/
 dist/
 .build/
+.gradle/
+**/.gradle/
+android/build/
+android/sample/build/
+android/src/main/jniLibs/
+runtime/rust/target/

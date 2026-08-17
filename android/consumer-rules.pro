@@ -1,0 +1,2 @@
+-keepattributes RuntimeVisibleAnnotations,AnnotationDefault
+-keep public class com.gamealgo.sdk.** { public protected *; }

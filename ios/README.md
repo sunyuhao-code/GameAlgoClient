@@ -89,7 +89,7 @@ let gameplay = try await sdk.fetchConfigFile("gameplay.json")
 
 SDK 默认会把 user id、配置拉取、实验分组、配置文件和脚本预加载状态输出到控制台。传入 `logger: nil` 可以关闭日志，也可以传入自定义 `GameAlgoLogHandler`。
 
-如果实验分组包含 `script`，`executor.execute(state)` 会通过 JSCore 执行预加载 JavaScript 文件。只有 config 的实验会直接把 config 作为 execution payload 返回。
+如果实验分组包含 `script`，`executor.execute(state)` 会通过 SDK 内置的 Rust + QuickJS 沙箱执行配置里精确引用的不可变脚本版本。SDK 使用 `script.url` 下载、按 `versionId` 隔离缓存，并在执行前校验 SHA-256；不会按文件名回退到最新脚本。脚本只能读取传入的 JSON，不能访问网络、文件、系统环境、时钟或随机数，并受执行时间、内存、栈及输入输出大小限制。只有 config 的实验会直接把 config 作为 execution payload 返回。
 
 ## DDA 行为窗口
 
@@ -108,7 +108,9 @@ let decision = dda.decide(context: .object([
 
 行为窗口按 strategy 存在本地，不会自动上传。脚本未准备好或返回非法动作时会安全返回 `.keep`。
 
-`tracker` 会把事件排入内存队列，每批最多上传 100 条，每 30 秒 flush 一次，并在 App 进入后台或退出时主动 flush；失败批次会保留到下次重试。如果配置 context 还没准备好，事件会继续留在本地，`flush` 会在上传前填入当前 `contextId`。关键事件后可以调用 `await sdk.tracker.flush()` 手动 flush；`trackSessionEnd` 入队 `session_end` 后也会立即触发一次 flush。
+`tracker` 会把事件排入内存队列，每批最多上传 100 条，每 30 秒 flush 一次，并在 App 进入后台或退出时主动 flush；失败批次会保留到下次重试。连续 3 次上传失败后，SDK 会把完整未发送队列按 JSON Lines 写入当前 Game Key 和匿名用户隔离的本地存储；下次启动自动恢复，服务端 ACK 后删除持久化副本。正常运行不会每条事件落盘，强制终止前的未失败内存事件仍是 best-effort。事件入队时即固定 `sessionId` 和已有的 `contextId`；同一 session 刷新 context 不会重绑旧事件，切换 session 只会丢弃上一 session 尚未绑定 context 的事件。关键事件后可以调用 `await sdk.tracker.flush()` 手动 flush；`trackSessionEnd` 入队 `session_end` 后也会立即触发一次 flush。
+
+`userId` 始终是 GameAlgo 生成并持久化的匿名设备标识，用于现有实验分流和报表。游戏已经登录的业务用户可以在 `GameAlgoSDK` 初始化或 `fetchConfig` 时额外传入 `accountUserId`，已知注册时间时再传 `accountUserCreatedAt`；两者不会覆盖匿名 `userId`。context 保存完整账号身份，后续事件自动携带 `accountUserId`。
 
 `trackAd` 上报的是 `ad_view`，只用于广告 SDK 确认实际产生收入的有效曝光。用户看了一部分广告后跳过，但广告 SDK 已确认本次曝光有效并产生收入，也应该调用 `trackAd`；广告加载失败、未填充、播放失败，或广告 SDK 没有确认产生收入的展示，不要调用 `trackAd`。
 

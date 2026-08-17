@@ -23,6 +23,7 @@ import type {
   UserAttributionInput,
   UserAttributionResponse,
 } from "./types.ts";
+import { sha256HexSync } from "./sha256.ts";
 import type { GameAlgoDDAOptions } from "./types.ts";
 import { GameAlgoDDAController } from "./dda.ts";
 
@@ -50,6 +51,8 @@ export class GameAlgoRestClient {
   private readonly gameKey: string;
   private readonly sdkVersion: string;
   private readonly appVersion?: string;
+  private readonly accountUserId?: string;
+  private readonly accountUserCreatedAt?: string;
   private readonly experimentIntegrationVersion: number;
   private readonly platform: Platform;
   private readonly timezone: string;
@@ -60,16 +63,18 @@ export class GameAlgoRestClient {
   private readonly scriptRuntime: GameAlgoScriptRuntime;
   private readonly logger?: (message: string) => void;
   private readonly snapshotCacheKey: string;
+  private readonly legacySnapshotCacheKey: string;
   private readonly attributionAckCacheKey: string;
   private readonly contextIdentifierAckCacheKey: string;
-  private readonly userIdKey = "gamealgo_user_id";
-  private readonly userCreatedAtKey = "gamealgo_user_created_at";
-  private readonly userCreatedLocalAtKey = "gamealgo_user_created_local_at";
+  private readonly userIdKey: string;
+  private readonly userCreatedAtKey: string;
+  private readonly userCreatedLocalAtKey: string;
   private cachedConfig: { value: ConfigResponse; expiresAt: number; cacheKey: string } | null = null;
   private snapshot: GameAlgoSnapshot = { configFiles: new Map(), updatedAt: 0 };
   private currentIdentity: GameAlgoUserIdentity | null = null;
   private readyPromise: Promise<void> | null = null;
   private didLogUserId = false;
+  private didMigrateLegacyIdentity = false;
   private readonly ddaControllers = new Map<string, GameAlgoDDAController>();
   readonly config: GameAlgoConfigReader;
   readonly tracker: GameAlgoEventTracker;
@@ -82,6 +87,8 @@ export class GameAlgoRestClient {
     this.gameKey = options.gameKey;
     this.sdkVersion = options.sdkVersion ?? "1.0.0";
     this.appVersion = options.appVersion;
+    this.accountUserId = clean(options.accountUserId);
+    this.accountUserCreatedAt = clean(options.accountUserCreatedAt);
     this.experimentIntegrationVersion = normalizeExperimentIntegrationVersion(options.experimentIntegrationVersion);
     this.platform = options.platform ?? "rest";
     this.timezone = clean(options.timezone) ?? defaultTimezone();
@@ -89,12 +96,18 @@ export class GameAlgoRestClient {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.now = options.now ?? Date.now;
     this.storage = options.storage;
-    this.scriptRuntime = options.scriptRuntime ?? new FunctionScriptRuntime();
+    this.scriptRuntime = options.scriptRuntime ?? new RustProcessScriptRuntime(options.scriptRuntimeBinaryPath);
     this.logger = resolveLogger(options.logger);
     const baseCacheNamespace = normalizedBaseUrl(this.baseUrl);
-    this.snapshotCacheKey = options.cacheKey ?? `gamealgo:v1:snapshot:${baseCacheNamespace}:${this.gameKey.slice(0, 16)}`;
-    this.attributionAckCacheKey = `gamealgo:v1:attribution:${baseCacheNamespace}:${this.gameKey.slice(0, 16)}`;
-    this.contextIdentifierAckCacheKey = `gamealgo:v1:context-identifier:${baseCacheNamespace}:${this.gameKey.slice(0, 16)}`;
+    const gameKeyHash = sha256HexSync(this.gameKey);
+    const userScope = clean(options.userId) ?? "anonymous";
+    this.legacySnapshotCacheKey = `gamealgo:v1:snapshot:${baseCacheNamespace}:${this.gameKey.slice(0, 16)}`;
+    this.snapshotCacheKey = options.cacheKey ?? `gamealgo:v1:snapshot:${baseCacheNamespace}:${gameKeyHash}:${userScope}`;
+    this.attributionAckCacheKey = `gamealgo:v1:attribution:${baseCacheNamespace}:${gameKeyHash}:${userScope}`;
+    this.contextIdentifierAckCacheKey = `gamealgo:v1:context-identifier:${baseCacheNamespace}:${gameKeyHash}:${userScope}`;
+    this.userIdKey = `gamealgo:v1:identity:${baseCacheNamespace}:${gameKeyHash}:user-id`;
+    this.userCreatedAtKey = `gamealgo:v1:identity:${baseCacheNamespace}:${gameKeyHash}:created-at`;
+    this.userCreatedLocalAtKey = `gamealgo:v1:identity:${baseCacheNamespace}:${gameKeyHash}:created-local-at`;
     this.config = new GameAlgoConfigReader(() => this.snapshot);
     this.tracker = new GameAlgoEventTracker({
       uploadEvents: (events) => this.uploadEvents(events),
@@ -107,6 +120,8 @@ export class GameAlgoRestClient {
       maxBatchSize: options.eventMaxBatchSize ?? 100,
       queueLimit: options.eventQueueLimit ?? 1000,
       now: this.now,
+      storage: this.storage,
+      persistenceKey: `gamealgo:v1:event-queue:${baseCacheNamespace}:${gameKeyHash}:${userScope}`,
     });
     const internalOptions = options as InternalClientOptions;
     if (internalOptions.autoStart !== false) {
@@ -141,13 +156,15 @@ export class GameAlgoRestClient {
     if (!strategy) throw new Error("DDA strategy key is required");
     const existing = this.ddaControllers.get(strategy);
     if (existing) return existing;
-    const storageKey = `gamealgo:v1:dda:${normalizedBaseUrl(this.baseUrl)}:${this.gameKey.slice(0, 16)}:${strategy}`;
+    const identityScope = this.currentIdentity?.userId ?? "anonymous";
+    const storageKey = `gamealgo:v1:dda:${normalizedBaseUrl(this.baseUrl)}:${sha256HexSync(this.gameKey)}:${identityScope}:${strategy}`;
     const controller = new GameAlgoDDAController(this.executor(strategy), this.storage, storageKey, options, this.logger);
     this.ddaControllers.set(strategy, controller);
     return controller;
   }
 
   async userIdentity(explicitUserId?: string): Promise<GameAlgoUserIdentity> {
+    await this.migrateLegacyIdentity();
     const cleanExplicit = clean(explicitUserId);
 
     if (cleanExplicit) {
@@ -213,8 +230,10 @@ export class GameAlgoRestClient {
     const userCreatedLocalAt = clean(options.userCreatedLocalAt)
       ?? (clean(options.userCreatedAt) ? localTimestamp(Date.parse(userCreatedAt)) : identity.userCreatedLocalAt);
     const createdLocalAt = localTimestamp(this.now());
+    const accountUserId = clean(options.accountUserId) ?? this.accountUserId;
+    const accountUserCreatedAt = clean(options.accountUserCreatedAt) ?? this.accountUserCreatedAt;
     this.logUserId(identity.userId);
-    this.tracker.identify(identity.userId, options.sessionId, userCreatedAt);
+    this.tracker.identify(identity.userId, options.sessionId, userCreatedAt, accountUserId);
     const platform = options.platform ?? this.platform;
     const sdkVersion = options.sdkVersion ?? this.sdkVersion;
     const appVersion = options.appVersion ?? this.appVersion;
@@ -232,6 +251,8 @@ export class GameAlgoRestClient {
       userId: identity.userId,
       userCreatedAt,
       userCreatedLocalAt,
+      accountUserId,
+      accountUserCreatedAt,
       sessionId,
       platform,
       sdkVersion,
@@ -258,6 +279,8 @@ export class GameAlgoRestClient {
           userId: identity.userId,
           userCreatedAt,
           userCreatedLocalAt,
+          accountUserId,
+          accountUserCreatedAt,
           createdLocalAt,
           sessionId,
           platform,
@@ -318,11 +341,17 @@ export class GameAlgoRestClient {
   }
 
   private async fetchScriptFile(script: ConfigFileRef): Promise<ConfigFileResponse> {
+    const versionId = clean(script.versionId);
+    if (!versionId) throw new Error(`script versionId is required: ${script.name}`);
+    if (!clean(script.url)) throw new Error(`script url is required: ${script.name}@${versionId}`);
+    if (!/^sha256:[a-f0-9]{64}$/i.test(script.hash)) throw new Error(`script hash is invalid: ${script.name}@${versionId}`);
     const scriptUrl = new URL(script.url, this.baseUrl);
     const response = await this.request(scriptUrl, { method: "GET" });
+    const content = await response.text();
+    await verifyScriptHash(content, script.hash);
     const file = {
       name: scriptCacheKey(script),
-      content: await response.text(),
+      content,
       contentType: response.headers.get("content-type") ?? script.contentType ?? "application/octet-stream",
       etag: response.headers.get("etag") ?? undefined,
     };
@@ -475,7 +504,7 @@ export class GameAlgoRestClient {
     const identity = await this.userIdentity(options.userId);
     const userCreatedAt = clean(options.userCreatedAt) ?? identity.userCreatedAt;
     this.logUserId(identity.userId);
-    this.tracker.identify(identity.userId, options.sessionId, userCreatedAt);
+    this.tracker.identify(identity.userId, options.sessionId, userCreatedAt, clean(options.accountUserId) ?? this.accountUserId);
     this.tracker.markSessionStarted();
     await this.loadPersistedSnapshot();
     try {
@@ -531,7 +560,14 @@ export class GameAlgoRestClient {
 
   private async loadPersistedSnapshot(): Promise<void> {
     if (!this.storage) return;
-    const raw = await this.storage.getItem(this.snapshotCacheKey);
+    let raw = await this.storage.getItem(this.snapshotCacheKey);
+    if (!raw && this.legacySnapshotCacheKey !== this.snapshotCacheKey) {
+      raw = await this.storage.getItem(this.legacySnapshotCacheKey);
+      if (raw) {
+        await this.storage.setItem(this.snapshotCacheKey, raw);
+        await this.storage.removeItem?.(this.legacySnapshotCacheKey);
+      }
+    }
     if (!raw) return;
     try {
       const parsed = JSON.parse(raw) as {
@@ -560,6 +596,23 @@ export class GameAlgoRestClient {
       updatedAt: this.snapshot.updatedAt,
       userId: this.snapshot.userId,
     }));
+  }
+
+  private async migrateLegacyIdentity(): Promise<void> {
+    if (this.didMigrateLegacyIdentity || !this.storage) return;
+    this.didMigrateLegacyIdentity = true;
+    const current = await this.storage.getItem(this.userIdKey);
+    if (clean(current)) return;
+    const legacyUserId = clean(await this.storage.getItem("gamealgo_user_id"));
+    if (!legacyUserId) return;
+    const legacyCreatedAt = clean(await this.storage.getItem("gamealgo_user_created_at"));
+    const legacyCreatedLocalAt = clean(await this.storage.getItem("gamealgo_user_created_local_at"));
+    await this.storage.setItem(this.userIdKey, legacyUserId);
+    if (legacyCreatedAt) await this.storage.setItem(this.userCreatedAtKey, legacyCreatedAt);
+    if (legacyCreatedLocalAt) await this.storage.setItem(this.userCreatedLocalAtKey, legacyCreatedLocalAt);
+    await this.storage.removeItem?.("gamealgo_user_id");
+    await this.storage.removeItem?.("gamealgo_user_created_at");
+    await this.storage.removeItem?.("gamealgo_user_created_local_at");
   }
 
   private url(path: string): URL {
@@ -619,12 +672,16 @@ export class GameAlgoEventTracker {
   private readonly queueLimit: number;
   private readonly flushIntervalMs: number;
   private readonly now: () => number;
+  private readonly storage?: GameAlgoStorage;
+  private readonly persistenceKey?: string;
+  private readonly restorePromise: Promise<void>;
 
   private userId?: string;
   private sessionId = randomId();
   private contextId?: string;
   private timezone?: string;
   private userCreatedAt?: string;
+  private accountUserId?: string;
   private isDebug: boolean;
   private currentExperiments: Record<string, string> = {};
   private queue: GameEvent[] = [];
@@ -632,6 +689,8 @@ export class GameAlgoEventTracker {
   private flushTimer?: ReturnType<typeof setInterval>;
   private flushing = false;
   private sessionStartMs?: number;
+  private consecutiveFailures = 0;
+  private hasPersistedQueue = false;
 
   constructor(options: {
     uploadEvents: (events: GameEvent[]) => Promise<EventBatchResponse>;
@@ -644,6 +703,8 @@ export class GameAlgoEventTracker {
     maxBatchSize: number;
     queueLimit: number;
     now: () => number;
+    storage?: GameAlgoStorage;
+    persistenceKey?: string;
   }) {
     this.uploadEvents = options.uploadEvents;
     this.platform = options.platform;
@@ -655,18 +716,26 @@ export class GameAlgoEventTracker {
     this.maxBatchSize = Math.max(1, Math.min(options.maxBatchSize, 100));
     this.queueLimit = Math.max(options.queueLimit, this.maxBatchSize);
     this.now = options.now;
+    this.storage = options.storage;
+    this.persistenceKey = clean(options.persistenceKey);
+    this.restorePromise = this.restorePersistedQueue();
   }
 
-  identify(userId: string, sessionId?: string, userCreatedAt?: string): void {
+  identify(userId: string, sessionId?: string, userCreatedAt?: string, accountUserId?: string): void {
     if (clean(userId)) this.userId = userId;
     if (clean(sessionId)) this.sessionId = sessionId!;
     if (clean(userCreatedAt)) this.userCreatedAt = userCreatedAt;
+    if (clean(accountUserId)) this.accountUserId = accountUserId;
   }
 
   newSession(sessionId = randomId()): void {
+    const previousSessionId = this.sessionId;
+    this.retryBatch = this.retryBatch.filter((event) => clean(event.contextId) || event.sessionId !== previousSessionId);
+    this.queue = this.queue.filter((event) => clean(event.contextId) || event.sessionId !== previousSessionId);
     this.sessionId = sessionId;
     this.contextId = undefined;
     this.sessionStartMs = this.now();
+    if (this.hasPersistedQueue) void this.persistPendingQueue();
   }
 
   currentSessionId(): string {
@@ -674,7 +743,17 @@ export class GameAlgoEventTracker {
   }
 
   setContextId(contextId: string): void {
-    this.contextId = clean(contextId);
+    const resolved = clean(contextId);
+    this.contextId = resolved;
+    if (!resolved) return;
+    const bind = (event: GameEvent) => (
+      !clean(event.contextId) && event.sessionId === this.sessionId
+        ? { ...event, contextId: resolved }
+        : event
+    );
+    this.retryBatch = this.retryBatch.map(bind);
+    this.queue = this.queue.map(bind);
+    if (this.hasPersistedQueue) void this.persistPendingQueue();
   }
 
   setDebug(isDebug: boolean): void {
@@ -710,6 +789,7 @@ export class GameAlgoEventTracker {
       isDebug: options.isDebug ?? this.isDebug,
       timestamp: options.timestamp ?? new Date(this.now()).toISOString(),
       createdLocalAt: options.createdLocalAt ?? localTimestamp(options.timestamp ? Date.parse(options.timestamp) : this.now()),
+      accountUserId: this.accountUserId,
       payload: normalizePayload(payload),
     });
     return true;
@@ -784,6 +864,7 @@ export class GameAlgoEventTracker {
   }
 
   async flush(): Promise<EventBatchResponse[]> {
+    await this.restorePromise;
     if (this.flushing) return [];
     this.flushing = true;
 
@@ -804,11 +885,23 @@ export class GameAlgoEventTracker {
 
         try {
           responses.push(await this.uploadEvents(uploadBatch));
+          this.consecutiveFailures = 0;
+          if (this.hasPersistedQueue) await this.persistPendingQueue();
         } catch (error) {
           this.retryBatch = uploadBatch;
+          this.consecutiveFailures += 1;
+          if (this.consecutiveFailures >= 3) {
+            this.hasPersistedQueue = true;
+            try {
+              await this.persistPendingQueue();
+            } catch {
+              // Preserve the transport error; persistence is a recovery aid.
+            }
+          }
           throw error;
         }
       }
+      if (this.hasPersistedQueue) await this.clearPersistedQueue();
       return responses;
     } finally {
       this.flushing = false;
@@ -839,6 +932,40 @@ export class GameAlgoEventTracker {
       void this.flush().catch(() => undefined);
     }, this.flushIntervalMs);
     this.flushTimer.unref?.();
+  }
+
+  private async restorePersistedQueue(): Promise<void> {
+    if (!this.storage || !this.persistenceKey) return;
+    const raw = await this.storage.getItem(this.persistenceKey);
+    if (!raw) return;
+    try {
+      const restored = raw
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as GameEvent)
+        .filter((event) => clean(event.eventId) && clean(event.userId) && clean(event.sessionId) && clean(event.eventType));
+      const existingIds = new Set([...this.retryBatch, ...this.queue].map((event) => event.eventId));
+      this.retryBatch = [...restored.filter((event) => !existingIds.has(event.eventId)), ...this.retryBatch];
+      this.hasPersistedQueue = restored.length > 0;
+    } catch {
+      await this.storage.removeItem?.(this.persistenceKey);
+    }
+  }
+
+  private async persistPendingQueue(): Promise<void> {
+    if (!this.storage || !this.persistenceKey) return;
+    const pending = [...this.retryBatch, ...this.queue];
+    if (pending.length === 0) {
+      await this.clearPersistedQueue();
+      return;
+    }
+    await this.storage.setItem(this.persistenceKey, pending.map((event) => JSON.stringify(event)).join("\n"));
+  }
+
+  private async clearPersistedQueue(): Promise<void> {
+    if (this.storage && this.persistenceKey) await this.storage.removeItem?.(this.persistenceKey);
+    this.hasPersistedQueue = false;
   }
 }
 
@@ -960,11 +1087,81 @@ export class GameAlgoExperimentExecutor {
   }
 }
 
-export class FunctionScriptRuntime implements GameAlgoScriptRuntime {
-  execute(script: string, input: GameAlgoScriptInput): JsonValue {
-    const runner = new Function("input", `${script}\n; return execute(input);`);
-    return normalizeJsonValue(runner(input));
+export class RustProcessScriptRuntime implements GameAlgoScriptRuntime {
+  private readonly binaryPath: string;
+  private readonly processTimeoutMs: number;
+
+  constructor(binaryPath?: string, processTimeoutMs = 2000) {
+    this.binaryPath = clean(binaryPath) ?? defaultRustRuntimeBinaryPath();
+    this.processTimeoutMs = processTimeoutMs;
   }
+
+  async execute(script: string, input: GameAlgoScriptInput): Promise<JsonValue> {
+    if (typeof process === "undefined" || !process.versions?.node) {
+      throw new Error("The canonical GameAlgo Rust runtime is unavailable in this environment; provide scriptRuntime explicitly");
+    }
+    const { spawn } = await import("node:child_process");
+    const request = JSON.stringify({ script, input });
+    return await new Promise<JsonValue>((resolve, reject) => {
+      const child = spawn(this.binaryPath, [], { stdio: ["pipe", "pipe", "pipe"] });
+      const stdout: Buffer[] = [];
+      const stderr: Buffer[] = [];
+      let stdoutBytes = 0;
+      let settled = false;
+      const finish = (callback: () => void): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        callback();
+      };
+      const timeout = setTimeout(() => {
+        child.kill("SIGKILL");
+        finish(() => reject(new Error(`GameAlgo Rust runtime process exceeded ${this.processTimeoutMs}ms`)));
+      }, this.processTimeoutMs);
+
+      child.stdout.on("data", (chunk: Buffer) => {
+        stdoutBytes += chunk.length;
+        if (stdoutBytes > 512 * 1024) {
+          child.kill("SIGKILL");
+          finish(() => reject(new Error("GameAlgo Rust runtime response exceeds 524288 bytes")));
+          return;
+        }
+        stdout.push(chunk);
+      });
+      child.stderr.on("data", (chunk: Buffer) => {
+        if (stderr.reduce((size, item) => size + item.length, 0) < 64 * 1024) stderr.push(chunk);
+      });
+      child.once("error", (error) => finish(() => reject(new Error(
+        `Unable to start GameAlgo Rust runtime at ${this.binaryPath}: ${error.message}`,
+      ))));
+      child.once("close", (code) => finish(() => {
+        const output = Buffer.concat(stdout).toString("utf8").trim();
+        if (code !== 0) {
+          reject(new Error(`GameAlgo Rust runtime exited with ${code}: ${Buffer.concat(stderr).toString("utf8").trim()}`));
+          return;
+        }
+        try {
+          const response = JSON.parse(output) as { status?: string; result?: JsonValue; message?: string };
+          if (response.status !== "ok") {
+            reject(new Error(response.message ?? "GameAlgo Rust runtime failed"));
+            return;
+          }
+          resolve(normalizeJsonValue(response.result));
+        } catch (error) {
+          reject(new Error(`Invalid GameAlgo Rust runtime response: ${error instanceof Error ? error.message : String(error)}`));
+        }
+      }));
+      child.stdin.on("error", (error) => finish(() => reject(error)));
+      child.stdin.end(request);
+    });
+  }
+}
+
+function defaultRustRuntimeBinaryPath(): string {
+  const configured = typeof process !== "undefined" ? clean(process.env.GAMEALGO_SCRIPT_RUNTIME_BIN) : undefined;
+  if (configured) return configured;
+  const profile = typeof process !== "undefined" && process.env.NODE_ENV === "production" ? "release" : "debug";
+  return decodeURIComponent(new URL(`../../runtime/rust/target/${profile}/gamealgo-script-runtime`, import.meta.url).pathname);
 }
 
 export class GameAlgoConfigReader {
@@ -1055,7 +1252,9 @@ function pad(value: number): string {
 }
 
 function scriptCacheKey(script: ConfigFileRef): string {
-  return script.versionId ? `script:${script.versionId}` : script.name;
+  const versionId = clean(script.versionId);
+  if (!versionId) throw new Error(`script versionId is required: ${script.name}`);
+  return `script:${versionId}`;
 }
 
 async function apiError(response: Response): Promise<GameAlgoApiError> {
@@ -1176,10 +1375,12 @@ function payloadValue(value: JsonValue): EventPayloadValue | undefined {
 }
 
 async function verifyScriptHash(content: string, expected: string): Promise<void> {
-  if (!expected) return;
+  if (!/^sha256:[a-f0-9]{64}$/i.test(expected)) {
+    throw new Error("Script hash must use sha256:<64 lowercase hex characters>");
+  }
   const actual = await sha256(content);
-  if (!actual) return;
-  if (actual !== expected) {
+  if (!actual) throw new Error("SHA-256 is unavailable in this runtime");
+  if (actual.toLowerCase() !== expected.toLowerCase()) {
     throw new Error(`Script hash mismatch: expected=${expected} actual=${actual}`);
   }
 }

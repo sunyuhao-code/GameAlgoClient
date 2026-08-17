@@ -1,6 +1,6 @@
 import CryptoKit
 import Foundation
-import JavaScriptCore
+import GameAlgoScriptRuntime
 
 public struct GameAlgoScriptInput: Sendable, Equatable {
     public struct Meta: Sendable, Equatable {
@@ -52,45 +52,38 @@ public protocol GameAlgoScriptRuntime: Sendable {
     func execute(script: String, input: GameAlgoScriptInput) throws -> JSONValue
 }
 
-public final class JavaScriptCoreGameAlgoScriptRuntime: GameAlgoScriptRuntime, @unchecked Sendable {
+public final class RustGameAlgoScriptRuntime: GameAlgoScriptRuntime, @unchecked Sendable {
     public init() {}
 
     public func execute(script: String, input: GameAlgoScriptInput) throws -> JSONValue {
-        guard let context = JSContext() else {
-            throw GameAlgoError.scriptExecutionFailed("Failed to create JSContext")
+        let request = RuntimeRequest(script: script, input: input.jsonValue)
+        let encoded = try JSONEncoder().encode(request)
+        guard let requestString = String(data: encoded, encoding: .utf8) else {
+            throw GameAlgoError.decodingFailed("Failed to encode script runtime request")
         }
-
-        var exceptionMessage: String?
-        context.exceptionHandler = { _, exception in
-            exceptionMessage = exception?.toString()
+        let responsePointer = requestString.withCString { gamealgo_runtime_execute($0) }
+        guard let responsePointer else {
+            throw GameAlgoError.scriptExecutionFailed("Rust runtime returned no response")
         }
-
-        let jsonInput = input.jsonValue
-        context.setObject(jsonInput.foundationValue, forKeyedSubscript: "__gameAlgoInput" as NSString)
-        context.evaluateScript(script)
-        if let exceptionMessage {
-            throw GameAlgoError.scriptExecutionFailed(exceptionMessage)
+        defer { gamealgo_runtime_free(responsePointer) }
+        let responseData = Data(String(cString: responsePointer).utf8)
+        let response = try JSONDecoder().decode(RuntimeResponse.self, from: responseData)
+        guard response.status == "ok", let result = response.result else {
+            throw GameAlgoError.scriptExecutionFailed(response.message ?? "Script execution failed")
         }
-
-        guard let execute = context.objectForKeyedSubscript("execute"), !execute.isUndefined else {
-            throw GameAlgoError.scriptExecutionFailed("Script must define execute(input)")
-        }
-        guard let result = execute.call(withArguments: [jsonInput.foundationValue]) else {
-            throw GameAlgoError.scriptExecutionFailed("execute(input) returned nil")
-        }
-        if let exceptionMessage {
-            throw GameAlgoError.scriptExecutionFailed(exceptionMessage)
-        }
-
-        context.setObject(result, forKeyedSubscript: "__gameAlgoResult" as NSString)
-        guard let json = context.evaluateScript("JSON.stringify(__gameAlgoResult)")?.toString(),
-              json != "undefined",
-              !json.isEmpty
-        else {
-            throw GameAlgoError.decodingFailed("Script result is not JSON serializable")
-        }
-        return try JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))
+        return result
     }
+}
+
+private struct RuntimeRequest: Encodable {
+    let script: String
+    let input: JSONValue
+}
+
+private struct RuntimeResponse: Decodable {
+    let status: String
+    let result: JSONValue?
+    let message: String?
 }
 
 enum GameAlgoSHA256 {

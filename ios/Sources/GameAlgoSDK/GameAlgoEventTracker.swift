@@ -14,6 +14,8 @@ public actor GameAlgoEventTracker {
     private let flushInterval: TimeInterval
     private let now: @Sendable () -> Date
     private let logger: GameAlgoLogHandler?
+    private let storage: (any GameAlgoCacheStorage)?
+    private let persistenceKey: String?
 
     private var userId: String?
     private var sessionId = UUID().uuidString
@@ -23,6 +25,7 @@ public actor GameAlgoEventTracker {
     private var appVersion: String?
     private var timezone: String
     private var userCreatedAt: String?
+    private var accountUserId: String?
     private var isDebug: Bool
     private var queue: [GameAlgoEvent] = []
     private var retryBatch: [GameAlgoEvent] = []
@@ -30,6 +33,8 @@ public actor GameAlgoEventTracker {
     private var isFlushing = false
     private var sessionStartDate: Date?
     private var currentAssignments: [GameAlgoExperimentAssignment] = []
+    private var consecutiveFailures = 0
+    private var hasPersistedQueue = false
 
     init(
         uploader: any GameAlgoEventBatchUploading,
@@ -38,6 +43,8 @@ public actor GameAlgoEventTracker {
         flushInterval: TimeInterval = 30,
         isDebug: Bool = false,
         initialIdentity: GameAlgoUserIdentity? = nil,
+        storage: (any GameAlgoCacheStorage)? = nil,
+        persistenceKey: String? = nil,
         logger: GameAlgoLogHandler? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
@@ -48,9 +55,21 @@ public actor GameAlgoEventTracker {
         self.isDebug = isDebug
         self.now = now
         self.logger = logger
+        self.storage = storage
+        self.persistenceKey = persistenceKey
         self.userId = initialIdentity?.userId
         self.userCreatedAt = initialIdentity?.userCreatedAt
         self.timezone = Self.defaultTimezone()
+        if let storage, let persistenceKey,
+           let raw = try? storage.loadValue(cacheKey: persistenceKey),
+           !raw.isEmpty {
+            let decoder = JSONDecoder()
+            let restored = raw.split(separator: "\n").compactMap { line in
+                try? decoder.decode(GameAlgoEvent.self, from: Data(line.utf8))
+            }
+            self.retryBatch = restored
+            self.hasPersistedQueue = !restored.isEmpty
+        }
 
         #if canImport(UIKit)
         let tracker = self
@@ -80,6 +99,7 @@ public actor GameAlgoEventTracker {
         appVersion: String? = nil,
         timezone: String? = nil,
         userCreatedAt: String? = nil,
+        accountUserId: String? = nil,
         isDebug: Bool? = nil
     ) {
         self.userId = userId
@@ -101,15 +121,22 @@ public actor GameAlgoEventTracker {
         if let userCreatedAt {
             self.userCreatedAt = userCreatedAt
         }
+        if let accountUserId = clean(accountUserId) {
+            self.accountUserId = accountUserId
+        }
         if let isDebug {
             self.isDebug = isDebug
         }
     }
 
     public func newSession(_ sessionId: String = UUID().uuidString) {
+        let previousSessionId = self.sessionId
+        retryBatch.removeAll { clean($0.contextId) == nil && $0.sessionId == previousSessionId }
+        queue.removeAll { clean($0.contextId) == nil && $0.sessionId == previousSessionId }
         self.sessionId = sessionId
         contextId = nil
         sessionStartDate = now()
+        if hasPersistedQueue { persistPendingQueue() }
     }
 
     public func currentSessionId() -> String {
@@ -117,7 +144,12 @@ public actor GameAlgoEventTracker {
     }
 
     public func setContextId(_ contextId: String) {
-        self.contextId = clean(contextId)
+        let resolved = clean(contextId)
+        self.contextId = resolved
+        guard let resolved else { return }
+        retryBatch = retryBatch.map { bindContext($0, contextId: resolved) }
+        queue = queue.map { bindContext($0, contextId: resolved) }
+        if hasPersistedQueue { persistPendingQueue() }
     }
 
     public func setDebug(_ isDebug: Bool) {
@@ -151,6 +183,7 @@ public actor GameAlgoEventTracker {
 
         let eventDate = now()
         let event = GameAlgoEvent(
+            eventId: UUID().uuidString,
             contextId: resolvedContextId,
             userId: resolvedUserId,
             sessionId: clean(sessionId) ?? self.sessionId,
@@ -158,6 +191,7 @@ public actor GameAlgoEventTracker {
             isDebug: isDebug,
             timestamp: GameAlgoEventBatchUploader.isoTimestamp(eventDate),
             createdLocalAt: GameAlgoEventBatchUploader.localTimestamp(eventDate),
+            accountUserId: accountUserId,
             payload: normalizePayload(payload)
         )
         enqueue(event)
@@ -301,13 +335,21 @@ public actor GameAlgoEventTracker {
             log("flushing \(uploadBatch.count) events")
             do {
                 _ = try await uploader.uploadEvents(uploadBatch)
+                consecutiveFailures = 0
+                if hasPersistedQueue { persistPendingQueue() }
                 log("flush success: \(uploadBatch.count) events")
             } catch {
                 retryBatch = uploadBatch
+                consecutiveFailures += 1
+                if consecutiveFailures >= 3 {
+                    hasPersistedQueue = true
+                    persistPendingQueue()
+                }
                 log("flush failed: \(error)")
                 return
             }
         }
+        if hasPersistedQueue { clearPersistedQueue() }
     }
 
     private func enqueue(_ event: GameAlgoEvent) {
@@ -321,6 +363,33 @@ public actor GameAlgoEventTracker {
             let tracker = self
             Task { await tracker.flush() }
         }
+    }
+
+    private func bindContext(_ event: GameAlgoEvent, contextId: String) -> GameAlgoEvent {
+        guard clean(event.contextId) == nil, event.sessionId == sessionId else { return event }
+        var updated = event
+        updated.contextId = contextId
+        return updated
+    }
+
+    private func persistPendingQueue() {
+        guard let storage, let persistenceKey else { return }
+        let pending = retryBatch + queue
+        guard !pending.isEmpty else {
+            clearPersistedQueue()
+            return
+        }
+        let encoder = JSONEncoder()
+        let lines = pending.compactMap { event -> String? in
+            guard let data = try? encoder.encode(event) else { return nil }
+            return String(data: data, encoding: .utf8)
+        }
+        try? storage.saveValue(lines.joined(separator: "\n"), cacheKey: persistenceKey)
+    }
+
+    private func clearPersistedQueue() {
+        if let storage, let persistenceKey { try? storage.removeValue(cacheKey: persistenceKey) }
+        hasPersistedQueue = false
     }
 
     private func startFlushTimerIfNeeded() {

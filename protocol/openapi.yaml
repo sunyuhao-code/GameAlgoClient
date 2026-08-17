@@ -95,6 +95,37 @@ paths:
         "500":
           $ref: "#/components/responses/ServerError"
 
+  /v1/scripts/{versionId}:
+    get:
+      summary: Fetch one immutable experiment script by version id.
+      operationId: fetchExperimentScript
+      parameters:
+        - name: versionId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+      responses:
+        "200":
+          description: Immutable JavaScript content. Clients must verify the assignment hash before execution.
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/javascript:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/MissingGameKey"
+        "403":
+          $ref: "#/components/responses/InvalidGameKey"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
   /v1/attribution:
     post:
       summary: Sync user attribution returned by attribution SDKs such as Adjust.
@@ -207,6 +238,18 @@ components:
         userCreatedAt:
           type: string
           format: date-time
+        userCreatedLocalAt:
+          type: string
+          description: User creation time reported with the device UTC offset.
+        accountUserId:
+          type: string
+          description: Optional game account identifier. The SDK-generated userId remains the analytics identity.
+        accountUserCreatedAt:
+          type: string
+          format: date-time
+        createdLocalAt:
+          type: string
+          description: Context creation time reported with the device UTC offset.
         sessionId:
           type: string
           minLength: 1
@@ -227,6 +270,9 @@ components:
           type: object
           additionalProperties:
             $ref: "#/components/schemas/JsonValue"
+        isDebug:
+          type: boolean
+          default: false
 
     ConfigResponse:
       type: object
@@ -281,7 +327,27 @@ components:
         config:
           $ref: "#/components/schemas/JsonValue"
         script:
-          $ref: "#/components/schemas/ConfigFileRef"
+          $ref: "#/components/schemas/ScriptFileRef"
+
+    ScriptFileRef:
+      type: object
+      required: [versionId, name, url, hash]
+      properties:
+        versionId:
+          type: string
+          minLength: 1
+        name:
+          type: string
+        url:
+          type: string
+          format: uri-reference
+        hash:
+          type: string
+          pattern: "^sha256:[a-f0-9]{64}$"
+        contentType:
+          type: string
+        updatedAt:
+          type: string
 
     ConfigFileRef:
       type: object
@@ -296,7 +362,7 @@ components:
           type: string
         url:
           type: string
-          format: uri
+          format: uri-reference
         hash:
           type: string
         contentType:
@@ -355,6 +421,11 @@ components:
         timestamp:
           type: string
           format: date-time
+        createdLocalAt:
+          type: string
+          description: Event time reported with the device UTC offset.
+        accountUserId:
+          type: string
         payload:
           type: object
           description: >

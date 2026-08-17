@@ -8,7 +8,7 @@ export type ExperimentAssignment = {
   experimentId: string;
   variant: string;
   config: JsonValue;
-  script?: ConfigFileRef;
+  script?: ScriptFileRef;
 };
 
 export type ConfigFileRef = {
@@ -19,6 +19,8 @@ export type ConfigFileRef = {
   contentType?: string;
   updatedAt?: string;
 };
+
+export type ScriptFileRef = ConfigFileRef & { versionId: string };
 
 export type ConfigResponse = {
   contextId: string;
@@ -35,6 +37,8 @@ export type FetchConfigOptions = {
   userId?: string;
   userCreatedAt?: string;
   userCreatedLocalAt?: string;
+  accountUserId?: string;
+  accountUserCreatedAt?: string;
   sessionId?: string;
   platform?: Platform;
   sdkVersion?: string;
@@ -63,6 +67,7 @@ export type GameEvent = {
   isDebug?: boolean;
   timestamp?: string;
   createdLocalAt?: string;
+  accountUserId?: string;
   payload?: EventPayload;
 };
 
@@ -109,6 +114,8 @@ export type GameAlgoRestClientOptions = {
   userId?: string;
   userCreatedAt?: string;
   userCreatedLocalAt?: string;
+  accountUserId?: string;
+  accountUserCreatedAt?: string;
   sessionId?: string;
   sdkVersion?: string;
   appVersion?: string;
@@ -126,6 +133,8 @@ export type GameAlgoRestClientOptions = {
   now?: () => number;
   storage?: GameAlgoStorage;
   scriptRuntime?: GameAlgoScriptRuntime;
+  /** Node/Server path to the canonical Rust QuickJS runtime executable. */
+  scriptRuntimeBinaryPath?: string;
   logger?: GameAlgoLogger;
   cacheKey?: string;
 };

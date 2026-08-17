@@ -135,6 +135,10 @@ local enabled = GameAlgo.ConfigValue("ads.rewarded.enabled", true, "gameplay.jso
 
 事件会先进入内存队列。如果配置还没准备好，`Flush` 会等待拿到 `contextId` 后再上传。`GameAlgo.TrackAd` 在广告事件入队后会立即尝试 `Flush`，尽量避免玩家看完广告后很快退出或进程被终止而丢失尚未上传的 `ad_view`；连续触发时 SDK 会等待当前请求完成后继续提交，不会并发修改事件队列。
 
+连续 3 次上传失败后，SDK 会把完整未发送队列按 JSON Lines 写入内部自动存储；下次启动自动恢复，服务端 ACK 后删除持久化副本。正常运行不会每条事件落盘，强制终止前的未失败内存事件仍是 best-effort。事件入队时即固定 `sessionId` 和已有的 `contextId`；同一 session 刷新 context 不会重绑旧事件，切换 session 只会丢弃上一 session 尚未绑定 context 的事件。
+
+`userId` 始终是 GameAlgo 生成并持久化的匿名设备标识，用于现有实验分流和报表。Maker 可用的 `getUserId()` 会自动写入独立的 `accountUserId`，不会替换匿名 `userId`；已知账号注册时间时也可以在 `GameAlgo.Init` 传 `accountUserCreatedAt`。context 保存完整账号身份，后续事件自动携带 `accountUserId`。
+
 ```lua
 GameAlgo.TrackLevelEnd({
     level = 3,

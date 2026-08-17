@@ -16,28 +16,46 @@ public final class GameAlgoEventTracker implements AutoCloseable {
     private final int maxBatchSize;
     private final int queueLimit;
     private final long flushIntervalMillis;
+    private final GameAlgoCacheStorage storage;
+    private final String persistenceKey;
 
     private String userId;
     private String sessionId = UUID.randomUUID().toString();
     private String contextId;
     private String timezone = TimeZone.getDefault().getID();
     private String userCreatedAt;
+    private String accountUserId;
     private boolean isDebug;
     private long sessionStartMillis;
     private final List<GameAlgoEvent> queue = new ArrayList<>();
     private final List<GameAlgoEvent> retryBatch = new ArrayList<>();
     private ScheduledExecutorService scheduler;
     private boolean flushing;
+    private int consecutiveFailures;
+    private boolean hasPersistedQueue;
 
     GameAlgoEventTracker(GameAlgoClient client) {
-        this(client, 100, 1000, 30000L);
+        this(client, 100, 1000, 30000L, null, null);
     }
 
     GameAlgoEventTracker(GameAlgoClient client, int maxBatchSize, int queueLimit, long flushIntervalMillis) {
+        this(client, maxBatchSize, queueLimit, flushIntervalMillis, null, null);
+    }
+
+    GameAlgoEventTracker(
+            GameAlgoClient client,
+            int maxBatchSize,
+            int queueLimit,
+            long flushIntervalMillis,
+            GameAlgoCacheStorage storage,
+            String persistenceKey) {
         this.client = client;
         this.maxBatchSize = Math.max(1, Math.min(maxBatchSize, 100));
         this.queueLimit = Math.max(queueLimit, this.maxBatchSize);
         this.flushIntervalMillis = flushIntervalMillis;
+        this.storage = storage;
+        this.persistenceKey = persistenceKey;
+        restorePersistedQueue();
     }
 
     public synchronized void identify(String userId) {
@@ -51,6 +69,10 @@ public final class GameAlgoEventTracker implements AutoCloseable {
     }
 
     public synchronized void identify(String userId, String sessionId, String userCreatedAt) {
+        identify(userId, sessionId, userCreatedAt, null);
+    }
+
+    public synchronized void identify(String userId, String sessionId, String userCreatedAt, String accountUserId) {
         identify(userId);
         if (!isBlank(sessionId)) {
             this.sessionId = sessionId;
@@ -58,12 +80,19 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         if (!isBlank(userCreatedAt)) {
             this.userCreatedAt = userCreatedAt;
         }
+        if (!isBlank(accountUserId)) {
+            this.accountUserId = accountUserId;
+        }
     }
 
     public synchronized void newSession() {
+        String previousSessionId = sessionId;
+        removeUnboundEvents(retryBatch, previousSessionId);
+        removeUnboundEvents(queue, previousSessionId);
         sessionId = UUID.randomUUID().toString();
         contextId = null;
         sessionStartMillis = System.currentTimeMillis();
+        if (hasPersistedQueue) persistPendingQueue();
     }
 
     public synchronized String currentSessionId() {
@@ -72,6 +101,10 @@ public final class GameAlgoEventTracker implements AutoCloseable {
 
     public synchronized void setContextId(String contextId) {
         this.contextId = isBlank(contextId) ? null : contextId;
+        if (this.contextId == null) return;
+        bindCurrentSession(retryBatch, this.contextId);
+        bindCurrentSession(queue, this.contextId);
+        if (hasPersistedQueue) persistPendingQueue();
     }
 
     public synchronized void setDebug(boolean isDebug) {
@@ -107,6 +140,7 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         String resolvedSessionId;
         String resolvedContextId;
         boolean resolvedIsDebug;
+        String resolvedAccountUserId;
         synchronized (this) {
             if (isBlank(userId)) {
                 return false;
@@ -115,14 +149,17 @@ public final class GameAlgoEventTracker implements AutoCloseable {
             resolvedSessionId = sessionId;
             resolvedContextId = isBlank(contextId) ? "" : contextId;
             resolvedIsDebug = isDebug;
+            resolvedAccountUserId = accountUserId;
         }
 
         Date eventDate = new Date();
         GameAlgoEvent event = new GameAlgoEvent(resolvedContextId, resolvedUserId, resolvedSessionId, eventType)
+                .eventId(UUID.randomUUID().toString())
                 .payload(normalizePayload(payload))
                 .isDebug(resolvedIsDebug)
                 .timestamp(GameAlgoClient.isoTimestamp(eventDate))
-                .createdLocalAt(GameAlgoClient.localTimestamp(eventDate));
+                .createdLocalAt(GameAlgoClient.localTimestamp(eventDate))
+                .accountUserId(resolvedAccountUserId);
         enqueue(event);
         return true;
     }
@@ -232,15 +269,11 @@ public final class GameAlgoEventTracker implements AutoCloseable {
                     pending.addAll(queue);
                     int end = Math.min(maxBatchSize, pending.size());
                     batch = new ArrayList<>(pending.subList(0, end));
-                    String resolvedContextId = contextId;
-                    if (hasMissingContextId(batch) && isBlank(resolvedContextId)) {
+                    if (hasMissingContextId(batch)) {
                         retryBatch.clear();
                         queue.clear();
                         queue.addAll(pending);
                         return;
-                    }
-                    if (!isBlank(resolvedContextId)) {
-                        batch = withResolvedContextId(batch, resolvedContextId);
                     }
                     retryBatch.clear();
                     queue.clear();
@@ -251,10 +284,18 @@ public final class GameAlgoEventTracker implements AutoCloseable {
 
                 try {
                     client.uploadEvents(batch);
+                    synchronized (this) {
+                        consecutiveFailures = 0;
+                    }
                 } catch (GameAlgoException error) {
                     synchronized (this) {
                         retryBatch.clear();
                         retryBatch.addAll(batch);
+                        consecutiveFailures += 1;
+                        if (consecutiveFailures >= 3) {
+                            hasPersistedQueue = true;
+                            persistPendingQueue();
+                        }
                     }
                     throw error;
                 }
@@ -262,6 +303,9 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         } finally {
             synchronized (this) {
                 flushing = false;
+                if (hasPersistedQueue && retryBatch.isEmpty() && queue.isEmpty()) {
+                    clearPersistedQueue();
+                }
             }
         }
     }
@@ -309,12 +353,72 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         return false;
     }
 
-    private static List<GameAlgoEvent> withResolvedContextId(List<GameAlgoEvent> events, String contextId) {
-        List<GameAlgoEvent> resolved = new ArrayList<>(events.size());
-        for (GameAlgoEvent event : events) {
-            resolved.add(isBlank(event.getContextId()) ? event.withContextId(contextId) : event);
+    private synchronized void bindCurrentSession(List<GameAlgoEvent> events, String contextId) {
+        for (int index = 0; index < events.size(); index += 1) {
+            GameAlgoEvent event = events.get(index);
+            if (isBlank(event.getContextId()) && sessionId.equals(event.getSessionId())) {
+                events.set(index, event.withContextId(contextId));
+            }
         }
-        return resolved;
+    }
+
+    private static void removeUnboundEvents(List<GameAlgoEvent> events, String sessionId) {
+        events.removeIf(event -> isBlank(event.getContextId()) && sessionId.equals(event.getSessionId()));
+    }
+
+    private void restorePersistedQueue() {
+        if (storage == null || isBlank(persistenceKey)) return;
+        try {
+            String raw = storage.getItem(persistenceKey);
+            if (isBlank(raw)) return;
+            for (String line : raw.split("\\r?\\n")) {
+                if (isBlank(line)) continue;
+                GameAlgoEvent event = GameAlgoEvent.fromJson(GameAlgoJson.asObject(GameAlgoJson.parse(line), "event"));
+                if (!isBlank(event.getContextId())) retryBatch.add(event);
+            }
+            hasPersistedQueue = !retryBatch.isEmpty();
+        } catch (GameAlgoException ignored) {
+            // A malformed or unavailable persistence file must not block SDK startup.
+        }
+    }
+
+    private synchronized void persistPendingQueue() {
+        if (storage == null || isBlank(persistenceKey)) return;
+        List<GameAlgoEvent> pending = new ArrayList<>(retryBatch.size() + queue.size());
+        pending.addAll(retryBatch);
+        pending.addAll(queue);
+        if (pending.isEmpty()) {
+            clearPersistedQueue();
+            return;
+        }
+        List<String> lines = new ArrayList<>(pending.size());
+        Date now = new Date();
+        for (GameAlgoEvent event : pending) {
+            try {
+                lines.add(GameAlgoJson.stringify(event.toJson(
+                        GameAlgoClient.isoTimestamp(now),
+                        GameAlgoClient.localTimestamp(now)
+                )));
+            } catch (GameAlgoException ignored) {
+                // Skip only the malformed record; preserve the rest of the queue.
+            }
+        }
+        try {
+            storage.setItem(persistenceKey, String.join("\n", lines));
+        } catch (GameAlgoException ignored) {
+            // Persistence is a fallback and must not replace the transport error.
+        }
+    }
+
+    private synchronized void clearPersistedQueue() {
+        if (storage != null && !isBlank(persistenceKey)) {
+            try {
+                storage.removeItem(persistenceKey);
+            } catch (GameAlgoException ignored) {
+                // The next successful flush will retry cleanup.
+            }
+        }
+        hasPersistedQueue = false;
     }
 
     private synchronized void ensureScheduler() {

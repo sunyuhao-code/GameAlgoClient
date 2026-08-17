@@ -13,6 +13,7 @@ public final class GameAlgoEvent {
     private Boolean isDebug;
     private String timestamp;
     private String createdLocalAt;
+    private String accountUserId;
     private Map<String, Object> payload;
 
     public GameAlgoEvent(String contextId, String userId, String sessionId, String eventType) {
@@ -40,6 +41,11 @@ public final class GameAlgoEvent {
 
     public GameAlgoEvent createdLocalAt(String createdLocalAt) {
         this.createdLocalAt = createdLocalAt;
+        return this;
+    }
+
+    public GameAlgoEvent accountUserId(String accountUserId) {
+        this.accountUserId = accountUserId;
         return this;
     }
 
@@ -80,6 +86,10 @@ public final class GameAlgoEvent {
         return createdLocalAt;
     }
 
+    public String getAccountUserId() {
+        return accountUserId;
+    }
+
     public Map<String, Object> getPayload() {
         return Collections.unmodifiableMap(payload);
     }
@@ -90,6 +100,7 @@ public final class GameAlgoEvent {
                 .isDebug(isDebug)
                 .timestamp(timestamp)
                 .createdLocalAt(createdLocalAt)
+                .accountUserId(accountUserId)
                 .payload(payload);
     }
 
@@ -103,8 +114,33 @@ public final class GameAlgoEvent {
         object.put("isDebug", isDebug == null ? Boolean.FALSE : isDebug);
         object.put("timestamp", isBlank(timestamp) ? defaultTimestamp : timestamp);
         object.put("createdLocalAt", isBlank(createdLocalAt) ? defaultCreatedLocalAt : createdLocalAt);
+        if (!isBlank(accountUserId)) {
+            object.put("accountUserId", accountUserId);
+        }
         object.put("payload", payload);
         return object;
+    }
+
+    static GameAlgoEvent fromJson(Map<String, Object> object) throws GameAlgoException {
+        GameAlgoEvent event = new GameAlgoEvent(
+                GameAlgoJson.stringValue(object, "contextId", false),
+                GameAlgoJson.stringValue(object, "userId", true),
+                GameAlgoJson.stringValue(object, "sessionId", true),
+                GameAlgoJson.stringValue(object, "eventType", true)
+        );
+        Object debug = object.get("isDebug");
+        if (debug instanceof Boolean) event.isDebug((Boolean) debug);
+        Object payload = object.get("payload");
+        if (payload instanceof Map) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> values = (Map<String, Object>) payload;
+            event.payload(values);
+        }
+        return event
+                .eventId(GameAlgoJson.stringValue(object, "eventId", false))
+                .timestamp(GameAlgoJson.stringValue(object, "timestamp", false))
+                .createdLocalAt(GameAlgoJson.stringValue(object, "createdLocalAt", false))
+                .accountUserId(GameAlgoJson.stringValue(object, "accountUserId", false));
     }
 
     private static boolean isBlank(String value) {

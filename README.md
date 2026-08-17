@@ -1,6 +1,6 @@
 # GameAlgo Client
 
-GameAlgo Client 是公开客户端仓库，包含 iOS SDK、Android SDK、REST helper、TapTap Maker / Lua SDK、CLI 和协议定义。
+GameAlgo Client 是公开客户端仓库，包含 iOS SDK、Android SDK、REST helper、TapTap Maker / Lua SDK 和协议定义。CLI 以独立的 `gamealgo-cli` npm 包发布，不在本仓库维护实现。
 
 产品能力、接入流程、埋点、实验、报表与优化方法由 GameAlgo Server 在线文档统一维护，不在本仓库保留副本。
 
@@ -58,7 +58,6 @@ ios/        iOS Swift Package SDK
 android/    Android Java SDK core
 rest-api/   REST API helper 和示例
 lua/        TapTap Maker / Lua SDK
-cli/        GameAlgo CLI
 protocol/   客户端协议定义
 examples/   接入示例
 ```
@@ -71,3 +70,7 @@ npm run check
 ```
 
 平台 SDK README 只描述与当前代码版本绑定的安装方式、公开 API 和运行时约束。业务流程与平台规则以 `gamealgo docs` 返回的在线文档为准。
+
+Server、CLI 和各平台 SDK 独立发布。兼容性由协议 fixture、不可变脚本版本以及 Server 暴露的最低 CLI 版本共同约束，不要求使用相同版本号。
+
+事件上传采用 `at-least-once` 重试语义，不承诺 exactly-once：重试会保留原始 `eventId`，服务端应按 `eventId` 幂等处理。SDK 正常情况下使用内存队列，连续 3 次上传失败后才把完整未发送队列持久化为 JSON Lines；因此事件首次持久化前若进程被强制终止，尚未发送的内存事件仍属于 `best-effort`。各平台 README 记录了对应生命周期和存储约束。

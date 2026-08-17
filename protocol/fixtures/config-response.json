@@ -1,0 +1,33 @@
+{
+  "contextId": "ctx_fixture_001",
+  "gameId": "fixture-game",
+  "environment": "live",
+  "configVersion": "cfg_fixture_001",
+  "ttlSeconds": 300,
+  "serverTime": "2026-08-17T12:00:00.000Z",
+  "experiments": [
+    {
+      "key": "difficulty",
+      "experimentId": "exp_fixture_001",
+      "variant": "treatment",
+      "config": { "level": 2 },
+      "script": {
+        "versionId": "sv_fixture_001",
+        "name": "difficulty.js",
+        "url": "/v1/scripts/sv_fixture_001",
+        "hash": "sha256:a016f68fc930601798fdbaf893bfe9013e4877b9c53d1017ba85fdcf58516d27",
+        "contentType": "application/javascript",
+        "updatedAt": "2026-08-17T12:00:00.000Z"
+      }
+    }
+  ],
+  "configFiles": [
+    {
+      "name": "gameplay.json",
+      "url": "/v1/config-files/gameplay.json",
+      "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "contentType": "application/json",
+      "updatedAt": "2026-08-17T12:00:00.000Z"
+    }
+  ]
+}

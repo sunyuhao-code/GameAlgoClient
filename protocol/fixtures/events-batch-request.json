@@ -1,0 +1,16 @@
+{
+  "events": [
+    {
+      "eventId": "event_fixture_001",
+      "contextId": "ctx_fixture_001",
+      "userId": "ga_user_fixture_001",
+      "accountUserId": "maker_user_fixture_001",
+      "sessionId": "session_fixture_001",
+      "eventType": "level_end",
+      "isDebug": false,
+      "timestamp": "2026-08-17T12:01:00.000Z",
+      "createdLocalAt": "2026-08-17T20:01:00+08:00",
+      "payload": { "level": 3, "success": true, "mode": "classic" }
+    }
+  ]
+}

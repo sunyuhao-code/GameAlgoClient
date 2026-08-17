@@ -1,0 +1,12 @@
+{
+  "userId": "ga_user_fixture_001",
+  "userCreatedAt": "2026-08-17T03:00:00.000Z",
+  "sessionId": "session_fixture_001",
+  "contextId": "ctx_fixture_001",
+  "platform": "android",
+  "provider": "adjust",
+  "status": "attributed",
+  "attribution": { "network": "Google Ads", "campaign": "fixture_campaign" },
+  "attributedAt": "2026-08-17T12:02:00.000Z",
+  "attributionHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+}
