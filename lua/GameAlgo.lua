@@ -28,7 +28,7 @@ local MakerAutoStorage = requireSdkModule("MakerAutoStorage")
 local GameAlgo = {}
 local unpackArgs = table.unpack or unpack
 
-local SDK_VERSION = "1.4.0-lua"
+local SDK_VERSION = "1.4.1-lua"
 local DEFAULT_BASE_URL = "https://game-algo-sdk.dictapis.cn"
 
 local state_ = {
@@ -609,7 +609,15 @@ function GameAlgo.FetchConfig(callback)
                 if file.name then GameAlgo.FetchConfigFile(file.name, nil) end
             end
             for _, experiment in ipairs(config.experiments or {}) do
-                if experiment.script then GameAlgo.FetchScript(experiment.script, nil) end
+                if experiment.script then
+                    GameAlgo.FetchScript(experiment.script, function(scriptError)
+                        if scriptError then
+                            log("script preload failed: name=" .. tostring(experiment.script.name)
+                                .. ", versionId=" .. tostring(experiment.script.versionId)
+                                .. ", error=" .. tostring(scriptError))
+                        end
+                    end)
+                end
             end
         end
         GameAlgo.Flush(nil)

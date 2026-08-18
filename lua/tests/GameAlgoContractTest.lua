@@ -38,6 +38,7 @@ local configFixture = readFile("protocol/fixtures/config-response.json")
 local configCount = 0
 local eventFailuresRemaining = 0
 local eventRequests = {}
+local logs = {}
 
 local transport = {}
 
@@ -147,5 +148,41 @@ assert(previousSessionEvents[1].sessionId == "session-fixture-001")
 assert(currentSessionEvents[1].eventType == "_new_session_unbound")
 assert(currentSessionEvents[1].contextId == "ctx-fixture-002")
 assert(currentSessionEvents[1].sessionId == "session-fixture-002")
+
+local preloadConfig = cjson.decode(configFixture)
+preloadConfig.contextId = "ctx-preload"
+preloadConfig.configFiles = {}
+preloadConfig.experiments[1].script.name = "wrong.js"
+preloadConfig.experiments[1].script.contentType = "text/plain; charset=utf-8"
+local preloadTransport = {}
+function preloadTransport.Request(options, callback)
+    if options.url:match("/v1/config$") then
+        callback(nil, { status = 200, body = cjson.encode(preloadConfig), headers = {} })
+        return
+    end
+    if options.url:match("/v1/events/batch$") then
+        callback(nil, { status = 200, body = '{"ok":true,"accepted":0}', headers = {} })
+        return
+    end
+    callback("unexpected request: " .. tostring(options.url), nil)
+end
+
+GameAlgo.Init({
+    gameKey = "ga_live_fixture_key",
+    sessionId = "session-preload",
+    transport = preloadTransport,
+    autoFetch = false,
+    logger = function(message) table.insert(logs, message) end,
+})
+GameAlgo.FetchConfig(function(error) assert(error == nil, tostring(error)) end)
+local preloadFailureLogged = false
+for _, message in ipairs(logs) do
+    if message:find("script preload failed:", 1, true)
+        and message:find("sv_fixture_001", 1, true)
+        and message:find("unsupported Lua SDK script type", 1, true) then
+        preloadFailureLogged = true
+    end
+end
+assert(preloadFailureLogged, "expected script preload failure log")
 
 print("Lua SDK contract tests passed")
