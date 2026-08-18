@@ -58,7 +58,7 @@ jobs:
       - name: Verify release AAR
         working-directory: android
         run: |
-          aar=build/outputs/aar/android-release.aar
+          aar=build/outputs/aar/gamealgo-android-release.aar
           test -f "$aar"
           unzip -p "$aar" classes.jar > /tmp/gamealgo-android-classes.jar
           jar tf /tmp/gamealgo-android-classes.jar | grep -q 'com/gamealgo/sdk/GameAlgoClient.class'
@@ -71,5 +71,5 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: gamealgo-android-${{ github.sha }}
-          path: android/build/outputs/aar/android-release.aar
+          path: android/build/outputs/aar/gamealgo-android-release.aar
           if-no-files-found: error

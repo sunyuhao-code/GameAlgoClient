@@ -20,14 +20,12 @@ android {
         targetCompatibility = JavaVersion.VERSION_1_8
     }
 
-    sourceSets {
-        named("main") {
-            java.exclude("com/gamealgo/sdk/JavaxScriptGameAlgoRuntime.java")
-        }
-    }
-
     buildFeatures {
         buildConfig = true
     }
 
+}
+
+tasks.withType<JavaCompile>().configureEach {
+    exclude("com/gamealgo/sdk/JavaxScriptGameAlgoRuntime.java")
 }

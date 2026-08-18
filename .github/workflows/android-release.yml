@@ -57,7 +57,7 @@ jobs:
         run: |
           mkdir -p release
           asset="gamealgo-android-${{ steps.version.outputs.value }}.aar"
-          cp android/build/outputs/aar/android-release.aar "release/$asset"
+          cp android/build/outputs/aar/gamealgo-android-release.aar "release/$asset"
           unzip -p "release/$asset" classes.jar > /tmp/gamealgo-android-classes.jar
           jar tf /tmp/gamealgo-android-classes.jar | grep -q 'com/gamealgo/sdk/GameAlgoClient.class'
           if jar tf /tmp/gamealgo-android-classes.jar | grep -q 'JavaxScriptGameAlgoRuntime'; then
