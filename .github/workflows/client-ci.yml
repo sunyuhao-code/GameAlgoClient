@@ -21,7 +21,15 @@ jobs:
       - run: cargo test --locked --manifest-path runtime/rust/Cargo.toml
       - run: npm run check
       - run: runtime/rust/build-apple-dynamic-xcframework.sh
-      - run: swift test --package-path ios
+      - name: Test iOS SDK
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! swift test --package-path ios 2>&1 | tee /tmp/gamealgo-swift-test.log; then
+            message="$(tail -n 60 /tmp/gamealgo-swift-test.log | perl -0pe 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')"
+            echo "::error title=Swift tests failed::$message"
+            exit 1
+          fi
       - run: brew install lua luarocks
       - run: luarocks install lua-cjson
       - run: lua lua/tests/GameAlgoContractTest.lua
