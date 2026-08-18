@@ -133,7 +133,7 @@ export type GameAlgoRestClientOptions = {
   now?: () => number;
   storage?: GameAlgoStorage;
   scriptRuntime?: GameAlgoScriptRuntime;
-  /** Node/Server path to the canonical Rust QuickJS runtime executable. */
+  /** Node/Server path to the canonical GameAlgo script runtime executable. */
   scriptRuntimeBinaryPath?: string;
   logger?: GameAlgoLogger;
   cacheKey?: string;

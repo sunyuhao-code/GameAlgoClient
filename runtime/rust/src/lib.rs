@@ -1,4 +1,4 @@
-use rquickjs::{Context, Function, Runtime};
+use gamealgo_js_engine::{Context, Function, Runtime};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::ffi::{CStr, CString, c_char};
@@ -178,13 +178,13 @@ impl PreparedScript {
                 .globals()
                 .get("__gamealgoDeepFreeze")
                 .map_err(|error| RuntimeError::Execution(error.to_string()))?;
-            let input_value: rquickjs::Value = freeze
+            let input_value: gamealgo_js_engine::Value = freeze
                 .call((input_value,))
                 .map_err(|error| RuntimeError::Execution(error.to_string()))?;
             let execute: Function = ctx
                 .eval("execute")
                 .map_err(|error| RuntimeError::Execution(error.to_string()))?;
-            let output: rquickjs::Value = execute
+            let output: gamealgo_js_engine::Value = execute
                 .call((input_value,))
                 .map_err(|error| RuntimeError::Execution(error.to_string()))?;
             let encoded = ctx

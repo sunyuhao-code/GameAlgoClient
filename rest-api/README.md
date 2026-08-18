@@ -67,7 +67,7 @@ await client.setGoogleAdvertisingId(gaid);
 
 Helper 会自动关联当前 `contextId` 和 GameAlgo `userId`，并按标识类型分别做 ACK 去重。`userId` 本身就是 GameAlgo 设备标识，不需要再传一个 `gamealgoDeviceId`。用户撤回授权或标识不可用时传 `null`，用于清除旧映射。
 
-如果实验分组包含 `script`，`executor.execute(state)` 会通过统一的 Rust + QuickJS 进程沙箱执行配置里精确引用的不可变脚本版本。Helper 使用 `script.url` 下载、按 `versionId` 隔离缓存，并在执行前校验 SHA-256；脚本下载后会先预解析，Rust worker 会复用已准备好的脚本上下文，并只保留有限数量的最近脚本。默认从 `GAMEALGO_SCRIPT_RUNTIME_BIN` 或已知构建路径定位 `gamealgo-script-runtime`，也可通过 `scriptRuntimeBinaryPath` 显式指定。脚本源码上限为 10 MiB，输入和输出仍分别受 256 KiB 限制。脚本只能读取传入的 JSON，不能访问网络、文件、系统环境、时钟或随机数，并受执行时间、内存、栈及输入输出大小限制。单次脚本执行默认最多 1 秒，超时会被 runtime 中断，游戏不能关闭这个安全限制。只有 config 的实验会直接把 config 作为 execution payload 返回。
+如果实验分组包含 `script`，`executor.execute(state)` 会通过统一的 GameAlgo 沙箱脚本运行时执行配置里精确引用的不可变脚本版本。Helper 使用 `script.url` 下载、按 `versionId` 隔离缓存，并在执行前校验 SHA-256；脚本下载后会先预解析，runtime worker 会复用已准备好的脚本上下文，并只保留有限数量的最近脚本。默认从 `GAMEALGO_SCRIPT_RUNTIME_BIN` 或已知构建路径定位 `gamealgo-script-runtime`，也可通过 `scriptRuntimeBinaryPath` 显式指定。脚本源码上限为 10 MiB，输入和输出仍分别受 256 KiB 限制。脚本只能读取传入的 JSON，不能访问网络、文件、系统环境、时钟或随机数，并受执行时间、内存、栈及输入输出大小限制。单次脚本执行默认最多 1 秒，超时会被 runtime 中断，游戏不能关闭这个安全限制。只有 config 的实验会直接把 config 作为 execution payload 返回。
 
 策略脚本请按无状态函数编写：顶层数据使用 `const` 定义，不要使用顶层 `let`/`var`、计数器或修改顶层数组和对象；`execute(input)` 内部可以使用局部 `let`/`const`。由于脚本会预解析并复用执行上下文，必须遵守该约束；SDK 不会通过 AST 校验强制检查。
 

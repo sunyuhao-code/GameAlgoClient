@@ -4,8 +4,8 @@ This crate is the canonical JavaScript strategy runtime for REST/Server and
 iOS. It also exposes JNI bindings that an Android integration may package,
 but the current lightweight Android AAR intentionally does not embed a native
 JavaScript engine and requires the app to inject `GameAlgoScriptRuntime`.
-A script is parsed once when it is preloaded and its prepared
-QuickJS context is reused for subsequent executions. It exposes no
+A script is parsed once when it is preloaded and its prepared GameAlgo runtime
+context is reused for subsequent executions. It exposes no
 network, filesystem, process, environment, module loader, host callbacks,
 clock, random source, or dynamic code generation. Input and output are JSON.
 

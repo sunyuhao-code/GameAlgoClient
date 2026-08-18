@@ -68,7 +68,7 @@ val gameplay = sdk.fetchConfigFile("gameplay.json")
 
 SDK 默认会把 user id、配置拉取、实验分组、配置文件和脚本预加载状态输出到 `System.out`。如果要关闭日志，可以在完整构造函数里把 `GameAlgoLogger` 参数传 `null`，也可以传入自定义 logger。
 
-如果实验分组包含 `script`，SDK 会使用 `script.url` 下载配置里精确引用的不可变版本，按 `versionId` 隔离缓存，并在执行前校验 SHA-256；不会按文件名回退到最新脚本。`executor.execute(state)` 会通过配置的 `GameAlgoScriptRuntime` 执行预加载脚本。Android 没有 JSR-223，当前轻量 AAR 不携带 JavaScript 引擎；需要执行脚本的 App 必须注入满足 `GameAlgoScriptRuntime` 的受限 QuickJS 或其他 runtime。未注入时脚本执行会安全失败，config-only 参数和固定实验分组仍可正常使用。
+如果实验分组包含 `script`，SDK 会使用 `script.url` 下载配置里精确引用的不可变版本，按 `versionId` 隔离缓存，并在执行前校验 SHA-256；不会按文件名回退到最新脚本。`executor.execute(state)` 会通过配置的 `GameAlgoScriptRuntime` 执行预加载脚本。Android 没有 JSR-223，当前轻量 AAR 不携带 JavaScript 引擎；需要执行脚本的 App 必须注入满足 `GameAlgoScriptRuntime` 的受限 JavaScript runtime。未注入时脚本执行会安全失败，config-only 参数和固定实验分组仍可正常使用。
 
 ## DDA 行为窗口
 
