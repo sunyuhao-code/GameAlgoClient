@@ -1,6 +1,6 @@
 # GameAlgo Client
 
-GameAlgo Client 是公开客户端仓库，包含 iOS SDK、Android SDK、REST helper、TapTap Maker / Lua SDK、CLI 和协议定义。
+GameAlgo Client 是公开客户端仓库，包含 iOS SDK、Android SDK、REST helper、TapTap Maker / Lua SDK 和协议定义。CLI 在独立的 [GameAlgoCli 仓库](https://github.com/sunyuhao-code/GameAlgoCli)维护和发布。
 
 产品能力、接入流程、埋点、实验、报表与优化方法由 GameAlgo Server 在线文档统一维护，不在本仓库保留副本。
 
@@ -58,7 +58,6 @@ ios/        iOS Swift Package SDK
 android/    Android Java SDK core
 rest-api/   REST API helper 和示例
 lua/        TapTap Maker / Lua SDK
-cli/        GameAlgo CLI
 protocol/   客户端协议定义
 examples/   接入示例
 ```
