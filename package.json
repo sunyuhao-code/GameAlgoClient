@@ -5,7 +5,14 @@
   "description": "GameAlgo client SDK development workspace",
   "type": "module",
   "scripts": {
-    "check": "node --test rest-api/src/*.test.ts"
+    "build:runtime": "cargo build --locked --manifest-path runtime/rust/Cargo.toml --bin gamealgo-script-runtime",
+    "check": "npm run build:runtime && node --test rest-api/src/*.test.ts"
+  },
+  "dependencies": {
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0"
   },
   "engines": {
     "node": ">=24"

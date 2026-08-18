@@ -5,7 +5,6 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 
@@ -40,10 +39,21 @@ public final class GameAlgoFileCacheStorage implements GameAlgoCacheStorage {
         if (!directory.exists() && !directory.mkdirs()) {
             throw new GameAlgoException("Failed to create cache directory");
         }
-        try (OutputStream output = new FileOutputStream(fileForKey(key))) {
+        File target = fileForKey(key);
+        File temporary = new File(directory, target.getName() + ".tmp");
+        try (FileOutputStream output = new FileOutputStream(temporary)) {
             output.write(value.getBytes(StandardCharsets.UTF_8));
+            output.getFD().sync();
+            if (target.exists() && !target.delete()) {
+                throw new IOException("Failed to replace existing cache file");
+            }
+            if (!temporary.renameTo(target)) {
+                throw new IOException("Failed to commit cache file");
+            }
         } catch (IOException error) {
-            if (temporary.exists()) temporary.delete();
+            if (temporary.exists()) {
+                temporary.delete();
+            }
             throw new GameAlgoException("Failed to write cache: " + error.getMessage(), error);
         }
     }

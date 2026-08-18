@@ -1,7 +1,10 @@
 # GameAlgo Rust script runtime
 
-This crate is the canonical JavaScript strategy runtime for REST/Server, iOS,
-and Android. A script is parsed once when it is preloaded and its prepared
+This crate is the canonical JavaScript strategy runtime for REST/Server and
+iOS. It also exposes JNI bindings that an Android integration may package,
+but the current lightweight Android AAR intentionally does not embed a native
+JavaScript engine and requires the app to inject `GameAlgoScriptRuntime`.
+A script is parsed once when it is preloaded and its prepared
 QuickJS context is reused for subsequent executions. It exposes no
 network, filesystem, process, environment, module loader, host callbacks,
 clock, random source, or dynamic code generation. Input and output are JSON.
@@ -70,5 +73,5 @@ and abort-on-panic. The consuming Xcode target should also enable dead-code
 stripping for the final app; the size of a static archive is not the same as
 the runtime size added to the IPA.
 
-The script builds iOS device, iOS simulator, and macOS slices from this crate.
-Android Gradle builds its ABI-specific shared libraries from the same source.
+The Apple build scripts produce iOS device, iOS simulator, and macOS slices
+from this crate.

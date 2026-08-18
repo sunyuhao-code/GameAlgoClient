@@ -9,15 +9,9 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import org.junit.Test;
 
 public final class GameAlgoClientSmokeTest {
     public static void main(String[] args) throws Exception {
-        runAll();
-    }
-
-    @Test
-    public void smokeSuite() throws Exception {
         runAll();
     }
 

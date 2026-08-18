@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .build/
+runtime/rust/target/
 android/.gradle/
 android/build/
 android/*/build/
