@@ -25,7 +25,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          if ! swift test --package-path ios 2>&1 | tee /tmp/gamealgo-swift-test.log; then
+          if ! swift test 2>&1 | tee /tmp/gamealgo-swift-test.log; then
             message="$(tail -n 60 /tmp/gamealgo-swift-test.log | perl -0pe 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')"
             echo "::error title=Swift tests failed::$message"
             exit 1

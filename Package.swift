@@ -15,8 +15,13 @@ let package = Package(
         ),
     ],
     targets: [
+        .binaryTarget(
+            name: "GameAlgoScriptRuntime",
+            path: "ios/GameAlgoScriptRuntime.xcframework"
+        ),
         .target(
             name: "GameAlgoSDK",
+            dependencies: ["GameAlgoScriptRuntime"],
             path: "ios/Sources/GameAlgoSDK"
         ),
         .testTarget(
