@@ -50,7 +50,7 @@ jobs:
 
       - name: Build release AAR
         working-directory: android
-        run: ./gradlew --no-daemon assembleRelease -PsdkVersion=${{ steps.version.outputs.value }}
+        run: ./gradlew --no-daemon :assembleRelease -PsdkVersion=${{ steps.version.outputs.value }}
 
       - name: Prepare release assets
         shell: bash

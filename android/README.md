@@ -125,7 +125,24 @@ javac -d /tmp/gamealgo-android-classes src/main/java/com/gamealgo/sdk/*.java src
 java -cp /tmp/gamealgo-android-classes com.gamealgo.sdk.GameAlgoClientSmokeTest
 
 # 需要 JDK 17 和 Android SDK 35
-./gradlew assembleRelease
+./gradlew :assembleRelease
 ```
 
 本地 AAR 输出到 `build/outputs/aar/`。向 GitHub 推送 `v1.2.3` 或 `1.2.3` 形式的 tag 时，Release workflow 会自动构建 `gamealgo-android-1.2.3.aar`，生成 SHA-256 校验文件并附加到 GitHub Release。
+
+## AAR 集成 Demo
+
+`demo/` 是一个最小 Android App。它只依赖构建后的 AAR，不直接依赖 SDK 源码模块，用来验证真实接入方能否编译并调用公开 API。
+
+```bash
+cd android
+./test-aar-integration.sh
+```
+
+该命令会依次构建 release AAR、检查 AAR 类清单、通过 Demo 的 JVM 集成测试调用配置/实验/事件 API，并编译可安装的 Demo APK：
+
+```text
+demo/build/outputs/apk/debug/demo-debug.apk
+```
+
+Android CI 对每次 `android/**` 改动执行同一条命令，再在 API 24 模拟器上安装 Demo 并运行 instrumentation test，最后上传 AAR 和 Demo APK artifact。

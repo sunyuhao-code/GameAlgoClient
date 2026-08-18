@@ -51,21 +51,32 @@ jobs:
             -cp /tmp/gamealgo-android-classes \
             com.gamealgo.sdk.GameAlgoClientSmokeTest
 
-      - name: Build release AAR
+      - name: Test release AAR integration
         working-directory: android
-        run: ./gradlew --no-daemon assembleRelease
+        run: ./test-aar-integration.sh
 
-      - name: Verify release AAR
-        working-directory: android
+      - name: Enable KVM
         run: |
-          aar=build/outputs/aar/gamealgo-android-release.aar
-          test -f "$aar"
-          unzip -p "$aar" classes.jar > /tmp/gamealgo-android-classes.jar
-          jar tf /tmp/gamealgo-android-classes.jar | grep -q 'com/gamealgo/sdk/GameAlgoClient.class'
-          if jar tf /tmp/gamealgo-android-classes.jar | grep -q 'JavaxScriptGameAlgoRuntime'; then
-            echo "Desktop-only JavaxScriptGameAlgoRuntime must not be packaged in the AAR" >&2
-            exit 1
-          fi
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run AAR integration on Android 7
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 24
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          script: cd android && ./gradlew --no-daemon :demo:connectedDebugAndroidTest -PgameAlgoAar="$GITHUB_WORKSPACE/android/build/outputs/aar/gamealgo-android-release.aar"
+
+      - name: Upload demo APK
+        uses: actions/upload-artifact@v6
+        with:
+          name: gamealgo-android-demo-${{ github.sha }}
+          path: android/demo/build/outputs/apk/debug/demo-debug.apk
+          if-no-files-found: error
 
       - name: Upload release AAR
         uses: actions/upload-artifact@v6

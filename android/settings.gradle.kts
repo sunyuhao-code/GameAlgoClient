@@ -15,3 +15,5 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "gamealgo-android"
+
+include(":demo")
