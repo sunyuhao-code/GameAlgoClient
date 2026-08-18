@@ -4,6 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 manifest="$repo_root/runtime/rust/Cargo.toml"
 output="${GAMEALGO_XCFRAMEWORK_OUTPUT:-$repo_root/ios/GameAlgoScriptRuntime.xcframework}"
+include_macos="${GAMEALGO_XCFRAMEWORK_INCLUDE_MACOS:-true}"
 build_dir="$(mktemp -d "${TMPDIR:-/tmp}/gamealgo-xcframework.XXXXXX")"
 trap 'rm -rf "$build_dir"' EXIT
 
@@ -11,9 +12,14 @@ targets=(
   aarch64-apple-ios
   aarch64-apple-ios-sim
   x86_64-apple-ios
-  aarch64-apple-darwin
-  x86_64-apple-darwin
 )
+
+if [[ "$include_macos" == "true" ]]; then
+  targets+=(
+    aarch64-apple-darwin
+    x86_64-apple-darwin
+  )
+fi
 
 build_static_library() {
   local target="$1"
@@ -54,19 +60,25 @@ lipo -create \
   "$build_dir/libgamealgo_script_runtime_x86_64-apple-ios.a" \
   -output "$build_dir/libgamealgo_script_runtime_ios_simulator.a"
 
-lipo -create \
-  "$build_dir/libgamealgo_script_runtime_aarch64-apple-darwin.a" \
-  "$build_dir/libgamealgo_script_runtime_x86_64-apple-darwin.a" \
-  -output "$build_dir/libgamealgo_script_runtime_macos.a"
-
-rm -rf "$output"
-xcodebuild -create-xcframework \
+libraries=(
   -library "$build_dir/libgamealgo_script_runtime_aarch64-apple-ios.a" \
   -headers "$repo_root/runtime/rust/include" \
   -library "$build_dir/libgamealgo_script_runtime_ios_simulator.a" \
-  -headers "$repo_root/runtime/rust/include" \
-  -library "$build_dir/libgamealgo_script_runtime_macos.a" \
-  -headers "$repo_root/runtime/rust/include" \
-  -output "$output"
+  -headers "$repo_root/runtime/rust/include"
+)
+
+if [[ "$include_macos" == "true" ]]; then
+  lipo -create \
+  "$build_dir/libgamealgo_script_runtime_aarch64-apple-darwin.a" \
+  "$build_dir/libgamealgo_script_runtime_x86_64-apple-darwin.a" \
+  -output "$build_dir/libgamealgo_script_runtime_macos.a"
+  libraries+=(
+    -library "$build_dir/libgamealgo_script_runtime_macos.a" \
+    -headers "$repo_root/runtime/rust/include"
+  )
+fi
+
+rm -rf "$output"
+xcodebuild -create-xcframework "${libraries[@]}" -output "$output"
 
 echo "Created $output"

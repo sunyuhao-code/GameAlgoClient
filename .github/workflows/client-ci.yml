@@ -20,7 +20,7 @@ jobs:
           targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios,aarch64-apple-darwin,x86_64-apple-darwin
       - run: cargo test --locked --manifest-path runtime/rust/Cargo.toml
       - run: npm run check
-      - run: runtime/rust/build-apple-xcframework.sh
+      - run: runtime/rust/build-apple-dynamic-xcframework.sh
       - run: swift test --package-path ios
       - run: brew install lua luarocks
       - run: luarocks install lua-cjson

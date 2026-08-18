@@ -89,7 +89,9 @@ let gameplay = try await sdk.fetchConfigFile("gameplay.json")
 
 SDK 默认会把 user id、配置拉取、实验分组、配置文件和脚本预加载状态输出到控制台。传入 `logger: nil` 可以关闭日志，也可以传入自定义 `GameAlgoLogHandler`。
 
-如果实验分组包含 `script`，`executor.execute(state)` 会通过 SDK 内置的 Rust + QuickJS 沙箱执行配置里精确引用的不可变脚本版本。SDK 使用 `script.url` 下载、按 `versionId` 隔离缓存，并在执行前校验 SHA-256；不会按文件名回退到最新脚本。脚本只能读取传入的 JSON，不能访问网络、文件、系统环境、时钟或随机数，并受执行时间、内存、栈及输入输出大小限制。只有 config 的实验会直接把 config 作为 execution payload 返回。
+如果实验分组包含 `script`，`executor.execute(state)` 会通过 SDK 内置的 Rust + QuickJS 沙箱执行配置里精确引用的不可变脚本版本。SDK 使用 `script.url` 下载、按 `versionId` 隔离缓存，并在执行前校验 SHA-256；下载后会预解析脚本并复用准备好的执行上下文，不会按文件名回退到最新脚本。脚本源码上限为 10 MiB，输入和输出仍分别受 256 KiB 限制。脚本只能读取传入的 JSON，不能访问网络、文件、系统环境、时钟或随机数，并受执行时间、内存、栈及输入输出大小限制。单次脚本执行默认最多 1 秒，超时会被 runtime 中断，游戏不能关闭这个安全限制。只有 config 的实验会直接把 config 作为 execution payload 返回。
+
+策略脚本请按无状态函数编写：顶层数据使用 `const` 定义，不要使用顶层 `let`/`var`、计数器或修改顶层数组和对象；`execute(input)` 内部可以使用局部 `let`/`const`。由于脚本会预解析并复用执行上下文，必须遵守该约束；SDK 不会通过 AST 校验强制检查。
 
 ## DDA 行为窗口
 

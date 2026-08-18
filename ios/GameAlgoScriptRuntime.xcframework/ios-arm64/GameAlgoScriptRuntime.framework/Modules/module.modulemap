@@ -1,0 +1,4 @@
+framework module GameAlgoScriptRuntime {
+  header "../Headers/gamealgo_runtime.h"
+  export *
+}

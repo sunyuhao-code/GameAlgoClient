@@ -189,6 +189,7 @@ export type GameAlgoScriptInput = {
 };
 
 export type GameAlgoScriptRuntime = {
+  prepare?(script: string): void | Promise<void>;
   execute(script: string, input: GameAlgoScriptInput): JsonValue | Promise<JsonValue>;
 };
 
