@@ -1,4 +1,0 @@
-module GameAlgoScriptRuntime {
-  header "gamealgo_runtime.h"
-  export *
-}

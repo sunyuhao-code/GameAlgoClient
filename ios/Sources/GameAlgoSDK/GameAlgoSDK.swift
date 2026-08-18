@@ -466,6 +466,7 @@ public actor GameAlgoSDK {
         guard GameAlgoSHA256.hash(content).lowercased() == script.hash.lowercased() else {
             throw GameAlgoError.decodingFailed("script.hash does not match downloaded content for \(script.name)@\(versionId)")
         }
+        try scriptRuntime.prepare(script: content)
         let file = GameAlgoConfigFile(
             name: scriptCacheKey(script),
             content: content,

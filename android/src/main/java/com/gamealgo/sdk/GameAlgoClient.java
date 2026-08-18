@@ -407,6 +407,7 @@ public final class GameAlgoClient {
             throw new GameAlgoException("script.hash does not match downloaded content for "
                     + script.getName() + "@" + script.getVersionId());
         }
+        scriptRuntime.prepare(content);
         GameAlgoConfigFile file = new GameAlgoConfigFile(
                 scriptCacheKey(script),
                 content,
