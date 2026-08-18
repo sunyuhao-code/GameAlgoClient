@@ -74,4 +74,6 @@ stripping for the final app; the size of a static archive is not the same as
 the runtime size added to the IPA.
 
 The Apple build scripts produce iOS device, iOS simulator, and macOS slices
-from this crate.
+from this crate. Release packaging also removes third-party engine identifiers
+from each final Mach-O slice and fails the build if one remains. Dependency and
+license metadata in the source repository is intentionally left intact.

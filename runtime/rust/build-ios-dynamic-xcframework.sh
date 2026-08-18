@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 manifest="$repo_root/runtime/rust/Cargo.toml"
+sanitizer="$repo_root/runtime/rust/sanitize-apple-runtime-binary.sh"
 output="${GAMEALGO_IOS_DYNAMIC_XCFRAMEWORK_OUTPUT:-$repo_root/ios/GameAlgoScriptRuntimeDynamic-iOS.xcframework}"
 include_macos="${GAMEALGO_DYNAMIC_INCLUDE_MACOS:-false}"
 build_dir="$(mktemp -d "${TMPDIR:-/tmp}/gamealgo-ios-dynamic.XXXXXX")"
@@ -76,6 +77,7 @@ for target in "${targets[@]}"; do
     "$repo_root/runtime/rust/target/$target/release/libgamealgo_script_runtime.dylib" \
     "$build_dir/libgamealgo_script_runtime_$target.dylib"
   xcrun strip -S "$build_dir/libgamealgo_script_runtime_$target.dylib"
+  "$sanitizer" "$build_dir/libgamealgo_script_runtime_$target.dylib"
 done
 
 lipo -create \
@@ -127,5 +129,10 @@ fi
 
 xcodebuild -create-xcframework "${frameworks[@]}" \
   -output "$output"
+
+while IFS= read -r -d '' framework; do
+  codesign --force --sign - --timestamp=none "$framework"
+  codesign --verify --verbose=2 "$framework"
+done < <(find "$output" -type d -name GameAlgoScriptRuntime.framework -print0)
 
 echo "Created $output"
