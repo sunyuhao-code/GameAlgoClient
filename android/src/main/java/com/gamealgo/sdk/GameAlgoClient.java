@@ -38,7 +38,6 @@ public final class GameAlgoClient {
     private final String snapshotCacheKey;
     private final String legacySnapshotCacheKey;
     private final String attributionAckCacheKey;
-    private final String contextIdentifierAckCacheKey;
     private final GameAlgoLogger logger;
     private final GameAlgoSnapshotStore snapshotStore;
     private final GameAlgoConfigReader configReader;
@@ -60,7 +59,7 @@ public final class GameAlgoClient {
             String appVersion,
             String platform,
             GameAlgoHttpClient httpClient) {
-        this(gameKey, baseUrl, sdkVersion, appVersion, platform, httpClient, new UnavailableGameAlgoScriptRuntime(), null, null);
+        this(gameKey, baseUrl, sdkVersion, appVersion, platform, httpClient, new RustGameAlgoScriptRuntime(), null, null);
     }
 
     public GameAlgoClient(
@@ -148,7 +147,7 @@ public final class GameAlgoClient {
                 ? 0
                 : initialRequest.getExperimentIntegrationVersion();
         this.httpClient = httpClient == null ? new UrlConnectionGameAlgoHttpClient() : httpClient;
-        this.scriptRuntime = scriptRuntime == null ? new UnavailableGameAlgoScriptRuntime() : scriptRuntime;
+        this.scriptRuntime = scriptRuntime == null ? new RustGameAlgoScriptRuntime() : scriptRuntime;
         this.cacheStorage = cacheStorage;
         String explicitUserId = initialRequest == null ? null : initialRequest.getUserId();
         String userScope = resolveInitialUserScope(cacheStorage, explicitUserId);
@@ -157,7 +156,6 @@ public final class GameAlgoClient {
         this.legacySnapshotCacheKey = "gamealgo:v1:snapshot:" + this.baseUrl + ":" + gameKey.substring(0, Math.min(16, gameKey.length()));
         this.snapshotCacheKey = cacheKey == null ? "gamealgo:v1:snapshot:" + namespace : cacheKey;
         this.attributionAckCacheKey = "gamealgo:v1:attribution:" + namespace;
-        this.contextIdentifierAckCacheKey = "gamealgo:v1:context-identifier:" + namespace;
         this.logger = logger;
         this.snapshotStore = new GameAlgoSnapshotStore();
         this.configReader = new GameAlgoConfigReader(snapshotStore);
@@ -570,12 +568,6 @@ public final class GameAlgoClient {
         hashPayload.put("identifierType", type);
         hashPayload.put("identifierValue", normalizedValue);
         String identifierHash = sha256(GameAlgoJson.stringify(stableJsonValue(hashPayload)));
-        String ackKey = contextIdentifierAckCacheKey + ":" + type;
-        if (cacheStorage != null && identifierHash.equals(cacheStorage.getItem(ackKey))) {
-            log("context identifier already synced: type=" + type);
-            return new GameAlgoContextIdentifierResponse(true, 0, identifierHash);
-        }
-
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("userId", userIdentity().getUserId());
         body.put("sessionId", tracker.currentSessionId());
@@ -591,9 +583,6 @@ public final class GameAlgoClient {
                 GameAlgoHttpMethod.POST,
                 GameAlgoJson.stringify(body).getBytes(StandardCharsets.UTF_8)
         )));
-        if (cacheStorage != null) {
-            cacheStorage.setItem(ackKey, response.getIdentifierHash());
-        }
         log("context identifier synced: type=" + type + ", accepted=" + response.getAccepted());
         return response;
     }

@@ -50,7 +50,7 @@ public final class GameAlgo {
                 appVersion,
                 "android",
                 new UrlConnectionGameAlgoHttpClient(),
-                new UnavailableGameAlgoScriptRuntime(),
+                new RustGameAlgoScriptRuntime(),
                 cacheStorage,
                 null,
                 GameAlgoLogger.console(),

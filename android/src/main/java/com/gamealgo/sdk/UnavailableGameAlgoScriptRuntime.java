@@ -1,9 +1,9 @@
 package com.gamealgo.sdk;
 
-/** Default runtime for Android builds until the app injects its JavaScript runtime. */
+/** Explicit opt-out runtime for apps that never execute script-backed strategies. */
 public final class UnavailableGameAlgoScriptRuntime implements GameAlgoScriptRuntime {
     @Override
     public Object execute(String script, GameAlgoScriptInput input) throws GameAlgoException {
-        throw new GameAlgoException("No JavaScript runtime is configured; inject a GameAlgoScriptRuntime");
+        throw new GameAlgoException("JavaScript execution is disabled for this GameAlgo client");
     }
 }

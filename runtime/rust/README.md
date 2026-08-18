@@ -1,9 +1,8 @@
 # GameAlgo Rust script runtime
 
-This crate is the canonical JavaScript strategy runtime for REST/Server and
-iOS. It also exposes JNI bindings that an Android integration may package,
-but the current lightweight Android AAR intentionally does not embed a native
-JavaScript engine and requires the app to inject `GameAlgoScriptRuntime`.
+This crate is the canonical JavaScript strategy runtime for REST/Server, iOS,
+and Android. The Android AAR packages JNI libraries for `armeabi-v7a`,
+`arm64-v8a`, and `x86_64`; the libraries are linked for 16 KiB Android pages.
 A script is parsed once when it is preloaded and its prepared GameAlgo runtime
 context is reused for subsequent executions. It exposes no
 network, filesystem, process, environment, module loader, host callbacks,

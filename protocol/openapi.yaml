@@ -520,7 +520,7 @@ components:
           enum: [ios, android, rest]
         identifierType:
           type: string
-          enum: [adjust_adid, firebase_app_instance_id, gaid]
+          enum: [adjust_adid, firebase_app_instance_id, gaid, idfa, idfv]
         identifierValue:
           type: [string, "null"]
           description: Null clears the latest mapping for this identifier type.

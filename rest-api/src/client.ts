@@ -65,7 +65,6 @@ export class GameAlgoRestClient {
   private readonly snapshotCacheKey: string;
   private readonly legacySnapshotCacheKey: string;
   private readonly attributionAckCacheKey: string;
-  private readonly contextIdentifierAckCacheKey: string;
   private readonly userIdKey: string;
   private readonly userCreatedAtKey: string;
   private readonly userCreatedLocalAtKey: string;
@@ -104,7 +103,6 @@ export class GameAlgoRestClient {
     this.legacySnapshotCacheKey = `gamealgo:v1:snapshot:${baseCacheNamespace}:${this.gameKey.slice(0, 16)}`;
     this.snapshotCacheKey = options.cacheKey ?? `gamealgo:v1:snapshot:${baseCacheNamespace}:${gameKeyHash}:${userScope}`;
     this.attributionAckCacheKey = `gamealgo:v1:attribution:${baseCacheNamespace}:${gameKeyHash}:${userScope}`;
-    this.contextIdentifierAckCacheKey = `gamealgo:v1:context-identifier:${baseCacheNamespace}:${gameKeyHash}:${userScope}`;
     this.userIdKey = `gamealgo:v1:identity:${baseCacheNamespace}:${gameKeyHash}:user-id`;
     this.userCreatedAtKey = `gamealgo:v1:identity:${baseCacheNamespace}:${gameKeyHash}:created-at`;
     this.userCreatedLocalAtKey = `gamealgo:v1:identity:${baseCacheNamespace}:${gameKeyHash}:created-local-at`;
@@ -452,6 +450,14 @@ export class GameAlgoRestClient {
     return this.setContextIdentifier("gaid", value, observedAt);
   }
 
+  async setIdfa(value: string | null, observedAt?: string): Promise<ContextIdentifierResponse> {
+    return this.setContextIdentifier("idfa", value, observedAt);
+  }
+
+  async setIdfv(value: string | null, observedAt?: string): Promise<ContextIdentifierResponse> {
+    return this.setContextIdentifier("idfv", value, observedAt);
+  }
+
   private async setContextIdentifier(
     identifierType: ContextIdentifierType,
     value: string | null,
@@ -464,11 +470,6 @@ export class GameAlgoRestClient {
     const identity = await this.userIdentity();
     const identifierValue = normalizeContextIdentifier(identifierType, value);
     const identifierHash = await sha256(JSON.stringify({ identifierType, identifierValue }));
-    const ackKey = `${this.contextIdentifierAckCacheKey}:${identifierType}`;
-    if (await this.storage?.getItem(ackKey) === identifierHash) {
-      this.log(`context identifier already synced: type=${identifierType}`);
-      return { ok: true, accepted: 0, identifierHash };
-    }
 
     const response = await this.requestJson<ContextIdentifierResponse>(this.url("/v1/context-identifiers"), {
       method: "POST",
@@ -484,7 +485,6 @@ export class GameAlgoRestClient {
         identifierHash,
       }),
     });
-    await this.storage?.setItem(ackKey, response.identifierHash);
     this.log(`context identifier synced: type=${identifierType}, accepted=${response.accepted}`);
     return response;
   }
@@ -1426,7 +1426,7 @@ function clean(value: string | undefined | null): string | undefined {
 function normalizeContextIdentifier(type: ContextIdentifierType, value: string | null): string | null {
   const cleaned = clean(value);
   if (!cleaned) return null;
-  if (type === "gaid" && /^0{8}-0{4}-0{4}-0{4}-0{12}$/i.test(cleaned)) return null;
+  if ((type === "gaid" || type === "idfa") && /^0{8}-0{4}-0{4}-0{4}-0{12}$/i.test(cleaned)) return null;
   return cleaned;
 }
 
