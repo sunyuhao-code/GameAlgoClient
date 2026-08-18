@@ -59,7 +59,7 @@ public final class GameAlgoClient {
             String appVersion,
             String platform,
             GameAlgoHttpClient httpClient) {
-        this(gameKey, baseUrl, sdkVersion, appVersion, platform, httpClient, new JavaxScriptGameAlgoRuntime(), null, null);
+        this(gameKey, baseUrl, sdkVersion, appVersion, platform, httpClient, new UnavailableGameAlgoScriptRuntime(), null, null);
     }
 
     public GameAlgoClient(
@@ -147,7 +147,7 @@ public final class GameAlgoClient {
                 ? 0
                 : initialRequest.getExperimentIntegrationVersion();
         this.httpClient = httpClient == null ? new UrlConnectionGameAlgoHttpClient() : httpClient;
-        this.scriptRuntime = scriptRuntime == null ? new JavaxScriptGameAlgoRuntime() : scriptRuntime;
+        this.scriptRuntime = scriptRuntime == null ? new UnavailableGameAlgoScriptRuntime() : scriptRuntime;
         this.cacheStorage = cacheStorage;
         this.snapshotCacheKey = cacheKey == null ? "gamealgo:v1:snapshot:" + this.baseUrl + ":" + gameKey.substring(0, Math.min(16, gameKey.length())) : cacheKey;
         this.attributionAckCacheKey = "gamealgo:v1:attribution:" + this.baseUrl + ":" + gameKey.substring(0, Math.min(16, gameKey.length()));

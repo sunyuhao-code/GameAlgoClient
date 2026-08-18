@@ -70,3 +70,5 @@ npm run check
 ```
 
 平台 SDK README 只描述与当前代码版本绑定的安装方式、公开 API 和运行时约束。业务流程与平台规则以 `gamealgo docs` 返回的在线文档为准。
+
+Android AAR 由语义化版本 tag（`v1.2.3` 或 `1.2.3`）触发 GitHub Actions 构建，并附加到对应 GitHub Release。

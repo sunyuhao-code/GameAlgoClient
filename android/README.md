@@ -2,7 +2,7 @@
 
 这是符合 Protocol v1 的 Android SDK core。
 
-当前实现是无第三方依赖的 Java core，后续可以在不改客户端/服务端协议的前提下封装成 Android AAR 或 Kotlin facade。
+当前实现发布为无第三方运行时依赖的 Android AAR，最低支持 Android API 24。每个 Git tag 对应的 AAR 可从该版本的 GitHub Release 下载。
 
 ## 最小 API
 
@@ -68,7 +68,7 @@ val gameplay = sdk.fetchConfigFile("gameplay.json")
 
 SDK 默认会把 user id、配置拉取、实验分组、配置文件和脚本预加载状态输出到 `System.out`。如果要关闭日志，可以在完整构造函数里把 `GameAlgoLogger` 参数传 `null`，也可以传入自定义 logger。
 
-如果实验分组包含 `script`，`executor.execute(state)` 会通过配置的 `GameAlgoScriptRuntime` 执行预加载脚本。无依赖 core 内置了 Java 环境可用的 JSR-223 runtime；Android App 包建议注入 QuickJS 或 WebView runtime。
+如果实验分组包含 `script`，`executor.execute(state)` 会通过配置的 `GameAlgoScriptRuntime` 执行预加载脚本。Android 没有 JSR-223，AAR 默认不携带 JavaScript 引擎；需要执行脚本的 App 必须注入 QuickJS 或 WebView runtime。未注入时脚本执行会安全失败，config-only 参数和固定实验分组仍可正常使用。
 
 ## DDA 行为窗口
 
@@ -123,4 +123,9 @@ sdk.setGoogleAdvertisingId(gaid)
 mkdir -p /tmp/gamealgo-android-classes
 javac -d /tmp/gamealgo-android-classes src/main/java/com/gamealgo/sdk/*.java src/test/java/com/gamealgo/sdk/*.java
 java -cp /tmp/gamealgo-android-classes com.gamealgo.sdk.GameAlgoClientSmokeTest
+
+# 需要 JDK 17 和 Android SDK 35
+./gradlew assembleRelease
 ```
+
+本地 AAR 输出到 `build/outputs/aar/`。向 GitHub 推送 `v1.2.3` 或 `1.2.3` 形式的 tag 时，Release workflow 会自动构建 `gamealgo-android-1.2.3.aar`，生成 SHA-256 校验文件并附加到 GitHub Release。

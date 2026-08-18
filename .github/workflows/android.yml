@@ -6,11 +6,13 @@ name: Android CI
     paths:
       - "android/**"
       - ".github/workflows/android.yml"
+      - ".github/workflows/android-release.yml"
   pull_request:
     branches: ["main"]
     paths:
       - "android/**"
       - ".github/workflows/android.yml"
+      - ".github/workflows/android-release.yml"
 
 permissions:
   contents: read
@@ -30,6 +32,9 @@ jobs:
           java-version: "17"
           distribution: "temurin"
 
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
       - name: Compile Android SDK
         working-directory: android
         run: |
@@ -45,3 +50,26 @@ jobs:
           java \
             -cp /tmp/gamealgo-android-classes \
             com.gamealgo.sdk.GameAlgoClientSmokeTest
+
+      - name: Build release AAR
+        working-directory: android
+        run: ./gradlew --no-daemon assembleRelease
+
+      - name: Verify release AAR
+        working-directory: android
+        run: |
+          aar=build/outputs/aar/android-release.aar
+          test -f "$aar"
+          unzip -p "$aar" classes.jar > /tmp/gamealgo-android-classes.jar
+          jar tf /tmp/gamealgo-android-classes.jar | grep -q 'com/gamealgo/sdk/GameAlgoClient.class'
+          if jar tf /tmp/gamealgo-android-classes.jar | grep -q 'JavaxScriptGameAlgoRuntime'; then
+            echo "Desktop-only JavaxScriptGameAlgoRuntime must not be packaged in the AAR" >&2
+            exit 1
+          fi
+
+      - name: Upload release AAR
+        uses: actions/upload-artifact@v6
+        with:
+          name: gamealgo-android-${{ github.sha }}
+          path: android/build/outputs/aar/android-release.aar
+          if-no-files-found: error

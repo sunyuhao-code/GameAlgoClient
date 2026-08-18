@@ -1,0 +1,33 @@
+plugins {
+    id("com.android.library") version "8.9.2"
+}
+
+group = "com.gamealgo"
+version = providers.gradleProperty("sdkVersion").getOrElse("0.0.0-dev")
+
+android {
+    namespace = "com.gamealgo.sdk"
+    compileSdk = 35
+
+    defaultConfig {
+        minSdk = 24
+        consumerProguardFiles("consumer-rules.pro")
+        buildConfigField("String", "VERSION_NAME", "\"${project.version}\"")
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_1_8
+        targetCompatibility = JavaVersion.VERSION_1_8
+    }
+
+    sourceSets {
+        named("main") {
+            java.exclude("com/gamealgo/sdk/JavaxScriptGameAlgoRuntime.java")
+        }
+    }
+
+    buildFeatures {
+        buildConfig = true
+    }
+
+}
