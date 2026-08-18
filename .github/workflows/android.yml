@@ -1,0 +1,45 @@
+name: Android CI
+
+on:
+push:
+  branches: ["main"]
+  paths:
+    - "android/**"
+    - ".github/workflows/android.yml"
+pull_request:
+  branches: ["main"]
+  paths:
+    - "android/**"
+    - ".github/workflows/android.yml"
+
+permissions:
+contents: read
+
+jobs:
+test:
+  runs-on: ubuntu-latest
+
+  steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: "17"
+        distribution: "temurin"
+
+    - name: Compile Android SDK
+      working-directory: android
+      run: |
+        mkdir -p /tmp/gamealgo-android-classes
+        javac \
+          -d /tmp/gamealgo-android-classes \
+          src/main/java/com/gamealgo/sdk/*.java \
+          src/test/java/com/gamealgo/sdk/*.java
+
+    - name: Run Android smoke tests
+      working-directory: android
+      run: |
+        java \
+          -cp /tmp/gamealgo-android-classes \
+          com.gamealgo.sdk.GameAlgoClientSmokeTest
