@@ -125,9 +125,10 @@ Adjust ADID、Firebase App Instance ID 等异步标识不要塞进普通事件�
 ```swift
 try await sdk.setAdjustAdid(adjustAdid)
 try await sdk.setFirebaseAppInstanceId(appInstanceId)
+try await sdk.setIdfa(idfa) // 由 App 在 ATT 授权完成后读取并设置
 ```
 
-SDK 会自动关联当前 `contextId` 和 GameAlgo `userId`，并按标识类型分别做 ACK 去重；不需要额外传 `gamealgoDeviceId`，因为 `userId` 本身就是 GameAlgo 设备标识。用户撤回授权或上游返回不可用时传 `nil`，服务端会记录清除操作。只在取得用户授权且符合应用隐私政策时采集这些标识。
+SDK 初始化完成后会自动读取并上报 IDFV，不会主动请求 ATT 权限或读取 IDFA。App 应在自己的 ATT 流程完成后调用 `setIdfa`。SDK 会自动关联当前 `contextId` 和 GameAlgo `userId`；每次 setter 调用都会追加一条带时间的设备映射记录，不需要额外传 `gamealgoDeviceId`。用户撤回授权或上游返回不可用时传 `nil`，服务端会记录清除操作。只在取得用户授权且符合应用隐私政策时采集这些标识。
 
 SDK 会在 `/v1/config` 请求里自动带上 UTC `userCreatedAt`、本地 `userCreatedLocalAt`、context 本地时间 `createdLocalAt` 和基础 `device` context。两个本地时间都包含 UTC offset；接入方不需要手工维护。接入方可以在 `GameAlgoSDK(...)` 或 `fetchConfig` 中传入 `device` / `deviceId`，用于追加 App 自定义字段或覆盖默认值。
 

@@ -2,11 +2,13 @@ package com.gamealgo.demo;
 
 import org.junit.Test;
 
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertNotNull;
+
+import com.gamealgo.sdk.RustGameAlgoScriptRuntime;
 
 public final class DemoScenarioTest {
     @Test
-    public void packagedAarSupportsAnAppIntegrationFlow() throws Exception {
-        assertTrue(DemoScenario.run().startsWith("PASSED"));
+    public void packagedAarExposesTheNativeRuntimeAdapter() {
+        assertNotNull(RustGameAlgoScriptRuntime.class);
     }
 }

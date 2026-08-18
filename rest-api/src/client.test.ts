@@ -642,7 +642,7 @@ test("setAttribution normalizes Adjust no-consent attribution as unknown", async
   assert.equal(requests.length, 1);
 });
 
-test("context identifier setters upload independently and deduplicate each type", async () => {
+test("context identifier setters upload every update independently", async () => {
   const storage = new MapStorage();
   const identifiers: Array<Record<string, unknown>> = [];
   const client = createClient({
@@ -678,16 +678,23 @@ test("context identifier setters upload independently and deduplicate each type"
   const duplicate = await client.setAdjustAdid("adjust-1");
   await client.setFirebaseAppInstanceId("firebase-1");
   await client.setGoogleAdvertisingId("00000000-0000-0000-0000-000000000000");
+  await client.setIdfa("00000000-0000-0000-0000-000000000000");
+  await client.setIdfv("vendor-1");
 
   assert.equal(first.accepted, 1);
-  assert.equal(duplicate.accepted, 0);
-  assert.equal(identifiers.length, 3);
+  assert.equal(duplicate.accepted, 1);
+  assert.equal(identifiers.length, 6);
   assert.deepEqual(identifiers.map((item) => item.identifierType), [
+    "adjust_adid",
     "adjust_adid",
     "firebase_app_instance_id",
     "gaid",
+    "idfa",
+    "idfv",
   ]);
-  assert.equal(identifiers[2].identifierValue, null);
+  assert.equal(identifiers[3].identifierValue, null);
+  assert.equal(identifiers[4].identifierValue, null);
+  assert.equal(identifiers[5].identifierValue, "vendor-1");
   assert.equal(identifiers[0].contextId, "ctx-1");
   assert.equal(identifiers[0].userId, "u1");
 });

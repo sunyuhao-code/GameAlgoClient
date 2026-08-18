@@ -68,7 +68,7 @@ val gameplay = sdk.fetchConfigFile("gameplay.json")
 
 SDK 默认会把 user id、配置拉取、实验分组、配置文件和脚本预加载状态输出到 `System.out`。如果要关闭日志，可以在完整构造函数里把 `GameAlgoLogger` 参数传 `null`，也可以传入自定义 logger。
 
-如果实验分组包含 `script`，SDK 会使用 `script.url` 下载配置里精确引用的不可变版本，按 `versionId` 隔离缓存，并在执行前校验 SHA-256；不会按文件名回退到最新脚本。`executor.execute(state)` 会通过配置的 `GameAlgoScriptRuntime` 执行预加载脚本。Android 没有 JSR-223，当前轻量 AAR 不携带 JavaScript 引擎；需要执行脚本的 App 必须注入满足 `GameAlgoScriptRuntime` 的受限 JavaScript runtime。未注入时脚本执行会安全失败，config-only 参数和固定实验分组仍可正常使用。
+如果实验分组包含 `script`，SDK 会使用 `script.url` 下载配置里精确引用的不可变版本，按 `versionId` 隔离缓存，并在执行前校验 SHA-256；不会按文件名回退到最新脚本。AAR 已内置受限 Rust 脚本 runtime，`executor.execute(state)` 无需接入方配置即可执行预加载脚本。AAR 包含 `armeabi-v7a`、`arm64-v8a` 和 `x86_64` 三种 ABI，native library 支持 Android 16 KB page size。仍可在高级构造函数中注入自定义 `GameAlgoScriptRuntime`。
 
 ## DDA 行为窗口
 
@@ -115,7 +115,9 @@ sdk.setFirebaseAppInstanceId(appInstanceId)
 sdk.setGoogleAdvertisingId(gaid)
 ```
 
-这三个无依赖 core API 会等待配置 context 并执行网络请求，Android App 应从自己的后台 executor 或 coroutine 调用，不要阻塞主线程。SDK 会自动关联当前 `contextId` 和 GameAlgo `userId`，并按标识类型分别做 ACK 去重；不需要额外传 `gamealgoDeviceId`，因为 `userId` 本身就是 GameAlgo 设备标识。用户撤回授权、标识不可用或 GAID 为全零值时传 `null`，服务端会记录清除操作。只在取得用户授权且符合应用隐私政策时采集这些标识。
+这三个无依赖 core API 会等待配置 context 并执行网络请求，Android App 应从自己的后台 executor 或 coroutine 调用，不要阻塞主线程。SDK 会自动关联当前 `contextId` 和 GameAlgo `userId`；每次 setter 调用都会追加一条带时间的设备映射记录，不需要额外传 `gamealgoDeviceId`。用户撤回授权、标识不可用或 GAID 为全零值时传 `null`，服务端会记录清除操作。只在取得用户授权且符合应用隐私政策时采集这些标识。
+
+用于 Adjust S2S 回传时，`gaid` 会映射为 Adjust 参数 `gps_adid`，`adjust_adid` 会映射为 `adid`。`firebase_app_instance_id` 不发送给 Adjust，它用于后续 Firebase/Google 事件链路。GameAlgo Android core 不引入 Google Play Services 或 Adjust SDK，因此不会自行读取这些标识；接入方应从对应 SDK 的异步回调取得值后调用 setter。
 
 事件业务字段通过 `payload` 发送。后续由游戏自己的 report pack 声明哪些 payload 字段会成为报表维度或指标。实验分组存储在 `/v1/config` 创建的 SDK context 中，不会复制到每条事件。
 

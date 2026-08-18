@@ -14,6 +14,8 @@ import java.util.List;
 import java.util.Map;
 
 public final class DemoScenario {
+    private static final String SCRIPT = "function execute(input) { return { payload: { difficulty: input.config.difficulty, native: true }, diagnostics: {} }; }";
+
     private DemoScenario() {}
 
     public static String run() throws Exception {
@@ -36,14 +38,18 @@ public final class DemoScenario {
             }
             GameAlgoExecutionResult result = client.executor("demo_strategy").execute(Collections.emptyMap());
             if (result == null || !(result.getPayload() instanceof Map)) {
-                throw new IllegalStateException("config-only strategy did not execute");
+                throw new IllegalStateException("native script strategy did not execute");
+            }
+            Map<?, ?> payload = (Map<?, ?>) result.getPayload();
+            if (!"normal".equals(payload.get("difficulty")) || !Boolean.TRUE.equals(payload.get("native"))) {
+                throw new IllegalStateException("native script returned an unexpected payload");
             }
             if (!client.tracker().trackLevelStart(Collections.<String, Object>singletonMap("level", 1))) {
                 throw new IllegalStateException("event was not queued");
             }
             client.tracker().flush();
-            if (http.requestCount() != 2) {
-                throw new IllegalStateException("expected config and event requests");
+            if (http.requestCount() != 3) {
+                throw new IllegalStateException("expected config, script and event requests");
             }
             return "PASSED\nAAR API, config, experiment and event flow are working.";
         } finally {
@@ -70,10 +76,22 @@ public final class DemoScenario {
                         + "\"key\":\"demo_strategy\","
                         + "\"experimentId\":\"exp-demo\","
                         + "\"variant\":\"demo_variant\","
-                        + "\"config\":{\"difficulty\":\"normal\"}"
+                        + "\"config\":{\"difficulty\":\"normal\"},"
+                        + "\"script\":{"
+                        + "\"versionId\":\"sv-demo\","
+                        + "\"name\":\"demo.js\","
+                        + "\"url\":\"/v1/scripts/sv-demo\","
+                        + "\"hash\":\"sha256:6be8effff09cf253f938c61335b13e3a13893e684168ee0a56c0f42e2f6bd457\""
+                        + "}"
                         + "}],"
                         + "\"configFiles\":[]"
                         + "}";
+            } else if (request.getUrl().getPath().endsWith("/v1/scripts/sv-demo")) {
+                return new GameAlgoHttpResponse(
+                        200,
+                        Collections.singletonMap("content-type", "application/javascript"),
+                        SCRIPT.getBytes(StandardCharsets.UTF_8)
+                );
             } else if (request.getUrl().getPath().endsWith("/v1/events/batch")) {
                 body = "{\"ok\":true,\"accepted\":1}";
             } else {

@@ -100,7 +100,7 @@ export type UserAttributionResponse = {
   attributionHash: string;
 };
 
-export type ContextIdentifierType = "adjust_adid" | "firebase_app_instance_id" | "gaid";
+export type ContextIdentifierType = "adjust_adid" | "firebase_app_instance_id" | "gaid" | "idfa" | "idfv";
 
 export type ContextIdentifierResponse = {
   ok: boolean;

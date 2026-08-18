@@ -631,7 +631,7 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(body["status"] as? String, "unknown")
     }
 
-    func testContextIdentifierSettersUploadIndependentlyAndDeduplicate() async throws {
+    func testContextIdentifierSettersAppendIndependentMappingRecords() async throws {
         let suiteName = "GameAlgoSDKTests.contextIdentifiers.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
@@ -640,11 +640,16 @@ final class GameAlgoSDKTests: XCTestCase {
         let adjustHash = GameAlgoSHA256.hash("{\"identifierType\":\"adjust_adid\",\"identifierValue\":\"adjust-1\"}")
         let firebaseHash = GameAlgoSHA256.hash("{\"identifierType\":\"firebase_app_instance_id\",\"identifierValue\":\"firebase-1\"}")
         let gaidHash = GameAlgoSHA256.hash("{\"identifierType\":\"gaid\",\"identifierValue\":null}")
+        let idfaHash = GameAlgoSHA256.hash("{\"identifierType\":\"idfa\",\"identifierValue\":null}")
+        let idfvHash = GameAlgoSHA256.hash("{\"identifierType\":\"idfv\",\"identifierValue\":\"idfv-1\"}")
         let httpClient = MockHTTPClient()
         try await httpClient.enqueueJSON(configResponse(version: "v1"))
         try await httpClient.enqueueJSON(["ok": true, "accepted": 1, "identifierHash": adjustHash])
+        try await httpClient.enqueueJSON(["ok": true, "accepted": 1, "identifierHash": adjustHash])
         try await httpClient.enqueueJSON(["ok": true, "accepted": 1, "identifierHash": firebaseHash])
         try await httpClient.enqueueJSON(["ok": true, "accepted": 1, "identifierHash": gaidHash])
+        try await httpClient.enqueueJSON(["ok": true, "accepted": 1, "identifierHash": idfaHash])
+        try await httpClient.enqueueJSON(["ok": true, "accepted": 1, "identifierHash": idfvHash])
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test/algo_sdk")!,
@@ -660,19 +665,52 @@ final class GameAlgoSDKTests: XCTestCase {
         let duplicate = try await sdk.setAdjustAdid("adjust-1")
         _ = try await sdk.setFirebaseAppInstanceId("firebase-1")
         _ = try await sdk.setGoogleAdvertisingId("00000000-0000-0000-0000-000000000000")
+        _ = try await sdk.setIdfa("00000000-0000-0000-0000-000000000000")
+        _ = try await sdk.setIdfv("idfv-1")
 
         let requests = await httpClient.requests
         let identifierRequests = Array(requests.dropFirst())
         let bodies = try identifierRequests.map(requestBody)
         XCTAssertEqual(first.accepted, 1)
-        XCTAssertEqual(duplicate.accepted, 0)
-        XCTAssertEqual(identifierRequests.count, 3)
+        XCTAssertEqual(duplicate.accepted, 1)
+        XCTAssertEqual(identifierRequests.count, 6)
         XCTAssertTrue(identifierRequests.allSatisfy { $0.url.absoluteString == "https://gamealgo.test/algo_sdk/v1/context-identifiers" })
-        XCTAssertEqual(bodies.compactMap { $0["identifierType"] as? String }, ["adjust_adid", "firebase_app_instance_id", "gaid"])
+        XCTAssertEqual(bodies.compactMap { $0["identifierType"] as? String }, ["adjust_adid", "adjust_adid", "firebase_app_instance_id", "gaid", "idfa", "idfv"])
         XCTAssertEqual(bodies[0]["contextId"] as? String, "ctx-1")
         XCTAssertEqual(bodies[0]["userId"] as? String, "u1")
-        XCTAssertTrue(bodies[2]["identifierValue"] is NSNull)
-        XCTAssertEqual(bodies[2]["identifierHash"] as? String, gaidHash)
+        XCTAssertTrue(bodies[3]["identifierValue"] is NSNull)
+        XCTAssertEqual(bodies[3]["identifierHash"] as? String, gaidHash)
+        XCTAssertTrue(bodies[4]["identifierValue"] is NSNull)
+        XCTAssertEqual(bodies[5]["identifierValue"] as? String, "idfv-1")
+    }
+
+    func testInitializationReportsIdentifierForVendorWithoutBlockingReadiness() async throws {
+        let idfvHash = GameAlgoSHA256.hash("{\"identifierType\":\"idfv\",\"identifierValue\":\"vendor-1\"}")
+        let httpClient = MockHTTPClient()
+        try await httpClient.enqueueJSON(configResponse(version: "v1"))
+        try await httpClient.enqueueJSON(["ok": true, "accepted": 1, "identifierHash": idfvHash])
+        let sdk = GameAlgoSDK(
+            gameKey: gameKey,
+            baseURL: URL(string: "https://gamealgo.test")!,
+            httpClient: httpClient,
+            cacheStorage: nil,
+            userId: "u1",
+            identifierForVendorProvider: { "vendor-1" },
+            _autoStart: true
+        )
+
+        let ready = await sdk.waitForReady()
+        XCTAssertTrue(ready)
+        var requests = await httpClient.requests
+        for _ in 0..<50 where requests.count < 2 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+            requests = await httpClient.requests
+        }
+        XCTAssertEqual(requests.count, 2)
+        let body = try requestBody(requests[1])
+        XCTAssertEqual(body["identifierType"] as? String, "idfv")
+        XCTAssertEqual(body["identifierValue"] as? String, "vendor-1")
+        XCTAssertEqual(body["contextId"] as? String, "ctx-1")
     }
 
     func testTrackerQueuesAndFlushesEventsAfterReadyIdentifiesUser() async throws {

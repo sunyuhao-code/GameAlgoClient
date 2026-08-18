@@ -23,11 +23,11 @@ public actor GameAlgoSDK {
     private let snapshotCacheKey: String
     private let legacySnapshotCacheKey: String
     private let attributionAckCacheKey: String
-    private let contextIdentifierAckCacheKey: String
     private let now: @Sendable () -> Date
     private let logger: GameAlgoLogHandler?
     private let snapshotStore: GameAlgoSnapshotStore
     private let eventUploader: any GameAlgoEventBatchUploading
+    private let identifierForVendorProvider: @Sendable () async -> String?
     private let readyTaskStore = GameAlgoReadyTaskStore()
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
@@ -87,6 +87,7 @@ public actor GameAlgoSDK {
             timezone: timezone,
             device: device,
             preloadConfigFiles: preloadConfigFiles,
+            identifierForVendorProvider: { await Self.systemIdentifierForVendor() },
             _autoStart: true,
             isDebug: isDebug,
             eventFlushInterval: eventFlushInterval,
@@ -118,6 +119,7 @@ public actor GameAlgoSDK {
         timezone: String? = nil,
         device: [String: JSONValue] = [:],
         preloadConfigFiles: GameAlgoConfigFilePreload = .all,
+        identifierForVendorProvider: @escaping @Sendable () async -> String? = { nil },
         _autoStart: Bool,
         isDebug: Bool = false,
         eventFlushInterval: TimeInterval = 30,
@@ -162,11 +164,11 @@ public actor GameAlgoSDK {
         self.legacySnapshotCacheKey = "gamealgo:v1:snapshot:\(baseURL.absoluteString):\(gameKey.prefix(16))"
         self.snapshotCacheKey = cacheKey ?? "gamealgo:v1:snapshot:\(namespace)"
         self.attributionAckCacheKey = "gamealgo:v1:attribution:\(namespace)"
-        self.contextIdentifierAckCacheKey = "gamealgo:v1:context-identifier:\(namespace)"
         self.now = now
         self.logger = logger
         self.snapshotStore = snapshotStore
         self.eventUploader = eventUploader
+        self.identifierForVendorProvider = identifierForVendorProvider
         self.config = GameAlgoConfigReader(store: snapshotStore)
         self.tracker = GameAlgoEventTracker(
             uploader: eventUploader,
@@ -276,6 +278,9 @@ public actor GameAlgoSDK {
                     throw error
                 }
                 await self.log("config fetch failed, using cached snapshot: \(error)")
+            }
+            Task {
+                await self.reportIdentifierForVendorIfAvailable(platform: platform)
             }
         }
     }
@@ -552,6 +557,14 @@ public actor GameAlgoSDK {
         try await setContextIdentifier(type: "gaid", value: value, observedAt: observedAt)
     }
 
+    public func setIdfa(_ value: String?, observedAt: String? = nil) async throws -> GameAlgoContextIdentifierResponse {
+        try await setContextIdentifier(type: "idfa", value: value, observedAt: observedAt)
+    }
+
+    public func setIdfv(_ value: String?, observedAt: String? = nil) async throws -> GameAlgoContextIdentifierResponse {
+        try await setContextIdentifier(type: "idfv", value: value, observedAt: observedAt)
+    }
+
     private func setContextIdentifier(type: String, value: String?, observedAt: String?) async throws -> GameAlgoContextIdentifierResponse {
         if snapshotStore.snapshot().config == nil, let readyTask = readyTaskStore.get() {
             try await readyTask.value
@@ -562,11 +575,6 @@ public actor GameAlgoSDK {
 
         let normalizedValue = normalizeContextIdentifier(type: type, value: value)
         let identifierHash = stableContextIdentifierHash(type: type, value: normalizedValue)
-        let ackKey = "\(contextIdentifierAckCacheKey):\(type)"
-        if userIdentityStore.string(forKey: ackKey) == identifierHash {
-            log("context identifier already synced: type=\(type)")
-            return GameAlgoContextIdentifierResponse(ok: true, accepted: 0, identifierHash: identifierHash)
-        }
 
         let identity = userIdentityStore.identity(now: now())
         let requestBody = ContextIdentifierRequest(
@@ -587,9 +595,27 @@ public actor GameAlgoSDK {
                 body: try encode(requestBody)
             )
         )
-        userIdentityStore.setString(response.identifierHash, forKey: ackKey)
         log("context identifier synced: type=\(type), accepted=\(response.accepted)")
         return response
+    }
+
+    private func reportIdentifierForVendorIfAvailable(platform: GameAlgoPlatform) async {
+        guard platform == .ios else { return }
+        let idfv = await identifierForVendorProvider()
+        guard let idfv else { return }
+        do {
+            _ = try await setIdfv(idfv)
+        } catch {
+            log("context identifier sync failed: type=idfv, error=\(error)")
+        }
+    }
+
+    private static func systemIdentifierForVendor() async -> String? {
+        #if canImport(UIKit)
+        return await MainActor.run { UIDevice.current.identifierForVendor?.uuidString }
+        #else
+        return nil
+        #endif
     }
 
     public func clearConfigCache() {
@@ -946,7 +972,7 @@ private func normalizeContextIdentifier(type: String, value: String?) -> String?
     guard let value else { return nil }
     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
     if trimmed.isEmpty { return nil }
-    if type == "gaid" && trimmed.lowercased() == "00000000-0000-0000-0000-000000000000" {
+    if (type == "gaid" || type == "idfa") && trimmed.lowercased() == "00000000-0000-0000-0000-000000000000" {
         return nil
     }
     return trimmed

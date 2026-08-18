@@ -5,12 +5,14 @@ name: Android CI
     branches: ["main"]
     paths:
       - "android/**"
+      - "runtime/rust/**"
       - ".github/workflows/android.yml"
       - ".github/workflows/android-release.yml"
   pull_request:
     branches: ["main"]
     paths:
       - "android/**"
+      - "runtime/rust/**"
       - ".github/workflows/android.yml"
       - ".github/workflows/android-release.yml"
 
@@ -34,6 +36,17 @@ jobs:
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
+
+      - name: Set up Rust Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: armv7-linux-androideabi,aarch64-linux-android,x86_64-linux-android
+
+      - name: Set up Android native toolchain
+        run: |
+          cargo install cargo-ndk --locked
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
 
       - name: Compile Android SDK
         working-directory: android
