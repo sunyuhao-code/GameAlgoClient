@@ -36,6 +36,9 @@ local DEFAULT_MAX_QUEUE_SIZE = 10000
 local DEFAULT_MAX_PENDING_FLUSH_CALLBACKS = 1000
 local QUEUE_PERSIST_INTERVAL_MS = 1000
 local QUEUE_PERSIST_EVENT_COUNT = 100
+local CONFIG_FETCH_MAX_ATTEMPTS = 3
+local CONFIG_FETCH_RETRY_BASE_MS = 1000
+local INIT_WATCHDOG_MS = 10000
 
 local state_ = {
     baseUrl = DEFAULT_BASE_URL,
@@ -51,6 +54,7 @@ local state_ = {
     userCreatedLocalAt = nil,
     accountUserId = nil,
     accountUserCreatedAt = nil,
+    prefetchedMakerUserId = nil,
     sessionId = nil,
     sessionStartMs = nil,
     contextId = nil,
@@ -81,6 +85,12 @@ local state_ = {
     initializationComplete = false,
     fetchConfigRequested = false,
     pendingFetchConfigCallbacks = {},
+    configFetchCallbacks = {},
+    configFetchInFlight = false,
+    configFetchAttempt = 0,
+    configFetchRetryHandle = nil,
+    initWatchdogHandle = nil,
+    initDiagnosticReported = false,
     pendingTracks = {},
     consecutiveFlushFailures = 0,
     queuePersistenceActive = false,
@@ -89,6 +99,7 @@ local state_ = {
     lastQueuePersistAtMs = 0,
     logger = nil,
     transport = HttpTransport,
+    scheduler = nil,
 }
 
 local function log(message)
@@ -344,6 +355,31 @@ local function httpRequest(method, path, bodyTable, callback)
         return nil
     end
     return requestOrError
+end
+
+local function reportInitTimeout()
+    state_.initWatchdogHandle = nil
+    if state_.contextId and state_.contextId ~= "" then return end
+    if state_.initDiagnosticReported then return end
+    state_.initDiagnosticReported = true
+    httpRequest("POST", "/v1/diagnostics/init", {
+        diagnosticId = randomId("ga_diag"),
+        userId = state_.userId,
+        accountUserId = state_.accountUserId or state_.prefetchedMakerUserId,
+        sessionId = state_.sessionId,
+        platform = state_.platform,
+        sdkVersion = SDK_VERSION,
+        appVersion = state_.appVersion,
+        stage = "config",
+        status = "failed",
+        reasonCode = "initialization_timeout",
+        reasonDetail = "context not ready after 10000ms",
+        createdAt = isoNow(),
+        createdLocalAt = localIsoNow(),
+        isDebug = state_.isDebug,
+    }, function(error)
+        if error then log("init timeout diagnostic upload failed: " .. tostring(error)) end
+    end)
 end
 
 local function rawHttpRequest(method, url, callback)
@@ -634,7 +670,7 @@ local function completeInitialization(options)
     state_.initializationComplete = true
 
     ensureIdentity(options.userId)
-    ensureAccountIdentity(options.accountUserId, options.accountUserCreatedAt)
+    ensureAccountIdentity(options.accountUserId or state_.prefetchedMakerUserId, options.accountUserCreatedAt)
     restoreEventQueue()
 
     for _, controller in pairs(state_.ddaControllers) do
@@ -646,8 +682,6 @@ local function completeInitialization(options)
     end
     state_.pendingTracks = {}
 
-    if type(state_.transport.Start) == "function" then state_.transport.Start(options.transportOptions) end
-    ensureAutomaticUpdateDriver()
     if not state_.gameKey or state_.gameKey == "" then
         log("missing gameKey; config and event requests will be rejected")
     end
@@ -677,7 +711,9 @@ function GameAlgo.Init(options)
     state_.flushing = false
     state_.lifecycleGeneration = state_.lifecycleGeneration + 1
     if previousActive then cancelTransportRequest(previousTransport, previousActive.handle) end
-
+    if state_.scheduler and type(state_.scheduler.Shutdown) == "function" then
+        state_.scheduler:Shutdown()
+    end
     math.randomseed(os.time())
     state_.baseUrl = options.baseUrl or DEFAULT_BASE_URL
     state_.gameKey = options.gameKey
@@ -711,6 +747,7 @@ function GameAlgo.Init(options)
     state_.userCreatedLocalAt = nil
     state_.accountUserId = nil
     state_.accountUserCreatedAt = nil
+    state_.prefetchedMakerUserId = nil
     state_.contextId = nil
     state_.config = nil
     state_.configFiles = {}
@@ -735,24 +772,55 @@ function GameAlgo.Init(options)
     state_.initializationComplete = false
     state_.fetchConfigRequested = options.autoFetch ~= false
     state_.pendingFetchConfigCallbacks = {}
+    state_.configFetchCallbacks = {}
+    state_.configFetchInFlight = false
+    state_.configFetchAttempt = 0
+    state_.configFetchRetryHandle = nil
+    state_.initWatchdogHandle = nil
+    state_.initDiagnosticReported = false
+    -- Read the stable Maker account id before any asynchronous clientCloud:Get.
+    -- It remains available for diagnostics even when cloud-backed storage stalls.
+    state_.prefetchedMakerUserId = options.accountUserId or resolveMakerUserId()
+    if type(state_.transport.Start) == "function" then state_.transport.Start(options.transportOptions) end
+    ensureAutomaticUpdateDriver()
+    state_.scheduler = options._scheduler or MakerAutoStorage.NewScheduler({
+        logger = log,
+        nowMs = state_.clock,
+        externallyDriven = state_.internalUpdateSubscribed,
+    })
 
     local storage, storageError = MakerAutoStorage.New({
         logger = log,
+        scheduler = state_.scheduler,
+        cloudReadTimeoutMs = options._cloudReadTimeoutMs,
     })
     if not storage then error(storageError) end
     state_.storage = storage
+    if state_.fetchConfigRequested and state_.scheduler and type(state_.scheduler.Schedule) == "function" then
+        state_.initWatchdogHandle = state_.scheduler:Schedule(INIT_WATCHDOG_MS, reportInitTimeout)
+    end
     storage:OnReady(function() completeInitialization(options) end)
     return GameAlgo
 end
 
-function GameAlgo.FetchConfig(callback)
-    if not state_.storageReady then
-        state_.fetchConfigRequested = true
-        if type(callback) == "function" then table.insert(state_.pendingFetchConfigCallbacks, callback) end
-        return
+local function finishConfigFetch(error, config)
+    state_.configFetchInFlight = false
+    state_.configFetchAttempt = 0
+    state_.configFetchRetryHandle = nil
+    local callbacks = state_.configFetchCallbacks
+    state_.configFetchCallbacks = {}
+    for _, callback in ipairs(callbacks) do
+        safeCallback(callback, error, config)
     end
-    ensureIdentity()
-    local request = {
+end
+
+local function isRetryableConfigFailure(response)
+    local status = tonumber(response and response.status) or 0
+    return status == 0 or status == 408 or status == 425 or status == 429 or status >= 500
+end
+
+local function configRequestBody()
+    return {
         userId = state_.userId,
         userCreatedAt = state_.userCreatedAt,
         userCreatedLocalAt = state_.userCreatedLocalAt,
@@ -768,17 +836,44 @@ function GameAlgo.FetchConfig(callback)
         device = state_.device,
         isDebug = state_.isDebug,
     }
-    httpRequest("POST", "/v1/config", request, function(error, config)
+end
+
+local performConfigFetchAttempt
+performConfigFetchAttempt = function()
+    state_.configFetchRetryHandle = nil
+    state_.configFetchAttempt = state_.configFetchAttempt + 1
+    local attempt = state_.configFetchAttempt
+    httpRequest("POST", "/v1/config", configRequestBody(), function(error, config, response)
         if error then
+            if attempt < CONFIG_FETCH_MAX_ATTEMPTS and isRetryableConfigFailure(response) then
+                local delayMs = CONFIG_FETCH_RETRY_BASE_MS * (2 ^ (attempt - 1))
+                local scheduler = state_.scheduler
+                local canSchedule = scheduler ~= nil
+                    and type(scheduler.Schedule) == "function"
+                    and (type(scheduler.IsAutomatic) ~= "function" or scheduler:IsAutomatic())
+                local handle = canSchedule
+                    and scheduler:Schedule(delayMs, performConfigFetchAttempt) or nil
+                if handle then
+                    state_.configFetchRetryHandle = handle
+                    log("config fetch failed; retrying in " .. tostring(delayMs)
+                        .. "ms (attempt " .. tostring(attempt + 1)
+                        .. "/" .. tostring(CONFIG_FETCH_MAX_ATTEMPTS) .. "): " .. tostring(error))
+                    return
+                end
+            end
             log("config fetch failed: " .. tostring(error))
-            safeCallback(callback, error, nil)
+            finishConfigFetch(error, nil)
             return
         end
         state_.config = config
         state_.contextId = config and config.contextId or nil
         bindQueuedEvents(state_.contextId, state_.sessionId)
+        if state_.initWatchdogHandle and state_.scheduler and type(state_.scheduler.Cancel) == "function" then
+            state_.scheduler:Cancel(state_.initWatchdogHandle)
+            state_.initWatchdogHandle = nil
+        end
         log("config fetched: version=" .. tostring(config and config.configVersion or "unknown"))
-        safeCallback(callback, nil, config)
+        finishConfigFetch(nil, config)
         if state_.preloadConfigFiles and config then
             for _, file in ipairs(config.configFiles or {}) do
                 if file.name then GameAlgo.FetchConfigFile(file.name, nil) end
@@ -797,6 +892,20 @@ function GameAlgo.FetchConfig(callback)
         end
         GameAlgo.Flush(nil)
     end)
+end
+
+function GameAlgo.FetchConfig(callback)
+    if not state_.storageReady then
+        state_.fetchConfigRequested = true
+        if type(callback) == "function" then table.insert(state_.pendingFetchConfigCallbacks, callback) end
+        return
+    end
+    ensureIdentity()
+    if type(callback) == "function" then table.insert(state_.configFetchCallbacks, callback) end
+    if state_.configFetchInFlight then return end
+    state_.configFetchInFlight = true
+    state_.configFetchAttempt = 0
+    performConfigFetchAttempt()
 end
 
 
@@ -1126,6 +1235,10 @@ local function recoverTimedOutFlush(currentTime)
 end
 
 function GameAlgo.Update()
+    if state_.scheduler and type(state_.scheduler.Update) == "function" then
+        local schedulerOk, schedulerError = pcall(function() state_.scheduler:Update() end)
+        if not schedulerOk then log("scheduler update failed: " .. tostring(schedulerError)) end
+    end
     if type(state_.transport.Update) == "function" then
         local updateOk, updateError = pcall(state_.transport.Update)
         if not updateOk then log("transport update failed: " .. tostring(updateError)) end

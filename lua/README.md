@@ -11,6 +11,8 @@ TapTap Maker 客户端支持直接访问 GameAlgo HTTPS API。接入时把以下
 
 `client_main.lua` 是可直接参考的初始化示例。
 
+SDK 会先同步读取 Maker `lobby:GetMyUserId()` 并暂存为 `accountUserId`，再开始 `clientCloud:Get`，因此云读取卡住时仍然能标识受影响账号。首次启动没有本地快照时，SDK 会等待云端恢复身份；若云读取在 5 秒内没有任何回调，SDK 会自动降级到本地/内存存储继续初始化，不会阻塞本次会话。`/v1/config` 遇到网络错误、限流或服务端暂时不可用时，会进行最多 3 次、间隔 1 秒和 2 秒的受控重试；鉴权等不可重试的 4xx 错误会直接返回。
+
 ## 客户端配置
 
 ```lua
@@ -35,7 +37,7 @@ GameAlgo.Init({
 
 关于何时创建新版本、Strategy 最低版本和托管实验覆盖率门槛，运行 `gamealgo docs experiments --host <admin-host>` 查看当前平台规则。
 
-Lua SDK 会自动调用 Maker 环境的 `lobby:GetMyUserId()` 作为稳定用户 ID，游戏接入代码不需要读取或传入该值。如果当前运行时拿不到 Maker 用户 ID，SDK 会从内部持久化快照读取已有匿名 ID，或生成并保存一个新的匿名 ID。不要使用昵称、头像、手机号等可识别信息作为 `userId`。
+Lua SDK 会自动调用 Maker 环境的 `lobby:GetMyUserId()` 作为稳定的 `accountUserId`，游戏接入代码不需要读取或传入该值。GameAlgo 自己的匿名 `userId` 仍从内部持久化快照读取，首次使用时才生成。不要使用昵称、头像、手机号等可识别信息作为 `userId`。
 
 ### 持久化存储
 
@@ -50,6 +52,8 @@ Lua SDK 自动管理持久化，不允许传入 `storage`：
 接入代码不要自行探测单机/联网模式，不要实现 GameAlgo 专用存档适配器，也不要给 `GameAlgo.Init` 传 `storage`。如果传入，SDK 会直接报错，避免本地存档和云端存档出现两套冲突语义。
 
 `Init` 会从客户端发起非阻塞的 `/v1/config` 请求。游戏逻辑应该保留本地默认值，只在远端配置可用时读取远端值。
+
+SDK 从 `GameAlgo.Init` 开始设置一个固定 10 秒的初始化看门狗。10 秒内拿到有效 `contextId` 就取消检查；届时仍未成功，则只通过独立的 `/v1/diagnostics/init` 接口上报一条 `initialization_timeout`，本次 Init 不重复上报，也不补发恢复事件。该接口不依赖 `contextId`，不会生成虚假 Context 或计入 DAU。显式配置 `autoFetch=false` 时不会启动看门狗。
 
 Lua SDK 会同时记录 UTC 时间和带 UTC offset 的客户端本地时间：通过内部自动存储持久化 `userCreatedAt` / `userCreatedLocalAt`，context 上报 `createdLocalAt`，事件上报 `timestamp` / `createdLocalAt`。这些字段由 SDK 自动维护；事件进入队列时即固定发生时间，延迟上传或重试不会改写。
 
