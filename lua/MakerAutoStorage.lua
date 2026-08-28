@@ -4,7 +4,8 @@
 --- The SDK exposes synchronous reads to its identity, script cache, and DDA
 --- layers while hiding Maker's asynchronous clientCloud API. A local File
 --- snapshot is used as the fast path. When no local snapshot exists, the
---- first cloud read completes before the SDK starts.
+--- first cloud read completes before the SDK starts, with a bounded timeout so
+--- a missing clientCloud callback cannot block the whole session.
 
 local cjson = require("cjson")
 
@@ -13,6 +14,7 @@ local MakerAutoStorage = {}
 local FILE_NAME = "gamealgo_sdk_storage_v1.json"
 local CLOUD_KEY = "gamealgo_sdk_storage_v1"
 local SCHEMA_VERSION = 1
+local DEFAULT_CLOUD_READ_TIMEOUT_MS = 5000
 
 local function makerGlobal(read)
     local ok, value = pcall(read)
@@ -125,6 +127,89 @@ local function cloudValue(values)
     return normalizeSnapshot(values[CLOUD_KEY])
 end
 
+--- Creates a small Maker-native scheduler without replacing the game's global
+--- Update handler. The dedicated LuaScriptObject owns its own subscription.
+function MakerAutoStorage.NewScheduler(options)
+    options = options or {}
+    local logger = type(options.logger) == "function" and options.logger or function() end
+    local now = type(options.nowMs) == "function"
+        and options.nowMs
+        or function() return math.floor(os.time() * 1000) end
+    local tasks = {}
+    local nextTaskId = 0
+    local eventNode = nil
+    local eventObject = nil
+    local automatic = options.externallyDriven == true
+    local stopped = false
+    local scheduler = {}
+
+    function scheduler:Schedule(delayMs, callback)
+        if stopped or type(callback) ~= "function" then return nil end
+        nextTaskId = nextTaskId + 1
+        local handle = { id = nextTaskId }
+        tasks[handle.id] = {
+            handle = handle,
+            dueAt = now() + math.max(0, tonumber(delayMs) or 0),
+            callback = callback,
+        }
+        return handle
+    end
+
+    function scheduler:Cancel(handle)
+        if type(handle) ~= "table" then return end
+        tasks[handle.id] = nil
+    end
+
+    function scheduler:Update()
+        if stopped then return end
+        local current = now()
+        local due = {}
+        for id, task in pairs(tasks) do
+            if task.dueAt <= current then
+                tasks[id] = nil
+                table.insert(due, task)
+            end
+        end
+        table.sort(due, function(left, right)
+            if left.dueAt == right.dueAt then return left.handle.id < right.handle.id end
+            return left.dueAt < right.dueAt
+        end)
+        for _, task in ipairs(due) do
+            local ok, reason = pcall(task.callback)
+            if not ok then logger("scheduler callback failed: " .. tostring(reason)) end
+        end
+    end
+
+    function scheduler:IsAutomatic()
+        return automatic
+    end
+
+    function scheduler:Shutdown()
+        if stopped then return end
+        stopped = true
+        tasks = {}
+        if eventObject ~= nil then
+            pcall(function() eventObject:UnsubscribeFromAllEvents() end)
+        end
+        eventObject = nil
+        eventNode = nil
+    end
+
+    local nodeFactory = makerGlobal(function() return Node end)
+    if not automatic and nodeFactory ~= nil then
+        local subscribed = pcall(function()
+            eventNode = nodeFactory()
+            eventObject = eventNode:CreateScriptObject("LuaScriptObject")
+            eventObject:SubscribeToEvent("Update", function()
+                scheduler:Update()
+            end)
+        end)
+        automatic = subscribed and eventObject ~= nil
+    end
+
+    return scheduler
+end
+
 function MakerAutoStorage.New(options)
     options = options or {}
     if not isMakerRuntime() then
@@ -132,6 +217,9 @@ function MakerAutoStorage.New(options)
     end
 
     local logger = type(options.logger) == "function" and options.logger or function() end
+    local scheduler = options.scheduler
+    local cloudReadTimeoutMs = math.max(0,
+        tonumber(options.cloudReadTimeoutMs) or DEFAULT_CLOUD_READ_TIMEOUT_MS)
     local fileApi = makerFileApi()
     local localSnapshot = readLocalSnapshot(fileApi)
     local snapshot = localSnapshot or emptySnapshot()
@@ -172,24 +260,55 @@ function MakerAutoStorage.New(options)
             return
         end
 
+        local canSchedule = scheduler ~= nil
+            and type(scheduler.Schedule) == "function"
+            and (type(scheduler.IsAutomatic) ~= "function" or scheduler:IsAutomatic())
+        if not canSchedule then
+            logger("automatic storage cloud read skipped: timeout scheduler unavailable")
+            persistLocal()
+            markReady(localAvailable and "local" or "memory")
+            return
+        end
+
+        local settled = false
+        local timeoutHandle = nil
+        local function finish(source, remote)
+            if settled then return end
+            settled = true
+            if timeoutHandle and type(scheduler.Cancel) == "function" then
+                scheduler:Cancel(timeoutHandle)
+            end
+            if remote then snapshot = remote end
+            persistLocal()
+            markReady(source)
+        end
+
+        timeoutHandle = scheduler:Schedule(cloudReadTimeoutMs, function()
+            logger("automatic storage cloud read timed out after "
+                .. tostring(cloudReadTimeoutMs) .. "ms")
+            finish(localAvailable and "local-timeout" or "memory-timeout", nil)
+        end)
+        if timeoutHandle == nil then
+            logger("automatic storage cloud read skipped: timeout scheduling failed")
+            persistLocal()
+            markReady(localAvailable and "local" or "memory")
+            return
+        end
+
         local started = pcall(function()
             cloud:Get(CLOUD_KEY, {
                 ok = function(values)
                     local remote = cloudValue(values)
-                    if remote then snapshot = remote end
-                    persistLocal()
-                    markReady(remote and "cloud" or (localAvailable and "local" or "memory"))
+                    finish(remote and "cloud" or (localAvailable and "local" or "memory"), remote)
                 end,
                 error = function(code, reason)
                     logger("automatic storage cloud read failed: " .. tostring(code) .. " " .. tostring(reason))
-                    persistLocal()
-                    markReady(localAvailable and "local" or "memory")
+                    finish(localAvailable and "local" or "memory", nil)
                 end,
             })
         end)
         if not started then
-            persistLocal()
-            markReady(localAvailable and "local" or "memory")
+            finish(localAvailable and "local" or "memory", nil)
         end
     end
 
