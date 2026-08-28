@@ -36,6 +36,6 @@ test("Maker automatic storage uses normal Maker global lookup and hydrates befor
   assert.match(storage, /file:ReadString\(\)/);
   assert.match(storage, /file:WriteString\(encoded\)/);
   assert.match(gameAlgo, /storage:OnReady\(function\(\) completeInitialization\(options\) end\)/);
-  assert.match(gameAlgo, /if not state_\.storageReady then\s+table\.insert\(state_\.pendingTracks/s);
+  assert.match(gameAlgo, /if not state_\.storageReady then[\s\S]*?table\.insert\(state_\.pendingTracks/s);
   assert.match(gameAlgo, /if actual or not state_\.storageReady then return end/);
 });

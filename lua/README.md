@@ -133,9 +133,13 @@ local enabled = GameAlgo.ConfigValue("ads.rewarded.enabled", true, "gameplay.jso
 
 ## 事件
 
-事件会先进入内存队列。如果配置还没准备好，`Flush` 会等待拿到 `contextId` 后再上传。`GameAlgo.TrackAd` 在广告事件入队后会立即尝试 `Flush`，尽量避免玩家看完广告后很快退出或进程被终止而丢失尚未上传的 `ad_view`；连续触发时 SDK 会等待当前请求完成后继续提交，不会并发修改事件队列。
+事件会先进入队列。如果配置还没准备好，`Flush` 会等待拿到 `contextId` 后再上传。普通事件默认每 5 秒批量 Flush；队列达到一个 batch 时也会立即发送。SDK 在 `Init` 内部自动订阅 Maker 的 `Update` 事件，用它驱动定时 Flush、15 秒请求 watchdog 和失败后的退避重试，接入方不需要修改游戏 Update。自定义运行时如果不提供 Maker `SubscribeToEvent`，后续的 Track/Flush 仍会检查批量阈值和超时并尝试自愈，也可在测试中手动调用 `GameAlgo.Update()`。
 
-连续 3 次上传失败后，SDK 会把完整未发送队列按 JSON Lines 写入内部自动存储；下次启动自动恢复，服务端 ACK 后删除持久化副本。正常运行不会每条事件落盘，强制终止前的未失败内存事件仍是 best-effort。事件入队时即固定 `sessionId` 和已有的 `contextId`；同一 session 刷新 context 不会重绑旧事件，切换 session 只会丢弃上一 session 尚未绑定 context 的事件。
+`GameAlgo.TrackAd` 在广告事件入队后会立即 Flush。发送前，SDK 会把 inflight batch 和剩余队列按 JSON Lines 写入内部自动存储；下次启动自动恢复，服务端完整 ACK 后才删除持久化副本。请求超过 15 秒没有终态回调时，watchdog 会释放请求、把 inflight batch 放回队首，并按退避间隔重试。迟到或重复回调由 request token 忽略；成功后 SDK 会连续发送，直到所有已有 context 的事件全部排空。事件入队时即固定 `sessionId` 和已有的 `contextId`；同一 session 刷新 context 不会重绑旧事件，切换 session 只会丢弃上一 session 尚未绑定 context 的事件。
+
+队列默认最多保留 10,000 个事件，包含 inflight batch；达到上限时新的 Track 调用会返回 `false, "event queue is full ..."`，避免断网或宿主异常造成无界内存增长。payload 会在入队前做快照和 JSON 可序列化校验，非法结构不会污染整个发送队列。服务端响应的 `accepted` 必须等于发送条数；部分接收按失败处理并保留整批重试，服务端通过稳定 `eventId` 幂等去重。
+
+测试或特殊运行环境可在 `Init` 中覆盖 `flushIntervalMs`、`flushTimeoutMs`、`maxBatchSize` 和 `maxQueueSize`。业务代码通常保持默认值即可。
 
 `userId` 始终是 GameAlgo 生成并持久化的匿名设备标识，用于现有实验分流和报表。Maker 可用的 `getUserId()` 会自动写入独立的 `accountUserId`，不会替换匿名 `userId`；已知账号注册时间时也可以在 `GameAlgo.Init` 传 `accountUserCreatedAt`。context 保存完整账号身份，后续事件自动携带 `accountUserId`。
 
@@ -188,7 +192,7 @@ sdk:ShowRewardVideoAd(function(result)
 end)
 ```
 
-客户端 HTTP 请求由 `HttpTransport.lua` 异步执行，不依赖游戏服务端连接状态，也不要求在 update loop 中轮询网络请求。
+客户端 HTTP 请求由 `HttpTransport.lua` 异步执行，不依赖 update loop 轮询网络进度。SDK 会自行订阅 Maker Update 驱动定时 Flush、watchdog 和失败重试，开发者不需要新增调用。Transport 会持有活动请求对象直到终态回调，创建、参数设置或 `Send` 的同步异常会转换成普通请求错误，同一请求只允许结算一次。
 
 ### Maker HTTP 全局变量兼容性
 

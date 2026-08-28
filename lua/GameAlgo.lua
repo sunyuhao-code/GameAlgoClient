@@ -28,8 +28,14 @@ local MakerAutoStorage = requireSdkModule("MakerAutoStorage")
 local GameAlgo = {}
 local unpackArgs = table.unpack or unpack
 
-local SDK_VERSION = "1.4.1-lua"
+local SDK_VERSION = "1.5.0-lua"
 local DEFAULT_BASE_URL = "https://game-algo-sdk.dictapis.cn"
+local DEFAULT_FLUSH_INTERVAL_MS = 5000
+local DEFAULT_FLUSH_TIMEOUT_MS = 15000
+local DEFAULT_MAX_QUEUE_SIZE = 10000
+local DEFAULT_MAX_PENDING_FLUSH_CALLBACKS = 1000
+local QUEUE_PERSIST_INTERVAL_MS = 1000
+local QUEUE_PERSIST_EVENT_COUNT = 100
 
 local state_ = {
     baseUrl = DEFAULT_BASE_URL,
@@ -54,9 +60,21 @@ local state_ = {
     ddaControllers = {},
     queue = {},
     flushing = false,
+    activeFlush = nil,
+    flushSequence = 0,
+    lifecycleGeneration = 0,
     flushRequested = false,
     pendingFlushCallbacks = {},
+    pendingFlushAccepted = 0,
     maxBatchSize = 100,
+    maxQueueSize = DEFAULT_MAX_QUEUE_SIZE,
+    maxPendingFlushCallbacks = DEFAULT_MAX_PENDING_FLUSH_CALLBACKS,
+    flushIntervalMs = DEFAULT_FLUSH_INTERVAL_MS,
+    flushTimeoutMs = DEFAULT_FLUSH_TIMEOUT_MS,
+    nextAutoFlushAtMs = nil,
+    retryFlushAtMs = nil,
+    clock = nil,
+    internalUpdateSubscribed = false,
     preloadConfigFiles = true,
     storage = nil,
     storageReady = false,
@@ -66,6 +84,9 @@ local state_ = {
     pendingTracks = {},
     consecutiveFlushFailures = 0,
     queuePersistenceActive = false,
+    queuePersistenceDirty = false,
+    queueEventsSincePersist = 0,
+    lastQueuePersistAtMs = 0,
     logger = nil,
     transport = HttpTransport,
 }
@@ -73,10 +94,32 @@ local state_ = {
 local function log(message)
     local line = "[GameAlgoSDK] " .. tostring(message)
     if type(state_.logger) == "function" then
-        state_.logger(line)
+        local ok, loggerError = pcall(state_.logger, line)
+        if not ok then
+            print(line)
+            print("[GameAlgoSDK] logger failed: " .. tostring(loggerError))
+        end
     else
         print(line)
     end
+end
+
+local function safeCallback(callback, ...)
+    if type(callback) ~= "function" then return true end
+    local ok, callbackError = pcall(callback, ...)
+    if not ok then log("callback failed: " .. tostring(callbackError)) end
+    return ok
+end
+
+local function cancelTransportRequest(transport, handle)
+    if handle == nil or type(transport) ~= "table" then return end
+    if type(transport.Cancel) == "function" then
+        pcall(transport.Cancel, handle)
+        return
+    end
+    local cancel = nil
+    pcall(function() cancel = handle.Cancel or handle.Abort end)
+    if type(cancel) == "function" then pcall(cancel, handle) end
 end
 
 local function isoNow()
@@ -125,6 +168,15 @@ end
 
 local function nowMs()
     return math.floor(os.time() * 1000)
+end
+
+local function clockMs()
+    local clock = state_.clock
+    if type(clock) == "function" then
+        local ok, value = pcall(clock)
+        if ok and tonumber(value) then return math.floor(tonumber(value)) end
+    end
+    return nowMs()
 end
 
 local function randomId(prefix)
@@ -252,14 +304,22 @@ local function httpRequest(method, path, bodyTable, callback)
         headers["X-GameAlgo-Key"] = state_.gameKey
     end
 
-    state_.transport.Request({
-        method = method,
-        url = trimSlash(state_.baseUrl) .. path,
-        headers = headers,
-        body = bodyTable and cjson.encode(bodyTable) or "",
-    }, function(error, response)
+    local body = ""
+    if bodyTable ~= nil then
+        local encodeOk, encoded = pcall(cjson.encode, bodyTable)
+        if not encodeOk then
+            safeCallback(callback, "request encode failed: " .. tostring(encoded), nil, nil)
+            return nil
+        end
+        body = encoded
+    end
+
+    local settled = false
+    local function complete(error, response)
+        if settled then return end
+        settled = true
         if error then
-            callback(error, nil, response)
+            safeCallback(callback, error, nil, response)
             return
         end
         local body = response and response.body or ""
@@ -268,20 +328,47 @@ local function httpRequest(method, path, bodyTable, callback)
             local ok, value = pcall(cjson.decode, body)
             if ok then decoded = value end
         end
-        callback(nil, decoded, response)
+        safeCallback(callback, nil, decoded, response)
+    end
+
+    local requestOk, requestOrError = pcall(function()
+        return state_.transport.Request({
+            method = method,
+            url = trimSlash(state_.baseUrl) .. path,
+            headers = headers,
+            body = body,
+        }, complete)
     end)
+    if not requestOk then
+        complete("request failed: " .. tostring(requestOrError), nil)
+        return nil
+    end
+    return requestOrError
 end
 
 local function rawHttpRequest(method, url, callback)
     callback = callback or function() end
     local headers = {}
     if state_.gameKey and state_.gameKey ~= "" then headers["X-GameAlgo-Key"] = state_.gameKey end
-    state_.transport.Request({
-        method = method,
-        url = tostring(url or ""),
-        headers = headers,
-        body = "",
-    }, callback)
+    local settled = false
+    local function complete(error, response)
+        if settled then return end
+        settled = true
+        safeCallback(callback, error, response)
+    end
+    local requestOk, requestOrError = pcall(function()
+        return state_.transport.Request({
+            method = method,
+            url = tostring(url or ""),
+            headers = headers,
+            body = "",
+        }, complete)
+    end)
+    if not requestOk then
+        complete("request failed: " .. tostring(requestOrError), nil)
+        return nil
+    end
+    return requestOrError
 end
 
 local function snapshotJsonValue(value, seen, path)
@@ -325,6 +412,19 @@ local function normalizePayload(payload)
     if payload == nil then return {}, nil end
     if type(payload) ~= "table" then return nil, "payload must be a table" end
     return snapshotJsonValue(payload, {}, "payload")
+end
+
+local function preparePayload(payload)
+    local snapshotOk, copy, snapshotError = pcall(normalizePayload, payload)
+    if not snapshotOk then
+        return nil, "payload snapshot failed: " .. tostring(copy)
+    end
+    if snapshotError then return nil, snapshotError end
+    local encodeOk, encodeError = pcall(cjson.encode, copy)
+    if not encodeOk then
+        return nil, "payload is not JSON serializable: " .. tostring(encodeError)
+    end
+    return copy, nil
 end
 
 local function decodeJsonObject(value)
@@ -406,18 +506,44 @@ local function chunkEvents()
     return batch
 end
 
+local function outstandingEventCount()
+    local activeCount = state_.activeFlush and #state_.activeFlush.batch or 0
+    return activeCount + #state_.queue
+end
+
 local function persistEventQueue()
     if not state_.storageReady or not state_.userId then return end
-    if #state_.queue == 0 then
+    local events = {}
+    if state_.activeFlush and state_.activeFlush.batch then
+        for _, event in ipairs(state_.activeFlush.batch) do table.insert(events, event) end
+    end
+    for _, event in ipairs(state_.queue) do table.insert(events, event) end
+    if #events == 0 then
         storageSet(queueStorageKey(), "")
+        state_.queuePersistenceDirty = false
+        state_.queueEventsSincePersist = 0
+        state_.lastQueuePersistAtMs = clockMs()
         return
     end
     local lines = {}
-    for _, event in ipairs(state_.queue) do
+    for _, event in ipairs(events) do
         local ok, encoded = pcall(cjson.encode, event)
         if ok then table.insert(lines, encoded) end
     end
     storageSet(queueStorageKey(), table.concat(lines, "\n"))
+    state_.queuePersistenceDirty = false
+    state_.queueEventsSincePersist = 0
+    state_.lastQueuePersistAtMs = clockMs()
+end
+
+local function scheduleEventQueuePersistence()
+    if not state_.queuePersistenceActive then return end
+    state_.queuePersistenceDirty = true
+    state_.queueEventsSincePersist = state_.queueEventsSincePersist + 1
+    if state_.queueEventsSincePersist >= QUEUE_PERSIST_EVENT_COUNT
+        or clockMs() - state_.lastQueuePersistAtMs >= QUEUE_PERSIST_INTERVAL_MS then
+        persistEventQueue()
+    end
 end
 
 local function restoreEventQueue()
@@ -446,11 +572,16 @@ local function bindQueuedEvents(contextId, sessionId)
             event.contextId = contextId
         end
     end
-    if state_.queuePersistenceActive then persistEventQueue() end
+    scheduleEventQueuePersistence()
 end
 
 local function enqueueTrack(eventType, payload, timestamp, createdLocalAt)
-    local payloadCopy, payloadError = normalizePayload(payload)
+    if outstandingEventCount() >= state_.maxQueueSize then
+        state_.queuePersistenceActive = true
+        persistEventQueue()
+        return false, "event queue is full (max=" .. tostring(state_.maxQueueSize) .. ")"
+    end
+    local payloadCopy, payloadError = preparePayload(payload)
     if payloadError then return false, payloadError end
     table.insert(state_.queue, {
         eventId = randomId("ga_event"),
@@ -464,15 +595,37 @@ local function enqueueTrack(eventType, payload, timestamp, createdLocalAt)
         createdLocalAt = createdLocalAt or localIsoNow(),
         payload = payloadCopy,
     })
-    if state_.queuePersistenceActive then persistEventQueue() end
+    scheduleEventQueuePersistence()
     return true, nil
 end
 
 local function flushAutomaticStorage()
     if not state_.storage or type(state_.storage.Flush) ~= "function" then return end
-    state_.storage:Flush(function(error)
-        if error then log("automatic storage flush failed: " .. tostring(error)) end
+    local ok, flushError = pcall(function()
+        state_.storage:Flush(function(error)
+            if error then log("automatic storage flush failed: " .. tostring(error)) end
+        end)
     end)
+    if not ok then log("automatic storage flush failed: " .. tostring(flushError)) end
+end
+
+local function ensureAutomaticUpdateDriver()
+    if state_.internalUpdateSubscribed then return true end
+    local handlerName = "__GameAlgoSdkInternalUpdate"
+    _G[handlerName] = function()
+        local updateOk, updateError = pcall(GameAlgo.Update)
+        if not updateOk then log("automatic update failed: " .. tostring(updateError)) end
+    end
+    local subscribed = pcall(function()
+        SubscribeToEvent("Update", handlerName)
+    end)
+    if subscribed then
+        state_.internalUpdateSubscribed = true
+        log("automatic update driver ready")
+        return true
+    end
+    log("automatic update driver unavailable; timed flush will run on subsequent SDK calls")
+    return false
 end
 
 local function completeInitialization(options)
@@ -494,6 +647,7 @@ local function completeInitialization(options)
     state_.pendingTracks = {}
 
     if type(state_.transport.Start) == "function" then state_.transport.Start(options.transportOptions) end
+    ensureAutomaticUpdateDriver()
     if not state_.gameKey or state_.gameKey == "" then
         log("missing gameKey; config and event requests will be rejected")
     end
@@ -506,7 +660,7 @@ local function completeInitialization(options)
         local callbacks = state_.pendingFetchConfigCallbacks
         state_.pendingFetchConfigCallbacks = {}
         GameAlgo.FetchConfig(function(error, config)
-            for _, callback in ipairs(callbacks) do callback(error, config) end
+            for _, callback in ipairs(callbacks) do safeCallback(callback, error, config) end
         end)
     end
 end
@@ -517,6 +671,13 @@ function GameAlgo.Init(options)
     if options.storage ~= nil then
         error("options.storage is not supported; TapTap Maker storage is managed automatically by the Lua SDK")
     end
+    local previousActive = state_.activeFlush
+    local previousTransport = state_.transport
+    state_.activeFlush = nil
+    state_.flushing = false
+    state_.lifecycleGeneration = state_.lifecycleGeneration + 1
+    if previousActive then cancelTransportRequest(previousTransport, previousActive.handle) end
+
     math.randomseed(os.time())
     state_.baseUrl = options.baseUrl or DEFAULT_BASE_URL
     state_.gameKey = options.gameKey
@@ -531,7 +692,17 @@ function GameAlgo.Init(options)
     state_.isDebug = options.isDebug == true
     state_.logger = options.logger
     state_.transport = options.transport or HttpTransport
-    state_.maxBatchSize = options.maxBatchSize or 100
+    state_.maxBatchSize = math.max(1, math.floor(tonumber(options.maxBatchSize) or 100))
+    state_.maxQueueSize = math.max(state_.maxBatchSize,
+        math.floor(tonumber(options.maxQueueSize) or DEFAULT_MAX_QUEUE_SIZE))
+    state_.maxPendingFlushCallbacks = math.max(1,
+        math.floor(tonumber(options.maxPendingFlushCallbacks)
+            or DEFAULT_MAX_PENDING_FLUSH_CALLBACKS))
+    state_.flushIntervalMs = options.flushIntervalMs == nil
+        and DEFAULT_FLUSH_INTERVAL_MS or math.max(0, tonumber(options.flushIntervalMs) or 0)
+    state_.flushTimeoutMs = options.flushTimeoutMs == nil
+        and DEFAULT_FLUSH_TIMEOUT_MS or math.max(1000, tonumber(options.flushTimeoutMs) or 0)
+    state_.clock = type(options.nowMs) == "function" and options.nowMs or nowMs
     state_.preloadConfigFiles = options.preloadConfigFiles ~= false
     state_.sessionId = options.sessionId or randomId("ga_session")
     state_.sessionStartMs = nowMs()
@@ -549,9 +720,17 @@ function GameAlgo.Init(options)
     state_.pendingTracks = {}
     state_.consecutiveFlushFailures = 0
     state_.queuePersistenceActive = false
+    state_.queuePersistenceDirty = false
+    state_.queueEventsSincePersist = 0
+    state_.lastQueuePersistAtMs = clockMs()
     state_.flushing = false
+    state_.activeFlush = nil
+    state_.flushSequence = 0
     state_.flushRequested = false
     state_.pendingFlushCallbacks = {}
+    state_.pendingFlushAccepted = 0
+    state_.nextAutoFlushAtMs = clockMs() + state_.flushIntervalMs
+    state_.retryFlushAtMs = nil
     state_.storageReady = false
     state_.initializationComplete = false
     state_.fetchConfigRequested = options.autoFetch ~= false
@@ -564,10 +743,6 @@ function GameAlgo.Init(options)
     state_.storage = storage
     storage:OnReady(function() completeInitialization(options) end)
     return GameAlgo
-end
-
-function GameAlgo.Update()
-    if type(state_.transport.Update) == "function" then state_.transport.Update() end
 end
 
 function GameAlgo.FetchConfig(callback)
@@ -596,14 +771,14 @@ function GameAlgo.FetchConfig(callback)
     httpRequest("POST", "/v1/config", request, function(error, config)
         if error then
             log("config fetch failed: " .. tostring(error))
-            if callback then callback(error, nil) end
+            safeCallback(callback, error, nil)
             return
         end
         state_.config = config
         state_.contextId = config and config.contextId or nil
         bindQueuedEvents(state_.contextId, state_.sessionId)
         log("config fetched: version=" .. tostring(config and config.configVersion or "unknown"))
-        if callback then callback(nil, config) end
+        safeCallback(callback, nil, config)
         if state_.preloadConfigFiles and config then
             for _, file in ipairs(config.configFiles or {}) do
                 if file.name then GameAlgo.FetchConfigFile(file.name, nil) end
@@ -696,12 +871,17 @@ end
 
 function GameAlgo.Track(eventType, payload)
     if not eventType or eventType == "" then return false end
-    local payloadCopy, payloadError = normalizePayload(payload)
+    local payloadCopy, payloadError = preparePayload(payload)
     if payloadError then
         log("event rejected: " .. tostring(eventType) .. " " .. tostring(payloadError))
         return false, payloadError
     end
     if not state_.storageReady then
+        if #state_.pendingTracks >= state_.maxQueueSize then
+            local queueError = "pending event queue is full (max=" .. tostring(state_.maxQueueSize) .. ")"
+            log("event rejected: " .. tostring(eventType) .. " " .. queueError)
+            return false, queueError
+        end
         table.insert(state_.pendingTracks, {
             eventType = eventType,
             payload = payloadCopy,
@@ -711,7 +891,18 @@ function GameAlgo.Track(eventType, payload)
         return true
     end
     ensureIdentity()
-    return enqueueTrack(eventType, payloadCopy, nil, nil)
+    local tracked, trackError = enqueueTrack(eventType, payloadCopy, nil, nil)
+    if not tracked then
+        log("event rejected: " .. tostring(eventType) .. " " .. tostring(trackError))
+        return false, trackError
+    end
+    if state_.contextId and state_.contextId ~= ""
+        and not state_.activeFlush
+        and (#state_.queue >= state_.maxBatchSize
+            or (state_.flushIntervalMs > 0 and clockMs() >= state_.nextAutoFlushAtMs)) then
+        GameAlgo.Flush(nil)
+    end
+    return true, nil
 end
 
 function GameAlgo.TrackEvent(name, payload)
@@ -754,7 +945,7 @@ function GameAlgo.TrackAd(placement, adType, revenue, currency, network, payload
         payload = network
         network = nil
     end
-    local merged, payloadError = normalizePayload(payload)
+    local merged, payloadError = preparePayload(payload)
     if payloadError then return false, payloadError end
     merged.placement = placement
     merged.adType = adType
@@ -767,7 +958,7 @@ function GameAlgo.TrackAd(placement, adType, revenue, currency, network, payload
 end
 
 function GameAlgo.TrackPurchase(productId, revenue, currency, payload)
-    local merged, payloadError = normalizePayload(payload)
+    local merged, payloadError = preparePayload(payload)
     if payloadError then return false, payloadError end
     if productId then merged.productId = productId end
     if revenue ~= nil then merged.revenue = revenue end
@@ -776,7 +967,7 @@ function GameAlgo.TrackPurchase(productId, revenue, currency, payload)
 end
 
 function GameAlgo.TrackSessionEnd(payload)
-    local merged, payloadError = normalizePayload(payload)
+    local merged, payloadError = preparePayload(payload)
     if payloadError then return false, payloadError end
     if merged.sessionDurationMs == nil and state_.sessionStartMs then
         merged.sessionDurationMs = nowMs() - state_.sessionStartMs
@@ -784,72 +975,205 @@ function GameAlgo.TrackSessionEnd(payload)
     return GameAlgo.Track("session_end", merged)
 end
 
-function GameAlgo.Flush(callback)
+local function hasFlushableEvents()
+    for _, event in ipairs(state_.queue) do
+        if event.contextId and event.contextId ~= "" then return true end
+    end
+    return false
+end
+
+local function prependBatch(batch)
+    for index = #batch, 1, -1 do table.insert(state_.queue, 1, batch[index]) end
+end
+
+local function retryDelayMs(failures)
+    return math.min(30000, 1000 * (2 ^ math.min(5, math.max(0, failures - 1))))
+end
+
+local function completeFlushCallbacks(error, result)
+    local callbacks = state_.pendingFlushCallbacks
+    state_.pendingFlushCallbacks = {}
+    for _, pendingCallback in ipairs(callbacks) do
+        safeCallback(pendingCallback, error, result)
+    end
+end
+
+local function queueFlushCallback(callback)
+    if type(callback) ~= "function" then return true end
+    if #state_.pendingFlushCallbacks >= state_.maxPendingFlushCallbacks then
+        safeCallback(callback, "too many pending flush callbacks", nil)
+        return false
+    end
+    table.insert(state_.pendingFlushCallbacks, callback)
+    return true
+end
+
+local function cancelRequest(handle)
+    cancelTransportRequest(state_.transport, handle)
+end
+
+local startFlush
+
+local function failActiveFlush(active, error, cancel)
+    if state_.activeFlush ~= active then return end
+    state_.activeFlush = nil
+    state_.flushing = false
+    state_.flushRequested = true
+    if cancel then cancelRequest(active.handle) end
+    prependBatch(active.batch)
+    state_.consecutiveFlushFailures = state_.consecutiveFlushFailures + 1
+    state_.retryFlushAtMs = clockMs() + retryDelayMs(state_.consecutiveFlushFailures)
+    state_.pendingFlushAccepted = 0
+    state_.queuePersistenceActive = true
+    persistEventQueue()
     flushAutomaticStorage()
-    if not state_.storageReady then
-        if callback then callback("storage not ready", nil) end
+    log("flush failed: " .. tostring(error))
+    completeFlushCallbacks(error, nil)
+end
+
+local function validateFlushResult(result, batchSize)
+    if type(result) ~= "table" then return nil, "invalid flush response" end
+    if result.ok == false then return nil, tostring(result.error or "flush rejected") end
+    local accepted = tonumber(result.accepted)
+    if accepted == nil then return nil, "flush response missing accepted count" end
+    if accepted ~= batchSize then
+        return nil, "partial flush acceptance: accepted=" .. tostring(accepted)
+            .. ", sent=" .. tostring(batchSize)
+    end
+    return accepted, nil
+end
+
+local function finishActiveFlush(lifecycleGeneration, sequence, error, result)
+    local active = state_.activeFlush
+    if not active
+        or active.lifecycleGeneration ~= lifecycleGeneration
+        or active.sequence ~= sequence then
+        log("ignored stale flush callback: sequence=" .. tostring(sequence))
         return
     end
-    if state_.flushing then
-        state_.flushRequested = true
-        if callback then table.insert(state_.pendingFlushCallbacks, callback) end
+    if error then
+        failActiveFlush(active, error, false)
         return
     end
-    if #state_.queue == 0 then
-        if callback then callback(nil, { ok = true, accepted = 0 }) end
+    local accepted, resultError = validateFlushResult(result, #active.batch)
+    if resultError then
+        failActiveFlush(active, resultError, false)
         return
     end
 
+    state_.activeFlush = nil
+    state_.flushing = false
+    state_.flushRequested = false
+    state_.retryFlushAtMs = nil
+    state_.consecutiveFlushFailures = 0
+    state_.pendingFlushAccepted = state_.pendingFlushAccepted + accepted
+    persistEventQueue()
+    flushAutomaticStorage()
+    log("flush ok: accepted=" .. tostring(accepted))
+
+    if hasFlushableEvents() then
+        startFlush(false)
+        return
+    end
+
+    local totalAccepted = state_.pendingFlushAccepted
+    state_.pendingFlushAccepted = 0
+    state_.nextAutoFlushAtMs = clockMs() + state_.flushIntervalMs
+    if outstandingEventCount() == 0 then state_.queuePersistenceActive = false end
+    completeFlushCallbacks(nil, { ok = true, accepted = totalAccepted })
+end
+
+startFlush = function(force)
+    if state_.activeFlush or not state_.storageReady then return false end
+    local currentTime = clockMs()
+    if not force and state_.retryFlushAtMs and currentTime < state_.retryFlushAtMs then
+        return false
+    end
     local batch = chunkEvents()
-    if #batch == 0 then
-        if callback then callback("context not ready", nil) end
+    if #batch == 0 then return false end
+
+    state_.flushSequence = state_.flushSequence + 1
+    local active = {
+        lifecycleGeneration = state_.lifecycleGeneration,
+        sequence = state_.flushSequence,
+        batch = batch,
+        startedAtMs = currentTime,
+        handle = nil,
+    }
+    state_.activeFlush = active
+    state_.flushing = true
+    state_.flushRequested = false
+    state_.queuePersistenceActive = true
+    state_.nextAutoFlushAtMs = currentTime + state_.flushIntervalMs
+    persistEventQueue()
+    flushAutomaticStorage()
+
+    local handle = httpRequest("POST", "/v1/events/batch", { events = batch },
+        function(error, result)
+            finishActiveFlush(active.lifecycleGeneration, active.sequence, error, result)
+        end)
+    if state_.activeFlush == active then active.handle = handle end
+    return true
+end
+
+local function recoverTimedOutFlush(currentTime)
+    local active = state_.activeFlush
+    if not active then return false end
+    if currentTime - active.startedAtMs < state_.flushTimeoutMs then return false end
+    failActiveFlush(active,
+        "flush request timed out after " .. tostring(state_.flushTimeoutMs) .. "ms", true)
+    return true
+end
+
+function GameAlgo.Update()
+    if type(state_.transport.Update) == "function" then
+        local updateOk, updateError = pcall(state_.transport.Update)
+        if not updateOk then log("transport update failed: " .. tostring(updateError)) end
+    end
+    if not state_.storageReady then return end
+    local currentTime = clockMs()
+    if state_.queuePersistenceDirty
+        and currentTime - state_.lastQueuePersistAtMs >= QUEUE_PERSIST_INTERVAL_MS then
+        persistEventQueue()
+        flushAutomaticStorage()
+    end
+    recoverTimedOutFlush(currentTime)
+    if state_.activeFlush or not hasFlushableEvents() then return end
+    if state_.retryFlushAtMs then
+        if currentTime >= state_.retryFlushAtMs then startFlush(false) end
         return
     end
-    state_.flushing = true
-    httpRequest("POST", "/v1/events/batch", { events = batch }, function(error, result)
-        state_.flushing = false
-        local flushRequested = state_.flushRequested
-        local pendingCallbacks = state_.pendingFlushCallbacks
-        state_.flushRequested = false
-        state_.pendingFlushCallbacks = {}
+    if state_.flushRequested
+        or #state_.queue >= state_.maxBatchSize
+        or (state_.flushIntervalMs > 0 and currentTime >= state_.nextAutoFlushAtMs) then
+        startFlush(false)
+    end
+end
 
-        if error then
-            for i = #batch, 1, -1 do
-                table.insert(state_.queue, 1, batch[i])
-            end
-            state_.consecutiveFlushFailures = state_.consecutiveFlushFailures + 1
-            if state_.consecutiveFlushFailures >= 3 then
-                state_.queuePersistenceActive = true
-                persistEventQueue()
-                flushAutomaticStorage()
-            end
-            log("flush failed: " .. tostring(error))
-            if callback then callback(error, nil) end
-            for _, pendingCallback in ipairs(pendingCallbacks) do
-                pendingCallback(error, nil)
-            end
-            return
-        end
-        state_.consecutiveFlushFailures = 0
-        if state_.queuePersistenceActive then
-            persistEventQueue()
-            flushAutomaticStorage()
-            if #state_.queue == 0 then state_.queuePersistenceActive = false end
-        end
-        log("flush ok: accepted=" .. tostring(result and result.accepted or #batch))
-        if callback then callback(nil, result) end
-        if flushRequested then
-            GameAlgo.Flush(function(nextError, nextResult)
-                for _, pendingCallback in ipairs(pendingCallbacks) do
-                    pendingCallback(nextError, nextResult)
-                end
-            end)
+function GameAlgo.Flush(callback)
+    if not state_.storageReady then
+        safeCallback(callback, "storage not ready", nil)
+        return
+    end
+
+    local currentTime = clockMs()
+    recoverTimedOutFlush(currentTime)
+    if not queueFlushCallback(callback) then return end
+    if state_.activeFlush then
+        state_.flushRequested = true
+        return
+    end
+    if not hasFlushableEvents() then
+        if #state_.queue > 0 then
+            completeFlushCallbacks("context not ready", nil)
         else
-            for _, pendingCallback in ipairs(pendingCallbacks) do
-                pendingCallback(nil, { ok = true, accepted = 0 })
-            end
+            completeFlushCallbacks(nil, { ok = true, accepted = 0 })
         end
-    end)
+        return
+    end
+
+    state_.retryFlushAtMs = nil
+    startFlush(true)
 end
 
 function GameAlgo.NewSession(sessionId, callback)
@@ -1045,6 +1369,7 @@ function GameAlgo.ConfigValue(path, defaultValue, fileName)
 end
 
 function GameAlgo.Snapshot()
+    local active = state_.activeFlush
     return {
         userId = state_.userId,
         userCreatedAt = state_.userCreatedAt,
@@ -1056,7 +1381,15 @@ function GameAlgo.Snapshot()
         config = state_.config,
         configFiles = state_.configFiles,
         scripts = state_.scripts,
-        queuedEvents = #state_.queue,
+        queuedEvents = outstandingEventCount(),
+        inflightEvents = active and #active.batch or 0,
+        flushing = active ~= nil,
+        flushAgeMs = active and math.max(0, clockMs() - active.startedAtMs) or 0,
+        flushIntervalMs = state_.flushIntervalMs,
+        flushTimeoutMs = state_.flushTimeoutMs,
+        consecutiveFlushFailures = state_.consecutiveFlushFailures,
+        nextAutoFlushAtMs = state_.nextAutoFlushAtMs,
+        retryFlushAtMs = state_.retryFlushAtMs,
         pendingEvents = #state_.pendingTracks,
         storage = state_.storage and state_.storage:Diagnostics() or nil,
     }
