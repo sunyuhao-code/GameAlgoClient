@@ -28,7 +28,7 @@ local MakerAutoStorage = requireSdkModule("MakerAutoStorage")
 local GameAlgo = {}
 local unpackArgs = table.unpack or unpack
 
-local SDK_VERSION = "1.5.0-lua"
+local SDK_VERSION = "1.5.1-lua"
 local DEFAULT_BASE_URL = "https://game-algo-sdk.dictapis.cn"
 local DEFAULT_FLUSH_INTERVAL_MS = 5000
 local DEFAULT_FLUSH_TIMEOUT_MS = 15000
@@ -79,6 +79,8 @@ local state_ = {
     retryFlushAtMs = nil,
     clock = nil,
     internalUpdateSubscribed = false,
+    internalUpdateNode = nil,
+    internalUpdateObject = nil,
     preloadConfigFiles = true,
     storage = nil,
     storageReady = false,
@@ -646,20 +648,35 @@ local function flushAutomaticStorage()
 end
 
 local function ensureAutomaticUpdateDriver()
-    if state_.internalUpdateSubscribed then return true end
-    local handlerName = "__GameAlgoSdkInternalUpdate"
-    _G[handlerName] = function()
-        local updateOk, updateError = pcall(GameAlgo.Update)
-        if not updateOk then log("automatic update failed: " .. tostring(updateError)) end
+    if state_.internalUpdateSubscribed and state_.internalUpdateObject ~= nil then return true end
+    local nodeFactory = nil
+    pcall(function() nodeFactory = Node end)
+    if nodeFactory == nil then
+        log("automatic update driver unavailable; timed flush will run on subsequent SDK calls")
+        return false
     end
+    local eventNode = nil
+    local eventObject = nil
     local subscribed = pcall(function()
-        SubscribeToEvent("Update", handlerName)
+        eventNode = nodeFactory()
+        eventObject = eventNode:CreateScriptObject("LuaScriptObject")
+        eventObject:SubscribeToEvent("Update", function()
+            local updateOk, updateError = pcall(GameAlgo.Update)
+            if not updateOk then log("automatic update failed: " .. tostring(updateError)) end
+        end)
     end)
-    if subscribed then
+    if subscribed and eventObject ~= nil then
+        -- Retain both objects for the full SDK lifetime. Using a dedicated
+        -- receiver avoids replacing the game's global Update subscription.
+        state_.internalUpdateNode = eventNode
+        state_.internalUpdateObject = eventObject
         state_.internalUpdateSubscribed = true
         log("automatic update driver ready")
         return true
     end
+    state_.internalUpdateNode = nil
+    state_.internalUpdateObject = nil
+    state_.internalUpdateSubscribed = false
     log("automatic update driver unavailable; timed flush will run on subsequent SDK calls")
     return false
 end

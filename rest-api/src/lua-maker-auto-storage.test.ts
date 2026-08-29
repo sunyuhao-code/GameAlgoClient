@@ -31,6 +31,9 @@ test("Maker automatic storage uses normal Maker global lookup and hydrates befor
   assert.doesNotMatch(storage, /rawget\s*\(/);
   assert.match(storage, /local function makerGlobal\(read\)\s+local ok, value = pcall\(read\)/s);
   assert.match(storage, /makerGlobal\(function\(\) return File end\)/);
+  assert.match(storage, /makerGlobal\(function\(\) return fileSystem end\)/);
+  assert.match(storage, /fileApi\.fileSystem:FileExists\(FILE_NAME\)/);
+  assert.match(storage, /if not existsOk or not exists then return nil end/);
   assert.match(storage, /makerGlobal\(function\(\) return clientCloud end\)/);
   assert.match(storage, /cloud:Get\(CLOUD_KEY/);
   assert.match(storage, /DEFAULT_CLOUD_READ_TIMEOUT_MS = 5000/);
@@ -43,6 +46,11 @@ test("Maker automatic storage uses normal Maker global lookup and hydrates befor
   assert.match(gameAlgo, /if actual or not state_\.storageReady then return end/);
   assert.match(gameAlgo, /CONFIG_FETCH_MAX_ATTEMPTS = 3/);
   assert.match(gameAlgo, /CONFIG_FETCH_RETRY_BASE_MS = 1000/);
+  assert.doesNotMatch(gameAlgo, /SubscribeToEvent\("Update", handlerName\)/);
+  assert.match(gameAlgo, /eventNode = nodeFactory\(\)/);
+  assert.match(gameAlgo, /eventObject = eventNode:CreateScriptObject\("LuaScriptObject"\)/);
+  assert.match(gameAlgo, /eventObject:SubscribeToEvent\("Update", function\(\)/);
+  assert.match(gameAlgo, /state_\.internalUpdateObject = eventObject/);
   assert.match(gameAlgo, /isRetryableConfigFailure/);
   assert.match(gameAlgo, /prefetchedMakerUserId = options\.accountUserId or resolveMakerUserId\(\)/);
   assert.match(gameAlgo, /INIT_WATCHDOG_MS = 10000/);

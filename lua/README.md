@@ -137,7 +137,7 @@ local enabled = GameAlgo.ConfigValue("ads.rewarded.enabled", true, "gameplay.jso
 
 ## 事件
 
-事件会先进入队列。如果配置还没准备好，`Flush` 会等待拿到 `contextId` 后再上传。普通事件默认每 5 秒批量 Flush；队列达到一个 batch 时也会立即发送。SDK 在 `Init` 内部自动订阅 Maker 的 `Update` 事件，用它驱动定时 Flush、15 秒请求 watchdog 和失败后的退避重试，接入方不需要修改游戏 Update。自定义运行时如果不提供 Maker `SubscribeToEvent`，后续的 Track/Flush 仍会检查批量阈值和超时并尝试自愈，也可在测试中手动调用 `GameAlgo.Update()`。
+事件会先进入队列。如果配置还没准备好，`Flush` 会等待拿到 `contextId` 后再上传。普通事件默认每 5 秒批量 Flush；队列达到一个 batch 时也会立即发送。SDK 在 `Init` 内部创建独立的 Maker `LuaScriptObject` Update 接收器，用它驱动定时 Flush、15 秒请求 watchdog 和失败后的退避重试；接入方不需要自己开发定时器，也不需要修改游戏 Update 或周期调用 `GameAlgo.Update()` / `GameAlgo.Flush()`。`Flush()` 仍可用于广告关闭、会话结束、进入后台等希望立即提交的边界。自定义运行时如果不提供 Maker 事件系统，后续的 Track/Flush 仍会检查批量阈值和超时并尝试自愈，也可在测试中手动调用 `GameAlgo.Update()`。
 
 `GameAlgo.TrackAd` 在广告事件入队后会立即 Flush。发送前，SDK 会把 inflight batch 和剩余队列按 JSON Lines 写入内部自动存储；下次启动自动恢复，服务端完整 ACK 后才删除持久化副本。请求超过 15 秒没有终态回调时，watchdog 会释放请求、把 inflight batch 放回队首，并按退避间隔重试。迟到或重复回调由 request token 忽略；成功后 SDK 会连续发送，直到所有已有 context 的事件全部排空。事件入队时即固定 `sessionId` 和已有的 `contextId`；同一 session 刷新 context 不会重绑旧事件，切换 session 只会丢弃上一 session 尚未绑定 context 的事件。
 
@@ -196,7 +196,7 @@ sdk:ShowRewardVideoAd(function(result)
 end)
 ```
 
-客户端 HTTP 请求由 `HttpTransport.lua` 异步执行，不依赖 update loop 轮询网络进度。SDK 会自行订阅 Maker Update 驱动定时 Flush、watchdog 和失败重试，开发者不需要新增调用。Transport 会持有活动请求对象直到终态回调，创建、参数设置或 `Send` 的同步异常会转换成普通请求错误，同一请求只允许结算一次。
+客户端 HTTP 请求由 `HttpTransport.lua` 异步执行，不依赖 update loop 轮询网络进度。SDK 会通过独立 `LuaScriptObject` 自行驱动定时 Flush、watchdog 和失败重试，开发者不需要自己开发定时 Flush，也不需要新增 Update 调用。Transport 会持有活动请求对象直到终态回调，创建、参数设置或 `Send` 的同步异常会转换成普通请求错误，同一请求只允许结算一次。
 
 ### Maker HTTP 全局变量兼容性
 
