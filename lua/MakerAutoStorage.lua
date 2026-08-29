@@ -26,11 +26,13 @@ local function makerFileApi()
     local factory = makerGlobal(function() return File end)
     local readMode = makerGlobal(function() return FILE_READ end)
     local writeMode = makerGlobal(function() return FILE_WRITE end)
+    local makerFileSystem = makerGlobal(function() return fileSystem end)
     if factory == nil or readMode == nil or writeMode == nil then return nil end
     return {
         factory = factory,
         readMode = readMode,
         writeMode = writeMode,
+        fileSystem = makerFileSystem,
     }
 end
 
@@ -84,6 +86,14 @@ end
 
 local function readLocalSnapshot(fileApi)
     if not fileApi then return nil end
+    -- Maker logs an engine-level ERROR when FILE_READ targets a missing file.
+    -- That log is emitted before Lua's pcall can contain the failed open, so a
+    -- missing first-run snapshot must be detected before constructing File.
+    local existsOk, exists = pcall(function()
+        return fileApi.fileSystem ~= nil
+            and fileApi.fileSystem:FileExists(FILE_NAME) == true
+    end)
+    if not existsOk or not exists then return nil end
     local ok, file = pcall(function()
         return fileApi.factory(FILE_NAME, fileApi.readMode)
     end)

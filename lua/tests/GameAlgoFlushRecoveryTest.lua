@@ -108,27 +108,41 @@ local function success(callback, batchSize)
     })
 end
 
--- Init subscribes an internal Update handler, so developers do not need to
--- wire GameAlgo.Update into their own game loop.
+-- Init owns an independent LuaScriptObject Update receiver. It must not touch
+-- or replace the game's global Update subscription.
 do
-    local updateHandler = nil
+    local sdkUpdateHandler = nil
+    local globalUpdateSubscriptions = 0
     SubscribeToEvent = function(eventType, handlerName)
-        equal(eventType, "Update", "SDK subscribes the Maker Update event")
-        updateHandler = handlerName
+        globalUpdateSubscriptions = globalUpdateSubscriptions + 1
+    end
+    Node = function()
+        return {
+            CreateScriptObject = function(_, className)
+                equal(className, "LuaScriptObject", "SDK creates an isolated event receiver")
+                return {
+                    SubscribeToEvent = function(_, eventName, callback)
+                        equal(eventName, "Update", "isolated receiver subscribes to Update")
+                        sdkUpdateHandler = callback
+                    end,
+                }
+            end,
+        }
     end
     local harness = makeSdk(function(_, callback, batch)
         success(callback, #batch)
     end)
-    assert(type(updateHandler) == "string" and type(_G[updateHandler]) == "function",
-        "automatic Update handler must be registered")
+    equal(globalUpdateSubscriptions, 0, "SDK must preserve the game's global Update handler")
+    assert(type(sdkUpdateHandler) == "function", "automatic Update handler must be registered")
     assert(harness.sdk.TrackEvent("timer_event", {}))
     harness.setTime(4999)
-    _G[updateHandler]("Update", nil)
+    sdkUpdateHandler("Update", nil)
     equal(harness.requests(), 0, "timer must not fire early")
     harness.setTime(5000)
-    _G[updateHandler]("Update", nil)
+    sdkUpdateHandler("Update", nil)
     equal(harness.requests(), 1, "timer flushes queued events")
     equal(harness.sdk.Snapshot().queuedEvents, 0, "timer drains the queue")
+    Node = nil
     SubscribeToEvent = nil
 end
 

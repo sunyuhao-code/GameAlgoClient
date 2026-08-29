@@ -34,3 +34,4 @@ jobs:
       - run: luarocks install lua-cjson
       - run: lua lua/tests/GameAlgoContractTest.lua
       - run: lua lua/tests/GameAlgoFlushRecoveryTest.lua
+      - run: lua lua/tests/MakerAutoStorageFirstRunTest.lua
