@@ -353,6 +353,7 @@ assert(#initTasks == 4 and initTasks[4].delayMs == 2000)
 initTasks[4].callback()
 assert(initConfigRequests == 3)
 assert(#initDiagnostics == 0)
+assert(#initTasks == 5 and initTasks[5].delayMs == 4000)
 
 initTasks[2].callback()
 assert(#initDiagnostics == 1)
@@ -367,8 +368,90 @@ assert(#initDiagnostics == 1)
 initConfigShouldFail = false
 local recoveredError = "not-called"
 GameAlgo.FetchConfig(function(error) recoveredError = error end)
+assert(recoveredError == "not-called")
+initTasks[5].callback()
 assert(recoveredError == nil)
 assert(#initDiagnostics == 1)
+
+local guardedTasks = {}
+local guardedScheduler = {}
+function guardedScheduler:Schedule(delayMs, callback)
+    local handle = { delayMs = delayMs, callback = callback }
+    table.insert(guardedTasks, handle)
+    return handle
+end
+function guardedScheduler:Cancel(handle)
+    handle.cancelled = true
+end
+function guardedScheduler:IsAutomatic()
+    return true
+end
+function guardedScheduler:Update()
+end
+function guardedScheduler:Shutdown()
+end
+
+local guardedRequestCount = 0
+local guardedFirstRequest = nil
+local guardedTransport = {}
+function guardedTransport.Request(options, callback)
+    if options.url:match("/v1/config$") then
+        guardedRequestCount = guardedRequestCount + 1
+        if guardedRequestCount == 1 then
+            guardedFirstRequest = { cancelled = false }
+            return guardedFirstRequest
+        end
+        if guardedRequestCount == 2 then
+            callback(nil, { status = 200, body = '{}', headers = {} })
+            return nil
+        end
+        local guardedConfig = cjson.decode(configFixture)
+        guardedConfig.contextId = "ctx-after-timeout-and-invalid-response"
+        callback(nil, { status = 200, body = cjson.encode(guardedConfig), headers = {} })
+        return nil
+    end
+    if options.url:match("/v1/events/batch$") then
+        callback(nil, { status = 200, body = '{"ok":true,"accepted":0}', headers = {} })
+        return nil
+    end
+    callback("unexpected request: " .. tostring(options.url), nil)
+end
+function guardedTransport.Cancel(handle)
+    handle.cancelled = true
+end
+
+clientCloud = nil
+GameAlgo.Init({
+    gameKey = "ga_live_fixture_key",
+    sessionId = "session-config-timeout-guard",
+    transport = guardedTransport,
+    autoFetch = false,
+    preloadConfigFiles = false,
+    _scheduler = guardedScheduler,
+})
+local guardedCallbackCount = 0
+local guardedError = "not-called"
+local guardedConfig = nil
+GameAlgo.FetchConfig(function(error, value)
+    guardedCallbackCount = guardedCallbackCount + 1
+    guardedError = error
+    guardedConfig = value
+end)
+assert(guardedRequestCount == 1)
+assert(#guardedTasks == 1 and guardedTasks[1].delayMs == 12000)
+guardedTasks[1].callback()
+assert(guardedFirstRequest.cancelled == true)
+assert(guardedCallbackCount == 0)
+assert(#guardedTasks == 2 and guardedTasks[2].delayMs == 1000)
+guardedTasks[2].callback()
+assert(guardedRequestCount == 2)
+assert(guardedCallbackCount == 0)
+assert(#guardedTasks == 3 and guardedTasks[3].delayMs == 2000)
+guardedTasks[3].callback()
+assert(guardedRequestCount == 3)
+assert(guardedCallbackCount == 1)
+assert(guardedError == nil)
+assert(guardedConfig.contextId == "ctx-after-timeout-and-invalid-response")
 
 local cloudCallbacks = nil
 clientCloud = {

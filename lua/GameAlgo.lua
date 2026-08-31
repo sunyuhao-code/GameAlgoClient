@@ -28,7 +28,7 @@ local MakerAutoStorage = requireSdkModule("MakerAutoStorage")
 local GameAlgo = {}
 local unpackArgs = table.unpack or unpack
 
-local SDK_VERSION = "1.5.1-lua"
+local SDK_VERSION = "1.5.2-lua"
 local DEFAULT_BASE_URL = "https://game-algo-sdk.dictapis.cn"
 local DEFAULT_FLUSH_INTERVAL_MS = 5000
 local DEFAULT_FLUSH_TIMEOUT_MS = 15000
@@ -36,8 +36,9 @@ local DEFAULT_MAX_QUEUE_SIZE = 10000
 local DEFAULT_MAX_PENDING_FLUSH_CALLBACKS = 1000
 local QUEUE_PERSIST_INTERVAL_MS = 1000
 local QUEUE_PERSIST_EVENT_COUNT = 100
-local CONFIG_FETCH_MAX_ATTEMPTS = 3
 local CONFIG_FETCH_RETRY_BASE_MS = 1000
+local CONFIG_FETCH_RETRY_MAX_MS = 30000
+local CONFIG_FETCH_TIMEOUT_MS = 12000
 local INIT_WATCHDOG_MS = 10000
 
 local state_ = {
@@ -91,6 +92,8 @@ local state_ = {
     configFetchInFlight = false,
     configFetchAttempt = 0,
     configFetchRetryHandle = nil,
+    configFetchRequestHandle = nil,
+    configFetchTimeoutHandle = nil,
     initWatchdogHandle = nil,
     initDiagnosticReported = false,
     pendingTracks = {},
@@ -723,11 +726,13 @@ function GameAlgo.Init(options)
         error("options.storage is not supported; TapTap Maker storage is managed automatically by the Lua SDK")
     end
     local previousActive = state_.activeFlush
+    local previousConfigRequestHandle = state_.configFetchRequestHandle
     local previousTransport = state_.transport
     state_.activeFlush = nil
     state_.flushing = false
     state_.lifecycleGeneration = state_.lifecycleGeneration + 1
     if previousActive then cancelTransportRequest(previousTransport, previousActive.handle) end
+    if previousConfigRequestHandle then cancelTransportRequest(previousTransport, previousConfigRequestHandle) end
     if state_.scheduler and type(state_.scheduler.Shutdown) == "function" then
         state_.scheduler:Shutdown()
     end
@@ -793,6 +798,8 @@ function GameAlgo.Init(options)
     state_.configFetchInFlight = false
     state_.configFetchAttempt = 0
     state_.configFetchRetryHandle = nil
+    state_.configFetchRequestHandle = nil
+    state_.configFetchTimeoutHandle = nil
     state_.initWatchdogHandle = nil
     state_.initDiagnosticReported = false
     -- Read the stable Maker account id before any asynchronous clientCloud:Get.
@@ -824,6 +831,8 @@ local function finishConfigFetch(error, config)
     state_.configFetchInFlight = false
     state_.configFetchAttempt = 0
     state_.configFetchRetryHandle = nil
+    state_.configFetchRequestHandle = nil
+    state_.configFetchTimeoutHandle = nil
     local callbacks = state_.configFetchCallbacks
     state_.configFetchCallbacks = {}
     for _, callback in ipairs(callbacks) do
@@ -857,27 +866,46 @@ end
 
 local performConfigFetchAttempt
 performConfigFetchAttempt = function()
+    if not state_.configFetchInFlight then return end
     state_.configFetchRetryHandle = nil
     state_.configFetchAttempt = state_.configFetchAttempt + 1
     local attempt = state_.configFetchAttempt
-    httpRequest("POST", "/v1/config", configRequestBody(), function(error, config, response)
-        if error then
-            if attempt < CONFIG_FETCH_MAX_ATTEMPTS and isRetryableConfigFailure(response) then
-                local delayMs = CONFIG_FETCH_RETRY_BASE_MS * (2 ^ (attempt - 1))
-                local scheduler = state_.scheduler
-                local canSchedule = scheduler ~= nil
-                    and type(scheduler.Schedule) == "function"
-                    and (type(scheduler.IsAutomatic) ~= "function" or scheduler:IsAutomatic())
-                local handle = canSchedule
-                    and scheduler:Schedule(delayMs, performConfigFetchAttempt) or nil
-                if handle then
-                    state_.configFetchRetryHandle = handle
-                    log("config fetch failed; retrying in " .. tostring(delayMs)
-                        .. "ms (attempt " .. tostring(attempt + 1)
-                        .. "/" .. tostring(CONFIG_FETCH_MAX_ATTEMPTS) .. "): " .. tostring(error))
-                    return
-                end
+    local generation = state_.lifecycleGeneration
+    local settled = false
+
+    local function scheduleRetry(error)
+        local delayMs = math.min(CONFIG_FETCH_RETRY_MAX_MS,
+            CONFIG_FETCH_RETRY_BASE_MS * (2 ^ math.min(attempt - 1, 5)))
+        local scheduler = state_.scheduler
+        local handle = scheduler ~= nil and type(scheduler.Schedule) == "function"
+            and scheduler:Schedule(delayMs, function()
+                if generation ~= state_.lifecycleGeneration or not state_.configFetchInFlight then return end
+                performConfigFetchAttempt()
+            end) or nil
+        if handle then
+            state_.configFetchRetryHandle = handle
+            log("config fetch failed; retrying in " .. tostring(delayMs)
+                .. "ms (next attempt " .. tostring(attempt + 1) .. "): " .. tostring(error))
+            return true
+        end
+        return false
+    end
+
+    local function completeAttempt(error, config, response)
+        if generation ~= state_.lifecycleGeneration or not state_.configFetchInFlight then return end
+        state_.configFetchRequestHandle = nil
+        state_.configFetchTimeoutHandle = nil
+
+        if not error then
+            local contextId = type(config) == "table" and config.contextId or nil
+            if type(contextId) ~= "string" or contextId == "" then
+                error = "invalid config response: contextId is required"
+                response = { status = 0 }
             end
+        end
+
+        if error then
+            if isRetryableConfigFailure(response) and scheduleRetry(error) then return end
             log("config fetch failed: " .. tostring(error))
             finishConfigFetch(error, nil)
             return
@@ -908,7 +936,37 @@ performConfigFetchAttempt = function()
             end
         end
         GameAlgo.Flush(nil)
+    end
+
+    local requestTimeoutHandle = nil
+    local requestHandle = httpRequest("POST", "/v1/config", configRequestBody(), function(error, config, response)
+        if settled then return end
+        settled = true
+        if requestTimeoutHandle and state_.scheduler and type(state_.scheduler.Cancel) == "function" then
+            state_.scheduler:Cancel(requestTimeoutHandle)
+        end
+        completeAttempt(error, config, response)
     end)
+
+    -- Maker normally applies its own HTTP timeout, but this independent guard
+    -- also recovers when the engine never invokes either request callback.
+    if not settled and generation == state_.lifecycleGeneration and state_.configFetchInFlight then
+        state_.configFetchRequestHandle = requestHandle
+        local scheduler = state_.scheduler
+        if scheduler and type(scheduler.Schedule) == "function" then
+            requestTimeoutHandle = scheduler:Schedule(CONFIG_FETCH_TIMEOUT_MS, function()
+                if settled or generation ~= state_.lifecycleGeneration or not state_.configFetchInFlight then return end
+                settled = true
+                state_.configFetchRequestHandle = nil
+                state_.configFetchTimeoutHandle = nil
+                cancelTransportRequest(state_.transport, requestHandle)
+                completeAttempt("config request timed out after " .. tostring(CONFIG_FETCH_TIMEOUT_MS) .. "ms", nil, {
+                    status = 0,
+                })
+            end)
+            if not settled then state_.configFetchTimeoutHandle = requestTimeoutHandle end
+        end
+    end
 end
 
 function GameAlgo.FetchConfig(callback)
