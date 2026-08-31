@@ -247,6 +247,42 @@ do
     equal(harness.sdk.Snapshot().queuedEvents, 0, "partial batch can be retried")
 end
 
+-- A server response that accounts for every row as accepted or explicitly
+-- rejected is terminal. The rejected row must not poison and replay the batch.
+do
+    local harness = makeSdk(function(_, callback, batch)
+        callback(nil, {
+            status = 200,
+            body = cjson.encode({
+                ok = true,
+                accepted = #batch - 1,
+                rejected = {{
+                    index = #batch - 1,
+                    eventId = batch[#batch].eventId,
+                    reason = "payload contains a non-JSON value",
+                }},
+            }),
+            headers = {},
+        })
+    end)
+    for sequence = 1, 10 do
+        assert(harness.sdk.TrackEvent("isolated_rejection", { sequence = sequence }))
+    end
+    local flushError = "callback not invoked"
+    local flushResult = nil
+    harness.sdk.Flush(function(error, result)
+        flushError = error
+        flushResult = result
+    end)
+    equal(flushError, nil, "accounted rejection completes successfully")
+    equal(flushResult.accepted, 9, "callback reports accepted rows")
+    equal(flushResult.rejectedCount, 1, "callback reports rejected rows")
+    equal(harness.requests(), 1, "accounted rejection is not retried")
+    equal(harness.sdk.Snapshot().queuedEvents, 0, "accounted rejection drains the batch")
+    assert(table.concat(harness.logs, "\n"):find("flush event rejected", 1, true),
+        "rejected event must be logged")
+end
+
 -- A duplicate terminal callback cannot unlock a newer request.
 do
     local held = {}
