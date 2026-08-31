@@ -71,6 +71,7 @@ local state_ = {
     flushRequested = false,
     pendingFlushCallbacks = {},
     pendingFlushAccepted = 0,
+    pendingFlushRejected = 0,
     maxBatchSize = 100,
     maxQueueSize = DEFAULT_MAX_QUEUE_SIZE,
     maxPendingFlushCallbacks = DEFAULT_MAX_PENDING_FLUSH_CALLBACKS,
@@ -788,6 +789,7 @@ function GameAlgo.Init(options)
     state_.flushRequested = false
     state_.pendingFlushCallbacks = {}
     state_.pendingFlushAccepted = 0
+    state_.pendingFlushRejected = 0
     state_.nextAutoFlushAtMs = clockMs() + state_.flushIntervalMs
     state_.retryFlushAtMs = nil
     state_.storageReady = false
@@ -1208,6 +1210,7 @@ local function failActiveFlush(active, error, cancel)
     state_.consecutiveFlushFailures = state_.consecutiveFlushFailures + 1
     state_.retryFlushAtMs = clockMs() + retryDelayMs(state_.consecutiveFlushFailures)
     state_.pendingFlushAccepted = 0
+    state_.pendingFlushRejected = 0
     state_.queuePersistenceActive = true
     persistEventQueue()
     flushAutomaticStorage()
@@ -1220,11 +1223,25 @@ local function validateFlushResult(result, batchSize)
     if result.ok == false then return nil, tostring(result.error or "flush rejected") end
     local accepted = tonumber(result.accepted)
     if accepted == nil then return nil, "flush response missing accepted count" end
-    if accepted ~= batchSize then
+    if accepted < 0 or accepted % 1 ~= 0 then
+        return nil, "invalid flush accepted count: " .. tostring(result.accepted)
+    end
+
+    local rejected = result.rejected
+    if rejected == nil then rejected = {} end
+    if type(rejected) ~= "table" then return nil, "invalid flush rejected rows" end
+    for index, row in ipairs(rejected) do
+        if type(row) ~= "table" then
+            return nil, "invalid flush rejected row at position " .. tostring(index)
+        end
+    end
+
+    if accepted + #rejected ~= batchSize then
         return nil, "partial flush acceptance: accepted=" .. tostring(accepted)
+            .. ", rejected=" .. tostring(#rejected)
             .. ", sent=" .. tostring(batchSize)
     end
-    return accepted, nil
+    return accepted, nil, rejected
 end
 
 local function finishActiveFlush(lifecycleGeneration, sequence, error, result)
@@ -1239,7 +1256,7 @@ local function finishActiveFlush(lifecycleGeneration, sequence, error, result)
         failActiveFlush(active, error, false)
         return
     end
-    local accepted, resultError = validateFlushResult(result, #active.batch)
+    local accepted, resultError, rejected = validateFlushResult(result, #active.batch)
     if resultError then
         failActiveFlush(active, resultError, false)
         return
@@ -1251,9 +1268,15 @@ local function finishActiveFlush(lifecycleGeneration, sequence, error, result)
     state_.retryFlushAtMs = nil
     state_.consecutiveFlushFailures = 0
     state_.pendingFlushAccepted = state_.pendingFlushAccepted + accepted
+    state_.pendingFlushRejected = state_.pendingFlushRejected + #rejected
     persistEventQueue()
     flushAutomaticStorage()
-    log("flush ok: accepted=" .. tostring(accepted))
+    log("flush ok: accepted=" .. tostring(accepted) .. ", rejected=" .. tostring(#rejected))
+    for _, row in ipairs(rejected) do
+        log("flush event rejected: index=" .. tostring(row.index)
+            .. ", eventId=" .. tostring(row.eventId)
+            .. ", reason=" .. tostring(row.reason))
+    end
 
     if hasFlushableEvents() then
         startFlush(false)
@@ -1261,10 +1284,16 @@ local function finishActiveFlush(lifecycleGeneration, sequence, error, result)
     end
 
     local totalAccepted = state_.pendingFlushAccepted
+    local totalRejected = state_.pendingFlushRejected
     state_.pendingFlushAccepted = 0
+    state_.pendingFlushRejected = 0
     state_.nextAutoFlushAtMs = clockMs() + state_.flushIntervalMs
     if outstandingEventCount() == 0 then state_.queuePersistenceActive = false end
-    completeFlushCallbacks(nil, { ok = true, accepted = totalAccepted })
+    completeFlushCallbacks(nil, {
+        ok = true,
+        accepted = totalAccepted,
+        rejectedCount = totalRejected,
+    })
 end
 
 startFlush = function(force)
@@ -1355,7 +1384,7 @@ function GameAlgo.Flush(callback)
         if #state_.queue > 0 then
             completeFlushCallbacks("context not ready", nil)
         else
-            completeFlushCallbacks(nil, { ok = true, accepted = 0 })
+            completeFlushCallbacks(nil, { ok = true, accepted = 0, rejectedCount = 0 })
         end
         return
     end

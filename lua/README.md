@@ -141,13 +141,20 @@ local enabled = GameAlgo.ConfigValue("ads.rewarded.enabled", true, "gameplay.jso
 
 `GameAlgo.TrackAd` 在广告事件入队后会立即 Flush。发送前，SDK 会把 inflight batch 和剩余队列按 JSON Lines 写入内部自动存储；下次启动自动恢复，服务端完整 ACK 后才删除持久化副本。请求超过 15 秒没有终态回调时，watchdog 会释放请求、把 inflight batch 放回队首，并按退避间隔重试。迟到或重复回调由 request token 忽略；成功后 SDK 会连续发送，直到所有已有 context 的事件全部排空。事件入队时即固定 `sessionId` 和已有的 `contextId`；同一 session 刷新 context 不会重绑旧事件，切换 session 只会丢弃上一 session 尚未绑定 context 的事件。
 
-队列默认最多保留 10,000 个事件，包含 inflight batch；达到上限时新的 Track 调用会返回 `false, "event queue is full ..."`，避免断网或宿主异常造成无界内存增长。payload 会在入队前做快照和 JSON 可序列化校验，非法结构不会污染整个发送队列。服务端响应的 `accepted` 必须等于发送条数；部分接收按失败处理并保留整批重试，服务端通过稳定 `eventId` 幂等去重。
+队列默认最多保留 10,000 个事件，包含 inflight batch；达到上限时新的 Track 调用会返回 `false, "event queue is full ..."`，避免断网或宿主异常造成无界内存增长。payload 会在入队前做快照和 JSON 可序列化校验，非法结构不会污染整个发送队列。服务端响应必须用 `accepted + rejected.length` 说明整批每一条事件的终态；明确列入 `rejected` 的坏事件会记录日志但不重试，避免它阻塞同批和后续事件。旧服务端如果只返回无法解释的部分 `accepted`，SDK 仍保留整批并重试。
 
 测试或特殊运行环境可在 `Init` 中覆盖 `flushIntervalMs`、`flushTimeoutMs`、`maxBatchSize` 和 `maxQueueSize`。业务代码通常保持默认值即可。
 
 `userId` 始终是 GameAlgo 生成并持久化的匿名设备标识，用于现有实验分流和报表。Maker 可用的 `getUserId()` 会自动写入独立的 `accountUserId`，不会替换匿名 `userId`；已知账号注册时间时也可以在 `GameAlgo.Init` 传 `accountUserCreatedAt`。context 保存完整账号身份，后续事件自动携带 `accountUserId`。
 
 ```lua
+-- 业务 payload 使用扁平字段；不要嵌套 table 或数组，方便事件词典和报表直接读取。
+GameAlgo.TrackEvent("level_item_used", {
+    level = 3,
+    itemName = "炸弹",
+    remainingCount = 2,
+})
+
 GameAlgo.TrackLevelEnd({
     level = 3,
     result = "win",
@@ -158,6 +165,8 @@ GameAlgo.TrackAd("rewarded_level_end", "reward", 0.018, "CNY", "admob")
 GameAlgo.TrackSessionEnd()
 GameAlgo.Flush()
 ```
+
+Lua SDK 为存量版本保留嵌套 JSON 的传输兼容，但新接入和新增字段一律使用上面的扁平 payload。需要描述多个属性时，把它们拆成稳定、含义明确的顶层字段，不要把业务对象或数组直接塞入事件。
 
 `GameAlgo.TrackAd` 上报的是 `ad_view`，只用于广告 SDK 确认实际产生收入的有效曝光。用户看了一部分广告后跳过，但广告 SDK 已确认本次曝光有效并产生收入，也应该调用 `TrackAd`；广告加载失败、未填充、播放失败，或广告 SDK 没有确认产生收入的展示，不要调用 `TrackAd`。
 
