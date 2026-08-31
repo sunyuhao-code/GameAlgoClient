@@ -44,8 +44,10 @@ test("Maker automatic storage uses normal Maker global lookup and hydrates befor
   assert.match(gameAlgo, /storage:OnReady\(function\(\) completeInitialization\(options\) end\)/);
   assert.match(gameAlgo, /if not state_\.storageReady then[\s\S]*?table\.insert\(state_\.pendingTracks/s);
   assert.match(gameAlgo, /if actual or not state_\.storageReady then return end/);
-  assert.match(gameAlgo, /CONFIG_FETCH_MAX_ATTEMPTS = 3/);
   assert.match(gameAlgo, /CONFIG_FETCH_RETRY_BASE_MS = 1000/);
+  assert.match(gameAlgo, /CONFIG_FETCH_RETRY_MAX_MS = 30000/);
+  assert.match(gameAlgo, /CONFIG_FETCH_TIMEOUT_MS = 12000/);
+  assert.match(gameAlgo, /invalid config response: contextId is required/);
   assert.doesNotMatch(gameAlgo, /SubscribeToEvent\("Update", handlerName\)/);
   assert.match(gameAlgo, /eventNode = nodeFactory\(\)/);
   assert.match(gameAlgo, /eventObject = eventNode:CreateScriptObject\("LuaScriptObject"\)/);
