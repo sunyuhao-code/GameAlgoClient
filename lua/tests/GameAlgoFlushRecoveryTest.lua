@@ -159,11 +159,11 @@ do
         success(callback, #batch)
         return { request = "complete" }
     end)
-    assert(harness.sdk.TrackEvent("first", { sequence = 1 }))
+    assert(harness.sdk.Track("game_start", { sequence = 1 }))
     local timeoutError = nil
     harness.sdk.Flush(function(error) timeoutError = error end)
     for sequence = 2, 2000 do
-        assert(harness.sdk.TrackEvent("queued", { sequence = sequence }))
+        assert(harness.sdk.Track("game_start", { sequence = sequence }))
         harness.sdk.Flush(nil)
     end
     equal(harness.requests(), 1, "only one request is active before timeout")

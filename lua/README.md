@@ -143,6 +143,8 @@ local enabled = GameAlgo.ConfigValue("ads.rewarded.enabled", true, "gameplay.jso
 
 队列默认最多保留 10,000 个事件，包含 inflight batch；达到上限时新的 Track 调用会返回 `false, "event queue is full ..."`，避免断网或宿主异常造成无界内存增长。payload 会在入队前做快照和 JSON 可序列化校验，非法结构不会污染整个发送队列。服务端响应必须用 `accepted + rejected.length` 说明整批每一条事件的终态；明确列入 `rejected` 的坏事件会记录日志但不重试，避免它阻塞同批和后续事件。旧服务端如果只返回无法解释的部分 `accepted`，SDK 仍保留整批并重试。
 
+自定义事件另有固定本地配额：单 `context × eventType` 1,000 条、单 context 合计 5,000 条、单 context 最多 100 种。达到阈值后 `Track` 返回 `false` 和原因、事件不入队，并通过独立 SDK 诊断接口采样报告；标准语义事件不占用这组配额。不要重试或改名绕过拒绝。
+
 测试或特殊运行环境可在 `Init` 中覆盖 `flushIntervalMs`、`flushTimeoutMs`、`maxBatchSize` 和 `maxQueueSize`。业务代码通常保持默认值即可。
 
 `userId` 始终是 GameAlgo 生成并持久化的匿名设备标识，用于现有实验分流和报表。Maker 可用的 `getUserId()` 会自动写入独立的 `accountUserId`，不会替换匿名 `userId`；已知账号注册时间时也可以在 `GameAlgo.Init` 传 `accountUserCreatedAt`。context 保存完整账号身份，后续事件自动携带 `accountUserId`。

@@ -5,9 +5,39 @@ import UIKit
 
 protocol GameAlgoEventBatchUploading: Sendable {
     func uploadEvents(_ events: [GameAlgoEvent]) async throws -> GameAlgoEventBatchResponse
+    func uploadEventGuardDiagnostic(_ diagnostic: GameAlgoEventGuardDiagnostic) async throws
+}
+
+extension GameAlgoEventBatchUploading {
+    func uploadEventGuardDiagnostic(_ diagnostic: GameAlgoEventGuardDiagnostic) async throws {}
+}
+
+struct GameAlgoEventGuardDiagnostic: Encodable, Sendable {
+    let diagnosticId: String
+    let userId: String?
+    let sessionId: String
+    let contextId: String?
+    let platform: GameAlgoPlatform
+    let sdkVersion: String
+    let appVersion: String?
+    let stage = "event_guard"
+    let status = "degraded"
+    let reasonCode = "custom_event_quota_exceeded"
+    let reasonDetail: String
+    let createdAt: String
+    let createdLocalAt: String
+    let isDebug: Bool
 }
 
 public actor GameAlgoEventTracker {
+    private static let standardEventTypes: Set<String> = [
+        "session_start", "session_end", "level_start", "level_end", "play_unit_start", "play_unit_end",
+        "ad_view", "purchase", "game_start", "game_over", "move", "replay", "quit",
+    ]
+    private struct CustomCountBucket {
+        var total = 0
+        var byType: [String: Int] = [:]
+    }
     private let uploader: any GameAlgoEventBatchUploading
     private let maxBatchSize: Int
     private let queueLimit: Int
@@ -35,6 +65,9 @@ public actor GameAlgoEventTracker {
     private var currentAssignments: [GameAlgoExperimentAssignment] = []
     private var consecutiveFailures = 0
     private var hasPersistedQueue = false
+    private var customCounts: [String: CustomCountBucket] = [:]
+    private var diagnosticKeys: Set<String> = []
+    private var diagnosticCount = 0
 
     init(
         uploader: any GameAlgoEventBatchUploading,
@@ -43,6 +76,9 @@ public actor GameAlgoEventTracker {
         flushInterval: TimeInterval = 30,
         isDebug: Bool = false,
         initialIdentity: GameAlgoUserIdentity? = nil,
+        initialPlatform: GameAlgoPlatform? = nil,
+        initialSDKVersion: String? = nil,
+        initialAppVersion: String? = nil,
         storage: (any GameAlgoCacheStorage)? = nil,
         persistenceKey: String? = nil,
         logger: GameAlgoLogHandler? = nil,
@@ -59,6 +95,9 @@ public actor GameAlgoEventTracker {
         self.persistenceKey = persistenceKey
         self.userId = initialIdentity?.userId
         self.userCreatedAt = initialIdentity?.userCreatedAt
+        self.platform = initialPlatform
+        self.sdkVersion = initialSDKVersion
+        self.appVersion = initialAppVersion
         self.timezone = Self.defaultTimezone()
         if let storage, let persistenceKey,
            let raw = try? storage.loadValue(cacheKey: persistenceKey),
@@ -134,6 +173,8 @@ public actor GameAlgoEventTracker {
         retryBatch.removeAll { clean($0.contextId) == nil && $0.sessionId == previousSessionId }
         queue.removeAll { clean($0.contextId) == nil && $0.sessionId == previousSessionId }
         self.sessionId = sessionId
+        diagnosticKeys.removeAll()
+        diagnosticCount = 0
         contextId = nil
         sessionStartDate = now()
         if hasPersistedQueue { persistPendingQueue() }
@@ -147,6 +188,7 @@ public actor GameAlgoEventTracker {
         let resolved = clean(contextId)
         self.contextId = resolved
         guard let resolved else { return }
+        mergeCustomCountBucket(from: "pending:\(sessionId)", to: "context:\(resolved)")
         retryBatch = retryBatch.map { bindContext($0, contextId: resolved) }
         queue = queue.map { bindContext($0, contextId: resolved) }
         if hasPersistedQueue { persistPendingQueue() }
@@ -180,13 +222,17 @@ public actor GameAlgoEventTracker {
             return false
         }
         let resolvedContextId = clean(contextId ?? self.contextId) ?? ""
+        let resolvedSessionId = clean(sessionId) ?? self.sessionId
+        guard consumeCustomEventQuota(eventType, contextId: clean(resolvedContextId), sessionId: resolvedSessionId) else {
+            return false
+        }
 
         let eventDate = now()
         let event = GameAlgoEvent(
             eventId: UUID().uuidString,
             contextId: resolvedContextId,
             userId: resolvedUserId,
-            sessionId: clean(sessionId) ?? self.sessionId,
+            sessionId: resolvedSessionId,
             eventType: eventType,
             isDebug: isDebug,
             timestamp: GameAlgoEventBatchUploader.isoTimestamp(eventDate),
@@ -196,6 +242,67 @@ public actor GameAlgoEventTracker {
         )
         enqueue(event)
         return true
+    }
+
+    private func consumeCustomEventQuota(_ eventType: String, contextId: String?, sessionId: String) -> Bool {
+        if Self.standardEventTypes.contains(eventType) { return true }
+        let bucketKey = contextId.map { "context:\($0)" } ?? "pending:\(sessionId)"
+        var bucket = customCounts[bucketKey] ?? CustomCountBucket()
+        let current = bucket.byType[eventType] ?? 0
+        let rejection: (String, Int)?
+        if bucket.byType[eventType] == nil && bucket.byType.count >= 100 {
+            rejection = ("distinct_event_types", 100)
+        } else if current >= 1000 {
+            rejection = ("context_event_type", 1000)
+        } else if bucket.total >= 5000 {
+            rejection = ("context_total", 5000)
+        } else {
+            rejection = nil
+        }
+        if let (scope, limit) = rejection {
+            let observed = scope == "context_total"
+                ? bucket.total + 1
+                : scope == "distinct_event_types" ? bucket.byType.count + 1 : current + 1
+            reportQuotaDiagnostic(eventType, sessionId: sessionId, contextId: contextId, scope: scope, limit: limit,
+                                  observed: observed)
+            return false
+        }
+        bucket.total += 1
+        bucket.byType[eventType] = current + 1
+        customCounts[bucketKey] = bucket
+        return true
+    }
+
+    private func mergeCustomCountBucket(from: String, to: String) {
+        guard let pending = customCounts.removeValue(forKey: from) else { return }
+        var target = customCounts[to] ?? CustomCountBucket()
+        target.total += pending.total
+        for (eventType, count) in pending.byType { target.byType[eventType, default: 0] += count }
+        customCounts[to] = target
+    }
+
+    private func reportQuotaDiagnostic(_ eventType: String, sessionId: String, contextId: String?, scope: String, limit: Int, observed: Int) {
+        guard let platform, let sdkVersion else { return }
+        let key = "\(sessionId)\u{0}\(eventType)\u{0}\(scope)"
+        guard !diagnosticKeys.contains(key), diagnosticCount < 10 else { return }
+        diagnosticKeys.insert(key)
+        diagnosticCount += 1
+        let safeEventType = String(eventType.replacingOccurrences(of: ";", with: "_").replacingOccurrences(of: "\n", with: "_").prefix(96))
+        let created = now()
+        let diagnostic = GameAlgoEventGuardDiagnostic(
+            diagnosticId: UUID().uuidString,
+            userId: userId,
+            sessionId: sessionId,
+            contextId: contextId,
+            platform: platform,
+            sdkVersion: sdkVersion,
+            appVersion: appVersion,
+            reasonDetail: "eventType=\(safeEventType);scope=\(scope);limit=\(limit);observed=\(observed);dropped=1",
+            createdAt: GameAlgoEventBatchUploader.isoTimestamp(created),
+            createdLocalAt: GameAlgoEventBatchUploader.localTimestamp(created),
+            isDebug: isDebug
+        )
+        Task { try? await uploader.uploadEventGuardDiagnostic(diagnostic) }
     }
 
     @discardableResult
@@ -523,6 +630,16 @@ final class GameAlgoEventBatchUploader: GameAlgoEventBatchUploading, @unchecked 
         } catch {
             throw GameAlgoError.decodingFailed(error.localizedDescription)
         }
+    }
+
+    func uploadEventGuardDiagnostic(_ diagnostic: GameAlgoEventGuardDiagnostic) async throws {
+        let body = try encode(diagnostic)
+        _ = try await request(GameAlgoHTTPRequest(
+            url: try endpoint("/v1/diagnostics/sdk"),
+            method: .post,
+            headers: ["content-type": "application/json"],
+            body: body
+        ))
     }
 
     static func isoTimestamp(_ date: Date) -> String {

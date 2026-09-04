@@ -38,6 +38,7 @@ local configFixture = readFile("protocol/fixtures/config-response.json")
 local configCount = 0
 local eventFailuresRemaining = 0
 local eventRequests = {}
+local eventGuardDiagnostics = {}
 local logs = {}
 
 local transport = {}
@@ -51,13 +52,19 @@ function transport.Request(options, callback)
         return
     end
     if options.url:match("/v1/events/batch$") then
-        table.insert(eventRequests, cjson.decode(options.body))
+        local requestBody = cjson.decode(options.body)
+        table.insert(eventRequests, requestBody)
         if eventFailuresRemaining > 0 then
             eventFailuresRemaining = eventFailuresRemaining - 1
             callback("simulated network failure", nil)
         else
-            callback(nil, { status = 200, body = '{"ok":true,"accepted":1}', headers = {} })
+            callback(nil, { status = 200, body = cjson.encode({ ok = true, accepted = #requestBody.events }), headers = {} })
         end
+        return
+    end
+    if options.url:match("/v1/diagnostics/sdk$") then
+        table.insert(eventGuardDiagnostics, cjson.decode(options.body))
+        callback(nil, { status = 200, body = '{"ok":true,"accepted":1}', headers = {} })
         return
     end
     callback("unexpected request: " .. tostring(options.url), nil)
@@ -148,6 +155,15 @@ assert(previousSessionEvents[1].sessionId == "session-fixture-001")
 assert(currentSessionEvents[1].eventType == "_new_session_unbound")
 assert(currentSessionEvents[1].contextId == "ctx-fixture-002")
 assert(currentSessionEvents[1].sessionId == "session-fixture-002")
+
+for _ = 1, 1000 do assert(GameAlgo.TrackEvent("frame_sample", {})) end
+local quotaAccepted, quotaError = GameAlgo.TrackEvent("frame_sample", {})
+assert(quotaAccepted == false)
+assert(tostring(quotaError):find("context_event_type", 1, true) ~= nil)
+assert(GameAlgo.TrackEvent("frame_sample", {}) == false)
+assert(#eventGuardDiagnostics == 1)
+assert(eventGuardDiagnostics[1].stage == "event_guard")
+assert(eventGuardDiagnostics[1].reasonDetail:find("eventType=_frame_sample;scope=context_event_type;limit=1000", 1, true) ~= nil)
 
 local preloadConfig = cjson.decode(configFixture)
 preloadConfig.contextId = "ctx-preload"

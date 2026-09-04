@@ -807,6 +807,35 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertNil(storage.value(cacheKey: "test-event-queue"))
     }
 
+    func testTrackerLimitsCustomEventsAndReportsGuardDiagnostic() async throws {
+        let uploader = QueueEventUploader(failures: 0)
+        let tracker = GameAlgoEventTracker(
+            uploader: uploader,
+            queueLimit: 3000,
+            flushInterval: 0,
+            initialIdentity: GameAlgoUserIdentity(userId: "u1", userCreatedAt: "2026-05-28T10:00:00.000Z", userCreatedLocalAt: "2026-05-28T18:00:00.000+08:00"),
+            initialPlatform: .ios,
+            initialSDKVersion: "1.0.0"
+        )
+        await tracker.identify(userId: "u1", sessionId: "s1")
+        for _ in 0..<1000 {
+            let accepted = await tracker.trackEvent("frame_sample")
+            XCTAssertTrue(accepted)
+        }
+        let firstRejected = await tracker.trackEvent("frame_sample")
+        let secondRejected = await tracker.trackEvent("frame_sample")
+        XCTAssertFalse(firstRejected)
+        XCTAssertFalse(secondRejected)
+        for _ in 0..<100 {
+            if (await uploader.diagnostics()).count == 1 { break }
+            await Task.yield()
+        }
+
+        let diagnostics = await uploader.diagnostics()
+        XCTAssertEqual(diagnostics.count, 1)
+        XCTAssertTrue(diagnostics[0].reasonDetail.contains("eventType=_frame_sample;scope=context_event_type;limit=1000"))
+    }
+
     func testCustomEventsPreservePayload() async throws {
         let suiteName = "GameAlgoSDKTests.customEventExperiments.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -1130,6 +1159,7 @@ private actor FixtureHTTPClient: GameAlgoHTTPClient {
 private actor QueueEventUploader: GameAlgoEventBatchUploading {
     private var remainingFailures: Int
     private var uploaded: [GameAlgoEvent] = []
+    private var guardDiagnostics: [GameAlgoEventGuardDiagnostic] = []
 
     init(failures: Int) {
         remainingFailures = failures
@@ -1146,6 +1176,14 @@ private actor QueueEventUploader: GameAlgoEventBatchUploading {
 
     func uploadedEvents() -> [GameAlgoEvent] {
         uploaded
+    }
+
+    func uploadEventGuardDiagnostic(_ diagnostic: GameAlgoEventGuardDiagnostic) async throws {
+        guardDiagnostics.append(diagnostic)
+    }
+
+    func diagnostics() -> [GameAlgoEventGuardDiagnostic] {
+        guardDiagnostics
     }
 }
 

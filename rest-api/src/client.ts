@@ -35,6 +35,11 @@ type InternalClientOptions = GameAlgoRestClientOptions & {
   autoStart?: boolean;
 };
 
+const STANDARD_EVENT_TYPES = new Set([
+  "session_start", "session_end", "level_start", "level_end", "play_unit_start", "play_unit_end",
+  "ad_view", "purchase", "game_start", "game_over", "move", "replay", "quit",
+]);
+
 export class GameAlgoApiError extends Error {
   readonly status: number;
   readonly code?: string;
@@ -109,6 +114,7 @@ export class GameAlgoRestClient {
     this.config = new GameAlgoConfigReader(() => this.snapshot);
     this.tracker = new GameAlgoEventTracker({
       uploadEvents: (events) => this.uploadEvents(events),
+      reportDiagnostic: (diagnostic) => this.reportSdkDiagnostic(diagnostic),
       platform: this.platform,
       sdkVersion: this.sdkVersion,
       appVersion: this.appVersion,
@@ -392,6 +398,14 @@ export class GameAlgoRestClient {
     });
   }
 
+  private async reportSdkDiagnostic(diagnostic: Record<string, unknown>): Promise<void> {
+    await this.requestJson(this.url("/v1/diagnostics/sdk"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(diagnostic),
+    });
+  }
+
   async setAttribution(input: UserAttributionInput): Promise<UserAttributionResponse> {
     const provider = clean(input.provider);
     if (!provider) throw new Error("provider is required");
@@ -666,6 +680,7 @@ export class GameAlgoRestClient {
 
 export class GameAlgoEventTracker {
   private readonly uploadEvents: (events: GameEvent[]) => Promise<EventBatchResponse>;
+  private readonly reportDiagnostic?: (diagnostic: Record<string, unknown>) => Promise<void>;
   private readonly platform: Platform;
   private readonly sdkVersion: string;
   private readonly appVersion?: string;
@@ -692,9 +707,13 @@ export class GameAlgoEventTracker {
   private sessionStartMs?: number;
   private consecutiveFailures = 0;
   private hasPersistedQueue = false;
+  private readonly customCounts = new Map<string, { total: number; byType: Map<string, number> }>();
+  private readonly diagnosticKeys = new Set<string>();
+  private diagnosticCount = 0;
 
   constructor(options: {
     uploadEvents: (events: GameEvent[]) => Promise<EventBatchResponse>;
+    reportDiagnostic?: (diagnostic: Record<string, unknown>) => Promise<void>;
     platform: Platform;
     sdkVersion: string;
     appVersion?: string;
@@ -708,6 +727,7 @@ export class GameAlgoEventTracker {
     persistenceKey?: string;
   }) {
     this.uploadEvents = options.uploadEvents;
+    this.reportDiagnostic = options.reportDiagnostic;
     this.platform = options.platform;
     this.sdkVersion = options.sdkVersion;
     this.appVersion = options.appVersion;
@@ -734,6 +754,8 @@ export class GameAlgoEventTracker {
     this.retryBatch = this.retryBatch.filter((event) => clean(event.contextId) || event.sessionId !== previousSessionId);
     this.queue = this.queue.filter((event) => clean(event.contextId) || event.sessionId !== previousSessionId);
     this.sessionId = sessionId;
+    this.diagnosticKeys.clear();
+    this.diagnosticCount = 0;
     this.contextId = undefined;
     this.sessionStartMs = this.now();
     if (this.hasPersistedQueue) void this.persistPendingQueue();
@@ -747,6 +769,7 @@ export class GameAlgoEventTracker {
     const resolved = clean(contextId);
     this.contextId = resolved;
     if (!resolved) return;
+    this.mergeCustomCountBucket(`pending:${this.sessionId}`, `context:${resolved}`);
     const bind = (event: GameEvent) => (
       !clean(event.contextId) && event.sessionId === this.sessionId
         ? { ...event, contextId: resolved }
@@ -780,12 +803,14 @@ export class GameAlgoEventTracker {
     const userId = clean(options.userId ?? this.userId);
     if (!userId) return false;
     const contextId = clean(options.contextId ?? this.contextId);
+    const resolvedSessionId = clean(options.sessionId) ?? this.sessionId;
+    if (!this.consumeCustomEventQuota(eventType, contextId, resolvedSessionId)) return false;
 
     this.enqueue({
       eventId: randomId(),
       contextId: contextId ?? "",
       userId,
-      sessionId: clean(options.sessionId) ?? this.sessionId,
+      sessionId: resolvedSessionId,
       eventType,
       isDebug: options.isDebug ?? this.isDebug,
       timestamp: options.timestamp ?? new Date(this.now()).toISOString(),
@@ -794,6 +819,73 @@ export class GameAlgoEventTracker {
       payload: normalizePayload(payload),
     });
     return true;
+  }
+
+  private consumeCustomEventQuota(eventType: string, contextId: string | undefined, sessionId: string): boolean {
+    if (STANDARD_EVENT_TYPES.has(eventType)) return true;
+    const bucketKey = contextId ? `context:${contextId}` : `pending:${sessionId}`;
+    const bucket = this.customCounts.get(bucketKey) ?? { total: 0, byType: new Map<string, number>() };
+    const current = bucket.byType.get(eventType) ?? 0;
+    let scope: string | undefined;
+    let limit = 0;
+    if (!bucket.byType.has(eventType) && bucket.byType.size >= 100) {
+      scope = "distinct_event_types";
+      limit = 100;
+    } else if (current >= 1000) {
+      scope = "context_event_type";
+      limit = 1000;
+    } else if (bucket.total >= 5000) {
+      scope = "context_total";
+      limit = 5000;
+    }
+    if (scope) {
+      const observed = scope === "context_total"
+        ? bucket.total + 1
+        : scope === "distinct_event_types"
+          ? bucket.byType.size + 1
+          : current + 1;
+      this.reportQuotaDiagnostic(eventType, sessionId, contextId, scope, limit, observed);
+      return false;
+    }
+    bucket.total += 1;
+    bucket.byType.set(eventType, current + 1);
+    this.customCounts.set(bucketKey, bucket);
+    return true;
+  }
+
+  private mergeCustomCountBucket(from: string, to: string): void {
+    const pending = this.customCounts.get(from);
+    if (!pending) return;
+    const target = this.customCounts.get(to) ?? { total: 0, byType: new Map<string, number>() };
+    target.total += pending.total;
+    for (const [eventType, count] of pending.byType) target.byType.set(eventType, (target.byType.get(eventType) ?? 0) + count);
+    this.customCounts.set(to, target);
+    this.customCounts.delete(from);
+  }
+
+  private reportQuotaDiagnostic(eventType: string, sessionId: string, contextId: string | undefined, scope: string, limit: number, observed: number): void {
+    const key = `${sessionId}\u0000${eventType}\u0000${scope}`;
+    if (!this.reportDiagnostic || this.diagnosticKeys.has(key) || this.diagnosticCount >= 10) return;
+    this.diagnosticKeys.add(key);
+    this.diagnosticCount += 1;
+    const createdAt = new Date(this.now()).toISOString();
+    const safeEventType = eventType.replace(/[;\r\n]/g, "_").slice(0, 96);
+    void this.reportDiagnostic({
+      diagnosticId: randomId(),
+      userId: this.userId,
+      sessionId,
+      contextId,
+      platform: this.platform,
+      sdkVersion: this.sdkVersion,
+      appVersion: this.appVersion,
+      stage: "event_guard",
+      status: "degraded",
+      reasonCode: "custom_event_quota_exceeded",
+      reasonDetail: `eventType=${safeEventType};scope=${scope};limit=${limit};observed=${observed};dropped=1`,
+      createdAt,
+      createdLocalAt: localTimestamp(this.now()),
+      isDebug: this.isDebug,
+    }).catch(() => undefined);
   }
 
   trackEvent(type: string, payload: JsonValue = {}, options: TrackEventOptions = {}): boolean {

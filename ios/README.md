@@ -112,6 +112,8 @@ let decision = dda.decide(context: .object([
 
 `tracker` 会把事件排入内存队列，每批最多上传 100 条，每 30 秒 flush 一次，并在 App 进入后台或退出时主动 flush；失败批次会保留到下次重试。连续 3 次上传失败后，SDK 会把完整未发送队列按 JSON Lines 写入当前 Game Key 和匿名用户隔离的本地存储；下次启动自动恢复，服务端 ACK 后删除持久化副本。正常运行不会每条事件落盘，强制终止前的未失败内存事件仍是 best-effort。事件入队时即固定 `sessionId` 和已有的 `contextId`；同一 session 刷新 context 不会重绑旧事件，切换 session 只会丢弃上一 session 尚未绑定 context 的事件。关键事件后可以调用 `await sdk.tracker.flush()` 手动 flush；`trackSessionEnd` 入队 `session_end` 后也会立即触发一次 flush。
 
+自定义事件有固定本地配额：单 `context × eventType` 1,000 条、单 context 合计 5,000 条、单 context 最多 100 种。达到阈值后 `track` 返回 `false`、事件不入队，并异步采样报告 SDK 诊断；标准语义事件不占用这组配额。不要重试或改名绕过拒绝。
+
 `userId` 始终是 GameAlgo 生成并持久化的匿名设备标识，用于现有实验分流和报表。游戏已经登录的业务用户可以在 `GameAlgoSDK` 初始化或 `fetchConfig` 时额外传入 `accountUserId`，已知注册时间时再传 `accountUserCreatedAt`；两者不会覆盖匿名 `userId`。context 保存完整账号身份，后续事件自动携带 `accountUserId`。
 
 `trackAd` 上报的是 `ad_view`，只用于广告 SDK 确认实际产生收入的有效曝光。用户看了一部分广告后跳过，但广告 SDK 已确认本次曝光有效并产生收入，也应该调用 `trackAd`；广告加载失败、未填充、播放失败，或广告 SDK 没有确认产生收入的展示，不要调用 `trackAd`。
