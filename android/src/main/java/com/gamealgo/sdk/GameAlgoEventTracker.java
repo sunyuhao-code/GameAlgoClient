@@ -1,10 +1,13 @@
 package com.gamealgo.sdk;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TimeZone;
 import java.util.UUID;
 import java.util.concurrent.Executors;
@@ -12,6 +15,15 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 public final class GameAlgoEventTracker implements AutoCloseable {
+    private static final Set<String> STANDARD_EVENT_TYPES = new HashSet<>(Arrays.asList(
+            "session_start", "session_end", "level_start", "level_end", "play_unit_start", "play_unit_end",
+            "ad_view", "purchase", "game_start", "game_over", "move", "replay", "quit"));
+
+    private static final class CustomCountBucket {
+        int total;
+        final Map<String, Integer> byType = new LinkedHashMap<>();
+    }
+
     private final GameAlgoClient client;
     private final int maxBatchSize;
     private final int queueLimit;
@@ -33,6 +45,9 @@ public final class GameAlgoEventTracker implements AutoCloseable {
     private boolean flushing;
     private int consecutiveFailures;
     private boolean hasPersistedQueue;
+    private final Map<String, CustomCountBucket> customCounts = new LinkedHashMap<>();
+    private final Set<String> diagnosticKeys = new HashSet<>();
+    private int diagnosticCount;
 
     GameAlgoEventTracker(GameAlgoClient client) {
         this(client, 100, 1000, 30000L, null, null);
@@ -90,6 +105,8 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         removeUnboundEvents(retryBatch, previousSessionId);
         removeUnboundEvents(queue, previousSessionId);
         sessionId = UUID.randomUUID().toString();
+        diagnosticKeys.clear();
+        diagnosticCount = 0;
         contextId = null;
         sessionStartMillis = System.currentTimeMillis();
         if (hasPersistedQueue) persistPendingQueue();
@@ -102,6 +119,7 @@ public final class GameAlgoEventTracker implements AutoCloseable {
     public synchronized void setContextId(String contextId) {
         this.contextId = isBlank(contextId) ? null : contextId;
         if (this.contextId == null) return;
+        mergeCustomCountBucket("pending:" + sessionId, "context:" + this.contextId);
         bindCurrentSession(retryBatch, this.contextId);
         bindCurrentSession(queue, this.contextId);
         if (hasPersistedQueue) persistPendingQueue();
@@ -145,6 +163,9 @@ public final class GameAlgoEventTracker implements AutoCloseable {
             if (isBlank(userId)) {
                 return false;
             }
+            if (!consumeCustomEventQuota(eventType, isBlank(contextId) ? null : contextId, sessionId)) {
+                return false;
+            }
             resolvedUserId = userId;
             resolvedSessionId = sessionId;
             resolvedContextId = isBlank(contextId) ? "" : contextId;
@@ -162,6 +183,64 @@ public final class GameAlgoEventTracker implements AutoCloseable {
                 .accountUserId(resolvedAccountUserId);
         enqueue(event);
         return true;
+    }
+
+    private boolean consumeCustomEventQuota(String eventType, String resolvedContextId, String resolvedSessionId) {
+        if (STANDARD_EVENT_TYPES.contains(eventType)) return true;
+        String bucketKey = resolvedContextId == null ? "pending:" + resolvedSessionId : "context:" + resolvedContextId;
+        CustomCountBucket bucket = customCounts.get(bucketKey);
+        if (bucket == null) bucket = new CustomCountBucket();
+        int current = bucket.byType.containsKey(eventType) ? bucket.byType.get(eventType) : 0;
+        String scope = null;
+        int limit = 0;
+        if (!bucket.byType.containsKey(eventType) && bucket.byType.size() >= 100) {
+            scope = "distinct_event_types";
+            limit = 100;
+        } else if (current >= 1000) {
+            scope = "context_event_type";
+            limit = 1000;
+        } else if (bucket.total >= 5000) {
+            scope = "context_total";
+            limit = 5000;
+        }
+        if (scope != null) {
+            int observed = "context_total".equals(scope)
+                    ? bucket.total + 1
+                    : "distinct_event_types".equals(scope) ? bucket.byType.size() + 1 : current + 1;
+            reportQuotaDiagnostic(eventType, resolvedSessionId, resolvedContextId, scope, limit,
+                    observed);
+            return false;
+        }
+        bucket.total += 1;
+        bucket.byType.put(eventType, current + 1);
+        customCounts.put(bucketKey, bucket);
+        return true;
+    }
+
+    private void mergeCustomCountBucket(String from, String to) {
+        CustomCountBucket pending = customCounts.remove(from);
+        if (pending == null) return;
+        CustomCountBucket target = customCounts.get(to);
+        if (target == null) target = new CustomCountBucket();
+        target.total += pending.total;
+        for (Map.Entry<String, Integer> entry : pending.byType.entrySet()) {
+            Integer current = target.byType.get(entry.getKey());
+            target.byType.put(entry.getKey(), (current == null ? 0 : current) + entry.getValue());
+        }
+        customCounts.put(to, target);
+    }
+
+    private void reportQuotaDiagnostic(String eventType, String resolvedSessionId, String resolvedContextId,
+                                       String scope, int limit, int observed) {
+        String key = resolvedSessionId + "\u0000" + eventType + "\u0000" + scope;
+        if (diagnosticKeys.contains(key) || diagnosticCount >= 10) return;
+        diagnosticKeys.add(key);
+        diagnosticCount += 1;
+        String safeEventType = eventType == null ? "" : eventType.replace(';', '_').replace('\n', '_').replace('\r', '_');
+        if (safeEventType.length() > 96) safeEventType = safeEventType.substring(0, 96);
+        client.reportEventGuardDiagnostic(
+                userId, resolvedSessionId, resolvedContextId, isDebug,
+                "eventType=" + safeEventType + ";scope=" + scope + ";limit=" + limit + ";observed=" + observed + ";dropped=1");
     }
 
     public boolean trackEvent(String type) {

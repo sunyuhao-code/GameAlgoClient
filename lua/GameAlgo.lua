@@ -40,6 +40,11 @@ local CONFIG_FETCH_RETRY_BASE_MS = 1000
 local CONFIG_FETCH_RETRY_MAX_MS = 30000
 local CONFIG_FETCH_TIMEOUT_MS = 12000
 local INIT_WATCHDOG_MS = 10000
+local STANDARD_EVENT_TYPES = {
+    session_start = true, session_end = true, level_start = true, level_end = true,
+    play_unit_start = true, play_unit_end = true, ad_view = true, purchase = true,
+    game_start = true, game_over = true, move = true, replay = true, quit = true,
+}
 
 local state_ = {
     baseUrl = DEFAULT_BASE_URL,
@@ -97,6 +102,9 @@ local state_ = {
     configFetchTimeoutHandle = nil,
     initWatchdogHandle = nil,
     initDiagnosticReported = false,
+    customEventCounts = {},
+    eventGuardDiagnosticKeys = {},
+    eventGuardDiagnosticCount = 0,
     pendingTracks = {},
     consecutiveFlushFailures = 0,
     queuePersistenceActive = false,
@@ -386,6 +394,72 @@ local function reportInitTimeout()
     }, function(error)
         if error then log("init timeout diagnostic upload failed: " .. tostring(error)) end
     end)
+end
+
+local function mergeCustomEventCountBucket(from, to)
+    local pending = state_.customEventCounts[from]
+    if not pending then return end
+    local target = state_.customEventCounts[to] or { total = 0, byType = {}, distinct = 0 }
+    target.total = target.total + pending.total
+    for eventType, count in pairs(pending.byType) do
+        if target.byType[eventType] == nil then target.distinct = target.distinct + 1 end
+        target.byType[eventType] = (target.byType[eventType] or 0) + count
+    end
+    state_.customEventCounts[to] = target
+    state_.customEventCounts[from] = nil
+end
+
+local function reportEventGuardDiagnostic(eventType, scope, limit, observed)
+    local key = tostring(state_.sessionId) .. "\0" .. tostring(eventType) .. "\0" .. tostring(scope)
+    if state_.eventGuardDiagnosticKeys[key] or state_.eventGuardDiagnosticCount >= 10 then return end
+    state_.eventGuardDiagnosticKeys[key] = true
+    state_.eventGuardDiagnosticCount = state_.eventGuardDiagnosticCount + 1
+    local safeEventType = tostring(eventType):gsub("[;\r\n]", "_"):sub(1, 96)
+    httpRequest("POST", "/v1/diagnostics/sdk", {
+        diagnosticId = randomId("ga_diag"),
+        userId = state_.userId,
+        accountUserId = state_.accountUserId or state_.prefetchedMakerUserId,
+        sessionId = state_.sessionId,
+        contextId = state_.contextId,
+        platform = state_.platform,
+        sdkVersion = SDK_VERSION,
+        appVersion = state_.appVersion,
+        stage = "event_guard",
+        status = "degraded",
+        reasonCode = "custom_event_quota_exceeded",
+        reasonDetail = "eventType=" .. safeEventType .. ";scope=" .. scope .. ";limit=" .. tostring(limit)
+            .. ";observed=" .. tostring(observed) .. ";dropped=1",
+        createdAt = isoNow(),
+        createdLocalAt = localIsoNow(),
+        isDebug = state_.isDebug,
+    }, function(error)
+        if error then log("event guard diagnostic upload failed: " .. tostring(error)) end
+    end)
+end
+
+local function consumeCustomEventQuota(eventType)
+    if STANDARD_EVENT_TYPES[eventType] then return true, nil end
+    local bucketKey = state_.contextId and state_.contextId ~= ""
+        and ("context:" .. state_.contextId) or ("pending:" .. tostring(state_.sessionId))
+    local bucket = state_.customEventCounts[bucketKey] or { total = 0, byType = {}, distinct = 0 }
+    local current = bucket.byType[eventType] or 0
+    local scope, limit, observed = nil, nil, nil
+    if bucket.byType[eventType] == nil and bucket.distinct >= 100 then
+        scope, limit, observed = "distinct_event_types", 100, bucket.distinct + 1
+    elseif current >= 1000 then
+        scope, limit, observed = "context_event_type", 1000, current + 1
+    elseif bucket.total >= 5000 then
+        scope, limit, observed = "context_total", 5000, bucket.total + 1
+    end
+    if scope then
+        reportEventGuardDiagnostic(eventType, scope, limit, observed)
+        return false, "custom event quota exceeded (scope=" .. scope .. ", limit=" .. tostring(limit) .. ")"
+    end
+    if bucket.byType[eventType] == nil then bucket.distinct = bucket.distinct + 1 end
+    bucket.byType[eventType] = current + 1
+    bucket.total = bucket.total + 1
+    state_.customEventCounts[bucketKey] = bucket
+    return true, nil
 end
 
 local function rawHttpRequest(method, url, callback)
@@ -778,6 +852,9 @@ function GameAlgo.Init(options)
     state_.ddaControllers = {}
     state_.queue = {}
     state_.pendingTracks = {}
+    state_.customEventCounts = {}
+    state_.eventGuardDiagnosticKeys = {}
+    state_.eventGuardDiagnosticCount = 0
     state_.consecutiveFlushFailures = 0
     state_.queuePersistenceActive = false
     state_.queuePersistenceDirty = false
@@ -914,6 +991,9 @@ performConfigFetchAttempt = function()
         end
         state_.config = config
         state_.contextId = config and config.contextId or nil
+        if state_.contextId and state_.contextId ~= "" then
+            mergeCustomEventCountBucket("pending:" .. tostring(state_.sessionId), "context:" .. state_.contextId)
+        end
         bindQueuedEvents(state_.contextId, state_.sessionId)
         if state_.initWatchdogHandle and state_.scheduler and type(state_.scheduler.Cancel) == "function" then
             state_.scheduler:Cancel(state_.initWatchdogHandle)
@@ -1068,6 +1148,11 @@ function GameAlgo.Track(eventType, payload)
             log("event rejected: " .. tostring(eventType) .. " " .. queueError)
             return false, queueError
         end
+        local quotaAccepted, quotaError = consumeCustomEventQuota(eventType)
+        if not quotaAccepted then
+            log("event rejected: " .. tostring(eventType) .. " " .. tostring(quotaError))
+            return false, quotaError
+        end
         table.insert(state_.pendingTracks, {
             eventType = eventType,
             payload = payloadCopy,
@@ -1077,6 +1162,16 @@ function GameAlgo.Track(eventType, payload)
         return true
     end
     ensureIdentity()
+    if outstandingEventCount() >= state_.maxQueueSize then
+        local queueError = "event queue is full (max=" .. tostring(state_.maxQueueSize) .. ")"
+        log("event rejected: " .. tostring(eventType) .. " " .. queueError)
+        return false, queueError
+    end
+    local quotaAccepted, quotaError = consumeCustomEventQuota(eventType)
+    if not quotaAccepted then
+        log("event rejected: " .. tostring(eventType) .. " " .. tostring(quotaError))
+        return false, quotaError
+    end
     local tracked, trackError = enqueueTrack(eventType, payloadCopy, nil, nil)
     if not tracked then
         log("event rejected: " .. tostring(eventType) .. " " .. tostring(trackError))
@@ -1401,6 +1496,8 @@ function GameAlgo.NewSession(sessionId, callback)
     end
     state_.queue = retained
     state_.sessionId = nextSessionId
+    state_.eventGuardDiagnosticKeys = {}
+    state_.eventGuardDiagnosticCount = 0
     state_.sessionStartMs = nowMs()
     state_.contextId = nil
     state_.config = nil

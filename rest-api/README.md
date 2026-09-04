@@ -268,6 +268,8 @@ _button_click
 _tutorial_skip
 ```
 
+自定义事件有固定的本地安全配额：单 `context × eventType` 最多 1,000 条、单 context 合计最多 5,000 条、单 context 最多 100 种。达到阈值后 `track` 返回 `false`、事件不入队，并向独立诊断接口采样报告；标准语义事件不占用这组配额。业务代码不得重试或改名绕过拒绝。
+
 ## 7. 错误响应
 
 ```json

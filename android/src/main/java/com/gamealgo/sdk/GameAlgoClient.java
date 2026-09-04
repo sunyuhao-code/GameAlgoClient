@@ -447,6 +447,33 @@ public final class GameAlgoClient {
         return parseEventBatchResponse(parseJsonObject(response));
     }
 
+    void reportEventGuardDiagnostic(String userId, String sessionId, String contextId, boolean isDebug, String reasonDetail) {
+        CompletableFuture.runAsync(() -> {
+            try {
+                Date created = new Date();
+                Map<String, Object> body = new LinkedHashMap<>();
+                body.put("diagnosticId", java.util.UUID.randomUUID().toString());
+                if (!isBlank(userId)) body.put("userId", userId);
+                body.put("sessionId", sessionId);
+                if (!isBlank(contextId)) body.put("contextId", contextId);
+                body.put("platform", defaultPlatform);
+                body.put("sdkVersion", defaultSDKVersion);
+                if (!isBlank(defaultAppVersion)) body.put("appVersion", defaultAppVersion);
+                body.put("stage", "event_guard");
+                body.put("status", "degraded");
+                body.put("reasonCode", "custom_event_quota_exceeded");
+                body.put("reasonDetail", reasonDetail);
+                body.put("createdAt", isoTimestamp(created));
+                body.put("createdLocalAt", localTimestamp(created));
+                body.put("isDebug", isDebug);
+                request(endpoint("/v1/diagnostics/sdk", null), GameAlgoHttpMethod.POST,
+                        GameAlgoJson.stringify(body).getBytes(StandardCharsets.UTF_8));
+            } catch (Exception error) {
+                log("event guard diagnostic failed: " + error.getMessage());
+            }
+        });
+    }
+
     public synchronized GameAlgoUserAttributionResponse setAttribution(String provider, Map<String, Object> attribution) throws GameAlgoException {
         return setAttribution(new GameAlgoUserAttribution(provider, attribution));
     }

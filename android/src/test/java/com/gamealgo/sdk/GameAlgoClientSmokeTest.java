@@ -33,6 +33,7 @@ public final class GameAlgoClientSmokeTest {
         testTrackerKeepsBoundEventsAcrossSessionsAndDropsUnboundOldEvents();
         testTrackerPersistsAfterThreeFailuresAndRestoresAfterRestart();
         testTrackerQueuesAndFlushesEvents();
+        testTrackerLimitsCustomEventsAndReportsGuardDiagnostic();
         testCustomEventsPreservePayload();
         testTrackAdUploadsStandardAdViewPayload();
         testDDAControllerPersistsBehaviorWindowAndReturnsDecision();
@@ -880,6 +881,40 @@ public final class GameAlgoClientSmokeTest {
         check(((Number) eventPayload.get("revenue")).doubleValue() == 0.018, "ad_view should include revenue");
         check("USD".equals(eventPayload.get("currency")), "ad_view should include currency");
         check("admob".equals(eventPayload.get("network")), "ad_view should include network");
+        client.tracker().close();
+    }
+
+    private static void testTrackerLimitsCustomEventsAndReportsGuardDiagnostic() throws Exception {
+        FakeHttpClient httpClient = new FakeHttpClient();
+        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":1}"));
+        GameAlgoClient client = new GameAlgoClient(
+                "ga_live_test_key_0123456789abcdef",
+                "https://gamealgo.test",
+                "1.0.0",
+                null,
+                "android",
+                httpClient,
+                new FakeScriptRuntime(),
+                null,
+                null,
+                GameAlgoLogger.console(),
+                false
+        );
+        client.tracker().identify("u1", "s1");
+        for (int index = 0; index < 1000; index += 1) {
+            check(client.tracker().trackEvent("frame_sample"), "first 1000 custom events should enqueue");
+        }
+        check(!client.tracker().trackEvent("frame_sample"), "1001st custom event should be rejected");
+        check(!client.tracker().trackEvent("frame_sample"), "later custom events should stay rejected");
+        for (int index = 0; index < 100 && httpClient.requests.isEmpty(); index += 1) Thread.sleep(10L);
+        check(httpClient.requests.size() == 1, "quota should emit one diagnostic");
+        GameAlgoHttpRequest request = httpClient.requests.get(0);
+        check(request.getUrl().toString().endsWith("/v1/diagnostics/sdk"), "quota diagnostic should use SDK diagnostic endpoint");
+        Map<String, Object> body = GameAlgoJson.asObject(
+                GameAlgoJson.parse(new String(request.getBody(), StandardCharsets.UTF_8)), "body");
+        check("event_guard".equals(body.get("stage")), "quota diagnostic should use event_guard stage");
+        check(String.valueOf(body.get("reasonDetail")).contains("eventType=_frame_sample;scope=context_event_type;limit=1000"),
+                "quota diagnostic should include the limit scope");
         client.tracker().close();
     }
 

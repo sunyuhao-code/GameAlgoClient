@@ -755,6 +755,79 @@ test("tracker binds context once and preserves it across same-session refreshes"
   client.tracker.close();
 });
 
+test("tracker limits custom events per context and reports one guard diagnostic", async () => {
+  const diagnostics: Array<Record<string, unknown>> = [];
+  const client = createClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    autoStart: false,
+    eventFlushIntervalMs: 0,
+    eventQueueLimit: 6000,
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      if (request.url.endsWith("/v1/diagnostics/sdk")) {
+        diagnostics.push(await request.json() as Record<string, unknown>);
+        return jsonResponse({ ok: true, accepted: 1 });
+      }
+      throw new Error("event upload is not expected without a context");
+    },
+  });
+  client.tracker.identify("u1", "s1");
+  for (let index = 0; index < 1000; index += 1) assert.equal(client.tracker.trackEvent("frame_sample"), true);
+  assert.equal(client.tracker.trackEvent("frame_sample"), false);
+  assert.equal(client.tracker.trackEvent("frame_sample"), false);
+  for (let index = 0; index < 1200; index += 1) assert.equal(client.tracker.trackLevelEnd({ level: index }), true);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(diagnostics.length, 1);
+  assert.equal(diagnostics[0].stage, "event_guard");
+  assert.equal(diagnostics[0].reasonCode, "custom_event_quota_exceeded");
+  assert.match(String(diagnostics[0].reasonDetail), /eventType=_frame_sample;scope=context_event_type;limit=1000/);
+  client.tracker.close();
+});
+
+test("tracker limits custom event cardinality and total volume per context", async () => {
+  const diagnostics: Array<Record<string, unknown>> = [];
+  const createQuotaClient = () => createClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    autoStart: false,
+    eventFlushIntervalMs: 0,
+    eventQueueLimit: 6000,
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      if (request.url.endsWith("/v1/diagnostics/sdk")) {
+        diagnostics.push(await request.json() as Record<string, unknown>);
+        return jsonResponse({ ok: true, accepted: 1 });
+      }
+      throw new Error("event upload is not expected without a context");
+    },
+  });
+
+  const cardinalityClient = createQuotaClient();
+  cardinalityClient.tracker.identify("u1", "cardinality-session");
+  for (let index = 0; index < 100; index += 1) {
+    assert.equal(cardinalityClient.tracker.trackEvent(`event_${index}`), true);
+  }
+  assert.equal(cardinalityClient.tracker.trackEvent("event_100"), false);
+
+  const totalClient = createQuotaClient();
+  totalClient.tracker.identify("u1", "total-session");
+  for (let type = 0; type < 5; type += 1) {
+    for (let index = 0; index < 1000; index += 1) {
+      assert.equal(totalClient.tracker.trackEvent(`volume_${type}`), true);
+    }
+  }
+  assert.equal(totalClient.tracker.trackEvent("volume_5"), false);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(diagnostics.length, 2);
+  assert.match(String(diagnostics[0].reasonDetail), /scope=distinct_event_types;limit=100;observed=101/);
+  assert.match(String(diagnostics[1].reasonDetail), /scope=context_total;limit=5000;observed=5001/);
+  cardinalityClient.tracker.close();
+  totalClient.tracker.close();
+});
+
 test("new session drops only unbound events from the previous session", async () => {
   let uploadedEvents: Array<Record<string, unknown>> = [];
   const client = createClient({
