@@ -36,8 +36,7 @@ type InternalClientOptions = GameAlgoRestClientOptions & {
 };
 
 const STANDARD_EVENT_TYPES = new Set([
-  "session_start", "session_end", "level_start", "level_end", "play_unit_start", "play_unit_end",
-  "ad_view", "purchase", "game_start", "game_over", "move", "replay", "quit",
+  "session_end", "level_start", "level_end", "ad_view", "purchase", "milestone",
 ]);
 
 export class GameAlgoApiError extends Error {
@@ -521,6 +520,7 @@ export class GameAlgoRestClient {
     this.logUserId(identity.userId);
     this.tracker.identify(identity.userId, options.sessionId, userCreatedAt, clean(options.accountUserId) ?? this.accountUserId);
     this.tracker.markSessionStarted();
+    await this.tracker.waitForRestore();
     await this.loadPersistedSnapshot();
     try {
       await this.refresh({ ...options, userId: identity.userId, userCreatedAt, forceRefresh: true });
@@ -690,6 +690,8 @@ export class GameAlgoEventTracker {
   private readonly now: () => number;
   private readonly storage?: GameAlgoStorage;
   private readonly persistenceKey?: string;
+  private readonly milestonePersistenceKey?: string;
+  private readonly milestoneRestorePromise: Promise<void>;
   private readonly restorePromise: Promise<void>;
 
   private userId?: string;
@@ -710,6 +712,9 @@ export class GameAlgoEventTracker {
   private readonly customCounts = new Map<string, { total: number; byType: Map<string, number> }>();
   private readonly diagnosticKeys = new Set<string>();
   private diagnosticCount = 0;
+  private readonly reachedMilestoneKeys = new Set<string>();
+  private readonly pendingMilestoneKeys = new Set<string>();
+  private milestonePersistPromise: Promise<void> = Promise.resolve();
 
   constructor(options: {
     uploadEvents: (events: GameEvent[]) => Promise<EventBatchResponse>;
@@ -739,7 +744,12 @@ export class GameAlgoEventTracker {
     this.now = options.now;
     this.storage = options.storage;
     this.persistenceKey = clean(options.persistenceKey);
-    this.restorePromise = this.restorePersistedQueue();
+    this.milestonePersistenceKey = this.persistenceKey ? `${this.persistenceKey}:milestones` : undefined;
+    this.milestoneRestorePromise = this.restorePersistedMilestones();
+    this.restorePromise = Promise.all([
+      this.restorePersistedQueue(),
+      this.milestoneRestorePromise,
+    ]).then(() => undefined);
   }
 
   identify(userId: string, sessionId?: string, userCreatedAt?: string, accountUserId?: string): void {
@@ -756,6 +766,7 @@ export class GameAlgoEventTracker {
     this.sessionId = sessionId;
     this.diagnosticKeys.clear();
     this.diagnosticCount = 0;
+    this.pendingMilestoneKeys.clear();
     this.contextId = undefined;
     this.sessionStartMs = this.now();
     if (this.hasPersistedQueue) void this.persistPendingQueue();
@@ -763,6 +774,10 @@ export class GameAlgoEventTracker {
 
   currentSessionId(): string {
     return this.sessionId;
+  }
+
+  async waitForRestore(): Promise<void> {
+    await this.restorePromise;
   }
 
   setContextId(contextId: string): void {
@@ -777,6 +792,7 @@ export class GameAlgoEventTracker {
     );
     this.retryBatch = this.retryBatch.map(bind);
     this.queue = this.queue.map(bind);
+    this.rememberBoundMilestones(resolved);
     if (this.hasPersistedQueue) void this.persistPendingQueue();
   }
 
@@ -806,19 +822,87 @@ export class GameAlgoEventTracker {
     const resolvedSessionId = clean(options.sessionId) ?? this.sessionId;
     if (!this.consumeCustomEventQuota(eventType, contextId, resolvedSessionId)) return false;
 
+    const eventTimeMs = options.timestamp ? Date.parse(options.timestamp) : this.now();
+    const resolvedIsDebug = options.isDebug ?? this.isDebug;
+    const normalizedPayload = normalizePayload(payload);
+    const milestone = eventType === "milestone"
+      ? this.prepareMilestone(userId, contextId, resolvedIsDebug, normalizedPayload, eventTimeMs)
+      : undefined;
+    if (milestone?.duplicate) return false;
+
     this.enqueue({
       eventId: randomId(),
       contextId: contextId ?? "",
       userId,
       sessionId: resolvedSessionId,
       eventType,
-      isDebug: options.isDebug ?? this.isDebug,
+      isDebug: resolvedIsDebug,
       timestamp: options.timestamp ?? new Date(this.now()).toISOString(),
       createdLocalAt: options.createdLocalAt ?? localTimestamp(options.timestamp ? Date.parse(options.timestamp) : this.now()),
       accountUserId: this.accountUserId,
-      payload: normalizePayload(payload),
+      payload: normalizedPayload,
     });
+    if (milestone?.key) this.rememberMilestone(milestone.key, milestone.durable);
     return true;
+  }
+
+  private prepareMilestone(
+    userId: string,
+    contextId: string | undefined,
+    isDebug: boolean,
+    payload: EventPayload,
+    eventTimeMs: number,
+  ): { duplicate: boolean; key?: string; durable: boolean } {
+    const registeredAtMs = this.userCreatedAt ? Date.parse(this.userCreatedAt) : Number.NaN;
+    delete payload.elapsedSinceRegistrationMs;
+    if (Number.isFinite(eventTimeMs) && Number.isFinite(registeredAtMs)) {
+      payload.elapsedSinceRegistrationMs = Math.max(0, Math.floor(eventTimeMs - registeredAtMs));
+    }
+
+    const milestoneType = clean(typeof payload.milestoneType === "string" ? payload.milestoneType : undefined);
+    const milestonePoint = clean(typeof payload.milestonePoint === "string" ? payload.milestonePoint : undefined);
+    if (!milestoneType || !milestonePoint) return { duplicate: false, durable: false };
+
+    const key = JSON.stringify([
+      isDebug ? "debug" : "live",
+      userId,
+      milestoneType,
+      milestonePoint,
+    ]);
+    const durable = Boolean(contextId);
+    const keys = durable ? this.reachedMilestoneKeys : this.pendingMilestoneKeys;
+    return { duplicate: keys.has(key), key, durable };
+  }
+
+  private rememberMilestone(key: string, durable: boolean): void {
+    if (!durable) {
+      this.pendingMilestoneKeys.add(key);
+      return;
+    }
+    if (this.reachedMilestoneKeys.has(key)) return;
+    this.reachedMilestoneKeys.add(key);
+    void this.persistReachedMilestones();
+  }
+
+  private rememberBoundMilestones(contextId: string): void {
+    let changed = false;
+    for (const event of [...this.retryBatch, ...this.queue]) {
+      if (event.contextId !== contextId || event.eventType !== "milestone") continue;
+      const milestoneType = clean(typeof event.payload?.milestoneType === "string" ? event.payload.milestoneType : undefined);
+      const milestonePoint = clean(typeof event.payload?.milestonePoint === "string" ? event.payload.milestonePoint : undefined);
+      if (!milestoneType || !milestonePoint) continue;
+      const key = JSON.stringify([
+        event.isDebug ? "debug" : "live",
+        event.userId,
+        milestoneType,
+        milestonePoint,
+      ]);
+      if (!this.reachedMilestoneKeys.has(key)) {
+        this.reachedMilestoneKeys.add(key);
+        changed = true;
+      }
+    }
+    if (changed) void this.persistReachedMilestones();
   }
 
   private consumeCustomEventQuota(eventType: string, contextId: string | undefined, sessionId: string): boolean {
@@ -936,28 +1020,9 @@ export class GameAlgoEventTracker {
     return this.track("purchase", merged);
   }
 
-  gameStart(payload: JsonValue = {}): boolean {
-    return this.track("game_start", payload);
-  }
-
-  gameOver(payload: JsonValue = {}): boolean {
-    return this.track("game_over", payload);
-  }
-
-  move(payload: JsonValue = {}): boolean {
-    return this.track("move", payload);
-  }
-
-  replay(payload: JsonValue = {}): boolean {
-    return this.track("replay", payload);
-  }
-
-  quit(payload: JsonValue = {}): boolean {
-    return this.track("quit", payload);
-  }
-
   async flush(): Promise<EventBatchResponse[]> {
     await this.restorePromise;
+    await this.milestonePersistPromise;
     if (this.flushing) return [];
     this.flushing = true;
 
@@ -1044,6 +1109,34 @@ export class GameAlgoEventTracker {
     } catch {
       await this.storage.removeItem?.(this.persistenceKey);
     }
+  }
+
+  private async restorePersistedMilestones(): Promise<void> {
+    if (!this.storage || !this.milestonePersistenceKey) return;
+    const raw = await this.storage.getItem(this.milestonePersistenceKey);
+    if (!raw) return;
+    try {
+      const restored = JSON.parse(raw);
+      if (!Array.isArray(restored)) throw new Error("invalid milestone cache");
+      for (const key of restored) {
+        if (typeof key === "string" && key) this.reachedMilestoneKeys.add(key);
+      }
+    } catch {
+      await this.storage.removeItem?.(this.milestonePersistenceKey);
+    }
+  }
+
+  private persistReachedMilestones(): Promise<void> {
+    if (!this.storage || !this.milestonePersistenceKey) return Promise.resolve();
+    const persist = async () => {
+      await this.milestoneRestorePromise;
+      await this.storage!.setItem(
+        this.milestonePersistenceKey!,
+        JSON.stringify([...this.reachedMilestoneKeys].sort()),
+      );
+    };
+    this.milestonePersistPromise = this.milestonePersistPromise.then(persist, persist);
+    return this.milestonePersistPromise;
   }
 
   private async persistPendingQueue(): Promise<void> {

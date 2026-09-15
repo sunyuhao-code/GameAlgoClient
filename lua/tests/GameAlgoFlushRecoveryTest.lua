@@ -43,6 +43,7 @@ local function makeSdk(eventHandler, options)
     local cancelCount = 0
     local logs = {}
     local transport = {}
+    local dataGameId = options.dataGameId or "data-game-flush"
 
     function transport.Request(request, callback)
         if request.url:match("/v1/config$") then
@@ -50,6 +51,7 @@ local function makeSdk(eventHandler, options)
                 status = 200,
                 body = cjson.encode({
                     contextId = "ctx-flush-" .. tostring(testSequence),
+                    gameId = dataGameId,
                     configVersion = "flush-recovery",
                     experiments = {},
                     configFiles = {},
@@ -77,6 +79,9 @@ local function makeSdk(eventHandler, options)
     local sdk = dofile("lua/GameAlgo.lua")
     sdk.Init({
         gameKey = "ga_live_flush_recovery_" .. tostring(testSequence),
+        userId = options.userId,
+        userCreatedAt = options.userCreatedAt,
+        userCreatedLocalAt = options.userCreatedLocalAt,
         sessionId = "flush-recovery-session-" .. tostring(testSequence),
         transport = transport,
         autoFetch = false,
@@ -96,6 +101,7 @@ local function makeSdk(eventHandler, options)
         requests = function() return requestCount end,
         sent = function() return sentCount end,
         cancels = function() return cancelCount end,
+        setDataGameId = function(value) dataGameId = value end,
         logs = logs,
     }
 end
@@ -106,6 +112,45 @@ local function success(callback, batchSize)
         body = cjson.encode({ ok = true, accepted = batchSize }),
         headers = {},
     })
+end
+
+-- Milestones derive elapsed time from registration and deduplicate locally
+-- across sessions and data-version switches.
+do
+    local uploaded = nil
+    local harness = makeSdk(function(_, callback, batch)
+        uploaded = batch
+        success(callback, #batch)
+    end, {
+        userId = "milestone-user",
+        userCreatedAt = "1970-01-01T00:00:00.000Z",
+        userCreatedLocalAt = "1970-01-01T00:00:00.000Z",
+        dataGameId = "data-game-milestone",
+    })
+    harness.setTime(5000)
+    assert(harness.sdk.Track("milestone", {
+        milestoneType = "new_user",
+        milestonePoint = "完成引导",
+        elapsedSinceRegistrationMs = 999999,
+    }))
+    local duplicate, duplicateError = harness.sdk.Track("milestone", {
+        milestoneType = "new_user",
+        milestonePoint = "完成引导",
+    })
+    equal(duplicate, false, "duplicate milestone is suppressed")
+    equal(duplicateError, "duplicate milestone", "duplicate reason is explicit")
+    harness.sdk.Flush(nil)
+    equal(#uploaded, 1, "only one milestone is uploaded")
+    equal(uploaded[1].payload.elapsedSinceRegistrationMs, 5000,
+        "SDK owns elapsed time since registration")
+
+    harness.setDataGameId("data-game-milestone-v2")
+    harness.sdk.NewSession("milestone-session-2", function(error) assert(error == nil, tostring(error)) end)
+    local nextSessionDuplicate = harness.sdk.Track("milestone", {
+        milestoneType = "new_user",
+        milestonePoint = "完成引导",
+    })
+    equal(nextSessionDuplicate, false, "milestone dedupe survives session and data-version changes")
 end
 
 -- Init owns an independent LuaScriptObject Update receiver. It must not touch
@@ -159,11 +204,11 @@ do
         success(callback, #batch)
         return { request = "complete" }
     end)
-    assert(harness.sdk.Track("game_start", { sequence = 1 }))
+    assert(harness.sdk.Track("level_start", { sequence = 1 }))
     local timeoutError = nil
     harness.sdk.Flush(function(error) timeoutError = error end)
     for sequence = 2, 2000 do
-        assert(harness.sdk.Track("game_start", { sequence = sequence }))
+        assert(harness.sdk.Track("level_start", { sequence = sequence }))
         harness.sdk.Flush(nil)
     end
     equal(harness.requests(), 1, "only one request is active before timeout")

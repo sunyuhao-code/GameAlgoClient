@@ -32,6 +32,7 @@ public final class GameAlgoClientSmokeTest {
         testTrackerBuffersEventsUntilContextIsReady();
         testTrackerKeepsBoundEventsAcrossSessionsAndDropsUnboundOldEvents();
         testTrackerPersistsAfterThreeFailuresAndRestoresAfterRestart();
+        testMilestoneAddsRegistrationElapsedTimeAndDeduplicatesPerDataVersion();
         testTrackerQueuesAndFlushesEvents();
         testTrackerLimitsCustomEventsAndReportsGuardDiagnostic();
         testCustomEventsPreservePayload();
@@ -720,6 +721,61 @@ public final class GameAlgoClientSmokeTest {
         check(recoveredEvents.size() == 1, "restarted tracker should upload the persisted event once");
         check(storage.getItem("test-event-queue") == null, "successful ACK should clear persisted JSONL");
         restoredTracker.close();
+    }
+
+    private static void testMilestoneAddsRegistrationElapsedTimeAndDeduplicatesPerDataVersion() throws Exception {
+        MemoryCacheStorage storage = new MemoryCacheStorage();
+        FakeHttpClient httpClient = new FakeHttpClient();
+        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":1}"));
+        GameAlgoClient client = new GameAlgoClient(
+                "ga_live_test_key_0123456789abcdef",
+                "https://gamealgo.test",
+                "1.0.0",
+                null,
+                "android",
+                httpClient,
+                new FakeScriptRuntime(),
+                null,
+                null,
+                GameAlgoLogger.console(),
+                false
+        );
+        String registeredAt = GameAlgoClient.isoTimestamp(new java.util.Date(System.currentTimeMillis() - 5000L));
+        GameAlgoEventTracker first = new GameAlgoEventTracker(
+                client, 100, 1000, 0L, storage, "milestone-event-queue"
+        );
+        first.identify("u1", "s1", registeredAt);
+        first.setContextId("ctx-v1");
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("milestoneType", "new_user");
+        payload.put("milestonePoint", "完成引导");
+        payload.put("elapsedSinceRegistrationMs", 999999L);
+        check(first.track("milestone", payload), "first milestone should queue");
+        check(!first.track("milestone", payload), "duplicate milestone should be suppressed");
+        first.flush();
+
+        Map<String, Object> body = requestBody(httpClient.requests.get(0));
+        Map<String, Object> event = GameAlgoJson.asObject(
+                GameAlgoJson.asArray(body.get("events"), "events").get(0),
+                "event"
+        );
+        Map<String, Object> uploadedPayload = GameAlgoJson.asObject(event.get("payload"), "payload");
+        long elapsed = ((Number) uploadedPayload.get("elapsedSinceRegistrationMs")).longValue();
+        check(elapsed >= 4000L && elapsed <= 7000L, "milestone should derive elapsed time from registration");
+        check(storage.getItem("milestone-event-queue:milestones") != null,
+                "milestone dedupe state should persist");
+        first.close();
+
+        GameAlgoEventTracker restored = new GameAlgoEventTracker(
+                client, 100, 1000, 0L, storage, "milestone-event-queue"
+        );
+        restored.identify("u1", "s2", registeredAt);
+        restored.setContextId("ctx-v1-restored");
+        check(!restored.track("milestone", payload), "persisted milestone should remain deduplicated");
+        restored.newSession();
+        restored.setContextId("ctx-v2");
+        check(!restored.track("milestone", payload), "milestone should stay deduplicated after a data version switch");
+        restored.close();
     }
 
     private static void testConstructorBackfillsCreatedAtForPersistedLegacyUserId() throws Exception {

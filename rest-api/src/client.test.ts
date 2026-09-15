@@ -786,6 +786,45 @@ test("tracker limits custom events per context and reports one guard diagnostic"
   client.tracker.close();
 });
 
+test("legacy session and game events use custom-event quotas without SDK helpers", async () => {
+  const diagnostics: Array<Record<string, unknown>> = [];
+  const client = createClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    autoStart: false,
+    eventFlushIntervalMs: 0,
+    eventQueueLimit: 4000,
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      if (request.url.endsWith("/v1/diagnostics/sdk")) {
+        diagnostics.push(await request.json() as Record<string, unknown>);
+        return jsonResponse({ ok: true, accepted: 1 });
+      }
+      throw new Error("event upload is not expected without a context");
+    },
+  });
+  client.tracker.identify("u1", "legacy-events-session");
+
+  for (const eventType of ["session_start", "game_start", "game_over"]) {
+    for (let index = 0; index < 1000; index += 1) {
+      assert.equal(client.tracker.track(eventType, {}), true);
+    }
+    assert.equal(client.tracker.track(eventType, {}), false);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal("gameStart" in client.tracker, false);
+  assert.equal("gameOver" in client.tracker, false);
+  assert.equal("move" in client.tracker, false);
+  assert.equal("replay" in client.tracker, false);
+  assert.equal("quit" in client.tracker, false);
+  assert.deepEqual(
+    diagnostics.map((diagnostic) => String(diagnostic.reasonDetail).match(/eventType=([^;]+)/)?.[1]),
+    ["session_start", "game_start", "game_over"],
+  );
+  client.tracker.close();
+});
+
 test("tracker limits custom event cardinality and total volume per context", async () => {
   const diagnostics: Array<Record<string, unknown>> = [];
   const createQuotaClient = () => createClient({
@@ -857,6 +896,66 @@ test("new session drops only unbound events from the previous session", async ()
   assert.deepEqual(uploadedEvents.map((event) => event.eventType), ["_unbound", "_bound", "_new_session"]);
   assert.deepEqual(uploadedEvents.map((event) => event.contextId), ["ctx-1", "ctx-1", "ctx-2"]);
   client.tracker.close();
+});
+
+test("milestones add registration elapsed time and stay deduplicated across data versions", async () => {
+  const storage = new MapStorage();
+  const uploaded: Array<Record<string, unknown>> = [];
+  const createMilestoneClient = (now: number) => createClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    userId: "u1",
+    storage,
+    autoStart: false,
+    eventFlushIntervalMs: 0,
+    now: () => now,
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      const body = await request.json() as { events: Array<Record<string, unknown>> };
+      uploaded.push(...body.events);
+      return jsonResponse({ ok: true, accepted: body.events.length });
+    },
+  });
+
+  const first = createMilestoneClient(Date.parse("2026-09-15T10:00:05.000Z"));
+  first.tracker.identify("u1", "s1", "2026-09-15T10:00:00.000Z");
+  first.tracker.setContextId("ctx-v1");
+  assert.equal(first.tracker.track("milestone", {
+    milestoneType: "new_user",
+    milestonePoint: "完成引导",
+    elapsedSinceRegistrationMs: 999_999,
+  }), true);
+  assert.equal(first.tracker.track("milestone", {
+    milestoneType: "new_user",
+    milestonePoint: "完成引导",
+  }), false);
+  assert.equal(first.tracker.track("milestone", {
+    milestoneType: "global",
+    milestonePoint: "完成引导",
+  }), true);
+  await first.tracker.flush();
+
+  assert.equal(uploaded.length, 2);
+  assert.equal((uploaded[0].payload as Record<string, unknown>).elapsedSinceRegistrationMs, 5_000);
+  assert.ok(storage.keys().some((key) => key.endsWith(":milestones")));
+  first.tracker.close();
+
+  const restored = createMilestoneClient(Date.parse("2026-09-15T10:00:10.000Z"));
+  await restored.tracker.flush();
+  restored.tracker.identify("u1", "s2", "2026-09-15T10:00:00.000Z");
+  restored.tracker.setContextId("ctx-v1-restored");
+  assert.equal(restored.tracker.track("milestone", {
+    milestoneType: "new_user",
+    milestonePoint: "完成引导",
+  }), false);
+
+  restored.tracker.newSession("s3");
+  restored.tracker.setContextId("ctx-v2");
+  assert.equal(restored.tracker.track("milestone", {
+    milestoneType: "new_user",
+    milestonePoint: "完成引导",
+  }), false);
+  restored.tracker.close();
 });
 
 test("tracker persists the full queue after three failures and restores it until ack", async () => {

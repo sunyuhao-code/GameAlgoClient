@@ -11,7 +11,7 @@ test("Lua SDK maps the Maker user id to account identity without replacing anony
   assert.match(source, /local function resolveMakerUserId\s*\(\s*\)/);
   assert.match(source, /pcall\s*\(\s*function\s*\(\s*\)\s*return\s+lobby\s+end\s*\)/s);
   assert.match(source, /makerLobby:GetMyUserId\s*\(\s*\)/);
-  assert.match(source, /ensureIdentity\s*\(\s*options\.userId\s*\)/);
+  assert.match(source, /ensureIdentity\s*\(\s*options\.userId, options\.userCreatedAt, options\.userCreatedLocalAt\s*\)/);
   assert.match(source, /if accountUserId == nil or accountUserId == "" then accountUserId = resolveMakerUserId\s*\(\s*\) end/);
   assert.match(source, /prefetchedMakerUserId = options\.accountUserId or resolveMakerUserId\s*\(\s*\)/);
   assert.match(source, /ensureAccountIdentity\s*\(\s*options\.accountUserId or state_\.prefetchedMakerUserId, options\.accountUserCreatedAt\s*\)/);

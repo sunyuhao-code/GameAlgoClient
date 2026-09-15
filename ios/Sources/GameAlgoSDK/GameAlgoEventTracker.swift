@@ -31,8 +31,7 @@ struct GameAlgoEventGuardDiagnostic: Encodable, Sendable {
 
 public actor GameAlgoEventTracker {
     private static let standardEventTypes: Set<String> = [
-        "session_start", "session_end", "level_start", "level_end", "play_unit_start", "play_unit_end",
-        "ad_view", "purchase", "game_start", "game_over", "move", "replay", "quit",
+        "session_end", "level_start", "level_end", "ad_view", "purchase", "milestone",
     ]
     private struct CustomCountBucket {
         var total = 0
@@ -46,6 +45,7 @@ public actor GameAlgoEventTracker {
     private let logger: GameAlgoLogHandler?
     private let storage: (any GameAlgoCacheStorage)?
     private let persistenceKey: String?
+    private let milestonePersistenceKey: String?
 
     private var userId: String?
     private var sessionId = UUID().uuidString
@@ -68,6 +68,8 @@ public actor GameAlgoEventTracker {
     private var customCounts: [String: CustomCountBucket] = [:]
     private var diagnosticKeys: Set<String> = []
     private var diagnosticCount = 0
+    private var reachedMilestoneKeys: Set<String> = []
+    private var pendingMilestoneKeys: Set<String> = []
 
     init(
         uploader: any GameAlgoEventBatchUploading,
@@ -93,6 +95,7 @@ public actor GameAlgoEventTracker {
         self.logger = logger
         self.storage = storage
         self.persistenceKey = persistenceKey
+        self.milestonePersistenceKey = persistenceKey.map { "\($0):milestones" }
         self.userId = initialIdentity?.userId
         self.userCreatedAt = initialIdentity?.userCreatedAt
         self.platform = initialPlatform
@@ -108,6 +111,12 @@ public actor GameAlgoEventTracker {
             }
             self.retryBatch = restored
             self.hasPersistedQueue = !restored.isEmpty
+        }
+        if let storage, let milestonePersistenceKey,
+           let raw = try? storage.loadValue(cacheKey: milestonePersistenceKey),
+           let data = raw.data(using: .utf8),
+           let restored = try? JSONDecoder().decode([String].self, from: data) {
+            self.reachedMilestoneKeys.formUnion(restored)
         }
 
         #if canImport(UIKit)
@@ -175,6 +184,7 @@ public actor GameAlgoEventTracker {
         self.sessionId = sessionId
         diagnosticKeys.removeAll()
         diagnosticCount = 0
+        pendingMilestoneKeys.removeAll()
         contextId = nil
         sessionStartDate = now()
         if hasPersistedQueue { persistPendingQueue() }
@@ -191,6 +201,7 @@ public actor GameAlgoEventTracker {
         mergeCustomCountBucket(from: "pending:\(sessionId)", to: "context:\(resolved)")
         retryBatch = retryBatch.map { bindContext($0, contextId: resolved) }
         queue = queue.map { bindContext($0, contextId: resolved) }
+        rememberBoundMilestones(contextId: resolved)
         if hasPersistedQueue { persistPendingQueue() }
     }
 
@@ -228,6 +239,17 @@ public actor GameAlgoEventTracker {
         }
 
         let eventDate = now()
+        var normalizedPayload = normalizePayload(payload)
+        let milestone = eventType == "milestone"
+            ? prepareMilestone(
+                userId: resolvedUserId,
+                contextId: clean(resolvedContextId),
+                isDebug: isDebug,
+                payload: &normalizedPayload,
+                eventDate: eventDate
+            )
+            : nil
+        if milestone?.duplicate == true { return false }
         let event = GameAlgoEvent(
             eventId: UUID().uuidString,
             contextId: resolvedContextId,
@@ -238,10 +260,100 @@ public actor GameAlgoEventTracker {
             timestamp: GameAlgoEventBatchUploader.isoTimestamp(eventDate),
             createdLocalAt: GameAlgoEventBatchUploader.localTimestamp(eventDate),
             accountUserId: accountUserId,
-            payload: normalizePayload(payload)
+            payload: normalizedPayload
         )
         enqueue(event)
+        if let milestone, let key = milestone.key {
+            rememberMilestone(key, durable: milestone.durable)
+        }
         return true
+    }
+
+    private func prepareMilestone(
+        userId: String,
+        contextId: String?,
+        isDebug: Bool,
+        payload: inout [String: JSONValue],
+        eventDate: Date
+    ) -> (duplicate: Bool, key: String?, durable: Bool) {
+        payload.removeValue(forKey: "elapsedSinceRegistrationMs")
+        if let userCreatedAt, let registeredAt = Self.isoDate(userCreatedAt) {
+            let elapsed = max(0, Int(eventDate.timeIntervalSince(registeredAt) * 1000))
+            payload["elapsedSinceRegistrationMs"] = .number(Double(elapsed))
+        }
+
+        guard let milestoneType = clean(payload["milestoneType"]?.stringValue),
+              let milestonePoint = clean(payload["milestonePoint"]?.stringValue) else {
+            return (false, nil, false)
+        }
+        let key = Self.milestoneKey(
+            userId: userId,
+            isDebug: isDebug,
+            milestoneType: milestoneType,
+            milestonePoint: milestonePoint
+        )
+        let durable = contextId != nil
+        let duplicate = !durable
+            ? pendingMilestoneKeys.contains(key)
+            : reachedMilestoneKeys.contains(key)
+        return (duplicate, key, durable)
+    }
+
+    private func rememberMilestone(_ key: String, durable: Bool) {
+        if !durable {
+            pendingMilestoneKeys.insert(key)
+            return
+        }
+        guard reachedMilestoneKeys.insert(key).inserted else { return }
+        persistReachedMilestones()
+    }
+
+    private func rememberBoundMilestones(contextId: String) {
+        var changed = false
+        for event in retryBatch + queue
+        where event.contextId == contextId && event.eventType == "milestone" {
+            guard let milestoneType = clean(event.payload["milestoneType"]?.stringValue),
+                  let milestonePoint = clean(event.payload["milestonePoint"]?.stringValue) else {
+                continue
+            }
+            let key = Self.milestoneKey(
+                userId: event.userId,
+                isDebug: event.isDebug == true,
+                milestoneType: milestoneType,
+                milestonePoint: milestonePoint
+            )
+            if reachedMilestoneKeys.insert(key).inserted { changed = true }
+        }
+        if changed { persistReachedMilestones() }
+    }
+
+    private func persistReachedMilestones() {
+        guard let storage, let milestonePersistenceKey,
+              let data = try? JSONEncoder().encode(reachedMilestoneKeys.sorted()),
+              let raw = String(data: data, encoding: .utf8) else { return }
+        try? storage.saveValue(raw, cacheKey: milestonePersistenceKey)
+    }
+
+    private static func milestoneKey(
+        userId: String,
+        isDebug: Bool,
+        milestoneType: String,
+        milestonePoint: String
+    ) -> String {
+        let parts = [isDebug ? "debug" : "live", userId, milestoneType, milestonePoint]
+        guard let data = try? JSONEncoder().encode(parts),
+              let encoded = String(data: data, encoding: .utf8) else {
+            return parts.map { "\($0.count):\($0)" }.joined()
+        }
+        return encoded
+    }
+
+    private static func isoDate(_ value: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: value)
     }
 
     private func consumeCustomEventQuota(_ eventType: String, contextId: String?, sessionId: String) -> Bool {
@@ -385,31 +497,6 @@ public actor GameAlgoEventTracker {
             merged["currency"] = .string(currency)
         }
         return track("purchase", payload: .object(merged))
-    }
-
-    @discardableResult
-    public func gameStart(payload: JSONValue = .object([:])) -> Bool {
-        track("game_start", payload: payload)
-    }
-
-    @discardableResult
-    public func gameOver(payload: JSONValue = .object([:])) -> Bool {
-        track("game_over", payload: payload)
-    }
-
-    @discardableResult
-    public func move(payload: JSONValue = .object([:])) -> Bool {
-        track("move", payload: payload)
-    }
-
-    @discardableResult
-    public func replay(payload: JSONValue = .object([:])) -> Bool {
-        track("replay", payload: payload)
-    }
-
-    @discardableResult
-    public func quit(payload: JSONValue = .object([:])) -> Bool {
-        track("quit", payload: payload)
     }
 
     public func flush() async {

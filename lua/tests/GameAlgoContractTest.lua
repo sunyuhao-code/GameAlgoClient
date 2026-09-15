@@ -6,6 +6,9 @@ local files = {}
 
 FILE_READ = 1
 FILE_WRITE = 2
+fileSystem = {
+    FileExists = function(_, name) return files[name] ~= nil end,
+}
 
 function File(name, mode)
     local readable = mode == FILE_READ and files[name] ~= nil
@@ -74,6 +77,7 @@ local GameAlgo = require("GameAlgo")
 
 GameAlgo.Init({
     gameKey = "ga_live_fixture_key",
+    userId = "milestone-user",
     sessionId = "session-fixture-001",
     transport = transport,
     autoFetch = false,
@@ -139,6 +143,30 @@ for key, value in pairs(snapshot.data) do
     if key:match(":events:jsonl$") then assert(value == "") end
 end
 
+assert(GameAlgo.Track("milestone", {
+    milestoneType = "new_user",
+    milestonePoint = "完成引导",
+    elapsedSinceRegistrationMs = 999999,
+}))
+local duplicateMilestone, duplicateMilestoneError = GameAlgo.Track("milestone", {
+    milestoneType = "new_user",
+    milestonePoint = "完成引导",
+})
+assert(duplicateMilestone == false)
+assert(duplicateMilestoneError == "duplicate milestone")
+GameAlgo.Flush(function(error) assert(error == nil, tostring(error)) end)
+local milestoneEvents = eventRequests[#eventRequests].events
+assert(#milestoneEvents == 1)
+assert(milestoneEvents[1].eventType == "milestone")
+assert(type(milestoneEvents[1].payload.elapsedSinceRegistrationMs) == "number")
+assert(milestoneEvents[1].payload.elapsedSinceRegistrationMs ~= 999999)
+snapshot = cjson.decode(assert(files["gamealgo_sdk_storage_v1.json"]))
+local persistedMilestones = nil
+for key, value in pairs(snapshot.data) do
+    if key:match(":milestones$") then persistedMilestones = value end
+end
+assert(type(persistedMilestones) == "string" and persistedMilestones ~= "")
+
 assert(GameAlgo.TrackEvent("bound_session_one", { sequence = 1 }))
 local sessionTwo = GameAlgo.NewSession("session-fixture-002")
 assert(sessionTwo == "session-fixture-002")
@@ -185,12 +213,24 @@ end
 
 GameAlgo.Init({
     gameKey = "ga_live_fixture_key",
+    userId = "milestone-user",
     sessionId = "session-preload",
     transport = preloadTransport,
     autoFetch = false,
     logger = function(message) table.insert(logs, message) end,
 })
 GameAlgo.FetchConfig(function(error) assert(error == nil, tostring(error)) end)
+local restoredMilestone, restoredMilestoneError = GameAlgo.Track("milestone", {
+    milestoneType = "new_user",
+    milestonePoint = "完成引导",
+})
+local restoredSnapshot = GameAlgo.Snapshot()
+assert(restoredMilestone == false, "expected persisted milestone dedupe, got "
+    .. tostring(restoredMilestone) .. ": " .. tostring(restoredMilestoneError)
+    .. ", user=" .. tostring(restoredSnapshot.userId)
+    .. ", game=" .. tostring(restoredSnapshot.config and restoredSnapshot.config.gameId)
+    .. ", stored=" .. tostring(persistedMilestones))
+assert(restoredMilestoneError == "duplicate milestone")
 local preloadFailureLogged = false
 for _, message in ipairs(logs) do
     if message:find("script preload failed:", 1, true)

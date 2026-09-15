@@ -41,9 +41,8 @@ local CONFIG_FETCH_RETRY_MAX_MS = 30000
 local CONFIG_FETCH_TIMEOUT_MS = 12000
 local INIT_WATCHDOG_MS = 10000
 local STANDARD_EVENT_TYPES = {
-    session_start = true, session_end = true, level_start = true, level_end = true,
-    play_unit_start = true, play_unit_end = true, ad_view = true, purchase = true,
-    game_start = true, game_over = true, move = true, replay = true, quit = true,
+    session_end = true, level_start = true, level_end = true,
+    ad_view = true, purchase = true, milestone = true,
 }
 
 local state_ = {
@@ -105,6 +104,8 @@ local state_ = {
     customEventCounts = {},
     eventGuardDiagnosticKeys = {},
     eventGuardDiagnosticCount = 0,
+    reachedMilestoneKeys = {},
+    pendingMilestoneKeys = {},
     pendingTracks = {},
     consecutiveFlushFailures = 0,
     queuePersistenceActive = false,
@@ -204,6 +205,42 @@ local function clockMs()
     return nowMs()
 end
 
+local function epochMsFromIso(value)
+    if type(value) ~= "string" then return nil end
+    local year, month, day, hour, minute, second, suffix = value:match(
+        "^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)(.*)$"
+    )
+    if not year then return nil end
+    local interpretedAsLocal = os.time({
+        year = tonumber(year),
+        month = tonumber(month),
+        day = tonumber(day),
+        hour = tonumber(hour),
+        min = tonumber(minute),
+        sec = tonumber(second),
+        isdst = false,
+    })
+    if not interpretedAsLocal then return nil end
+    local utcParts = os.date("!*t", interpretedAsLocal)
+    local localParts = os.date("*t", interpretedAsLocal)
+    utcParts.isdst = localParts.isdst
+    local utcAsLocal = os.time(utcParts)
+    if not utcAsLocal then return nil end
+    local timestamp = interpretedAsLocal + os.difftime(interpretedAsLocal, utcAsLocal)
+
+    local zone = suffix:match("(Z)$") or suffix:match("([+-]%d%d:?%d%d)$")
+    if not zone then return nil end
+    if zone ~= "Z" then
+        local sign, zoneHour, zoneMinute = zone:match("^([+-])(%d%d):?(%d%d)$")
+        if not sign then return nil end
+        local offsetSeconds = (tonumber(zoneHour) * 60 + tonumber(zoneMinute)) * 60
+        timestamp = timestamp - (sign == "+" and offsetSeconds or -offsetSeconds)
+    end
+    local fraction = suffix:match("^%.(%d+)") or ""
+    local milliseconds = tonumber((fraction .. "000"):sub(1, 3)) or 0
+    return math.floor(timestamp * 1000 + milliseconds)
+end
+
 local function randomId(prefix)
     return (prefix or "id") .. "_" .. tostring(os.time()) .. "_" .. tostring(math.random(100000, 999999))
 end
@@ -248,6 +285,10 @@ local function queueStorageKey()
     return userStorageNamespace() .. ":events:jsonl"
 end
 
+local function milestoneStorageKey()
+    return userStorageNamespace() .. ":milestones"
+end
+
 local function resolveMakerUserId()
     -- Maker exposes some globals through the Lua environment metatable, so the
     -- lookup must preserve the environment's normal index behavior.
@@ -265,15 +306,19 @@ local function resolveMakerUserId()
     return normalized
 end
 
-local function ensureIdentity(explicitUserId)
+local function ensureIdentity(explicitUserId, explicitUserCreatedAt, explicitUserCreatedLocalAt)
     if explicitUserId and explicitUserId ~= "" then
         state_.userId = tostring(explicitUserId)
-        if not state_.userCreatedAt then
+        if explicitUserCreatedAt and explicitUserCreatedAt ~= "" then
+            state_.userCreatedAt = tostring(explicitUserCreatedAt)
+        elseif not state_.userCreatedAt then
             state_.userCreatedAt = storageGet(identityStorageKey("user_created_at"))
                 or storageGet("gamealgo_user_created_at")
                 or isoNow()
         end
-        if not state_.userCreatedLocalAt then
+        if explicitUserCreatedLocalAt and explicitUserCreatedLocalAt ~= "" then
+            state_.userCreatedLocalAt = tostring(explicitUserCreatedLocalAt)
+        elseif not state_.userCreatedLocalAt then
             state_.userCreatedLocalAt = storageGet(identityStorageKey("user_created_local_at"))
                 or storageGet("gamealgo_user_created_local_at")
                 or localIsoFromUtc(state_.userCreatedAt)
@@ -543,6 +588,73 @@ local function preparePayload(payload)
     return copy, nil
 end
 
+local function milestoneKey(isDebug, milestoneType, milestonePoint)
+    local ok, encoded = pcall(cjson.encode, {
+        isDebug and "debug" or "live",
+        tostring(milestoneType),
+        tostring(milestonePoint),
+    })
+    if ok then return encoded end
+    return (isDebug and "debug" or "live") .. "\0"
+        .. tostring(milestoneType) .. "\0" .. tostring(milestonePoint)
+end
+
+local function persistReachedMilestones()
+    if not state_.storageReady or not state_.userId then return end
+    local keys = {}
+    for key in pairs(state_.reachedMilestoneKeys) do table.insert(keys, key) end
+    table.sort(keys)
+    local ok, encoded = pcall(cjson.encode, keys)
+    if ok then storageSet(milestoneStorageKey(), encoded) end
+end
+
+local function restoreReachedMilestones()
+    state_.reachedMilestoneKeys = {}
+    local raw = storageGet(milestoneStorageKey())
+    if type(raw) ~= "string" or raw == "" then return end
+    local ok, decoded = pcall(cjson.decode, raw)
+    if not ok or type(decoded) ~= "table" then
+        storageSet(milestoneStorageKey(), "")
+        return
+    end
+    for _, key in pairs(decoded) do
+        if type(key) == "string" and key ~= "" then state_.reachedMilestoneKeys[key] = true end
+    end
+end
+
+local function prepareMilestone(eventType, payload, occurredAtMs)
+    if eventType ~= "milestone" then return payload, nil, false, false end
+    payload.elapsedSinceRegistrationMs = nil
+    local registeredAtMs = epochMsFromIso(state_.userCreatedAt)
+    if registeredAtMs and tonumber(occurredAtMs) then
+        payload.elapsedSinceRegistrationMs = math.max(0, math.floor(tonumber(occurredAtMs) - registeredAtMs))
+    end
+    if type(payload.milestoneType) ~= "string" or payload.milestoneType == ""
+        or type(payload.milestonePoint) ~= "string" or payload.milestonePoint == "" then
+        return payload, nil, false, false
+    end
+    local durable = state_.contextId ~= nil and state_.contextId ~= ""
+    local key = milestoneKey(state_.isDebug, payload.milestoneType, payload.milestonePoint)
+    local duplicate
+    if durable then
+        duplicate = state_.reachedMilestoneKeys[key] == true
+    else
+        duplicate = state_.pendingMilestoneKeys[key] == true
+    end
+    return payload, key, durable, duplicate
+end
+
+local function rememberMilestone(key, durable)
+    if not key then return end
+    if not durable then
+        state_.pendingMilestoneKeys[key] = true
+        return
+    end
+    if state_.reachedMilestoneKeys[key] then return end
+    state_.reachedMilestoneKeys[key] = true
+    persistReachedMilestones()
+end
+
 local function decodeJsonObject(value)
     if type(value) == "table" then return value end
     if type(value) ~= "string" then return nil end
@@ -691,6 +803,28 @@ local function bindQueuedEvents(contextId, sessionId)
     scheduleEventQueuePersistence()
 end
 
+local function rememberBoundMilestones(contextId)
+    if not contextId or contextId == "" then return end
+    local changed = false
+    for _, event in ipairs(state_.queue) do
+        local payload = event.payload
+        if event.contextId == contextId and event.eventType == "milestone" and type(payload) == "table"
+            and type(payload.milestoneType) == "string" and payload.milestoneType ~= ""
+            and type(payload.milestonePoint) == "string" and payload.milestonePoint ~= "" then
+            local key = milestoneKey(
+                event.isDebug == true,
+                payload.milestoneType,
+                payload.milestonePoint
+            )
+            if not state_.reachedMilestoneKeys[key] then
+                state_.reachedMilestoneKeys[key] = true
+                changed = true
+            end
+        end
+    end
+    if changed then persistReachedMilestones() end
+end
+
 local function enqueueTrack(eventType, payload, timestamp, createdLocalAt)
     if outstandingEventCount() >= state_.maxQueueSize then
         state_.queuePersistenceActive = true
@@ -764,15 +898,25 @@ local function completeInitialization(options)
     state_.storageReady = true
     state_.initializationComplete = true
 
-    ensureIdentity(options.userId)
+    ensureIdentity(options.userId, options.userCreatedAt, options.userCreatedLocalAt)
     ensureAccountIdentity(options.accountUserId or state_.prefetchedMakerUserId, options.accountUserCreatedAt)
+    restoreReachedMilestones()
     restoreEventQueue()
 
     for _, controller in pairs(state_.ddaControllers) do
         if type(controller._Hydrate) == "function" then controller._Hydrate() end
     end
     for _, pending in ipairs(state_.pendingTracks) do
-        local tracked, trackError = enqueueTrack(pending.eventType, pending.payload, pending.timestamp, pending.createdLocalAt)
+        local prepared, key, durable, duplicate = prepareMilestone(
+            pending.eventType,
+            pending.payload,
+            pending.occurredAtMs
+        )
+        local tracked, trackError = false, "duplicate milestone"
+        if not duplicate then
+            tracked, trackError = enqueueTrack(pending.eventType, prepared, pending.timestamp, pending.createdLocalAt)
+            if tracked then rememberMilestone(key, durable) end
+        end
         if not tracked then log("pending event dropped: " .. tostring(trackError)) end
     end
     state_.pendingTracks = {}
@@ -855,6 +999,8 @@ function GameAlgo.Init(options)
     state_.customEventCounts = {}
     state_.eventGuardDiagnosticKeys = {}
     state_.eventGuardDiagnosticCount = 0
+    state_.reachedMilestoneKeys = {}
+    state_.pendingMilestoneKeys = {}
     state_.consecutiveFlushFailures = 0
     state_.queuePersistenceActive = false
     state_.queuePersistenceDirty = false
@@ -995,6 +1141,7 @@ performConfigFetchAttempt = function()
             mergeCustomEventCountBucket("pending:" .. tostring(state_.sessionId), "context:" .. state_.contextId)
         end
         bindQueuedEvents(state_.contextId, state_.sessionId)
+        rememberBoundMilestones(state_.contextId)
         if state_.initWatchdogHandle and state_.scheduler and type(state_.scheduler.Cancel) == "function" then
             state_.scheduler:Cancel(state_.initWatchdogHandle)
             state_.initWatchdogHandle = nil
@@ -1153,11 +1300,24 @@ function GameAlgo.Track(eventType, payload)
             log("event rejected: " .. tostring(eventType) .. " " .. tostring(quotaError))
             return false, quotaError
         end
+        if eventType == "milestone"
+            and type(payloadCopy.milestoneType) == "string" and payloadCopy.milestoneType ~= ""
+            and type(payloadCopy.milestonePoint) == "string" and payloadCopy.milestonePoint ~= "" then
+            for _, pending in ipairs(state_.pendingTracks) do
+                if pending.eventType == "milestone"
+                    and pending.payload.milestoneType == payloadCopy.milestoneType
+                    and pending.payload.milestonePoint == payloadCopy.milestonePoint then
+                    return false, "duplicate milestone"
+                end
+            end
+        end
         table.insert(state_.pendingTracks, {
             eventType = eventType,
             payload = payloadCopy,
             timestamp = isoNow(),
             createdLocalAt = localIsoNow(),
+            occurredAtMs = clockMs(),
+            sessionId = state_.sessionId,
         })
         return true
     end
@@ -1172,11 +1332,18 @@ function GameAlgo.Track(eventType, payload)
         log("event rejected: " .. tostring(eventType) .. " " .. tostring(quotaError))
         return false, quotaError
     end
-    local tracked, trackError = enqueueTrack(eventType, payloadCopy, nil, nil)
+    local prepared, key, durable, duplicate = prepareMilestone(
+        eventType,
+        payloadCopy,
+        clockMs()
+    )
+    if duplicate then return false, "duplicate milestone" end
+    local tracked, trackError = enqueueTrack(eventType, prepared, nil, nil)
     if not tracked then
         log("event rejected: " .. tostring(eventType) .. " " .. tostring(trackError))
         return false, trackError
     end
+    rememberMilestone(key, durable)
     if state_.contextId and state_.contextId ~= ""
         and not state_.activeFlush
         and (#state_.queue >= state_.maxBatchSize
@@ -1501,6 +1668,7 @@ function GameAlgo.NewSession(sessionId, callback)
     state_.sessionStartMs = nowMs()
     state_.contextId = nil
     state_.config = nil
+    state_.pendingMilestoneKeys = {}
     if state_.queuePersistenceActive then persistEventQueue() end
     GameAlgo.FetchConfig(callback)
     return nextSessionId

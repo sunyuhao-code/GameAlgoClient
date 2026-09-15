@@ -807,6 +807,68 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertNil(storage.value(cacheKey: "test-event-queue"))
     }
 
+    func testMilestoneAddsRegistrationElapsedTimeAndStaysDeduplicatedAcrossDataVersions() async throws {
+        let storage = MemoryCacheStorage()
+        let identity = GameAlgoUserIdentity(
+            userId: "u1",
+            userCreatedAt: "1970-01-01T00:00:00.000Z",
+            userCreatedLocalAt: "1970-01-01T00:00:00.000Z"
+        )
+        let clock = TestClock(date: Date(timeIntervalSince1970: 5))
+        let uploader = QueueEventUploader(failures: 0)
+        let first = GameAlgoEventTracker(
+            uploader: uploader,
+            flushInterval: 0,
+            initialIdentity: identity,
+            storage: storage,
+            persistenceKey: "milestone-event-queue",
+            now: { clock.now() }
+        )
+        await first.identify(userId: "u1", sessionId: "s1")
+        await first.setContextId("ctx-v1")
+        let firstAccepted = await first.track("milestone", payload: .object([
+            "milestoneType": .string("new_user"),
+            "milestonePoint": .string("完成引导"),
+            "elapsedSinceRegistrationMs": .number(999_999),
+        ]))
+        let duplicateAccepted = await first.track("milestone", payload: .object([
+            "milestoneType": .string("new_user"),
+            "milestonePoint": .string("完成引导"),
+        ]))
+        XCTAssertTrue(firstAccepted)
+        XCTAssertFalse(duplicateAccepted)
+        await first.flush()
+
+        let uploaded = await uploader.uploadedEvents()
+        XCTAssertEqual(uploaded.count, 1)
+        XCTAssertEqual(uploaded[0].payload["elapsedSinceRegistrationMs"]?.doubleValue, 5_000)
+        XCTAssertNotNil(storage.value(cacheKey: "milestone-event-queue:milestones"))
+
+        let restored = GameAlgoEventTracker(
+            uploader: QueueEventUploader(failures: 0),
+            flushInterval: 0,
+            initialIdentity: identity,
+            storage: storage,
+            persistenceKey: "milestone-event-queue",
+            now: { clock.now() }
+        )
+        await restored.identify(userId: "u1", sessionId: "s2")
+        await restored.setContextId("ctx-v1-restored")
+        let restoredDuplicate = await restored.track("milestone", payload: .object([
+            "milestoneType": .string("new_user"),
+            "milestonePoint": .string("完成引导"),
+        ]))
+        XCTAssertFalse(restoredDuplicate)
+
+        await restored.newSession("s3")
+        await restored.setContextId("ctx-v2")
+        let nextVersionAccepted = await restored.track("milestone", payload: .object([
+            "milestoneType": .string("new_user"),
+            "milestonePoint": .string("完成引导"),
+        ]))
+        XCTAssertFalse(nextVersionAccepted)
+    }
+
     func testTrackerLimitsCustomEventsAndReportsGuardDiagnostic() async throws {
         let uploader = QueueEventUploader(failures: 0)
         let tracker = GameAlgoEventTracker(
