@@ -2,6 +2,7 @@ package com.gamealgo.sdk;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -10,18 +11,31 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TimeZone;
 import java.util.UUID;
+import java.text.SimpleDateFormat;
+import java.util.Locale;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 public final class GameAlgoEventTracker implements AutoCloseable {
     private static final Set<String> STANDARD_EVENT_TYPES = new HashSet<>(Arrays.asList(
-            "session_start", "session_end", "level_start", "level_end", "play_unit_start", "play_unit_end",
-            "ad_view", "purchase", "game_start", "game_over", "move", "replay", "quit"));
+            "session_end", "level_start", "level_end", "ad_view", "purchase", "milestone"));
 
     private static final class CustomCountBucket {
         int total;
         final Map<String, Integer> byType = new LinkedHashMap<>();
+    }
+
+    private static final class MilestoneDecision {
+        final boolean duplicate;
+        final String key;
+        final boolean durable;
+
+        MilestoneDecision(boolean duplicate, String key, boolean durable) {
+            this.duplicate = duplicate;
+            this.key = key;
+            this.durable = durable;
+        }
     }
 
     private final GameAlgoClient client;
@@ -30,6 +44,7 @@ public final class GameAlgoEventTracker implements AutoCloseable {
     private final long flushIntervalMillis;
     private final GameAlgoCacheStorage storage;
     private final String persistenceKey;
+    private final String milestonePersistenceKey;
 
     private String userId;
     private String sessionId = UUID.randomUUID().toString();
@@ -48,6 +63,8 @@ public final class GameAlgoEventTracker implements AutoCloseable {
     private final Map<String, CustomCountBucket> customCounts = new LinkedHashMap<>();
     private final Set<String> diagnosticKeys = new HashSet<>();
     private int diagnosticCount;
+    private final Set<String> reachedMilestoneKeys = new HashSet<>();
+    private final Set<String> pendingMilestoneKeys = new HashSet<>();
 
     GameAlgoEventTracker(GameAlgoClient client) {
         this(client, 100, 1000, 30000L, null, null);
@@ -70,7 +87,9 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         this.flushIntervalMillis = flushIntervalMillis;
         this.storage = storage;
         this.persistenceKey = persistenceKey;
+        this.milestonePersistenceKey = isBlank(persistenceKey) ? null : persistenceKey + ":milestones";
         restorePersistedQueue();
+        restorePersistedMilestones();
     }
 
     public synchronized void identify(String userId) {
@@ -107,6 +126,7 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         sessionId = UUID.randomUUID().toString();
         diagnosticKeys.clear();
         diagnosticCount = 0;
+        pendingMilestoneKeys.clear();
         contextId = null;
         sessionStartMillis = System.currentTimeMillis();
         if (hasPersistedQueue) persistPendingQueue();
@@ -122,6 +142,7 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         mergeCustomCountBucket("pending:" + sessionId, "context:" + this.contextId);
         bindCurrentSession(retryBatch, this.contextId);
         bindCurrentSession(queue, this.contextId);
+        rememberBoundMilestones(this.contextId);
         if (hasPersistedQueue) persistPendingQueue();
     }
 
@@ -154,11 +175,14 @@ public final class GameAlgoEventTracker implements AutoCloseable {
     }
 
     private boolean trackInternal(String eventType, Map<String, Object> payload) {
+        Date eventDate = new Date();
+        Map<String, Object> normalizedPayload = normalizePayload(payload);
         String resolvedUserId;
         String resolvedSessionId;
         String resolvedContextId;
         boolean resolvedIsDebug;
         String resolvedAccountUserId;
+        MilestoneDecision milestone = null;
         synchronized (this) {
             if (isBlank(userId)) {
                 return false;
@@ -171,18 +195,116 @@ public final class GameAlgoEventTracker implements AutoCloseable {
             resolvedContextId = isBlank(contextId) ? "" : contextId;
             resolvedIsDebug = isDebug;
             resolvedAccountUserId = accountUserId;
+            if ("milestone".equals(eventType)) {
+                milestone = prepareMilestone(
+                        resolvedUserId,
+                        resolvedContextId,
+                        resolvedIsDebug,
+                        normalizedPayload,
+                        eventDate
+                );
+                if (milestone.duplicate) return false;
+                if (milestone.key != null) rememberMilestone(milestone.key, milestone.durable);
+            }
         }
 
-        Date eventDate = new Date();
         GameAlgoEvent event = new GameAlgoEvent(resolvedContextId, resolvedUserId, resolvedSessionId, eventType)
                 .eventId(UUID.randomUUID().toString())
-                .payload(normalizePayload(payload))
+                .payload(normalizedPayload)
                 .isDebug(resolvedIsDebug)
                 .timestamp(GameAlgoClient.isoTimestamp(eventDate))
                 .createdLocalAt(GameAlgoClient.localTimestamp(eventDate))
                 .accountUserId(resolvedAccountUserId);
         enqueue(event);
         return true;
+    }
+
+    private MilestoneDecision prepareMilestone(
+            String resolvedUserId,
+            String resolvedContextId,
+            boolean resolvedIsDebug,
+            Map<String, Object> payload,
+            Date eventDate) {
+        payload.remove("elapsedSinceRegistrationMs");
+        Date registeredAt = parseIsoTimestamp(userCreatedAt);
+        if (registeredAt != null) {
+            payload.put("elapsedSinceRegistrationMs", Math.max(0L, eventDate.getTime() - registeredAt.getTime()));
+        }
+
+        String milestoneType = cleanPayloadString(payload.get("milestoneType"));
+        String milestonePoint = cleanPayloadString(payload.get("milestonePoint"));
+        if (milestoneType == null || milestonePoint == null) {
+            return new MilestoneDecision(false, null, false);
+        }
+        boolean durable = !isBlank(resolvedContextId);
+        String key = milestoneKey(resolvedUserId, resolvedIsDebug, milestoneType, milestonePoint);
+        boolean duplicate = durable ? reachedMilestoneKeys.contains(key) : pendingMilestoneKeys.contains(key);
+        return new MilestoneDecision(duplicate, key, durable);
+    }
+
+    private void rememberMilestone(String key, boolean durable) {
+        if (!durable) {
+            pendingMilestoneKeys.add(key);
+            return;
+        }
+        if (reachedMilestoneKeys.add(key)) persistReachedMilestones();
+    }
+
+    private void rememberBoundMilestones(String resolvedContextId) {
+        boolean changed = false;
+        List<GameAlgoEvent> events = new ArrayList<>(retryBatch.size() + queue.size());
+        events.addAll(retryBatch);
+        events.addAll(queue);
+        for (GameAlgoEvent event : events) {
+            if (!resolvedContextId.equals(event.getContextId()) || !"milestone".equals(event.getEventType())) continue;
+            String milestoneType = cleanPayloadString(event.getPayload().get("milestoneType"));
+            String milestonePoint = cleanPayloadString(event.getPayload().get("milestonePoint"));
+            if (milestoneType == null || milestonePoint == null) continue;
+            String key = milestoneKey(
+                    event.getUserId(),
+                    Boolean.TRUE.equals(event.getIsDebug()),
+                    milestoneType,
+                    milestonePoint
+            );
+            if (reachedMilestoneKeys.add(key)) changed = true;
+        }
+        if (changed) persistReachedMilestones();
+    }
+
+    private static String milestoneKey(
+            String resolvedUserId,
+            boolean resolvedIsDebug,
+            String milestoneType,
+            String milestonePoint) {
+        String[] parts = {
+                resolvedIsDebug ? "debug" : "live",
+                resolvedUserId,
+                milestoneType,
+                milestonePoint,
+        };
+        StringBuilder key = new StringBuilder();
+        for (String part : parts) key.append(part.length()).append(':').append(part);
+        return key.toString();
+    }
+
+    private static String cleanPayloadString(Object value) {
+        if (!(value instanceof String)) return null;
+        String normalized = ((String) value).trim();
+        return normalized.length() == 0 ? null : normalized;
+    }
+
+    private static Date parseIsoTimestamp(String value) {
+        if (isBlank(value)) return null;
+        for (String pattern : Arrays.asList("yyyy-MM-dd'T'HH:mm:ss.SSSX", "yyyy-MM-dd'T'HH:mm:ssX")) {
+            try {
+                SimpleDateFormat formatter = new SimpleDateFormat(pattern, Locale.US);
+                formatter.setLenient(false);
+                return formatter.parse(value);
+            } catch (Exception ignored) {
+                // Try the next supported ISO-8601 shape.
+            }
+        }
+        return null;
     }
 
     private boolean consumeCustomEventQuota(String eventType, String resolvedContextId, String resolvedSessionId) {
@@ -306,26 +428,6 @@ public final class GameAlgoEventTracker implements AutoCloseable {
             merged.put("currency", currency);
         }
         return track("purchase", merged);
-    }
-
-    public boolean gameStart(Map<String, Object> payload) {
-        return track("game_start", payload);
-    }
-
-    public boolean gameOver(Map<String, Object> payload) {
-        return track("game_over", payload);
-    }
-
-    public boolean move(Map<String, Object> payload) {
-        return track("move", payload);
-    }
-
-    public boolean replay(Map<String, Object> payload) {
-        return track("replay", payload);
-    }
-
-    public boolean quit(Map<String, Object> payload) {
-        return track("quit", payload);
     }
 
     public void flush() throws GameAlgoException {
@@ -458,6 +560,36 @@ public final class GameAlgoEventTracker implements AutoCloseable {
             hasPersistedQueue = !retryBatch.isEmpty();
         } catch (GameAlgoException ignored) {
             // A malformed or unavailable persistence file must not block SDK startup.
+        }
+    }
+
+    private void restorePersistedMilestones() {
+        if (storage == null || isBlank(milestonePersistenceKey)) return;
+        try {
+            String raw = storage.getItem(milestonePersistenceKey);
+            if (isBlank(raw)) return;
+            for (Object value : GameAlgoJson.asArray(GameAlgoJson.parse(raw), "milestones")) {
+                if (value instanceof String && !isBlank((String) value)) {
+                    reachedMilestoneKeys.add((String) value);
+                }
+            }
+        } catch (GameAlgoException ignored) {
+            try {
+                storage.removeItem(milestonePersistenceKey);
+            } catch (GameAlgoException ignoredCleanup) {
+                // A malformed optional cache must not block SDK startup.
+            }
+        }
+    }
+
+    private synchronized void persistReachedMilestones() {
+        if (storage == null || isBlank(milestonePersistenceKey)) return;
+        List<String> keys = new ArrayList<>(reachedMilestoneKeys);
+        Collections.sort(keys);
+        try {
+            storage.setItem(milestonePersistenceKey, GameAlgoJson.stringify(keys));
+        } catch (GameAlgoException ignored) {
+            // Milestone deduplication remains active in memory when persistence is unavailable.
         }
     }
 
