@@ -1,8 +1,10 @@
-# GameAlgo REST API v1
+# GameAlgo TypeScript HTTP Helper
 
-这份文档面向无法使用官方 iOS / Android SDK 的团队。
+这是供官方 SDK 复用及自定义受控运行时使用的底层 HTTP helper。H5 游戏应直接使用 [`@gamealgo/web`](../web/README.md)，不要把 HTTP 传输方式当作平台类型。
 
 REST 请求和 SDK 使用同一套 Protocol v1 接口。
+
+新客户端必须显式使用 `ios`、`android`、`maker` 或 `web`；`rest` 只由服务端用于兼容旧 Maker 数据，不是可选平台值。此 helper 的默认平台是 `maker`。
 
 ## TypeScript Helper
 
@@ -17,6 +19,7 @@ const client = new GameAlgoRestClient({
   sdkVersion: "1.0.0",
   appVersion: "1.2.3",
   experimentIntegrationVersion: 3,
+  platform: "maker",
 });
 
 const levelGenerator = client.executor("level_generator");
@@ -117,13 +120,13 @@ curl -s -X POST "https://gamealgo.example.com/v1/config" \
   -d '{
     "userId": "user-001",
     "sessionId": "session-001",
-    "platform": "rest",
+    "platform": "maker",
     "sdkVersion": "1.0.0",
     "appVersion": "1.2.3",
     "timezone": "Asia/Shanghai",
     "isDebug": false,
     "device": {
-      "runtime": "rest",
+      "runtime": "custom",
       "locale": "zh-CN",
       "deviceId": "debug-device-id"
     }

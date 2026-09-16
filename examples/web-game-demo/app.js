@@ -113,7 +113,7 @@ async function connectSdk() {
         userId: state.userId,
         userCreatedAt: state.userCreatedAt,
         sessionId: state.sessionId,
-        platform: "rest",
+        platform: "web",
         sdkVersion: SDK_VERSION,
         appVersion: APP_VERSION,
         timezone: state.timezone,

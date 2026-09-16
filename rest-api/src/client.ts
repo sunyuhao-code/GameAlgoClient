@@ -1,4 +1,5 @@
 import type {
+  ConfigFileRef,
   ConfigFileResponse,
   ConfigResponse,
   ContextIdentifierResponse,
@@ -93,7 +94,9 @@ export class GameAlgoRestClient {
     this.accountUserId = clean(options.accountUserId);
     this.accountUserCreatedAt = clean(options.accountUserCreatedAt);
     this.experimentIntegrationVersion = normalizeExperimentIntegrationVersion(options.experimentIntegrationVersion);
-    this.platform = options.platform ?? "rest";
+    // `rest` was the historical Maker platform value. JavaScript callers can
+    // still pass it at runtime even though it is no longer in the public type.
+    this.platform = (options.platform as unknown) === "rest" ? "maker" : (options.platform ?? "maker");
     this.timezone = clean(options.timezone) ?? defaultTimezone();
     this.isDebug = options.isDebug ?? false;
     this.fetchImpl = options.fetchImpl ?? fetch;
@@ -121,7 +124,9 @@ export class GameAlgoRestClient {
       isDebug: this.isDebug,
       flushIntervalMs: options.eventFlushIntervalMs ?? 30000,
       maxBatchSize: options.eventMaxBatchSize ?? 100,
+      maxBatchBytes: options.eventMaxBatchBytes,
       queueLimit: options.eventQueueLimit ?? 1000,
+      persistOnEnqueue: options.eventPersistOnEnqueue ?? false,
       now: this.now,
       storage: this.storage,
       persistenceKey: `gamealgo:v1:event-queue:${baseCacheNamespace}:${gameKeyHash}:${userScope}`,
@@ -685,7 +690,9 @@ export class GameAlgoEventTracker {
   private readonly sdkVersion: string;
   private readonly appVersion?: string;
   private readonly maxBatchSize: number;
+  private readonly maxBatchBytes?: number;
   private readonly queueLimit: number;
+  private readonly persistOnEnqueue: boolean;
   private readonly flushIntervalMs: number;
   private readonly now: () => number;
   private readonly storage?: GameAlgoStorage;
@@ -715,6 +722,7 @@ export class GameAlgoEventTracker {
   private readonly reachedMilestoneKeys = new Set<string>();
   private readonly pendingMilestoneKeys = new Set<string>();
   private milestonePersistPromise: Promise<void> = Promise.resolve();
+  private queuePersistPromise: Promise<void> = Promise.resolve();
 
   constructor(options: {
     uploadEvents: (events: GameEvent[]) => Promise<EventBatchResponse>;
@@ -726,7 +734,9 @@ export class GameAlgoEventTracker {
     isDebug: boolean;
     flushIntervalMs: number;
     maxBatchSize: number;
+    maxBatchBytes?: number;
     queueLimit: number;
+    persistOnEnqueue?: boolean;
     now: () => number;
     storage?: GameAlgoStorage;
     persistenceKey?: string;
@@ -740,7 +750,11 @@ export class GameAlgoEventTracker {
     this.isDebug = options.isDebug;
     this.flushIntervalMs = options.flushIntervalMs;
     this.maxBatchSize = Math.max(1, Math.min(options.maxBatchSize, 100));
+    this.maxBatchBytes = Number.isFinite(options.maxBatchBytes) && Number(options.maxBatchBytes) > 0
+      ? Math.floor(Number(options.maxBatchBytes))
+      : undefined;
     this.queueLimit = Math.max(options.queueLimit, this.maxBatchSize);
+    this.persistOnEnqueue = options.persistOnEnqueue ?? false;
     this.now = options.now;
     this.storage = options.storage;
     this.persistenceKey = clean(options.persistenceKey);
@@ -1023,6 +1037,7 @@ export class GameAlgoEventTracker {
   async flush(): Promise<EventBatchResponse[]> {
     await this.restorePromise;
     await this.milestonePersistPromise;
+    await this.queuePersistPromise;
     if (this.flushing) return [];
     this.flushing = true;
 
@@ -1030,7 +1045,7 @@ export class GameAlgoEventTracker {
     try {
       while (this.retryBatch.length > 0 || this.queue.length > 0) {
         const pending = [...this.retryBatch, ...this.queue];
-        const batch = pending.slice(0, this.maxBatchSize);
+        const batch = eventBatchWithinBudget(pending, this.maxBatchSize, this.maxBatchBytes);
         const resolvedContextId = clean(this.contextId);
         if (batch.some((event) => !clean(event.contextId)) && !resolvedContextId) {
           this.retryBatch = [];
@@ -1039,7 +1054,7 @@ export class GameAlgoEventTracker {
         }
         const uploadBatch = batch.map((event) => clean(event.contextId) ? event : { ...event, contextId: resolvedContextId! });
         this.retryBatch = [];
-        this.queue = pending.slice(this.maxBatchSize);
+        this.queue = pending.slice(batch.length);
 
         try {
           responses.push(await this.uploadEvents(uploadBatch));
@@ -1059,7 +1074,10 @@ export class GameAlgoEventTracker {
           throw error;
         }
       }
-      if (this.hasPersistedQueue) await this.clearPersistedQueue();
+      await this.queuePersistPromise;
+      if (this.hasPersistedQueue && this.retryBatch.length === 0 && this.queue.length === 0) {
+        await this.clearPersistedQueue();
+      }
       return responses;
     } finally {
       this.flushing = false;
@@ -1077,6 +1095,14 @@ export class GameAlgoEventTracker {
     this.queue.push(event);
     if (this.queue.length > this.queueLimit) {
       this.queue.splice(0, this.queue.length - this.queueLimit);
+    }
+    if (this.persistOnEnqueue) {
+      this.hasPersistedQueue = true;
+      const persist = async () => {
+        await this.restorePromise;
+        await this.persistPendingQueue();
+      };
+      this.queuePersistPromise = this.queuePersistPromise.then(persist, persist).catch(() => undefined);
     }
     this.startTimer();
     if (this.queue.length >= this.maxBatchSize) {
@@ -1391,9 +1417,9 @@ export class RustProcessScriptRuntime implements GameAlgoScriptRuntime {
     // The cache worker should not keep a short-lived CLI/test process alive.
     // A server with an active event loop still keeps using the same worker.
     child.unref();
-    child.stdin.unref?.();
-    child.stdout.unref?.();
-    child.stderr.unref?.();
+    (child.stdin as { unref?: () => void }).unref?.();
+    (child.stdout as { unref?: () => void }).unref?.();
+    (child.stderr as { unref?: () => void }).unref?.();
     child.stdout.on("data", (chunk: Buffer) => this.handleStdout(child, chunk));
     child.stderr.on("data", () => undefined);
     child.once("error", (error) => {
@@ -1685,6 +1711,22 @@ function normalizePayload(value: JsonValue): EventPayload {
     }
   }
   return payload;
+}
+
+function eventBatchWithinBudget(events: GameEvent[], maxCount: number, maxBytes?: number): GameEvent[] {
+  const countLimited = events.slice(0, maxCount);
+  if (!maxBytes || countLimited.length <= 1) return countLimited;
+  const batch: GameEvent[] = [];
+  for (const event of countLimited) {
+    const candidate = [...batch, event];
+    if (batch.length > 0 && utf8Bytes(JSON.stringify({ events: candidate })) > maxBytes) break;
+    batch.push(event);
+  }
+  return batch;
+}
+
+function utf8Bytes(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
 }
 
 function payloadValue(value: JsonValue): EventPayloadValue | undefined {

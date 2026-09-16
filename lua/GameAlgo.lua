@@ -50,7 +50,7 @@ local state_ = {
     gameKey = nil,
     appVersion = nil,
     experimentIntegrationVersion = 0,
-    platform = "rest",
+    platform = "maker",
     timezone = nil,
     device = {},
     isDebug = false,
@@ -963,7 +963,10 @@ function GameAlgo.Init(options)
     if state_.experimentIntegrationVersion < 0 or state_.experimentIntegrationVersion % 1 ~= 0 then
         error("experimentIntegrationVersion must be a non-negative integer")
     end
-    state_.platform = options.platform or "rest"
+    -- Maker is a runtime property of this SDK, not an application option.
+    -- Ignore legacy `platform` input so older integrations keep working while
+    -- current clients always emit the canonical storage value.
+    state_.platform = "maker"
     state_.timezone = options.timezone
     state_.device = options.device or {}
     state_.isDebug = options.isDebug == true

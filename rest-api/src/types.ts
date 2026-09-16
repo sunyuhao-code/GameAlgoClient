@@ -1,6 +1,6 @@
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
-export type Platform = "ios" | "android" | "rest";
+export type Platform = "ios" | "android" | "maker" | "web";
 export type GameEnvironment = "test" | "live";
 
 export type ExperimentAssignment = {
@@ -128,7 +128,11 @@ export type GameAlgoRestClientOptions = {
   timezone?: string;
   eventFlushIntervalMs?: number;
   eventMaxBatchSize?: number;
+  /** Optional UTF-8 byte budget for one `{ events }` request body. */
+  eventMaxBatchBytes?: number;
   eventQueueLimit?: number;
+  /** Persist every queued event immediately. Recommended for browser runtimes. */
+  eventPersistOnEnqueue?: boolean;
   fetchImpl?: typeof fetch;
   now?: () => number;
   storage?: GameAlgoStorage;

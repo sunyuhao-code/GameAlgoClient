@@ -12,7 +12,7 @@ const sessionId = crypto.randomUUID();
 
 const config = await client.fetchConfig({
   userId,
-  platform: "rest",
+  platform: "maker",
 });
 
 console.log("config", {

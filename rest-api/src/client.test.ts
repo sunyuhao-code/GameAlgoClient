@@ -66,7 +66,7 @@ test("fetchConfig sends Protocol v1 headers and caches by ttl", async () => {
       assertLocalTimestamp(body.userCreatedLocalAt);
       assert.equal(body.createdLocalAt, body.userCreatedLocalAt);
       assert.equal(body.sessionId, client.tracker.currentSessionId());
-      assert.equal(body.platform, "rest");
+      assert.equal(body.platform, "maker");
       assert.equal(body.sdkVersion, "1.0.0");
       assert.equal(body.experimentIntegrationVersion, 7);
       assert.equal(body.isDebug, true);
@@ -98,6 +98,34 @@ test("fetchConfig sends Protocol v1 headers and caches by ttl", async () => {
   assert.equal(second.configVersion, "v1");
   assert.equal(calls, 1);
   assert.equal(requests[0].url, "https://gamealgo.test/v1/config");
+});
+
+test("legacy rest input is emitted as the canonical Maker platform", async () => {
+  let emittedPlatform = "";
+  const client = createClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    platform: "rest" as never,
+    autoStart: false,
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      const body = await request.json() as Record<string, unknown>;
+      emittedPlatform = String(body.platform ?? "");
+      return jsonResponse({
+        contextId: "ctx-legacy-maker",
+        gameId: "Mahjong",
+        environment: "live",
+        configVersion: "v1",
+        ttlSeconds: 60,
+        serverTime: "2026-05-28T10:00:00.000Z",
+        experiments: [],
+        configFiles: [],
+      });
+    },
+  });
+
+  await client.fetchConfig({ userId: "u1" });
+  assert.equal(emittedPlatform, "maker");
 });
 
 test("base URL path prefix is preserved for Protocol v1 requests", async () => {
@@ -587,7 +615,7 @@ test("setAttribution posts user attribution once until it changes", async () => 
       const body = await request.json() as Record<string, unknown>;
       assert.equal(body.userId, "u1");
       assert.equal(body.userCreatedAt, "2026-05-28T10:00:00.000Z");
-      assert.equal(body.platform, "rest");
+      assert.equal(body.platform, "maker");
       assert.equal(body.provider, "adjust");
       assert.equal((body.attribution as Record<string, unknown>).network, "facebook");
       return jsonResponse({ ok: true, accepted: 1, attributionHash: body.attributionHash });
