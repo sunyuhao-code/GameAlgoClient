@@ -538,7 +538,7 @@ export class GameAlgoRestClient {
     }
   }
 
-  private async refresh(options: RefreshOptions): Promise<void> {
+  protected async refresh(options: RefreshOptions): Promise<void> {
     const config = await this.fetchConfig(options);
     const preload = options.preloadConfigFiles ?? true;
     if (!preload) {

@@ -2,6 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { GameAlgoBrowserStorage, GameAlgoWebClient } from "./index.ts";
+import { runQuickJSSandbox } from "./quickjs-sandbox.ts";
+
+const SCRIPT_INPUT = {
+  state: { level: 3 },
+  config: { difficulty: "hard" },
+  meta: {
+    gameId: "web-game",
+    userId: "web-user",
+    environment: "live" as const,
+    strategy: "difficulty",
+    experimentId: "experiment-1",
+    variant: "treatment",
+  },
+};
 
 test("H5 client always reports the web platform and flushes events", async () => {
   const requests: Array<{ url: string; body: Record<string, unknown>; keepalive: boolean }> = [];
@@ -103,5 +117,112 @@ test("H5 event batches stay within the keepalive byte budget", async () => {
   await client.flush();
   assert.deepEqual(eventRequests.map((request) => request.events.length), [1, 1]);
   assert.ok(eventRequests.every((request) => request.keepalive));
+  client.close();
+});
+
+test("H5 QuickJS sandbox executes strategies without browser host access", async () => {
+  const output = await runQuickJSSandbox(
+    "execute",
+    `function execute(input) {
+      return {
+        payload: {
+          level: input.state.level,
+          difficulty: input.config.difficulty,
+          fetchType: typeof fetch,
+          documentType: typeof document,
+          randomType: typeof Math.random
+        },
+        diagnostics: { isolated: true }
+      };
+    }`,
+    SCRIPT_INPUT,
+  );
+  assert.deepEqual(output, {
+    payload: {
+      level: 3,
+      difficulty: "hard",
+      fetchType: "undefined",
+      documentType: "undefined",
+      randomType: "undefined",
+    },
+    diagnostics: { isolated: true },
+  });
+});
+
+test("H5 QuickJS sandbox blocks dynamic code generation and infinite loops", async () => {
+  await assert.rejects(
+    runQuickJSSandbox(
+      "execute",
+      `function execute() {
+        return { payload: (function() {}).constructor("return 7")(), diagnostics: {} };
+      }`,
+      SCRIPT_INPUT,
+    ),
+    /not a function|undefined|execution failed/i,
+  );
+
+  await assert.rejects(
+    runQuickJSSandbox(
+      "execute",
+      "function execute() { while (true) {} }",
+      SCRIPT_INPUT,
+      {
+        scriptBytes: 10 * 1024 * 1024,
+        inputBytes: 256 * 1024,
+        outputBytes: 256 * 1024,
+        memoryBytes: 64 * 1024 * 1024,
+        stackBytes: 512 * 1024,
+        timeoutMs: 50,
+        interruptPolls: 5_000,
+      },
+    ),
+    /resource limit|interrupted/i,
+  );
+});
+
+test("H5 URL attribution uploads only allow-listed campaign fields", async () => {
+  const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const fetchImpl: typeof fetch = async (input, init = {}) => {
+    const url = String(input);
+    const body = init.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
+    requests.push({ url, body });
+    if (url.endsWith("/v1/config")) {
+      return Response.json({
+        contextId: "ctx-web-attribution",
+        gameId: "web-game",
+        environment: "live",
+        configVersion: "1",
+        ttlSeconds: 60,
+        serverTime: "2026-09-16T00:00:00.000Z",
+        experiments: [],
+        configFiles: [],
+      });
+    }
+    if (url.endsWith("/v1/attribution")) {
+      return Response.json({ ok: true, accepted: 1, attributionHash: body.attributionHash });
+    }
+    throw new Error(`unexpected request: ${url}`);
+  };
+  const client = new GameAlgoWebClient({
+    baseUrl: "https://gamealgo.example.com",
+    gameKey: "ga_live_test",
+    userId: "web-attribution-user",
+    fetchImpl,
+    autoLifecycle: false,
+    preloadConfigFiles: false,
+  });
+  assert.equal(await client.waitForReady(), true);
+  await client.syncUrlAttribution({
+    url: "https://game.example/play?utm_source=taptap&utm_campaign=launch&secret=omit&gclid=click-1",
+    referrer: "https://www.taptap.cn/app/1?private=value",
+  });
+  const body = requests.find((request) => request.url.endsWith("/v1/attribution"))?.body;
+  assert.ok(body);
+  assert.deepEqual(body.attribution, {
+    utm_source: "taptap",
+    utm_campaign: "launch",
+    gclid: "click-1",
+    referrerHost: "www.taptap.cn",
+  });
   client.close();
 });
