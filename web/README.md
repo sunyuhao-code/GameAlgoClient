@@ -21,6 +21,8 @@ gameAlgo.tracker.track("milestone", {
   milestoneType: "new_user",
   milestonePoint: "进入第一关",
 });
+
+const decision = await gameAlgo.executor("level_dda").execute({ level: 12 });
 ```
 
 The SDK uses IndexedDB for stable anonymous identity, config snapshots,
@@ -30,9 +32,52 @@ batch fills, when the page is hidden or left, and when the browser returns
 online. Event batches use `fetch(..., { keepalive: true })` and are capped at 20
 events to stay below browser keepalive limits.
 
+When the page is left, the SDK records one `session_end` and flushes it. If the
+page is restored from the back-forward cache, the SDK opens a new session,
+refreshes the context, and preloads the current config files again. Set
+`autoSessionLifecycle: false` only when the game already owns those boundaries.
+
+## Remote strategies and DDA
+
+Remote strategy scripts run in a dedicated Web Worker containing an isolated
+QuickJS/WASM runtime. Scripts cannot access the page DOM, cookies, browser
+storage, network APIs, clocks, randomness, dynamic code generation, or host
+objects. Script source, input, output, memory, stack, and execution time are
+bounded; a stuck worker is terminated without blocking the game page.
+
+Config-only strategies and script-backed `executor(...).execute(...)` are both
+supported. `dda(...)` uses the same sandbox and persists its rolling state in
+the browser store.
+
+## Optional URL attribution
+
+URL attribution is opt-in. It sends only an allow-list of campaign parameters
+and the referrer host; it never uploads the full URL or full referrer.
+
+```ts
+const gameAlgo = GameAlgoWebClient.init({
+  baseUrl: "https://game-algo-sdk.dictapis.cn",
+  gameKey: "ga_live_xxx",
+  autoUrlAttribution: true,
+});
+
+// Or call this after consent with a custom allow-list.
+await gameAlgo.syncUrlAttribution({
+  parameterNames: ["utm_source", "utm_campaign", "partner_click_id"],
+});
+```
+
 `ga_live_*` is a browser client identifier and is visible to end users. Never
 embed a `ga_admin_*` key, persist the raw Client Key, or write it to logs.
 
-Config-only strategies are supported. Remote script execution is deliberately
-disabled in this first release; a later sandboxed Web Worker/WASM runtime can
-add it without running untrusted code on the main thread.
+The npm package includes the worker entry and declares its QuickJS dependency.
+Use a modern bundler that supports `new Worker(new URL(..., import.meta.url))`,
+such as Vite, webpack, Rollup, Parcel, or an equivalent WebView build pipeline.
+
+## Compatibility checks
+
+`npm run check:web:e2e` runs the packaged SDK in Chrome. On macOS with Xcode
+installed, `npm run check:web:webview` builds a minimal native iOS app and runs
+the same fixture twice inside a real iPhone Simulator `WKWebView`. The WebView
+check covers the QuickJS worker, DDA, IndexedDB identity persistence, session
+lifecycle, event upload, and allow-listed URL attribution.

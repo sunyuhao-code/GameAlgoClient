@@ -6,16 +6,22 @@
   "type": "module",
   "scripts": {
     "build:runtime": "cargo build --locked --manifest-path runtime/rust/Cargo.toml --bin gamealgo-script-runtime",
-    "build:web": "tsc -p web/tsconfig.json",
+    "build:web": "tsc -p web/tsconfig.json && node scripts/rewrite-web-worker-path.mjs",
+    "check:web:pack": "npm pack --dry-run ./web",
+    "check:web:e2e": "npm run build:web && node web/e2e/run-browser-test.mjs",
+    "check:web:webview": "npm run build:web && node web/e2e/run-ios-webview-test.mjs",
     "check:web": "npm run build:web && node --test web/src/*.test.ts",
-    "check": "npm run build:runtime && npm run check:web && node --test rest-api/src/*.test.ts"
+    "check": "npm run build:runtime && npm run check:web && node --test rest-api/src/*.test.ts && npm run check:web:e2e && npm run check:web:webview && npm run check:web:pack"
   },
   "dependencies": {
     "yaml": "^2.8.1"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",
-    "typescript": "^5.9.3"
+    "playwright-core": "^1.63.0",
+    "quickjs-emscripten": "^0.32.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.0"
   },
   "engines": {
     "node": ">=24"
