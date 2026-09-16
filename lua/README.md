@@ -23,13 +23,14 @@ GameAlgo.Init({
     gameKey = "ga_live_xxx",
     appVersion = "1.0.0",
     experimentIntegrationVersion = 3,
-    platform = "rest",
     device = {
         runtime = "taptap_mini_game",
         game = "your_game_id",
     },
 })
 ```
+
+Lua SDK 会自动上报 `platform=maker`，接入代码不需要也不能选择运行平台。
 
 `ga_live_xxx` 只是示例占位。实际接入必须使用真实 `ga_live_*`；如果当前没有真实 key，AI Agent 应使用 `ga_admin_*` 通过 GameAlgo CLI 创建或读取。`ga_admin_*` 只能给 CLI 使用，不能放入客户端。
 

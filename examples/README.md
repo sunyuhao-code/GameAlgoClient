@@ -6,7 +6,7 @@
 
 | 示例 | 位置 | 用途 |
 | --- | --- | --- |
-| Node REST | `../rest-api/examples/node/basic.ts` | 最小后端接入 |
+| Node HTTP helper | `../rest-api/examples/node/basic.ts` | 底层传输协议示例 |
 | Curl | 本文下方 | 直接验证配置和事件接口 |
 | DDA 脚本 | `dda/level-dda.js`、`dda/level-dda.lua` | JavaScript / Lua 关卡策略模板 |
 | Web 游戏 Demo | [`web-game-demo/`](./web-game-demo/README.md) | 浏览器端到端验证事件和 Report Pack |
@@ -23,7 +23,7 @@ curl -s -X POST "https://gamealgo.example.com/v1/config" \
   -d '{
     "userId": "user-001",
     "sessionId": "session-001",
-    "platform": "rest",
+    "platform": "web",
     "sdkVersion": "1.0.0",
     "appVersion": "1.2.3",
     "timezone": "Asia/Shanghai",

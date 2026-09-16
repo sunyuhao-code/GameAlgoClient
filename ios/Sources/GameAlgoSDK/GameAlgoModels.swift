@@ -3,7 +3,8 @@ import Foundation
 public enum GameAlgoPlatform: String, Sendable, Equatable, Codable {
     case ios
     case android
-    case rest
+    case maker
+    case web
 }
 
 public enum GameAlgoEnvironment: String, Sendable, Equatable, Codable {

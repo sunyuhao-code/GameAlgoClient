@@ -1,6 +1,6 @@
 # GameAlgo Client
 
-GameAlgo Client 是公开客户端仓库，包含 iOS SDK、Android SDK、REST helper、TapTap Maker / Lua SDK 和协议定义。CLI 在独立的 [GameAlgoCli 仓库](https://github.com/sunyuhao-code/GameAlgoCli)维护和发布。
+GameAlgo Client 是公开客户端仓库，包含 iOS SDK、Android SDK、H5 / Web SDK、TapTap Maker / Lua SDK、底层 TypeScript HTTP helper 和协议定义。CLI 在独立的 [GameAlgoCli 仓库](https://github.com/sunyuhao-code/GameAlgoCli)维护和发布。
 
 产品能力、接入流程、埋点、实验、报表与优化方法由 GameAlgo Server 在线文档统一维护，不在本仓库保留副本。
 
@@ -8,7 +8,7 @@ GameAlgo Client 是公开客户端仓库，包含 iOS SDK、Android SDK、REST h
 
 不要把 README 原样转发给开发者。先安装最新 CLI，再从目标环境读取当前文档并完成接入。
 
-| 环境 | Admin host | SDK / REST API |
+| 环境 | Admin host | SDK API |
 | --- | --- | --- |
 | 国内 | `https://game-algo-admin.dictapis.cn` | `https://game-algo-sdk.dictapis.cn` |
 | 海外 | `https://dirichlet.ai/algo_admin` | `https://dirichlet.ai/algo_sdk` |
@@ -25,7 +25,7 @@ gamealgo listapi --host <admin-host>
 
 ```bash
 gamealgo login --host <admin-host> --admin-key <ga_admin_xxx>
-gamealgo integration get-plan --environment <domestic|overseas> --platform <ios|android|maker|rest> --out gamealgo-integration-plan.json
+gamealgo integration get-plan --environment <domestic|overseas> --platform <ios|android|maker|web> --out gamealgo-integration-plan.json
 ```
 
 AI Agent 必须先执行 `integration get-plan`，并按返回的完整清单完成接入和人工验收。不要依赖只读某一份 README 后自行推断其他平台规则。
@@ -44,8 +44,9 @@ gamealgo experiment run create --help
 
 - [iOS SDK](./ios/README.md)
 - [Android SDK](./android/README.md)
-- [REST helper](./rest-api/README.md)
+- [H5 / Web SDK](./web/README.md)
 - [TapTap Maker / Lua SDK](./lua/README.md)
+- [底层 TypeScript HTTP helper](./rest-api/README.md)
 - [客户端示例](./examples/README.md)
 - [Protocol OpenAPI](./protocol/openapi.yaml)
 
@@ -56,7 +57,8 @@ gamealgo experiment run create --help
 ```text
 ios/        iOS Swift Package SDK
 android/    Android Java SDK core
-rest-api/   REST API helper 和示例
+web/        H5 / Web 浏览器 SDK
+rest-api/   底层 TypeScript HTTP helper 和协议示例
 lua/        TapTap Maker / Lua SDK
 protocol/   客户端协议定义
 examples/   接入示例

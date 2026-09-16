@@ -255,7 +255,7 @@ components:
           minLength: 1
         platform:
           type: string
-          enum: [ios, android, rest]
+          enum: [ios, android, maker, web]
         sdkVersion:
           type: string
           minLength: 1
@@ -462,7 +462,7 @@ components:
           type: string
         platform:
           type: string
-          enum: [ios, android, rest]
+          enum: [ios, android, maker, web]
         provider:
           type: string
           example: adjust
@@ -517,7 +517,7 @@ components:
           minLength: 1
         platform:
           type: string
-          enum: [ios, android, rest]
+          enum: [ios, android, maker, web]
         identifierType:
           type: string
           enum: [adjust_adid, firebase_app_instance_id, gaid, idfa, idfv]

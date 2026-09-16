@@ -6,13 +6,16 @@
   "type": "module",
   "scripts": {
     "build:runtime": "cargo build --locked --manifest-path runtime/rust/Cargo.toml --bin gamealgo-script-runtime",
-    "check": "npm run build:runtime && node --test rest-api/src/*.test.ts"
+    "build:web": "tsc -p web/tsconfig.json",
+    "check:web": "npm run build:web && node --test web/src/*.test.ts",
+    "check": "npm run build:runtime && npm run check:web && node --test rest-api/src/*.test.ts"
   },
   "dependencies": {
     "yaml": "^2.8.1"
   },
   "devDependencies": {
-    "@types/node": "^24.3.0"
+    "@types/node": "^24.3.0",
+    "typescript": "^5.9.3"
   },
   "engines": {
     "node": ">=24"
