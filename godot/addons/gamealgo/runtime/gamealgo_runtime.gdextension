@@ -11,10 +11,12 @@ reloadable = false
 
 macos.debug = "res://addons/gamealgo/runtime/macos/libgamealgo_godot_runtime.dylib"
 macos.release = "res://addons/gamealgo/runtime/macos/libgamealgo_godot_runtime.dylib"
-ios.debug = "res://addons/gamealgo/runtime/ios/libgamealgo_godot_runtime.dylib"
-ios.release = "res://addons/gamealgo/runtime/ios/libgamealgo_godot_runtime.dylib"
-ios.debug.simulator = "res://addons/gamealgo/runtime/ios-simulator/libgamealgo_godot_runtime.dylib"
-ios.release.simulator = "res://addons/gamealgo/runtime/ios-simulator/libgamealgo_godot_runtime.dylib"
+; iOS loads an embedded framework, not a bare dylib: dyld resolves it by the
+; binary's own install name, which only a framework bundle can carry.
+ios.debug = "res://addons/gamealgo/runtime/ios/gamealgo_godot_runtime.framework"
+ios.release = "res://addons/gamealgo/runtime/ios/gamealgo_godot_runtime.framework"
+ios.debug.simulator = "res://addons/gamealgo/runtime/ios-simulator/gamealgo_godot_runtime.framework"
+ios.release.simulator = "res://addons/gamealgo/runtime/ios-simulator/gamealgo_godot_runtime.framework"
 android.debug.arm64 = "res://addons/gamealgo/runtime/android/arm64-v8a/libgamealgo_godot_runtime.so"
 android.release.arm64 = "res://addons/gamealgo/runtime/android/arm64-v8a/libgamealgo_godot_runtime.so"
 android.debug.arm32 = "res://addons/gamealgo/runtime/android/armeabi-v7a/libgamealgo_godot_runtime.so"

@@ -10,7 +10,9 @@
 
 发布包按语义化版本 tag 触发，和 Android AAR 同一个 Release。
 
-支持 `android` 和 `ios` 两个导出目标。**iOS 模拟器的二进制是单独一份**（`runtime/ios-simulator/`），一起放进去，否则模拟器里运行时单例加载不出来，脚本型策略会失败关闭。
+支持 `android` 和 `ios` 两个导出目标。
+
+iOS 的运行时是 **framework 而不是裸 dylib**：dyld 按二进制自带的 install name 解析嵌入的库，只有 framework bundle 能带上这个名字。设备和模拟器各一份（`runtime/ios/` 和 `runtime/ios-simulator/`），两份都要放进去，否则对应环境里运行时单例加载不出来，脚本型策略会失败关闭。
 
 本仓库的 `godot/project.godot` 和 `godot/tests/` 只用于跑测试，游戏不需要。
 
