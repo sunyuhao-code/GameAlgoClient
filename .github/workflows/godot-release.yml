@@ -93,13 +93,22 @@ jobs:
           for required in \
             "$staging/gamealgo/gamealgo_client.gd" \
             "$staging/gamealgo/runtime/gamealgo_runtime.gdextension" \
-            "$staging/gamealgo/runtime/ios/libgamealgo_godot_runtime.dylib" \
-            "$staging/gamealgo/runtime/ios-simulator/libgamealgo_godot_runtime.dylib" \
+            "$staging/gamealgo/runtime/ios/gamealgo_godot_runtime.framework/gamealgo_godot_runtime" \
+            "$staging/gamealgo/runtime/ios/gamealgo_godot_runtime.framework/Info.plist" \
+            "$staging/gamealgo/runtime/ios-simulator/gamealgo_godot_runtime.framework/gamealgo_godot_runtime" \
+            "$staging/gamealgo/runtime/ios-simulator/gamealgo_godot_runtime.framework/Info.plist" \
             "$staging/gamealgo/runtime/android/arm64-v8a/libgamealgo_godot_runtime.so" \
             "$staging/gamealgo/runtime/android/armeabi-v7a/libgamealgo_godot_runtime.so" \
             "$staging/gamealgo/runtime/android/x86_64/libgamealgo_godot_runtime.so" \
           ; do
             [[ -f "$required" ]] || { echo "missing release payload: $required" >&2; exit 1; }
+          done
+
+          # An absolute build path here means the app dies at launch on device.
+          for slice in ios ios-simulator; do
+            name="$staging/gamealgo/runtime/$slice/gamealgo_godot_runtime.framework/gamealgo_godot_runtime"
+            [[ "$(otool -D "$name" | tail -n 1)" == "@rpath/gamealgo_godot_runtime.framework/gamealgo_godot_runtime" ]] \
+              || { echo "$slice install name is not framework-relative" >&2; exit 1; }
           done
 
           mkdir -p release
