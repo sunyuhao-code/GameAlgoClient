@@ -1,6 +1,6 @@
 # GameAlgo Client
 
-GameAlgo Client 是公开客户端仓库，包含 iOS SDK、Android SDK、H5 / Web SDK、TapTap Maker / Lua SDK、底层 TypeScript HTTP helper 和协议定义。CLI 在独立的 [GameAlgoCli 仓库](https://github.com/sunyuhao-code/GameAlgoCli)维护和发布。
+GameAlgo Client 是公开客户端仓库，包含 iOS SDK、Android SDK、H5 / Web SDK、TapTap Maker / Lua SDK、Godot SDK、底层 TypeScript HTTP helper 和协议定义。CLI 在独立的 [GameAlgoCli 仓库](https://github.com/sunyuhao-code/GameAlgoCli)维护和发布。
 
 产品能力、接入流程、埋点、实验、报表与优化方法由 GameAlgo Server 在线文档统一维护，不在本仓库保留副本。
 
@@ -46,11 +46,24 @@ gamealgo experiment run create --help
 - [Android SDK](./android/README.md)
 - [H5 / Web SDK](./web/README.md)
 - [TapTap Maker / Lua SDK](./lua/README.md)
+- [Godot SDK](./godot/README.md)
 - [底层 TypeScript HTTP helper](./rest-api/README.md)
 - [客户端示例](./examples/README.md)
 - [Protocol OpenAPI](./protocol/openapi.yaml)
 
 海外 SDK 地址包含 `/algo_sdk` 路径前缀，必须完整保留。客户端只能配置 `ga_live_*`；`ga_admin_*` 只允许用于开发机器、AI Agent 或 CI。
+
+## Godot SDK
+
+Godot 客户端是独立的 Protocol v1 实现，用 GDScript 直接访问 GameAlgo HTTPS API，不桥接 iOS / Android SDK。协议层在 [`godot/`](./godot/README.md)，策略脚本运行时在 [`runtime/godot/`](./godot/README.md#策略运行时)——它是 `runtime/rust/` 的 gdext 绑定，和 iOS / Android 共用同一个 crate。
+
+[`dirichlet-ai/pocket-native-plugins`](https://github.com/dirichlet-ai/pocket-native-plugins) 里另有一份独立实现，供既有接入使用；新接入用本仓库这套。
+
+Godot SDK 只支持 `ios` 和 `android` 两个导出目标，上报的 `platform` 就是运行的操作系统。引擎信息走 `device` context（`runtime=godot`、`godotVersion`），不占用 `platform` 维度。桌面导出不受支持，`configure` 会直接拒绝。
+
+Godot SDK 的埋点、归因、标识映射、自定义事件配额和 milestone 去重与其他 SDK 一致。
+
+目前 CLI 还没有 Godot 接入形态。`--platform` 的取值是上报平台（`ios|android|maker|web`），Godot 项目应按目标导出平台取接入计划，其中「安装 SDK」一节以 [`godot/README.md`](./godot/README.md) 为准。
 
 ## 仓库结构
 
@@ -60,9 +73,28 @@ android/    Android Java SDK core
 web/        H5 / Web 浏览器 SDK
 rest-api/   底层 TypeScript HTTP helper 和协议示例
 lua/        TapTap Maker / Lua SDK
+godot/      Godot 4 GDScript SDK
+runtime/    Rust 脚本运行时和它的 Godot 绑定
 protocol/   客户端协议定义
 examples/   接入示例
 ```
+
+## 协议一致性
+
+Protocol v1 有五份客户端实现，都在本仓库：iOS / Android / Web / Lua / Godot。`protocol/openapi.yaml` 是唯一真相源，`protocol/fixtures/` 是跨实现的共同闸门。
+
+Godot SDK 是 GDScript，进不了 Node 和 Swift 的测试套件，所以它的协议常量由 `rest-api/src/godot-sdk-drift.test.ts` 直接读源码校验，`npm run check` 就会跑，不需要装 Godot。GDScript 自身的契约测试用 `npm run check:godot`。
+
+策略脚本运行时只有一份实现：`runtime/rust/`（rquickjs）。iOS 和 Android 走它的 C ABI，Godot 走 `runtime/godot/`（gdext 绑定，同一个 crate），Web 走 quickjs-emscripten 加载同一套语义。沙箱预算和 prelude 因此不存在需要人工对齐的副本：
+
+| | 值 |
+| --- | --- |
+| 脚本源 / 输入 / 输出上限 | 10 MiB / 256 KiB / 256 KiB |
+| 内存 / 栈上限 | 64 MiB / 512 KiB |
+| 中断轮询上限 | 100,000 |
+| 执行 / 预备超时 | 1s / 2s |
+
+`protocol/fixtures/script-fixture.js` 是跨宿主的共同 fixture：`cargo test` 和 `npm run check:godot` 都执行它并断言同一份期望输出。
 
 ## 本地验证
 
