@@ -127,6 +127,49 @@ await client.set_idfv(idfv)
 
 这些调用需要 context 已就绪，会自动关联当前 `contextId` 和 GameAlgo `userId`。用户撤回授权或标识不可用时传 `null`，服务端会记录清除操作；全零的 GAID / IDFA 会被自动识别为清除。只在取得用户授权且符合应用隐私政策时采集这些标识。
 
+## 日志与可观测性
+
+### iOS 上 `print()` 是看不见的
+
+Godot 在 iOS 上接管了自己的 stdio，`print()` 和 `printerr()` **既进不了 `simctl launch --console-pty`，也进不了真机的 Xcode console**。Android 和桌面没有这个问题。
+
+所以 SDK 不依赖 `print` 作为唯一出口。每一条日志都会发 `sdk_log` 信号：
+
+```gdscript
+client.sdk_log.connect(func(line: String) -> void:
+    # iOS 写文件或转 NSLog；Android 和桌面直接 print 即可
+    my_log_sink(line)
+)
+```
+
+也可以注入自己的落地方式，宿主决定往哪写：
+
+```gdscript
+client.configure({ ..., "logger": Callable(self, "_on_gamealgo_log") })
+client.configure({ ..., "logger": null })   # 关掉默认输出，信号照常发
+```
+
+默认 `logger` 是 `print`，在 Android 和桌面直接可用；**iOS 上必须接 `sdk_log` 信号**，否则什么都看不到。信号不受 `logger` 影响，关掉 `logger` 它照发。
+
+所有日志带 `[GameAlgoSDK] ` 前缀，和 iOS / Android SDK 一致。
+
+### 失败是信号，不只是日志
+
+字符串日志只能给人看，信号能进监控和契约测试。两类请求失败都会发 `request_failed`：
+
+```gdscript
+client.request_failed.connect(func(code: String) -> void:
+    # 配置拉取失败：invalid_config_response、http_503、cross_origin_request_rejected…
+    # 事件上传失败：http_503、invalid_event_response…
+)
+```
+
+### 记了哪些节点
+
+`userId`、配置命中缓存 / 拉取 / 拉取失败、配置文件预加载、脚本加载、每个实验分组、归因与标识同步、事件被配额拒绝、**flush 成功（accepted 与剩余队列长度）**、**flush 失败（暂存条数、连续失败次数、队列深度）**、**启动时恢复了几条持久化事件**、**measurement 同意翻转**。
+
+后四项是排查上传链路时最先要看的东西。
+
 ## platform 上报的是操作系统，不是引擎
 
 `platform` 取运行的操作系统，只接受 `ios` 和 `android`。引擎信息走 `device` context 的 `runtime=godot` 和 `godotVersion`，不占用 `platform` 维度。

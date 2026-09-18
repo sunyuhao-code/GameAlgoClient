@@ -91,6 +91,9 @@ func configure(client: Object, storage: Variant, options: Dictionary) -> bool:
 
 
 func set_measurement_allowed(allowed: bool) -> bool:
+	_log("measurement consent: allowed=%s (was allowed=%s, resolved=%s)" % [
+		allowed, _measurement_allowed, _measurement_resolved
+	])
 	if not _measurement_resolved:
 		if allowed:
 			if not _restore_queue():
@@ -335,6 +338,14 @@ func _persist_reached_milestones() -> void:
 	_storage.call("save_json", _milestone_storage_key, keys)
 
 
+## Routed through the client so every line reaches the same sink and the same
+## sdk_log signal. Without the signal an iOS host sees nothing, since Godot
+## redirects stdio there.
+func _log(message: String) -> void:
+	if is_instance_valid(_client) and _client.has_method("_log"):
+		_client.call("_log", message)
+
+
 func _quota_bucket_key() -> String:
 	return "context:" + _context_id if not _context_id.is_empty() else "pending:" + _session_id
 
@@ -365,6 +376,9 @@ func _consume_custom_event_quota(event_type: String) -> bool:
 		limit = QUOTA_PER_CONTEXT
 		observed = int(bucket["total"]) + 1
 	if not scope.is_empty():
+		_log("event refused by quota: type=%s, scope=%s, limit=%d, observed=%d" % [
+			event_type, scope, limit, observed
+		])
 		_report_quota_diagnostic(event_type, scope, limit, observed)
 		return false
 	bucket["total"] = int(bucket["total"]) + 1
@@ -525,6 +539,9 @@ func flush() -> bool:
 			_retry_batch = _inflight_batch.duplicate(true)
 			_inflight_batch.clear()
 			_consecutive_failures += 1
+			_log("flush failed: %d event(s) held, consecutiveFailures=%d, queued=%d" % [
+				_retry_batch.size(), _consecutive_failures, _queue.size()
+			])
 			if _consecutive_failures >= 3:
 				_has_persisted_queue = true
 				_persist_pending()
@@ -532,6 +549,7 @@ func flush() -> bool:
 			return false
 		_inflight_batch.clear()
 		_consecutive_failures = 0
+		_log("flush ok: accepted=%d, remaining=%d" % [batch.size(), _queue.size()])
 		if _has_persisted_queue and not _persist_pending():
 			_is_flushing = false
 			return false
@@ -583,6 +601,8 @@ func _restore_queue() -> bool:
 			continue
 		_retry_batch.append(event.duplicate(true))
 	_has_persisted_queue = not _retry_batch.is_empty()
+	if not _retry_batch.is_empty():
+		_log("restored %d persisted event(s)" % _retry_batch.size())
 	return true
 
 
