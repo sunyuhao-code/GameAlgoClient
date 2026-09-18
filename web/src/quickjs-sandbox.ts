@@ -25,6 +25,15 @@ export const DEFAULT_BROWSER_SCRIPT_LIMITS: BrowserScriptLimits = {
 };
 
 const PRELUDE = String.raw`
+  // Captured before the strategy script runs. The deep freeze below must not
+  // reach for a global the script can replace, or overriding Object.freeze,
+  // Object.keys, Set or Array.prototype[Symbol.iterator] would hand the script
+  // a mutable input. Kept in step with PRELUDE in runtime/rust/src/lib.rs.
+  const __gamealgoObjectKeys = Object.keys;
+  const __gamealgoObjectFreeze = Object.freeze;
+  const __gamealgoSet = Set;
+  const __gamealgoSetHas = Function.prototype.call.bind(Set.prototype.has);
+  const __gamealgoSetAdd = Function.prototype.call.bind(Set.prototype.add);
   const __gamealgoDisableConstructor = (value) => {
     const prototype = Object.getPrototypeOf(value);
     if (prototype && Object.prototype.hasOwnProperty.call(prototype, "constructor")) {
@@ -46,13 +55,20 @@ const PRELUDE = String.raw`
   delete globalThis.AsyncGeneratorFunction;
   delete globalThis.WebAssembly;
   delete globalThis.Date;
+  // A high-resolution clock is a clock; strategies must stay deterministic.
+  delete globalThis.performance;
   Object.defineProperty(Math, "random", { value: undefined, writable: false, configurable: false });
   Object.defineProperty(globalThis, "__gamealgoDeepFreeze", {
-    value: (value, seen = new Set()) => {
-      if (value === null || typeof value !== "object" || seen.has(value)) return value;
-      seen.add(value);
-      for (const key of Object.keys(value)) __gamealgoDeepFreeze(value[key], seen);
-      return Object.freeze(value);
+    value: (value, seen = new __gamealgoSet()) => {
+      if (value === null || typeof value !== "object" || __gamealgoSetHas(seen, value)) return value;
+      __gamealgoSetAdd(seen, value);
+      // An index loop, so a replaced Array.prototype[Symbol.iterator] cannot
+      // cut the traversal short.
+      const keys = __gamealgoObjectKeys(value);
+      for (let index = 0; index < keys.length; index++) {
+        __gamealgoDeepFreeze(value[keys[index]], seen);
+      }
+      return __gamealgoObjectFreeze(value);
     },
     writable: false,
     configurable: false

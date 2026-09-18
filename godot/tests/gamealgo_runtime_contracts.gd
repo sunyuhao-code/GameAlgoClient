@@ -32,6 +32,7 @@ func _run() -> void:
 	_test_sandbox_has_no_host_capabilities(native)
 	_test_indirect_constructors_blocked(native)
 	_test_input_is_frozen(native)
+	_test_freeze_survives_tampered_intrinsics(native)
 	_test_budgets_are_enforced(native)
 	_test_error_envelopes(native)
 	_test_prepared_scripts_are_evicted(native)
@@ -68,7 +69,8 @@ func _test_sandbox_has_no_host_capabilities(native: Object) -> void:
 	  eval: typeof eval,
 	  Function: typeof Function,
 	  Date: typeof Date,
-	  random: typeof Math.random
+	  random: typeof Math.random,
+	  performance: typeof performance
 	}}; }"""
 	_check(native.call("prepare", "sandbox", script), "sandbox probe prepares")
 	var result := _envelope(native, "sandbox", "{}")
@@ -77,7 +79,7 @@ func _test_sandbox_has_no_host_capabilities(native: Object) -> void:
 		payload == {
 			"process": "undefined", "require": "undefined", "fetch": "undefined",
 			"eval": "undefined", "Function": "undefined", "Date": "undefined",
-			"random": "undefined",
+			"random": "undefined", "performance": "undefined",
 		},
 		"no host, clock, randomness or dynamic code is reachable"
 	)
@@ -113,6 +115,38 @@ func _test_input_is_frozen(native: Object) -> void:
 	var payload: Dictionary = result.get("result", {}).get("payload", {})
 	_check(not bool(payload.get("mutated", true)), "script input is deeply frozen")
 	_check(int(payload.get("level", -1)) == 2, "a frozen input keeps its value")
+
+
+## A script runs before its input is frozen, so it can replace any global the
+## freeze relies on. Mirrors deep_freeze_survives_tampered_intrinsics in
+## runtime/rust/src/lib.rs.
+func _test_freeze_survives_tampered_intrinsics(native: Object) -> void:
+	var tampering := {
+		"freeze": "Object.freeze = function (v) { return v; };",
+		"keys": "Object.keys = function () { return []; };",
+		"iterator": "Array.prototype[Symbol.iterator] = function* () {};",
+		"set": "globalThis.Set = function () { throw new Error('denied'); };",
+	}
+	var combined := ""
+	for label: String in tampering:
+		combined += String(tampering[label])
+	tampering["all"] = combined
+	var index := 0
+	for label: String in tampering:
+		var script := "%s function execute(input) { try { input.nested.value = 99; } catch (error) {} return { value: input.nested.value, frozen: Object.isFrozen(input.nested) }; }" % tampering[label]
+		var key := "tamper_%d" % index
+		index += 1
+		_check(native.call("prepare", key, script), "tampering script prepares: %s" % label)
+		var result := _envelope(native, key, JSON.stringify({"nested": {"value": 7}}))
+		_check(
+			String(result.get("status", "")) == "ok",
+			"tampering does not break execution: %s" % label
+		)
+		var payload: Dictionary = result.get("result", {})
+		_check(
+			int(payload.get("value", -1)) == 7 and bool(payload.get("frozen", false)),
+			"input stays frozen after tampering with %s" % label
+		)
 
 
 func _test_budgets_are_enforced(native: Object) -> void:
