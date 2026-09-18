@@ -13,6 +13,10 @@ signal assignment_received(key: String, value: Variant, generation: int)
 signal assignment_updated(assignment: Dictionary, generation: int)
 signal request_failed(code: String)
 signal startup_completed(success: bool)
+## Emitted for every SDK log line, whatever the logger is set to. Godot
+## redirects stdio on iOS, so print() never reaches simctl or the Xcode
+## console there; this signal is how an iOS host gets the same information.
+signal sdk_log(message: String)
 
 const SDK_VERSION := "1.0.5"
 # The Protocol v1 client is platform-neutral. Storage and script execution are
@@ -56,6 +60,8 @@ var _generation := 0
 var _cached_request_fingerprint := ""
 var _cached_expiry_unix := 0.0
 var _prepared_script_hashes: Dictionary = {}
+## A Callable taking one String, or null to silence the SDK.
+var _logger: Variant = null
 
 
 func configure(options: Dictionary) -> bool:
@@ -111,6 +117,17 @@ func configure(options: Dictionary) -> bool:
 	_device = _default_device()
 	_device.merge((device_value as Dictionary).duplicate(true), true)
 	_preload = preload_value.duplicate(true) if preload_value is Array else preload_value
+	if options.has("logger"):
+		var logger_value: Variant = options["logger"]
+		if logger_value == null:
+			_logger = null
+		elif logger_value is Callable and (logger_value as Callable).is_valid():
+			_logger = logger_value
+		else:
+			last_error = "invalid_logger"
+			return false
+	else:
+		_logger = _default_logger
 	_storage = options.get("storage", null)
 	_transport = options.get("transport", null)
 	_json_decoder = options.get("json_decoder", null)
@@ -167,6 +184,10 @@ func configure(options: Dictionary) -> bool:
 	last_error = ""
 	status = "configured"
 	set_process(true)
+	_log("userId: %s" % _identity["userId"])
+	_log("configured: platform=%s, appVersion=%s, integrationVersion=%d" % [
+		_platform, _app_version if not _app_version.is_empty() else "<none>", _integration_version
+	])
 	return true
 
 
@@ -182,6 +203,7 @@ func start() -> bool:
 	_started = true
 	var used_cache := _load_cached_snapshot()
 	if used_cache:
+		_log("cached snapshot loaded")
 		_publish_snapshot_assignments()
 		_ready = true
 		status = "ready_cached"
@@ -249,10 +271,12 @@ func refresh(force_refresh: bool = false) -> bool:
 			and _cached_expiry_unix > Time.get_unix_time_from_system() \
 			and _snapshot.get("config", null) is Dictionary:
 		last_error = ""
+		_log("config cache hit: %s" % String(_snapshot["config"].get("configVersion", "")))
 		return true
 	_refreshing = true
 	status = "refreshing"
 	var request_session_id := tracker.current_session_id()
+	_log("fetching config: userId=%s, platform=%s" % [_identity["userId"], _platform])
 	var response := await _request_json("POST", "/v1/config", request_body)
 	_refreshing = false
 	if request_session_id != tracker.current_session_id():
@@ -263,10 +287,14 @@ func refresh(force_refresh: bool = false) -> bool:
 		last_error = String(response.get("error", "config_request_failed"))
 		request_failed.emit(last_error)
 		status = "degraded" if _snapshot.get("config", null) is Dictionary else "failed"
+		_log("config fetch failed%s: %s" % [
+			", using cached config" if status == "degraded" else "", last_error
+		])
 		return false
 	var config := _normalize_config(response.get("value", null))
 	if config.is_empty():
 		last_error = "invalid_config_response"
+		_log("config fetch failed: invalid_config_response")
 		request_failed.emit(last_error)
 		status = "degraded" if _snapshot.get("config", null) is Dictionary else "failed"
 		return false
@@ -278,6 +306,10 @@ func refresh(force_refresh: bool = false) -> bool:
 		"updatedAtUnix": Time.get_unix_time_from_system(),
 		"userId": _identity["userId"],
 	}
+	_log("config fetched: version=%s, experiments=%d, configFiles=%d, ttl=%ds" % [
+		String(config["configVersion"]), (config["experiments"] as Array).size(),
+		(config["configFiles"] as Array).size(), int(config["ttlSeconds"])
+	])
 	_cached_request_fingerprint = fingerprint
 	_cached_expiry_unix = Time.get_unix_time_from_system() + maxf(float(config["ttlSeconds"]), 0.0)
 	tracker.set_context_id(String(config["contextId"]))
@@ -285,6 +317,10 @@ func refresh(force_refresh: bool = false) -> bool:
 	_prepared_script_hashes.clear()
 	var preload_ok := await _preload_config(config)
 	_publish_snapshot_assignments()
+	for raw_assignment: Variant in config["experiments"]:
+		_log("assignment: %s -> %s" % [
+			String(raw_assignment.get("key", "")), String(raw_assignment.get("variant", ""))
+		])
 	_ready = true
 	status = "ready" if preload_ok and snapshot_saved else "degraded"
 	last_error = "" if preload_ok and snapshot_saved \
@@ -382,9 +418,16 @@ func upload_events(events: Array[Dictionary]) -> Dictionary:
 	var response := await _request_json("POST", "/v1/events/batch", {"events": events})
 	if not response.get("ok", null) is bool or not response["ok"] \
 			or not response.get("value", null) is Dictionary:
-		return {"ok": false, "accepted": 0, "error": response.get("error", "upload_failed")}
+		# Config failures already surfaced through request_failed; event uploads
+		# were silent, which is the half that matters once a game is live.
+		var error := String(response.get("error", "upload_failed"))
+		_log("event upload failed: %d events, error=%s" % [events.size(), error])
+		request_failed.emit(error)
+		return {"ok": false, "accepted": 0, "error": error}
 	var value := response["value"] as Dictionary
 	if not value.get("ok", null) is bool or not _integer_value(value.get("accepted", null), 0, 100):
+		_log("event upload failed: %d events, error=invalid_event_response" % events.size())
+		request_failed.emit("invalid_event_response")
 		return {"ok": false, "accepted": 0, "error": "invalid_event_response"}
 	return {"ok": bool(value["ok"]), "accepted": int(value["accepted"])}
 
@@ -422,6 +465,7 @@ func set_attribution(
 	var acknowledged := _attribution_acks()
 	if String(acknowledged.get(clean_provider, "")) == hash_value:
 		last_error = ""
+		_log("attribution already synced: provider=%s" % clean_provider)
 		return {"ok": true, "accepted": 0, "attributionHash": hash_value}
 
 	var body := {
@@ -440,6 +484,7 @@ func set_attribution(
 	if not response.get("ok", null) is bool or not response["ok"] \
 			or not response.get("value", null) is Dictionary:
 		last_error = String(response.get("error", "attribution_failed"))
+		_log("attribution sync failed: provider=%s, error=%s" % [clean_provider, last_error])
 		return {"ok": false, "accepted": 0, "error": last_error}
 	var value := response["value"] as Dictionary
 	var acknowledged_hash := GameAlgoUtil.clean(value.get("attributionHash", ""))
@@ -447,6 +492,9 @@ func set_attribution(
 		acknowledged[clean_provider] = acknowledged_hash
 		_store_attribution_acks(acknowledged)
 	last_error = ""
+	_log("attribution synced: provider=%s, accepted=%d" % [
+		clean_provider, int(value.get("accepted", 0))
+	])
 	return {
 		"ok": bool(value.get("ok", false)),
 		"accepted": int(value.get("accepted", 0)),
@@ -623,6 +671,20 @@ func _request_raw(
 	return response if response is Dictionary else {"ok": false, "error": "invalid_transport_result"}
 
 
+## Mirrors the iOS and Android SDKs: on by default, prefixed, and silenced by
+## passing logger = null. Games ship with it off or routed to their own sink.
+static func _default_logger(message: String) -> void:
+	print(message)
+
+
+func _log(message: String) -> void:
+	var line := "[GameAlgoSDK] " + message
+	sdk_log.emit(line)
+	if _logger == null:
+		return
+	(_logger as Callable).call(line)
+
+
 func _context_id() -> String:
 	var config: Variant = _snapshot.get("config", null)
 	return String(config.get("contextId", "")) if config is Dictionary else ""
@@ -672,9 +734,13 @@ func _set_context_identifier(
 	if not response.get("ok", null) is bool or not response["ok"] \
 			or not response.get("value", null) is Dictionary:
 		last_error = String(response.get("error", "context_identifier_failed"))
+		_log("context identifier sync failed: type=%s, error=%s" % [identifier_type, last_error])
 		return {"ok": false, "accepted": 0, "error": last_error}
 	var value_dict := response["value"] as Dictionary
 	last_error = ""
+	_log("context identifier synced: type=%s, accepted=%d" % [
+		identifier_type, int(value_dict.get("accepted", 0))
+	])
 	return {"ok": bool(value_dict.get("ok", false)), "accepted": int(value_dict.get("accepted", 0))}
 
 
@@ -686,17 +752,27 @@ func _preload_config(config: Dictionary) -> bool:
 	elif _preload is Array:
 		for raw_name: Variant in _preload:
 			names.append(String(raw_name))
+	if names.is_empty():
+		_log("no config files to preload")
+	else:
+		var sorted_names := names.duplicate()
+		sorted_names.sort()
+		_log("preloading config files: %s" % ", ".join(sorted_names))
 	var ok := true
 	for name: String in names:
 		var file := await fetch_config_file(name)
 		if file.is_empty():
 			ok = false
+		else:
+			_log("config file loaded: %s (%s)" % [file["name"], file["contentType"]])
 	if _preload is String and String(_preload) == "all" \
 			and _runtime != null and _runtime.has_method("execute"):
 		for raw_assignment: Variant in config["experiments"]:
 			var script: Variant = raw_assignment.get("script", null)
 			if script is Dictionary and not await _fetch_script(script):
 				ok = false
+	if ok and not names.is_empty():
+		_log("all config files loaded")
 	return ok
 
 

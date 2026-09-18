@@ -51,6 +51,7 @@ class TransportFixture:
 	var accepted_override := -1
 	var config_calls := 0
 	var attribution_ok := true
+	var events_ok := true
 	var attribution_hash_override := ""
 
 	func send(spec: Dictionary) -> Dictionary:
@@ -86,6 +87,11 @@ class TransportFixture:
 				"configFiles": config_files.duplicate(true),
 			})
 		if url.ends_with("/v1/events/batch"):
+			if not events_ok:
+				return {
+					"ok": false, "status": 503, "headers": {},
+					"body": PackedByteArray(), "error": "http_503",
+				}
 			var parsed: Variant = JSON.parse_string(String(spec.get("body", "")))
 			var events: Array = parsed.get("events", []) if parsed is Dictionary else []
 			var accepted := accepted_override if accepted_override >= 0 else events.size()
@@ -155,6 +161,7 @@ func _run() -> void:
 	await _test_attribution_upload_and_ack()
 	await _test_attribution_status_normalization()
 	await _test_context_identifiers()
+	await _test_observability()
 	print("RESULT: %d passed, %d failed" % [_passed, _failed])
 	quit(0 if _failed == 0 else 1)
 
@@ -795,6 +802,86 @@ func _test_context_identifiers() -> void:
 		"a real advertising id is reported verbatim"
 	)
 	client.free()
+
+
+## Godot redirects stdio on iOS, so print() never reaches the console there. The
+## signal and the injectable sink are the only ways an iOS host sees anything,
+## and a failed event upload has to be as observable as a failed config fetch.
+func _test_observability() -> void:
+	var transport := TransportFixture.new()
+	transport.experiments = [{
+		"key": "level_dda", "experimentId": "dda-1", "variant": "treatment",
+		"config": {"enabled": true}, "script": null,
+	}]
+	var lines: Array[String] = []
+	var signalled: Array[String] = []
+	var client := _make_client({
+		"transport": transport,
+		"logger": func(message: String) -> void: lines.append(message),
+	})
+	if client == null:
+		_check(false, "observability fixture configured")
+		return
+	# configure() already logged, and the signal can only be connected afterwards,
+	# so compare from here on.
+	var before_connect := lines.size()
+	client.sdk_log.connect(func(message: String) -> void: signalled.append(message))
+	var failures: Array[String] = []
+	client.request_failed.connect(func(code: String) -> void: failures.append(code))
+
+	await client.refresh(true)
+	_check(not lines.is_empty(), "the injected logger receives SDK lines")
+	_check(
+		lines.all(func(line: String) -> bool: return line.begins_with("[GameAlgoSDK] ")),
+		"every line carries the SDK prefix"
+	)
+	_check(
+		lines.any(func(line: String) -> bool: return line.contains("config fetched")),
+		"a successful config fetch is logged"
+	)
+	_check(
+		lines.any(func(line: String) -> bool: return line.contains("assignment:")),
+		"assignments are logged"
+	)
+
+	# The signal must carry everything the sink does, because on iOS it is the
+	# only one that works.
+	_check(
+		signalled.size() == lines.size() - before_connect and not signalled.is_empty(),
+		"sdk_log mirrors the injected logger"
+	)
+
+	# A failed event upload emits request_failed, like a failed config fetch.
+	transport.events_ok = false
+	client.tracker.track("level_end", {"level": 1})
+	await client.tracker.flush()
+	_check(
+		failures.has("http_503"),
+		"a failed event upload emits request_failed"
+	)
+	_check(
+		lines.any(func(line: String) -> bool: return line.contains("event upload failed")),
+		"a failed event upload is logged"
+	)
+	_check(
+		lines.any(func(line: String) -> bool: return line.contains("flush failed")),
+		"the held queue depth is logged on a failed flush"
+	)
+	client.free()
+
+	# logger = null silences the sink but never the signal.
+	var quiet_transport := TransportFixture.new()
+	var quiet_signals: Array[String] = []
+	var quiet := _make_client({"transport": quiet_transport, "logger": null})
+	quiet.sdk_log.connect(func(message: String) -> void: quiet_signals.append(message))
+	await quiet.refresh(true)
+	_check(not quiet_signals.is_empty(), "sdk_log still fires with the logger disabled")
+	quiet.free()
+
+	_check(
+		not _configure_result({"logger": "not a callable"})["ok"],
+		"a non-callable logger is rejected"
+	)
 
 
 func _script_assignment(url: String) -> Dictionary:
