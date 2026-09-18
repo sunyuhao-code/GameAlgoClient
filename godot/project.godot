@@ -1,0 +1,13 @@
+; GameAlgo Godot SDK test project. Games do not ship this file; they copy
+; addons/gamealgo/ into their own project.
+config_version=5
+
+[application]
+
+config/name="GameAlgo Godot SDK"
+config/features=PackedStringArray("4.7")
+
+[debug]
+
+gdscript/warnings/enable=true
+gdscript/warnings/exclude_addons=false

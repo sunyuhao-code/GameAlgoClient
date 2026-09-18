@@ -6,6 +6,34 @@ on:
     branches: [master, main]
 
 jobs:
+  godot:
+    # macOS, because the runtime contracts need a host GDExtension build and
+    # macOS is the only shipped desktop target.
+    runs-on: macos-14
+    env:
+      GODOT_VERSION: "4.7"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the Godot runtime for this host
+        run: npm run build:godot-runtime
+      - name: Install Godot ${{ env.GODOT_VERSION }}
+        run: |
+          set -euo pipefail
+          archive="Godot_v${GODOT_VERSION}-stable_macos.universal.zip"
+          curl -sSLf -o "$archive" \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/${archive}"
+          unzip -q "$archive"
+          echo "GODOT_BIN=$PWD/Godot.app/Contents/MacOS/Godot" >> "$GITHUB_ENV"
+          "$PWD/Godot.app/Contents/MacOS/Godot" --version
+      - name: Godot SDK contracts
+        run: npm run check:godot
+
   rest-ios-lua:
     runs-on: macos-14
     steps:

@@ -6,3 +6,10 @@ android/.gradle/
 android/build/
 android/*/build/
 android/local.properties
+
+# Godot import cache for the SDK test project
+godot/.godot/
+
+# GameAlgo Godot runtime binaries are build outputs
+godot/addons/gamealgo/runtime/*/
+runtime/godot/target/
