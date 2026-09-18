@@ -120,6 +120,47 @@ test("H5 event batches stay within the keepalive byte budget", async () => {
   client.close();
 });
 
+// A strategy script runs before its input is frozen, so it can replace any
+// global the freeze relies on. Mirrors deep_freeze_survives_tampered_intrinsics
+// in runtime/rust/src/lib.rs.
+test("H5 QuickJS sandbox freezes input against tampered intrinsics", async () => {
+  const tampering = [
+    "Object.freeze = function (value) { return value; };",
+    "Object.keys = function () { return []; };",
+    "Array.prototype[Symbol.iterator] = function* () {};",
+    "globalThis.Set = function () { throw new Error('denied'); };",
+  ];
+  for (const prologue of [...tampering, tampering.join("")]) {
+    const output = await runQuickJSSandbox(
+      "execute",
+      `${prologue} function execute(input) {
+        try { input.state.level = 99; } catch (error) {}
+        return { payload: { level: input.state.level, frozen: Object.isFrozen(input.state) }, diagnostics: {} };
+      }`,
+      SCRIPT_INPUT,
+    );
+    assert.deepEqual(
+      (output as { payload: unknown }).payload,
+      { level: 3, frozen: true },
+      `input stayed mutable after: ${prologue}`,
+    );
+  }
+});
+
+test("H5 QuickJS sandbox leaves no enumerable globals behind", async () => {
+  const output = await runQuickJSSandbox(
+    "execute",
+    `function execute() {
+      return { payload: { globals: Object.keys(globalThis), performance: typeof performance }, diagnostics: {} };
+    }`,
+    SCRIPT_INPUT,
+  );
+  assert.deepEqual((output as { payload: unknown }).payload, {
+    globals: ["execute"],
+    performance: "undefined",
+  });
+});
+
 test("H5 QuickJS sandbox executes strategies without browser host access", async () => {
   const output = await runQuickJSSandbox(
     "execute",

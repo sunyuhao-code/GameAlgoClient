@@ -66,6 +66,15 @@ impl Default for RuntimeLimits {
 }
 
 const PRELUDE: &str = r#"
+    // Captured before the strategy script runs. The deep freeze below must not
+    // reach for a global the script can replace, or overriding Object.freeze,
+    // Object.keys, Set or Array.prototype[Symbol.iterator] would hand the script
+    // a mutable input.
+    const __gamealgoObjectKeys = Object.keys;
+    const __gamealgoObjectFreeze = Object.freeze;
+    const __gamealgoSet = Set;
+    const __gamealgoSetHas = Function.prototype.call.bind(Set.prototype.has);
+    const __gamealgoSetAdd = Function.prototype.call.bind(Set.prototype.add);
     const __gamealgoDisableConstructor = (value) => {
       const prototype = Object.getPrototypeOf(value);
       if (prototype && Object.prototype.hasOwnProperty.call(prototype, "constructor")) {
@@ -87,13 +96,20 @@ const PRELUDE: &str = r#"
     delete globalThis.AsyncGeneratorFunction;
     delete globalThis.WebAssembly;
     delete globalThis.Date;
+    // A high-resolution clock is a clock; strategies must stay deterministic.
+    delete globalThis.performance;
     Object.defineProperty(Math, "random", { value: undefined, writable: false, configurable: false });
     Object.defineProperty(globalThis, "__gamealgoDeepFreeze", {
-      value: (value, seen = new Set()) => {
-        if (value === null || typeof value !== "object" || seen.has(value)) return value;
-        seen.add(value);
-        for (const key of Object.keys(value)) __gamealgoDeepFreeze(value[key], seen);
-        return Object.freeze(value);
+      value: (value, seen = new __gamealgoSet()) => {
+        if (value === null || typeof value !== "object" || __gamealgoSetHas(seen, value)) return value;
+        __gamealgoSetAdd(seen, value);
+        // An index loop, so a replaced Array.prototype[Symbol.iterator] cannot
+        // cut the traversal short.
+        const keys = __gamealgoObjectKeys(value);
+        for (let index = 0; index < keys.length; index++) {
+          __gamealgoDeepFreeze(value[keys[index]], seen);
+        }
+        return __gamealgoObjectFreeze(value);
       },
       writable: false,
       configurable: false
@@ -515,16 +531,67 @@ mod tests {
           eval: typeof eval,
           Function: typeof Function,
           Date: typeof Date,
-          random: typeof Math.random
+          random: typeof Math.random,
+          performance: typeof performance
         }}; }"#;
         let result = execute(script, &json!({}), &RuntimeLimits::default()).unwrap();
         assert_eq!(
             result["payload"],
             json!({
                 "process":"undefined", "require":"undefined", "fetch":"undefined",
-                "eval":"undefined", "Function":"undefined", "Date":"undefined", "random":"undefined"
+                "eval":"undefined", "Function":"undefined", "Date":"undefined",
+                "random":"undefined", "performance":"undefined"
             })
         );
+    }
+
+    /// A strategy script runs before its input is frozen, so it can replace any
+    /// global the freeze relies on. The prelude captures those first; without
+    /// that, each of these hands the script a mutable input.
+    #[test]
+    fn deep_freeze_survives_tampered_intrinsics() {
+        let tampering = [
+            "Object.freeze = function (value) { return value; };",
+            "Object.keys = function () { return []; };",
+            "Array.prototype[Symbol.iterator] = function* () {};",
+            "globalThis.Set = function () { throw new Error(\"denied\"); };",
+            concat!(
+                "Object.freeze = function (value) { return value; };",
+                "Object.keys = function () { return []; };",
+                "Array.prototype[Symbol.iterator] = function* () {};",
+                "globalThis.Set = function () { throw new Error(\"denied\"); };",
+            ),
+        ];
+        for prologue in tampering {
+            let script = format!(
+                "{prologue} function execute(input) {{
+                   try {{ input.nested.value = 99; }} catch (error) {{}}
+                   return {{ payload: {{
+                     value: input.nested.value,
+                     frozen: Object.isFrozen(input.nested)
+                   }} }};
+                 }}"
+            );
+            let result = execute(
+                &script,
+                &json!({"nested": {"value": 7}}),
+                &RuntimeLimits::default(),
+            )
+            .unwrap_or_else(|error| panic!("tampering must not break execution: {prologue}: {error}"));
+            assert_eq!(
+                result["payload"],
+                json!({"value": 7, "frozen": true}),
+                "input stayed mutable after: {prologue}"
+            );
+        }
+    }
+
+    /// Only the script's own entry point is reachable as an enumerable global.
+    #[test]
+    fn leaves_no_enumerable_globals_behind() {
+        let script = "function execute() { return { payload: Object.keys(globalThis) }; }";
+        let result = execute(script, &json!({}), &RuntimeLimits::default()).unwrap();
+        assert_eq!(result["payload"], json!(["execute"]));
     }
 
     #[test]
