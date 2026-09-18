@@ -15,6 +15,11 @@ if (process.platform !== "darwin" || !(await hasSimulatorToolchain())) {
 
 const harnessRoot = resolve(import.meta.dirname, "ios-webview");
 const bundleId = "cn.gamealgo.webview-e2e";
+// Kept below every simulator runtime a CI image might carry, and in step with
+// MinimumOSVersion in ios-webview/Info.plist. The harness only uses long-stable
+// UIKit and WebKit APIs, and what this actually exercises is the simulator's
+// WebKit, not the app's deployment target.
+const DEPLOYMENT_TARGET = "15.0";
 const workRoot = await mkdtemp(resolve(tmpdir(), "gamealgo-ios-webview-"));
 const appRoot = resolve(workRoot, "GameAlgoWebViewE2E.app");
 const executable = resolve(appRoot, "GameAlgoWebViewE2E");
@@ -85,7 +90,7 @@ async function buildApp() {
   await run("xcrun", [
     "swiftc",
     "-sdk", sdk,
-    "-target", `${architecture}-apple-ios18.0-simulator`,
+    "-target", `${architecture}-apple-ios${DEPLOYMENT_TARGET}-simulator`,
     "-framework", "UIKit",
     "-framework", "WebKit",
     resolve(harnessRoot, "AppDelegate.swift"),
@@ -94,13 +99,38 @@ async function buildApp() {
   await run("codesign", ["--force", "--sign", "-", appRoot]);
 }
 
+// Runner images carry different iOS runtimes over time, so prefer the newest
+// one available rather than whichever the list happens to return first. The
+// harness deployment target stays below every runtime we could pick, so the
+// install never fails on a version mismatch.
 async function findSimulator() {
   const { stdout } = await run("xcrun", ["simctl", "list", "devices", "available", "-j"]);
-  const runtimes = Object.values(JSON.parse(stdout).devices);
-  const devices = runtimes.flat().filter((candidate) => candidate.isAvailable && candidate.name.startsWith("iPhone"));
-  const device = devices.find((candidate) => candidate.state === "Booted") ?? devices[0];
-  if (!device) throw new Error("No available iPhone Simulator found");
+  const byRuntime = Object.entries(JSON.parse(stdout).devices)
+    .map(([runtime, devices]) => ({
+      version: runtimeVersion(runtime),
+      devices: devices.filter((candidate) => candidate.isAvailable && candidate.name.startsWith("iPhone")),
+    }))
+    .filter((entry) => entry.version !== null && entry.devices.length > 0)
+    .sort((a, b) => compareVersions(b.version, a.version));
+  const newest = byRuntime[0];
+  if (!newest) throw new Error("No available iPhone Simulator found");
+  const device = newest.devices.find((candidate) => candidate.state === "Booted") ?? newest.devices[0];
+  console.log(`Using iOS ${newest.version.join(".")} Simulator: ${device.name}`);
   return device;
+}
+
+/** `com.apple.CoreSimulator.SimRuntime.iOS-17-4` -> [17, 4] */
+function runtimeVersion(identifier) {
+  const match = /SimRuntime\.iOS-(\d+)(?:-(\d+))?(?:-(\d+))?$/.exec(identifier);
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2] ?? 0), Number(match[3] ?? 0)];
+}
+
+function compareVersions(a, b) {
+  for (let index = 0; index < 3; index += 1) {
+    if (a[index] !== b[index]) return a[index] - b[index];
+  }
+  return 0;
 }
 
 async function run(command, args, options = {}) {
