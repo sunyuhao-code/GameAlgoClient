@@ -1,0 +1,122 @@
+name: Godot Runtime Release
+
+"on":
+  push:
+    tags:
+      - "v*.*.*"
+      - "[0-9]*.[0-9]*.[0-9]*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # macOS builds every shipped target: the iOS slices need Xcode, and the
+    # Android slices only need the NDK, which is available here too.
+    runs-on: macos-14
+    env:
+      TZ: Asia/Shanghai
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Set up Rust targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - name: Set up Android NDK
+        uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r27c
+
+      - name: Set up cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Unsupported release tag: $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Run the runtime contracts before publishing
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          GODOT_VERSION: "4.7"
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="Godot_v${GODOT_VERSION}-stable_macos.universal.zip"
+          curl -sSLf -o "$archive" \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/${archive}"
+          unzip -q "$archive"
+          export GODOT_BIN="$PWD/Godot.app/Contents/MacOS/Godot"
+          cargo test --locked --manifest-path runtime/rust/Cargo.toml
+          npm run build:godot-runtime
+          npm run check:godot
+
+      - name: Build the shipped runtime targets
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: npm run build:godot-runtime -- ios android
+
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.value }}"
+          staging="$(mktemp -d)/gamealgo-godot-$version"
+          mkdir -p "$staging"
+
+          # The addon ships as one archive: GDScript, the GDExtension descriptor
+          # and every shipped runtime binary, laid out exactly as a game copies
+          # it into res://addons/gamealgo/.
+          cp -R godot/addons/gamealgo "$staging/gamealgo"
+          cp godot/README.md "$staging/README.md"
+
+          # The macOS runtime is a test-host artifact, never shipped.
+          rm -rf "$staging/gamealgo/runtime/macos"
+
+          for required in \
+            "$staging/gamealgo/gamealgo_client.gd" \
+            "$staging/gamealgo/runtime/gamealgo_runtime.gdextension" \
+            "$staging/gamealgo/runtime/ios/libgamealgo_godot_runtime.dylib" \
+            "$staging/gamealgo/runtime/ios-simulator/libgamealgo_godot_runtime.dylib" \
+            "$staging/gamealgo/runtime/android/arm64-v8a/libgamealgo_godot_runtime.so" \
+            "$staging/gamealgo/runtime/android/armeabi-v7a/libgamealgo_godot_runtime.so" \
+            "$staging/gamealgo/runtime/android/x86_64/libgamealgo_godot_runtime.so" \
+          ; do
+            [[ -f "$required" ]] || { echo "missing release payload: $required" >&2; exit 1; }
+          done
+
+          mkdir -p release
+          asset="gamealgo-godot-$version.zip"
+          (cd "$(dirname "$staging")" && zip -qr "$OLDPWD/release/$asset" "$(basename "$staging")")
+          shasum -a 256 "release/$asset" > "release/$asset.sha256"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              release/* \
+              --verify-tag \
+              --generate-notes \
+              --title "GameAlgo Client $GITHUB_REF_NAME"
+          fi
