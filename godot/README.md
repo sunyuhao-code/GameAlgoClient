@@ -6,18 +6,24 @@
 
 ## 安装
 
-把 `addons/gamealgo/` 整个目录复制到游戏项目的 `res://addons/gamealgo/`，包含 `runtime/` 下的 GDExtension 及其二进制。本目录下的 `project.godot` 和 `tests/` 只用于本仓库跑测试，游戏不需要。
+从 GitHub Release 下载 `gamealgo-godot-<version>.zip`，把里面的 `gamealgo/` 整个目录放到游戏项目的 `res://addons/gamealgo/`。包里已经含 GDScript、`.gdextension` 和 iOS / Android 的运行时二进制，不需要自己构建。
 
-二进制是构建产物，不入库。从源码构建：
+发布包按语义化版本 tag 触发，和 Android AAR 同一个 Release。
+
+支持 `android` 和 `ios` 两个导出目标。**iOS 模拟器的二进制是单独一份**（`runtime/ios-simulator/`），一起放进去，否则模拟器里运行时单例加载不出来，脚本型策略会失败关闭。
+
+本仓库的 `godot/project.godot` 和 `godot/tests/` 只用于跑测试，游戏不需要。
+
+### 从源码构建
+
+只有改运行时本身或在本仓库跑测试时才需要：
 
 ```bash
 npm run build:godot-runtime -- ios android   # 发布目标
-npm run build:godot-runtime                  # 当前主机（macOS），仅用于跑测试
+npm run build:godot-runtime                  # 当前主机（macOS），仅测试用
 ```
 
-发布目标是 **iOS 和 Android**（三个 ABI）。iOS 部署目标 13.0，Android 走 cargo-ndk，与 iOS / Android SDK 的下限一致。
-
-macOS 构建只是本仓库跑运行时契约测试用的宿主产物，不随游戏发布。
+iOS 部署目标 13.0，Android 走 cargo-ndk，与 iOS / Android SDK 的下限一致。macOS 构建只是本仓库跑运行时契约测试的宿主产物，不随游戏发布，也不进发布包。
 
 ## 最小接入
 
