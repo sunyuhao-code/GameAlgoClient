@@ -20,6 +20,10 @@ const bundleId = "cn.gamealgo.webview-e2e";
 // UIKit and WebKit APIs, and what this actually exercises is the simulator's
 // WebKit, not the app's deployment target.
 const DEPLOYMENT_TARGET = "15.0";
+// A CI runner may be booting a simulator runtime for the first time, where
+// installd and the first launch are far slower than on a warm machine. These
+// are backstops against a hang, not latency budgets.
+const SIMCTL_TIMEOUT_MS = 180_000;
 const workRoot = await mkdtemp(resolve(tmpdir(), "gamealgo-ios-webview-"));
 const appRoot = resolve(workRoot, "GameAlgoWebViewE2E.app");
 const executable = resolve(appRoot, "GameAlgoWebViewE2E");
@@ -29,13 +33,14 @@ const server = await startGameAlgoE2EServer();
 
 try {
   await buildApp();
-  await run("xcrun", ["simctl", "boot", device.udid], { allowFailure: true });
-  await run("xcrun", ["simctl", "bootstatus", device.udid, "-b"], { timeout: 120_000 });
-  await run("xcrun", ["simctl", "install", device.udid, appRoot]);
+  await run("xcrun", ["simctl", "boot", device.udid], { allowFailure: true, timeout: SIMCTL_TIMEOUT_MS });
+  await run("xcrun", ["simctl", "bootstatus", device.udid, "-b"], { timeout: SIMCTL_TIMEOUT_MS });
+  await run("xcrun", ["simctl", "install", device.udid, appRoot], { timeout: SIMCTL_TIMEOUT_MS });
   await run("xcrun", ["simctl", "terminate", device.udid, bundleId], { allowFailure: true });
   const pageUrl = `${server.baseUrl}/?utm_source=taptap&utm_campaign=e2e&secret=omit&webview_e2e=1`;
   await run("xcrun", ["simctl", "launch", device.udid, bundleId], {
     env: { ...process.env, SIMCTL_CHILD_GAMEALGO_E2E_URL: pageUrl },
+    timeout: SIMCTL_TIMEOUT_MS,
   });
 
   const [first, second] = await withTimeout(
@@ -143,6 +148,12 @@ async function run(command, args, options = {}) {
     });
   } catch (error) {
     if (options.allowFailure) return { stdout: error.stdout ?? "", stderr: error.stderr ?? "" };
+    // A timeout arrives as SIGTERM with no output, which says nothing about
+    // which step stalled. Name it.
+    if (error.killed) {
+      const seconds = Math.round((options.timeout ?? 30_000) / 1000);
+      throw new Error(`${command} ${args.join(" ")} timed out after ${seconds}s`);
+    }
     throw error;
   }
 }
