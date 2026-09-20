@@ -162,6 +162,7 @@ func _run() -> void:
 	await _test_attribution_status_normalization()
 	await _test_context_identifiers()
 	await _test_observability()
+	await _test_automatic_idfv()
 	print("RESULT: %d passed, %d failed" % [_passed, _failed])
 	quit(0 if _failed == 0 else 1)
 
@@ -802,6 +803,67 @@ func _test_context_identifiers() -> void:
 		"a real advertising id is reported verbatim"
 	)
 	client.free()
+
+
+## Matches the iOS SDK, which reports IDFV once after the startup config fetch.
+## Godot surfaces the same value through OS.get_unique_id() on iOS.
+func _test_automatic_idfv() -> void:
+	# The test host is macOS, so start() cannot exercise the real iOS path. Drive
+	# the reporter directly with platform=ios to cover the decisions it makes.
+	var transport := TransportFixture.new()
+	var client := _make_client({"transport": transport, "platform": "ios"})
+	if client == null:
+		_check(false, "idfv fixture configured")
+		return
+	await client.refresh(true)
+	await client._report_identifier_for_vendor()
+	var bodies := transport.bodies_for("/v1/context-identifiers")
+	_check(bodies.size() == 1, "idfv is reported once after startup")
+	if not bodies.is_empty():
+		_check(
+			String(bodies[0].get("identifierType", "")) == "idfv",
+			"the automatic report uses the idfv identifier type"
+		)
+		_check(
+			String(bodies[0].get("contextId", "")) == "context-1",
+			"the automatic report binds the live context"
+		)
+	# Once per startup, never on every call.
+	await client._report_identifier_for_vendor()
+	_check(
+		transport.bodies_for("/v1/context-identifiers").size() == 1,
+		"idfv is not reported again within the same startup"
+	)
+	client.free()
+
+	# Android and desktop have no vendor identifier to report.
+	var android_transport := TransportFixture.new()
+	var android := _make_client({"transport": android_transport, "platform": "android"})
+	await android.refresh(true)
+	await android._report_identifier_for_vendor()
+	_check(
+		android_transport.bodies_for("/v1/context-identifiers").is_empty(),
+		"idfv is never reported off iOS"
+	)
+	android.free()
+
+	# IDFV needs no ATT authorization, measurement consent governs events here,
+	# and the manual identifier setters do not consult it either, so neither does
+	# this. The iOS SDK reports it unconditionally as well.
+	var denied_transport := TransportFixture.new()
+	var denied := _make_client({
+		"transport": denied_transport,
+		"platform": "ios",
+		"measurement_allowed": false,
+		"measurement_resolved": true,
+	})
+	await denied.refresh(true)
+	await denied._report_identifier_for_vendor()
+	_check(
+		denied_transport.bodies_for("/v1/context-identifiers").size() == 1,
+		"idfv does not depend on measurement consent"
+	)
+	denied.free()
 
 
 ## Godot redirects stdio on iOS, so print() never reaches the console there. The

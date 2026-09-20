@@ -125,6 +125,10 @@ await client.set_idfa(idfa)
 await client.set_idfv(idfv)
 ```
 
+**iOS 上 IDFV 会自动上报一次**，和 iOS SDK 行为一致：启动拉完配置后，SDK 取 `OS.get_unique_id()`（在 iOS 上就是 `identifierForVendor`）上报一次，失败只记日志、不影响启动。IDFV 不需要 ATT 授权，所以不受 `measurement_allowed` 约束——那个开关管的是事件，`set_attribution` 和其他标识 setter 同样不受它约束，iOS SDK 也是无条件上报。
+
+Android 和桌面没有 IDFV，不会触发。其余标识仍需游戏在拿到值后手动调用。
+
 这些调用需要 context 已就绪，会自动关联当前 `contextId` 和 GameAlgo `userId`。用户撤回授权或标识不可用时传 `null`，服务端会记录清除操作；全零的 GAID / IDFA 会被自动识别为清除。只在取得用户授权且符合应用隐私政策时采集这些标识。
 
 ## 日志与可观测性

@@ -62,6 +62,7 @@ var _cached_expiry_unix := 0.0
 var _prepared_script_hashes: Dictionary = {}
 ## A Callable taking one String, or null to silence the SDK.
 var _logger: Variant = null
+var _reported_idfv := false
 
 
 func configure(options: Dictionary) -> bool:
@@ -209,6 +210,7 @@ func start() -> bool:
 		status = "ready_cached"
 		sdk_ready.emit(true)
 	var refreshed := await refresh(true)
+	_report_identifier_for_vendor()
 	if refreshed:
 		if not _ready or not used_cache:
 			_ready = true
@@ -673,6 +675,28 @@ func _request_raw(
 
 ## Mirrors the iOS and Android SDKs: on by default, prefixed, and silenced by
 ## passing logger = null. Games ship with it off or routed to their own sink.
+## The iOS SDK reports IDFV once per startup; Godot exposes the same value
+## through OS.get_unique_id(), which is identifierForVendor on iOS.
+##
+## Not gated on measurement consent: IDFV needs no ATT authorization, that flag
+## governs events here, and neither set_attribution nor the manual identifier
+## setters consult it. The iOS SDK reports it unconditionally too.
+## Fire and forget: a failure here must never hold up startup.
+func _report_identifier_for_vendor() -> void:
+	if _reported_idfv or _platform != "ios":
+		return
+	if _context_id().is_empty():
+		return
+	_reported_idfv = true
+	var idfv := GameAlgoUtil.clean(OS.get_unique_id())
+	if idfv.is_empty():
+		_log("idfv auto-report skipped: no vendor identifier")
+		return
+	var result: Dictionary = await _set_context_identifier("idfv", idfv, "")
+	if not bool(result.get("ok", false)):
+		_log("idfv auto-report failed: %s" % String(result.get("error", "unknown")))
+
+
 static func _default_logger(message: String) -> void:
 	print(message)
 
