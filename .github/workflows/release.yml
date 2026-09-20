@@ -1,0 +1,246 @@
+name: Release
+
+# One workflow per tag. The two platform jobs build in parallel on the runner
+# each needs, and only `publish` touches the GitHub Release. Splitting it this
+# way is what makes a tag all-or-nothing: previously two workflows published
+# independently, so a tag could leave a Release holding only the AAR when the
+# Godot build failed, and both could race to create it in the first place.
+
+"on":
+  push:
+    tags:
+      - "v*.*.*"
+      - "[0-9]*.[0-9]*.[0-9]*"
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      value: ${{ steps.resolve.outputs.value }}
+    steps:
+      - name: Resolve release version
+        id: resolve
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Unsupported release tag: $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+  android:
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Shanghai
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: "17"
+          distribution: "temurin"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: "platform-tools"
+
+      - name: Set up Rust Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: armv7-linux-androideabi,aarch64-linux-android,x86_64-linux-android
+
+      - name: Set up Android native toolchain
+        run: |
+          cargo install cargo-ndk --locked
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+
+      - name: Run Android smoke tests
+        working-directory: android
+        run: |
+          classes="$(mktemp -d)"
+          javac \
+            -d "$classes" \
+            src/main/java/com/gamealgo/sdk/*.java \
+            src/test/java/com/gamealgo/sdk/*.java
+          java -cp "$classes" com.gamealgo.sdk.GameAlgoClientSmokeTest
+
+      - name: Build release AAR
+        working-directory: android
+        run: ./gradlew --no-daemon :assembleRelease -PsdkVersion=${{ needs.version.outputs.value }}
+
+      - name: Verify packaged native runtime
+        working-directory: android
+        run: ./verify-native-runtime.sh build/outputs/aar/gamealgo-android-release.aar
+
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          mkdir -p release
+          asset="gamealgo-android-${{ needs.version.outputs.value }}.aar"
+          cp android/build/outputs/aar/gamealgo-android-release.aar "release/$asset"
+          unzip -p "release/$asset" classes.jar > /tmp/gamealgo-android-classes.jar
+          jar tf /tmp/gamealgo-android-classes.jar | grep -q 'com/gamealgo/sdk/GameAlgoClient.class'
+          if jar tf /tmp/gamealgo-android-classes.jar | grep -q 'JavaxScriptGameAlgoRuntime'; then
+            echo "Desktop-only JavaxScriptGameAlgoRuntime must not be packaged in the AAR" >&2
+            exit 1
+          fi
+          sha256sum "release/$asset" > "release/$asset.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-android
+          path: release/
+          if-no-files-found: error
+          retention-days: 1
+
+  godot:
+    needs: version
+    # macOS builds every shipped target: the iOS slices need Xcode, and the
+    # Android slices only need the NDK, which is available here too.
+    runs-on: macos-14
+    env:
+      TZ: Asia/Shanghai
+      GODOT_VERSION: "4.7"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Set up Rust targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - name: Set up Android NDK
+        uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r27c
+
+      - name: Set up cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Run the runtime contracts before publishing
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="Godot_v${GODOT_VERSION}-stable_macos.universal.zip"
+          curl -sSLf -o "$archive" \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/${archive}"
+          unzip -q "$archive"
+          export GODOT_BIN="$PWD/Godot.app/Contents/MacOS/Godot"
+          cargo test --locked --manifest-path runtime/rust/Cargo.toml
+          npm run build:godot-runtime
+          npm run check:godot
+
+      - name: Build the shipped runtime targets
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: npm run build:godot-runtime -- ios android
+
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.version.outputs.value }}"
+          staging="$(mktemp -d)/gamealgo-godot-$version"
+          mkdir -p "$staging"
+
+          # The addon ships as one archive: GDScript, the GDExtension descriptor
+          # and every shipped runtime binary, laid out exactly as a game copies
+          # it into res://addons/gamealgo/.
+          cp -R godot/addons/gamealgo "$staging/gamealgo"
+          cp godot/README.md "$staging/README.md"
+
+          # The macOS runtime is a test-host artifact, never shipped.
+          rm -rf "$staging/gamealgo/runtime/macos"
+
+          for required in \
+            "$staging/gamealgo/gamealgo_client.gd" \
+            "$staging/gamealgo/runtime/gamealgo_runtime.gdextension" \
+            "$staging/gamealgo/runtime/ios/gamealgo_godot_runtime.framework/gamealgo_godot_runtime" \
+            "$staging/gamealgo/runtime/ios/gamealgo_godot_runtime.framework/Info.plist" \
+            "$staging/gamealgo/runtime/ios-simulator/gamealgo_godot_runtime.framework/gamealgo_godot_runtime" \
+            "$staging/gamealgo/runtime/ios-simulator/gamealgo_godot_runtime.framework/Info.plist" \
+            "$staging/gamealgo/runtime/android/arm64-v8a/libgamealgo_godot_runtime.so" \
+            "$staging/gamealgo/runtime/android/armeabi-v7a/libgamealgo_godot_runtime.so" \
+            "$staging/gamealgo/runtime/android/x86_64/libgamealgo_godot_runtime.so" \
+          ; do
+            [[ -f "$required" ]] || { echo "missing release payload: $required" >&2; exit 1; }
+          done
+
+          # An absolute build path here means the app dies at launch on device.
+          for slice in ios ios-simulator; do
+            name="$staging/gamealgo/runtime/$slice/gamealgo_godot_runtime.framework/gamealgo_godot_runtime"
+            [[ "$(otool -D "$name" | tail -n 1)" == "@rpath/gamealgo_godot_runtime.framework/gamealgo_godot_runtime" ]] \
+              || { echo "$slice install name is not framework-relative" >&2; exit 1; }
+          done
+
+          mkdir -p release
+          asset="gamealgo-godot-$version.zip"
+          (cd "$(dirname "$staging")" && zip -qr "$OLDPWD/release/$asset" "$(basename "$staging")")
+          shasum -a 256 "release/$asset" > "release/$asset.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-godot
+          path: release/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    # Runs only when every platform built, so a tag either publishes a complete
+    # Release or none at all.
+    needs: [version, android, godot]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: downloaded
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Check the expected assets arrived
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.version.outputs.value }}"
+          for asset in "gamealgo-android-$version.aar" "gamealgo-godot-$version.zip"; do
+            [[ -f "downloaded/$asset" ]] || { echo "missing release asset: $asset" >&2; exit 1; }
+            [[ -f "downloaded/$asset.sha256" ]] || { echo "missing checksum: $asset.sha256" >&2; exit 1; }
+          done
+          ls -l downloaded
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Only this job touches the Release, so `create` cannot race another
+          # workflow. `upload --clobber` still covers a re-run of the same tag.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" downloaded/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              downloaded/* \
+              --verify-tag \
+              --generate-notes \
+              --title "GameAlgo Client $GITHUB_REF_NAME"
+          fi

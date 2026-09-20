@@ -7,14 +7,14 @@ name: Android CI
       - "android/**"
       - "runtime/rust/**"
       - ".github/workflows/android.yml"
-      - ".github/workflows/android-release.yml"
+      - ".github/workflows/release.yml"
   pull_request:
     branches: ["main"]
     paths:
       - "android/**"
       - "runtime/rust/**"
       - ".github/workflows/android.yml"
-      - ".github/workflows/android-release.yml"
+      - ".github/workflows/release.yml"
 
 permissions:
   contents: read
