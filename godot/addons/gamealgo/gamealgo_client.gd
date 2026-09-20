@@ -692,7 +692,7 @@ func _report_identifier_for_vendor() -> void:
 	if idfv.is_empty():
 		_log("idfv auto-report skipped: no vendor identifier")
 		return
-	var result: Dictionary = await _set_context_identifier("idfv", idfv, "")
+	var result: Dictionary = await _send_context_identifier("idfv", idfv, "")
 	if not bool(result.get("ok", false)):
 		_log("idfv auto-report failed: %s" % String(result.get("error", "unknown")))
 
@@ -729,16 +729,17 @@ func _store_attribution_acks(acknowledged: Dictionary) -> void:
 ## Maps one advertising or analytics identifier onto the current context. The
 ## context must exist, because the mapping is what joins GameAlgo identity to
 ## the attribution provider's own reporting.
-func _set_context_identifier(
+## Performs the request and reports the outcome, without touching last_error.
+## The automatic IDFV report runs detached from start(), so it must not write to
+## an error channel that belongs to whatever the caller was doing.
+func _send_context_identifier(
 	identifier_type: String, value: Variant, observed_at: String
 ) -> Dictionary:
 	if status == "unconfigured":
-		last_error = "not_configured"
-		return {"ok": false, "accepted": 0, "error": last_error}
+		return {"ok": false, "accepted": 0, "error": "not_configured"}
 	var context_id := _context_id()
 	if context_id.is_empty():
-		last_error = "context_not_ready"
-		return {"ok": false, "accepted": 0, "error": last_error}
+		return {"ok": false, "accepted": 0, "error": "context_not_ready"}
 	var identifier_value: Variant = GameAlgoUtil.normalize_context_identifier(identifier_type, value)
 	var observed := GameAlgoUtil.clean(observed_at)
 	var body := {
@@ -757,15 +758,23 @@ func _set_context_identifier(
 	var response := await _request_json("POST", "/v1/context-identifiers", body)
 	if not response.get("ok", null) is bool or not response["ok"] \
 			or not response.get("value", null) is Dictionary:
-		last_error = String(response.get("error", "context_identifier_failed"))
-		_log("context identifier sync failed: type=%s, error=%s" % [identifier_type, last_error])
-		return {"ok": false, "accepted": 0, "error": last_error}
+		var error := String(response.get("error", "context_identifier_failed"))
+		_log("context identifier sync failed: type=%s, error=%s" % [identifier_type, error])
+		return {"ok": false, "accepted": 0, "error": error}
 	var value_dict := response["value"] as Dictionary
-	last_error = ""
 	_log("context identifier synced: type=%s, accepted=%d" % [
 		identifier_type, int(value_dict.get("accepted", 0))
 	])
 	return {"ok": bool(value_dict.get("ok", false)), "accepted": int(value_dict.get("accepted", 0))}
+
+
+## The caller-facing path: the public setters own last_error.
+func _set_context_identifier(
+	identifier_type: String, value: Variant, observed_at: String
+) -> Dictionary:
+	var result: Dictionary = await _send_context_identifier(identifier_type, value, observed_at)
+	last_error = "" if bool(result.get("ok", false)) else String(result.get("error", ""))
+	return result
 
 
 func _preload_config(config: Dictionary) -> bool:
