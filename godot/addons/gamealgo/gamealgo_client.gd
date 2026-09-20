@@ -62,7 +62,6 @@ var _cached_expiry_unix := 0.0
 var _prepared_script_hashes: Dictionary = {}
 ## A Callable taking one String, or null to silence the SDK.
 var _logger: Variant = null
-var _auto_report_idfv := true
 var _reported_idfv := false
 
 
@@ -119,11 +118,6 @@ func configure(options: Dictionary) -> bool:
 	_device = _default_device()
 	_device.merge((device_value as Dictionary).duplicate(true), true)
 	_preload = preload_value.duplicate(true) if preload_value is Array else preload_value
-	if options.has("auto_report_idfv"):
-		if not options["auto_report_idfv"] is bool:
-			last_error = "invalid_auto_report_idfv"
-			return false
-		_auto_report_idfv = bool(options["auto_report_idfv"])
 	if options.has("logger"):
 		var logger_value: Variant = options["logger"]
 		if logger_value == null:
@@ -686,10 +680,10 @@ func _request_raw(
 ##
 ## Not gated on measurement consent: IDFV needs no ATT authorization, that flag
 ## governs events here, and neither set_attribution nor the manual identifier
-## setters consult it. Games that want to withhold it pass auto_report_idfv.
+## setters consult it. The iOS SDK reports it unconditionally too.
 ## Fire and forget: a failure here must never hold up startup.
 func _report_identifier_for_vendor() -> void:
-	if not _auto_report_idfv or _reported_idfv or _platform != "ios":
+	if _reported_idfv or _platform != "ios":
 		return
 	if _context_id().is_empty():
 		return

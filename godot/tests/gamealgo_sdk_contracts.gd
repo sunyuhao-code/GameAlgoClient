@@ -849,7 +849,7 @@ func _test_automatic_idfv() -> void:
 
 	# IDFV needs no ATT authorization, measurement consent governs events here,
 	# and the manual identifier setters do not consult it either, so neither does
-	# this. auto_report_idfv is the control for withholding it.
+	# this. The iOS SDK reports it unconditionally as well.
 	var denied_transport := TransportFixture.new()
 	var denied := _make_client({
 		"transport": denied_transport,
@@ -864,19 +864,6 @@ func _test_automatic_idfv() -> void:
 		"idfv does not depend on measurement consent"
 	)
 	denied.free()
-
-	# And it can be turned off outright.
-	var off_transport := TransportFixture.new()
-	var off := _make_client({
-		"transport": off_transport, "platform": "ios", "auto_report_idfv": false,
-	})
-	await off.refresh(true)
-	await off._report_identifier_for_vendor()
-	_check(
-		off_transport.bodies_for("/v1/context-identifiers").is_empty(),
-		"auto_report_idfv = false disables the automatic report"
-	)
-	off.free()
 
 
 ## Godot redirects stdio on iOS, so print() never reaches the console there. The

@@ -125,11 +125,7 @@ await client.set_idfa(idfa)
 await client.set_idfv(idfv)
 ```
 
-**iOS 上 IDFV 会自动上报一次**，和 iOS SDK 行为一致：启动拉完配置后，SDK 取 `OS.get_unique_id()`（在 iOS 上就是 `identifierForVendor`）上报一次，失败只记日志、不影响启动。IDFV 不需要 ATT 授权，所以不受 `measurement_allowed` 约束——那个开关管的是事件，`set_attribution` 和其他标识 setter 同样不受它约束。要关掉：
-
-```gdscript
-client.configure({ ..., "auto_report_idfv": false })
-```
+**iOS 上 IDFV 会自动上报一次**，和 iOS SDK 行为一致：启动拉完配置后，SDK 取 `OS.get_unique_id()`（在 iOS 上就是 `identifierForVendor`）上报一次，失败只记日志、不影响启动。IDFV 不需要 ATT 授权，所以不受 `measurement_allowed` 约束——那个开关管的是事件，`set_attribution` 和其他标识 setter 同样不受它约束，iOS SDK 也是无条件上报。
 
 Android 和桌面没有 IDFV，不会触发。其余标识仍需游戏在拿到值后手动调用。
 
