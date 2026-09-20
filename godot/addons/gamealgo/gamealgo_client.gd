@@ -62,6 +62,8 @@ var _cached_expiry_unix := 0.0
 var _prepared_script_hashes: Dictionary = {}
 ## A Callable taking one String, or null to silence the SDK.
 var _logger: Variant = null
+var _auto_report_idfv := true
+var _reported_idfv := false
 
 
 func configure(options: Dictionary) -> bool:
@@ -117,6 +119,11 @@ func configure(options: Dictionary) -> bool:
 	_device = _default_device()
 	_device.merge((device_value as Dictionary).duplicate(true), true)
 	_preload = preload_value.duplicate(true) if preload_value is Array else preload_value
+	if options.has("auto_report_idfv"):
+		if not options["auto_report_idfv"] is bool:
+			last_error = "invalid_auto_report_idfv"
+			return false
+		_auto_report_idfv = bool(options["auto_report_idfv"])
 	if options.has("logger"):
 		var logger_value: Variant = options["logger"]
 		if logger_value == null:
@@ -209,6 +216,7 @@ func start() -> bool:
 		status = "ready_cached"
 		sdk_ready.emit(true)
 	var refreshed := await refresh(true)
+	_report_identifier_for_vendor()
 	if refreshed:
 		if not _ready or not used_cache:
 			_ready = true
@@ -673,6 +681,28 @@ func _request_raw(
 
 ## Mirrors the iOS and Android SDKs: on by default, prefixed, and silenced by
 ## passing logger = null. Games ship with it off or routed to their own sink.
+## The iOS SDK reports IDFV once per startup; Godot exposes the same value
+## through OS.get_unique_id(), which is identifierForVendor on iOS.
+##
+## Not gated on measurement consent: IDFV needs no ATT authorization, that flag
+## governs events here, and neither set_attribution nor the manual identifier
+## setters consult it. Games that want to withhold it pass auto_report_idfv.
+## Fire and forget: a failure here must never hold up startup.
+func _report_identifier_for_vendor() -> void:
+	if not _auto_report_idfv or _reported_idfv or _platform != "ios":
+		return
+	if _context_id().is_empty():
+		return
+	_reported_idfv = true
+	var idfv := GameAlgoUtil.clean(OS.get_unique_id())
+	if idfv.is_empty():
+		_log("idfv auto-report skipped: no vendor identifier")
+		return
+	var result: Dictionary = await _set_context_identifier("idfv", idfv, "")
+	if not bool(result.get("ok", false)):
+		_log("idfv auto-report failed: %s" % String(result.get("error", "unknown")))
+
+
 static func _default_logger(message: String) -> void:
 	print(message)
 
