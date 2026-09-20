@@ -52,6 +52,7 @@ class TransportFixture:
 	var config_calls := 0
 	var attribution_ok := true
 	var events_ok := true
+	var identifiers_ok := true
 	var attribution_hash_override := ""
 
 	func send(spec: Dictionary) -> Dictionary:
@@ -71,6 +72,11 @@ class TransportFixture:
 				"attributionHash": attribution_hash_override if not attribution_hash_override.is_empty() else echoed,
 			})
 		if url.ends_with("/v1/context-identifiers"):
+			if not identifiers_ok:
+				return {
+					"ok": false, "status": 404, "headers": {},
+					"body": PackedByteArray(), "error": "http_404",
+				}
 			return _json({"ok": true, "accepted": 1})
 		if url.ends_with("/v1/diagnostics/sdk"):
 			return _json({"ok": true, "accepted": 1})
@@ -125,6 +131,17 @@ class TransportFixture:
 		}
 
 
+class FailingStore:
+	extends MemoryStore
+
+	var refuse_saves := false
+
+	func save_json(key: String, value: Variant) -> bool:
+		if refuse_saves:
+			return false
+		return super.save_json(key, value)
+
+
 class UnavailableRuntime:
 	extends RefCounted
 
@@ -163,6 +180,7 @@ func _run() -> void:
 	await _test_context_identifiers()
 	await _test_observability()
 	await _test_automatic_idfv()
+	await _test_idfv_does_not_steal_last_error()
 	print("RESULT: %d passed, %d failed" % [_passed, _failed])
 	quit(0 if _failed == 0 else 1)
 
@@ -864,6 +882,55 @@ func _test_automatic_idfv() -> void:
 		"idfv does not depend on measurement consent"
 	)
 	denied.free()
+
+
+## The automatic report is fire-and-forget from start(). It must not write to
+## last_error, which belongs to whatever the caller was doing: a host reads
+## status and last_error together right after start() to explain a degraded
+## startup, and an IDFV result would replace that reason with its own.
+func _test_idfv_does_not_steal_last_error() -> void:
+	# A storage that refuses to persist leaves start() degraded with a reason.
+	var failing := FailingStore.new()
+	var transport := TransportFixture.new()
+	transport.identifiers_ok = false
+	var client := _make_client({
+		"transport": transport, "platform": "ios", "storage": failing,
+	})
+	if client == null:
+		_check(false, "last_error fixture configured")
+		return
+	failing.refuse_saves = true
+	await client.start()
+	# The report is detached, so let it finish before reading last_error; the
+	# point is that it never writes there, not that it loses a race.
+	for _frame: int in range(4):
+		await process_frame
+	_check(client.status == "degraded", "a snapshot persistence failure is degraded")
+	_check(
+		String(client.last_error) == "snapshot_persistence_failed",
+		"a failed idfv report does not replace the startup failure reason"
+	)
+	client.free()
+
+	# The success path is the quieter half: it would clear last_error outright.
+	var ok_storage := FailingStore.new()
+	var ok_transport := TransportFixture.new()
+	var succeeding := _make_client({
+		"transport": ok_transport, "platform": "ios", "storage": ok_storage,
+	})
+	ok_storage.refuse_saves = true
+	await succeeding.start()
+	for _frame: int in range(4):
+		await process_frame
+	_check(
+		String(succeeding.last_error) == "snapshot_persistence_failed",
+		"a successful idfv report does not clear the startup failure reason"
+	)
+	# The manual setters still own last_error.
+	var manual: Dictionary = await succeeding.set_adjust_adid("adid-1")
+	_check(bool(manual.get("ok", false)), "a manual identifier call still succeeds")
+	_check(String(succeeding.last_error) == "", "a manual identifier call still clears last_error")
+	succeeding.free()
 
 
 ## Godot redirects stdio on iOS, so print() never reaches the console there. The
