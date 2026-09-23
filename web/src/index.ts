@@ -9,7 +9,7 @@ import { GameAlgoBrowserStorage, type GameAlgoBrowserStorageOptions } from "./br
 import { GameAlgoWebScriptRuntime } from "./script-runtime.ts";
 import { GameAlgoMatchmakingClient } from "./multiplayer.ts";
 
-export const GAMEALGO_WEB_SDK_VERSION = "0.2.0";
+export const GAMEALGO_WEB_SDK_VERSION = "0.4.0";
 const WEB_KEEPALIVE_BODY_LIMIT_BYTES = 60 * 1024;
 const WEB_EVENT_BATCH_BODY_BUDGET_BYTES = 48 * 1024;
 const DEFAULT_WEB_ATTRIBUTION_PARAMETERS = [
@@ -233,11 +233,27 @@ function requestBodyBytes(body: BodyInit | null | undefined): number {
 export { GameAlgoBrowserStorage } from "./browser-storage.ts";
 export { GameAlgoWebScriptRuntime } from "./script-runtime.ts";
 export { defineMultiplayerProtocol } from "./multiplayer-protocol.ts";
-export { connectRoom, GameAlgoMatchmakingClient, MatchHandle, MultiplayerInputQueue, MultiplayerRoom } from "./multiplayer.ts";
+export {
+  connectRoom,
+  GameAlgoMatchmakingClient,
+  GameAlgoMultiplayerError,
+  MatchHandle,
+  MultiplayerInputQueue,
+  MultiplayerRoom,
+} from "./multiplayer.ts";
 export type { GameAlgoBrowserStorageOptions } from "./browser-storage.ts";
 export type { GameAlgoWebScriptRuntimeOptions } from "./script-runtime.ts";
 export type { MultiplayerFieldSchema, MultiplayerPrimitive, MultiplayerProtocol, MultiplayerProtocolDefinition, MultiplayerStructSchema } from "./multiplayer-protocol.ts";
-export type { ConnectRoomOptions, GameAlgoMatchmakingClientOptions, InputQueueOptions, MatchedRoom, MatchJoinOptions, MultiplayerRoomState, MultiplayerSocketFactory } from "./multiplayer.ts";
+export type {
+  ConnectRoomOptions,
+  GameAlgoMatchmakingClientOptions,
+  InputQueueOptions,
+  MatchedRoom,
+  MatchJoinOptions,
+  MultiplayerErrorPhase,
+  MultiplayerRoomState,
+  MultiplayerSocketFactory,
+} from "./multiplayer.ts";
 export type {
   ConfigResponse,
   EventBatchResponse,

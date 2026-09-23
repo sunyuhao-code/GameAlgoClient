@@ -1,7 +1,33 @@
 import type { MultiplayerProtocol } from "./multiplayer-protocol.ts";
-import { decodeMultiplayerFrame, encodeMultiplayerFrame, MultiplayerMessageType, NO_TARGET_SEAT } from "./multiplayer-wire.ts";
+import {
+  decodeMultiplayerFrame,
+  encodeMultiplayerFrame,
+  MultiplayerMessageType,
+  NO_TARGET_SEAT,
+  RELIABLE_INPUT_FLAG,
+} from "./multiplayer-wire.ts";
 
 export type MultiplayerSocketFactory = (url: string) => WebSocket;
+
+export type MultiplayerErrorPhase = "token" | "match" | "room_join" | "room_active" | "input";
+
+export class GameAlgoMultiplayerError extends Error {
+  readonly code: string;
+  readonly phase: MultiplayerErrorPhase;
+  readonly retryable: boolean;
+
+  constructor(
+    code: string,
+    phase: MultiplayerErrorPhase,
+    options: { retryable?: boolean; cause?: unknown } = {},
+  ) {
+    super(code, options.cause === undefined ? undefined : { cause: options.cause });
+    this.name = "GameAlgoMultiplayerError";
+    this.code = code;
+    this.phase = phase;
+    this.retryable = options.retryable === true;
+  }
+}
 
 export type MatchJoinOptions = {
   accessToken?: string;
@@ -16,6 +42,9 @@ export type MatchJoinOptions = {
   foreground?: boolean;
   rttMs?: number;
   deviceScore?: number;
+  connectionRetries?: number;
+  connectionTimeoutMs?: number;
+  retryDelayMs?: number;
 };
 
 export type MatchedRoom = {
@@ -49,6 +78,11 @@ export class GameAlgoMatchmakingClient {
 export class MatchHandle {
   private socket?: WebSocket;
   private cancelled = false;
+  private finished = false;
+  private connectionAttempt = 0;
+  private retryTimer?: ReturnType<typeof setTimeout>;
+  private connectionTimer?: ReturnType<typeof setTimeout>;
+  private credentials?: { accessToken: string; controllerUrl: string };
   private readonly matchedListeners = new Set<(match: MatchedRoom) => void>();
   private readonly errorListeners = new Set<(error: Error) => void>();
   private readonly matchedPromise: Promise<MatchedRoom>;
@@ -83,44 +117,78 @@ export class MatchHandle {
   }
 
   cancel(): void {
-    if (this.cancelled) return;
+    if (this.cancelled || this.finished) return;
     this.cancelled = true;
+    this.clearConnectionTimers();
     if (this.socket?.readyState === 1) this.socket.send(JSON.stringify({ type: "cancel" }));
     this.socket?.close(1000, "cancelled");
-    this.rejectMatched(new Error("match_cancelled"));
+    this.rejectMatched(multiplayerError("match_cancelled", "match", false));
   }
 
   private async start(): Promise<void> {
     try {
       const identity = await this.client.identity(this.options.userId, this.options.sessionId);
       const explicitControllerUrl = this.options.controllerUrl ?? this.client.controllerUrl;
-      const credentials = this.options.accessToken && explicitControllerUrl
+      this.credentials = this.options.accessToken && explicitControllerUrl
         ? { accessToken: this.options.accessToken, controllerUrl: explicitControllerUrl }
-        : await this.issueAccessToken(identity);
+        : await retryOperation(
+          () => this.issueAccessToken(identity),
+          boundedInteger(this.options.connectionRetries, 2, 0, 5),
+          boundedInteger(this.options.retryDelayMs, 250, 50, 5_000),
+          () => this.cancelled,
+        );
       if (this.cancelled) return;
-      const socket = (this.client.socketFactory ?? defaultSocketFactory)(credentials.controllerUrl);
-      this.socket = socket;
-      socket.addEventListener("open", () => {
-        socket.send(JSON.stringify({
-          type: "join",
-          accessToken: credentials.accessToken,
-          queueId: this.options.queueId,
-          protocolHash: this.options.protocolHash,
-          rating: this.options.rating,
-          canHost: this.options.canHost !== false,
-          foreground: this.options.foreground !== false,
-          rttMs: this.options.rttMs,
-          deviceScore: this.options.deviceScore,
-        }));
-      });
-      socket.addEventListener("message", (event) => this.onMessage(String(event.data)));
-      socket.addEventListener("error", () => this.fail(new Error("match_connection_failed")));
-      socket.addEventListener("close", (event) => {
-        if (!this.cancelled && event.code !== 1000) this.fail(new Error(event.reason || "match_connection_closed"));
-      });
+      this.openMatchSocket();
     } catch (error) {
-      this.fail(asError(error));
+      this.fail(asMultiplayerError(error, "token", "multiplayer_access_token_failed", true));
     }
+  }
+
+  private openMatchSocket(): void {
+    if (this.cancelled || this.finished || !this.credentials) return;
+    const socket = (this.client.socketFactory ?? defaultSocketFactory)(this.credentials.controllerUrl);
+    this.socket = socket;
+    let attemptFinished = false;
+    const failAttempt = (error: GameAlgoMultiplayerError): void => {
+      if (attemptFinished || this.cancelled || this.finished || this.socket !== socket) return;
+      attemptFinished = true;
+      clearTimeout(this.connectionTimer);
+      socket.close(1000, "match_retry");
+      const retries = boundedInteger(this.options.connectionRetries, 2, 0, 5);
+      if (error.retryable && this.connectionAttempt < retries) {
+        const delay = boundedInteger(this.options.retryDelayMs, 250, 50, 5_000) * 2 ** this.connectionAttempt;
+        this.connectionAttempt += 1;
+        this.retryTimer = setTimeout(() => this.openMatchSocket(), Math.min(5_000, delay));
+        return;
+      }
+      this.fail(error);
+    };
+    this.connectionTimer = setTimeout(() => failAttempt(
+      multiplayerError("match_connection_timeout", "match", true),
+    ), boundedInteger(this.options.connectionTimeoutMs, 8_000, 1_000, 30_000));
+    socket.addEventListener("open", () => {
+      clearTimeout(this.connectionTimer);
+      socket.send(JSON.stringify({
+        type: "join",
+        accessToken: this.credentials!.accessToken,
+        queueId: this.options.queueId,
+        protocolHash: this.options.protocolHash,
+        rating: this.options.rating,
+        canHost: this.options.canHost !== false,
+        foreground: this.options.foreground !== false,
+        rttMs: this.options.rttMs,
+        deviceScore: this.options.deviceScore,
+      }));
+    });
+    socket.addEventListener("message", (event) => {
+      if (this.socket === socket) this.onMessage(String(event.data));
+    });
+    socket.addEventListener("error", () => failAttempt(multiplayerError("match_connection_failed", "match", true)));
+    socket.addEventListener("close", (event) => {
+      if (!this.cancelled && !this.finished && event.code !== 1000) {
+        failAttempt(multiplayerError(event.reason || "match_connection_closed", "match", true));
+      }
+    });
   }
 
   private async issueAccessToken(identity: { userId: string; sessionId: string }): Promise<{ accessToken: string; controllerUrl: string }> {
@@ -130,11 +198,17 @@ export class MatchHandle {
       headers: { "content-type": "application/json", "X-GameAlgo-Key": this.client.gameKey },
       body: JSON.stringify({ userId: identity.userId, sessionId: identity.sessionId, region: this.options.region }),
     });
-    if (!response.ok) throw new Error(`multiplayer_access_token_failed_${response.status}`);
+    if (!response.ok) {
+      throw multiplayerError(
+        `multiplayer_access_token_failed_${response.status}`,
+        "token",
+        response.status === 408 || response.status === 429 || response.status >= 500,
+      );
+    }
     const payload = await response.json() as { accessToken?: unknown; controllerUrl?: unknown };
-    if (typeof payload.accessToken !== "string") throw new Error("multiplayer_access_token_missing");
+    if (typeof payload.accessToken !== "string") throw multiplayerError("multiplayer_access_token_missing", "token", false);
     const controllerUrl = typeof payload.controllerUrl === "string" ? payload.controllerUrl : this.client.controllerUrl;
-    if (!controllerUrl) throw new Error("multiplayer_controller_url_missing");
+    if (!controllerUrl) throw multiplayerError("multiplayer_controller_url_missing", "token", false);
     return { accessToken: payload.accessToken, controllerUrl };
   }
 
@@ -143,25 +217,38 @@ export class MatchHandle {
     try {
       message = JSON.parse(raw) as Record<string, unknown>;
     } catch {
-      return this.fail(new Error("invalid_match_message"));
+      return this.fail(multiplayerError("invalid_match_message", "match", false));
     }
     if (message.type === "matched") {
       const match = message as unknown as MatchedRoom;
-      if (!match.ticket || !match.relayUrl) return this.fail(new Error("invalid_matched_message"));
+      if (!match.ticket || !match.relayUrl) return this.fail(multiplayerError("invalid_matched_message", "match", false));
+      this.finished = true;
+      this.clearConnectionTimers();
       this.resolveMatched(match);
       for (const listener of this.matchedListeners) listener(match);
       this.socket?.close(1000, "matched");
       return;
     }
-    if (message.type === "error") this.fail(new Error(String(message.code || "match_failed")));
+    if (message.type === "error") {
+      const code = String(message.code || "match_failed");
+      this.fail(multiplayerError(code, "match", retryableMultiplayerCode(code)));
+    }
   }
 
   private fail(error: Error): void {
-    if (this.cancelled) return;
-    this.cancelled = true;
+    if (this.cancelled || this.finished) return;
+    this.finished = true;
+    this.clearConnectionTimers();
     this.socket?.close(1000, "match_failed");
     this.rejectMatched(error);
     for (const listener of this.errorListeners) listener(error);
+  }
+
+  private clearConnectionTimers(): void {
+    clearTimeout(this.retryTimer);
+    clearTimeout(this.connectionTimer);
+    this.retryTimer = undefined;
+    this.connectionTimer = undefined;
   }
 }
 
@@ -169,6 +256,9 @@ export type ConnectRoomOptions = {
   socketFactory?: MultiplayerSocketFactory;
   reconnect?: boolean;
   reconnectWindowMs?: number;
+  connectRetries?: number;
+  connectTimeoutMs?: number;
+  retryDelayMs?: number;
 };
 
 export type MultiplayerRoomState = {
@@ -180,6 +270,7 @@ export type MultiplayerRoomState = {
 type RoomEventMap = {
   initialized: Record<string, unknown>;
   input: { seat: number; input: Record<string, unknown>; sequence: number };
+  inputAcknowledged: { sequence: number };
   state: MultiplayerRoomState;
   event: { type: string; payload: Record<string, unknown> };
   peerChanged: { type: string; seat: number };
@@ -219,8 +310,10 @@ export class MultiplayerRoom {
   private closed = false;
   private reconnectEnabled: boolean;
   private reconnectStartedAt?: number;
+  private reconnectAttempt = 0;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private pendingHostRecovery = false;
+  private readonly lastReliableInputSequenceBySeat = new Map<number, number>();
   private sharedState?: Record<string, unknown>;
   private seatState?: Record<string, unknown>;
   private pendingState?: { sharedState: Record<string, unknown>; seatStates?: Record<number, Record<string, unknown>> };
@@ -260,8 +353,20 @@ export class MultiplayerRoom {
     this.reconnectEnabled = options.reconnect !== false;
   }
 
-  connect(): Promise<void> {
-    return this.openSocket({ type: "join", ticket: this.ticket });
+  async connect(): Promise<void> {
+    const retries = boundedInteger(this.options.connectRetries, 1, 0, 3);
+    let lastError: GameAlgoMultiplayerError | undefined;
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      try {
+        await this.openSocket({ type: "join", ticket: this.ticket });
+        return;
+      } catch (error) {
+        lastError = asMultiplayerError(error, "room_join", "room_connection_failed", true);
+        if (!lastError.retryable || attempt >= retries) throw lastError;
+        await delay(boundedInteger(this.options.retryDelayMs, 250, 50, 5_000) * 2 ** attempt);
+      }
+    }
+    throw lastError ?? multiplayerError("room_connection_failed", "room_join", true);
   }
 
   async initialize(initData: Record<string, unknown>): Promise<void> {
@@ -321,6 +426,7 @@ export class MultiplayerRoom {
 
   onInitialized(listener: (value: Record<string, unknown>) => void): () => void { return this.on("initialized", listener); }
   onInput(listener: (value: RoomEventMap["input"]) => void): () => void { return this.on("input", listener); }
+  onInputAcknowledged(listener: (value: RoomEventMap["inputAcknowledged"]) => void): () => void { return this.on("inputAcknowledged", listener); }
   onState(listener: (value: MultiplayerRoomState) => void): () => void { return this.on("state", listener); }
   onEvent(listener: (value: RoomEventMap["event"]) => void): () => void { return this.on("event", listener); }
   onPeerChanged(listener: (value: RoomEventMap["peerChanged"]) => void): () => void { return this.on("peerChanged", listener); }
@@ -331,9 +437,21 @@ export class MultiplayerRoom {
   onClosed(listener: (value: RoomEventMap["closed"]) => void): () => void { return this.on("closed", listener); }
   onError(listener: (error: Error) => void): () => void { return this.on("error", listener); }
 
-  sendAggregatedInput(value: Record<string, unknown>, firstSequence: number, lastSequence: number): void {
+  sendAggregatedInput(
+    value: Record<string, unknown>,
+    firstSequence: number,
+    lastSequence: number,
+    options: { reliable?: boolean } = {},
+  ): void {
     const payload = this.protocol.encodeInput(value);
-    this.sendFrame(MultiplayerMessageType.inputBatch, payload, NO_TARGET_SEAT, 512, lastSequence || firstSequence);
+    this.sendFrame(
+      MultiplayerMessageType.inputBatch,
+      payload,
+      NO_TARGET_SEAT,
+      512,
+      lastSequence || firstSequence,
+      options.reliable ? RELIABLE_INPUT_FLAG : 0,
+    );
   }
 
   private openSocket(authentication: Record<string, unknown>): Promise<void> {
@@ -342,16 +460,38 @@ export class MultiplayerRoom {
       this.socket = socket;
       socket.binaryType = "arraybuffer";
       let welcomed = false;
+      let settled = false;
+      const rejectJoin = (error: GameAlgoMultiplayerError): void => {
+        if (settled || welcomed) return;
+        settled = true;
+        clearTimeout(connectionTimer);
+        socket.close(1000, "room_join_failed");
+        reject(error);
+      };
+      const connectionTimer = setTimeout(() => rejectJoin(
+        multiplayerError("room_connection_timeout", "room_join", true),
+      ), boundedInteger(this.options.connectTimeoutMs, 8_000, 1_000, 30_000));
       socket.addEventListener("open", () => socket.send(JSON.stringify(authentication)));
       socket.addEventListener("message", (event) => {
         if (typeof event.data === "string") {
-          const message = JSON.parse(event.data) as Record<string, unknown>;
+          let message: Record<string, unknown>;
+          try {
+            message = JSON.parse(event.data) as Record<string, unknown>;
+          } catch (error) {
+            if (!welcomed) return rejectJoin(multiplayerError("invalid_room_message", "room_join", false, error));
+            return this.emit("error", multiplayerError("invalid_room_message", "room_active", false, error));
+          }
           if (message.type === "welcome" && !welcomed) {
             welcomed = true;
+            settled = true;
+            clearTimeout(connectionTimer);
             this.applyWelcome(message);
             this.attachLifecycle();
             this.startHeartbeat();
             resolve();
+          } else if (!welcomed && message.type === "error") {
+            const code = String(message.code || "room_connection_failed");
+            rejectJoin(multiplayerError(code, "room_join", retryableMultiplayerCode(code)));
           } else {
             void this.onControl(message);
           }
@@ -361,12 +501,16 @@ export class MultiplayerRoom {
         void Promise.resolve(data).then((buffer) => this.onBinary(buffer)).catch((error) => this.emit("error", asError(error)));
       });
       socket.addEventListener("error", () => {
-        if (!welcomed) reject(new Error("room_connection_failed"));
-        else this.emit("error", new Error("room_connection_failed"));
+        if (!welcomed) rejectJoin(multiplayerError("room_connection_failed", "room_join", true));
+        else this.emit("error", multiplayerError("room_connection_failed", "room_active", true));
       });
       socket.addEventListener("close", (event) => {
+        clearTimeout(connectionTimer);
         this.stopHeartbeat();
-        if (!welcomed) reject(new Error(event.reason || "room_connection_closed"));
+        if (!welcomed) {
+          rejectJoin(multiplayerError(event.reason || "room_connection_closed", "room_join", true));
+          return;
+        }
         if (!this.closed && this.reconnectEnabled && this.sessionToken) this.scheduleReconnect();
         else if (!this.closed) this.emit("closed", { reason: event.reason || "connection_closed" });
       });
@@ -382,10 +526,14 @@ export class MultiplayerRoom {
     this.isHost = this.seat === this.hostSeat;
     this.sessionToken = String(message.sessionToken);
     this.reconnectStartedAt = undefined;
+    this.reconnectAttempt = 0;
   }
 
   private async onControl(message: Record<string, unknown>): Promise<void> {
-    if (message.type === "error") return this.emit("error", new Error(String(message.code || "multiplayer_error")));
+    if (message.type === "error") {
+      const code = String(message.code || "multiplayer_error");
+      return this.emit("error", multiplayerError(code, "room_active", retryableMultiplayerCode(code)));
+    }
     if (message.type === "peer_joined" || message.type === "peer_disconnected" || message.type === "peer_reconnected" || message.type === "peer_ready") {
       return this.emit("peerChanged", { type: String(message.type), seat: Number(message.seat) });
     }
@@ -438,7 +586,21 @@ export class MultiplayerRoom {
       return this.emitState(frame.stateRevision);
     }
     if (frame.type === MultiplayerMessageType.inputBatch) {
-      return this.emit("input", { seat: frame.targetSeat, input: this.protocol.decodeInput(frame.payload), sequence: frame.sequence });
+      const reliable = (frame.flags & RELIABLE_INPUT_FLAG) !== 0;
+      const previous = this.lastReliableInputSequenceBySeat.get(frame.targetSeat) ?? 0;
+      if (!reliable || frame.sequence > previous) {
+        const input = this.protocol.decodeInput(frame.payload);
+        if (reliable) this.lastReliableInputSequenceBySeat.set(frame.targetSeat, frame.sequence);
+        this.emit("input", { seat: frame.targetSeat, input, sequence: frame.sequence });
+      }
+      if (reliable) {
+        this.requireHost();
+        this.sendFrame(MultiplayerMessageType.inputAck, new Uint8Array(), frame.targetSeat, 0, frame.sequence);
+      }
+      return;
+    }
+    if (frame.type === MultiplayerMessageType.inputAck) {
+      return this.emit("inputAcknowledged", { sequence: frame.sequence });
     }
     if (frame.type === MultiplayerMessageType.gameEvent) return this.emit("event", this.protocol.decodeEvent(frame.payload));
     if (frame.type === MultiplayerMessageType.hostRecovery) {
@@ -478,12 +640,19 @@ export class MultiplayerRoom {
     this.sendFrame(MultiplayerMessageType.hostState, this.protocol.encodeHostState(state), NO_TARGET_SEAT, 8 * 1024);
   }
 
-  private sendFrame(type: number, payload: Uint8Array, targetSeat: number, limit: number, sequence?: number): void {
+  private sendFrame(
+    type: number,
+    payload: Uint8Array,
+    targetSeat: number,
+    limit: number,
+    sequence?: number,
+    flags = 0,
+  ): void {
     if (payload.byteLength > limit) throw new Error("payload_too_large");
     if (this.socket?.readyState !== 1) throw new Error("room_connection_unavailable");
     this.socket.send(encodeMultiplayerFrame({
       type,
-      flags: 0,
+      flags,
       targetSeat,
       hostEpoch: this.hostEpoch,
       sequence: sequence ?? ++this.sequence,
@@ -500,13 +669,17 @@ export class MultiplayerRoom {
   private startHeartbeat(): void {
     this.stopHeartbeat();
     const interval = this.isHost ? 2_000 : 5_000;
-    this.heartbeatTimer = setInterval(() => {
-      if (this.socket?.readyState === 1) this.sendControl({
-        type: "heartbeat",
-        sentAt: Date.now(),
-        foreground: typeof document === "undefined" || document.visibilityState !== "hidden",
-      });
-    }, interval);
+    this.sendHeartbeat();
+    this.heartbeatTimer = setInterval(() => this.sendHeartbeat(), interval);
+  }
+
+  private sendHeartbeat(): void {
+    if (this.socket?.readyState !== 1) return;
+    this.sendControl({
+      type: "heartbeat",
+      sentAt: Date.now(),
+      foreground: typeof document === "undefined" || document.visibilityState !== "hidden",
+    });
   }
 
   private stopHeartbeat(): void {
@@ -522,10 +695,12 @@ export class MultiplayerRoom {
       this.detachLifecycle();
       return this.emit("closed", { reason: "reconnect_expired" });
     }
+    const delayMs = Math.min(2_000, 250 * 2 ** this.reconnectAttempt);
+    this.reconnectAttempt += 1;
     setTimeout(() => {
       if (this.closed || !this.sessionToken) return;
       void this.openSocket({ type: "resume", sessionToken: this.sessionToken }).catch(() => this.scheduleReconnect());
-    }, 250);
+    }, delayMs);
   }
 
   private requireHost(): void {
@@ -574,42 +749,111 @@ export class MultiplayerRoom {
 export type InputQueueOptions = {
   intervalMs?: number;
   maxQueuedInputs?: number;
+  delivery?: "latest" | "reliable";
+  ackTimeoutMs?: number;
   aggregate: (inputs: readonly Record<string, unknown>[]) => Record<string, unknown> | undefined;
   onError?: (error: Error) => void;
 };
 
 export class MultiplayerInputQueue {
   private readonly values: Array<{ sequence: number; value: Record<string, unknown> }> = [];
+  private inFlight?: {
+    values: Array<{ sequence: number; value: Record<string, unknown> }>;
+    aggregate: Record<string, unknown>;
+    firstSequence: number;
+    lastSequence: number;
+    nextAttemptAt: number;
+  };
   private nextSequence = 0;
   private readonly timer: ReturnType<typeof setInterval>;
   private readonly room: MultiplayerRoom;
   private readonly options: InputQueueOptions;
+  private readonly delivery: "latest" | "reliable";
+  private readonly unsubscribeAck: () => void;
 
   constructor(room: MultiplayerRoom, options: InputQueueOptions) {
     this.room = room;
     this.options = options;
+    this.delivery = options.delivery ?? "latest";
+    this.unsubscribeAck = room.onInputAcknowledged(({ sequence }) => this.acknowledge(sequence));
     this.timer = setInterval(() => this.flush(), Math.max(50, options.intervalMs ?? 50));
   }
 
   push(value: Record<string, unknown>): void {
     const maximum = Math.max(1, this.options.maxQueuedInputs ?? 128);
-    if (this.values.length >= maximum) this.values.shift();
+    const queued = this.values.length + (this.inFlight?.values.length ?? 0);
+    if (queued >= maximum) {
+      if (this.delivery === "reliable") {
+        this.options.onError?.(multiplayerError("input_queue_full", "input", true));
+        return;
+      }
+      this.values.shift();
+    }
     this.values.push({ sequence: ++this.nextSequence, value });
   }
 
   flush(): void {
+    if (this.room.phase !== "active") return;
+    if (this.inFlight) {
+      if (Date.now() >= this.inFlight.nextAttemptAt) this.transmitReliable(this.inFlight);
+      return;
+    }
     if (this.values.length === 0) return;
     const pending = this.values.splice(0);
+    let result: Record<string, unknown> | undefined;
     try {
-      const result = this.options.aggregate(pending.map((item) => item.value));
-      if (result) this.room.sendAggregatedInput(result, pending[0].sequence, pending[pending.length - 1].sequence);
+      result = this.options.aggregate(pending.map((item) => item.value));
     } catch (error) {
       this.options.onError?.(asError(error));
+      return;
+    }
+    if (!result) return;
+    const firstSequence = pending[0].sequence;
+    const lastSequence = pending[pending.length - 1].sequence;
+    if (this.delivery === "reliable") {
+      this.inFlight = {
+        values: pending,
+        aggregate: result,
+        firstSequence,
+        lastSequence,
+        nextAttemptAt: 0,
+      };
+      this.transmitReliable(this.inFlight);
+      return;
+    }
+    try {
+      this.room.sendAggregatedInput(result, firstSequence, lastSequence);
+    } catch (error) {
+      this.values.unshift(...pending);
+      this.options.onError?.(asMultiplayerError(error, "input", "input_send_failed", true));
     }
   }
 
   close(): void {
     clearInterval(this.timer);
+    this.unsubscribeAck();
+    this.inFlight = undefined;
+  }
+
+  private transmitReliable(batch: NonNullable<MultiplayerInputQueue["inFlight"]>): void {
+    const retryMs = boundedInteger(this.options.ackTimeoutMs, 3_000, 250, 10_000);
+    batch.nextAttemptAt = Date.now() + retryMs;
+    try {
+      this.room.sendAggregatedInput(
+        batch.aggregate,
+        batch.firstSequence,
+        batch.lastSequence,
+        { reliable: true },
+      );
+    } catch (error) {
+      this.options.onError?.(asMultiplayerError(error, "input", "input_send_failed", true));
+    }
+  }
+
+  private acknowledge(sequence: number): void {
+    if (!this.inFlight || sequence < this.inFlight.lastSequence) return;
+    this.inFlight = undefined;
+    this.flush();
   }
 }
 
@@ -628,4 +872,71 @@ function apiUrl(baseUrl: string, path: string): URL {
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function multiplayerError(
+  code: string,
+  phase: MultiplayerErrorPhase,
+  retryable: boolean,
+  cause?: unknown,
+): GameAlgoMultiplayerError {
+  return new GameAlgoMultiplayerError(code, phase, { retryable, cause });
+}
+
+function asMultiplayerError(
+  error: unknown,
+  phase: MultiplayerErrorPhase,
+  fallbackCode: string,
+  retryable: boolean,
+): GameAlgoMultiplayerError {
+  if (error instanceof GameAlgoMultiplayerError) return error;
+  const code = error instanceof Error && /^[a-z][a-z0-9_]{1,127}$/.test(error.message)
+    ? error.message
+    : fallbackCode;
+  return multiplayerError(code, phase, retryable, error);
+}
+
+function retryableMultiplayerCode(code: string): boolean {
+  return new Set([
+    "match_connection_failed",
+    "match_connection_closed",
+    "match_connection_timeout",
+    "match_timeout",
+    "relay_unavailable",
+    "room_connection_failed",
+    "room_connection_closed",
+    "room_connection_timeout",
+    "host_unavailable",
+    "heartbeat_timeout",
+  ]).has(code);
+}
+
+function boundedInteger(value: number | undefined, fallback: number, minimum: number, maximum: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(maximum, Math.max(minimum, Math.floor(value!)));
+}
+
+async function retryOperation<T>(
+  operation: () => Promise<T>,
+  retries: number,
+  delayMs: number,
+  cancelled: () => boolean,
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    if (cancelled()) throw multiplayerError("match_cancelled", "match", false);
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      const typed = asMultiplayerError(error, "token", "multiplayer_access_token_failed", true);
+      if (!typed.retryable || attempt >= retries) throw typed;
+      await delay(Math.min(5_000, delayMs * 2 ** attempt));
+    }
+  }
+  throw asMultiplayerError(lastError, "token", "multiplayer_access_token_failed", true);
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

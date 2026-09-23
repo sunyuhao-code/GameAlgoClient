@@ -9,7 +9,10 @@ export const MultiplayerMessageType = {
   inputBatch: 5,
   gameEvent: 6,
   hostRecovery: 7,
+  inputAck: 8,
 } as const;
+
+export const RELIABLE_INPUT_FLAG = 1;
 
 export type MultiplayerFrame = {
   type: number;
