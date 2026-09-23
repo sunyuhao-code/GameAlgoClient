@@ -14,7 +14,6 @@ name: Release
 
 permissions:
   contents: write
-  id-token: write
 
 jobs:
   version:
@@ -260,11 +259,6 @@ jobs:
     needs: [version, android, godot, web]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          registry-url: https://registry.npmjs.org
-
       - uses: actions/download-artifact@v4
         with:
           path: downloaded
@@ -281,25 +275,6 @@ jobs:
             [[ -f "downloaded/$asset.sha256" ]] || { echo "missing checksum: $asset.sha256" >&2; exit 1; }
           done
           ls -l downloaded
-
-      - name: Publish Web SDK to npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${{ needs.version.outputs.value }}"
-          package="downloaded/gamealgo-web-$version.tgz"
-          if published_sha="$(npm view "@gamealgo/web@$version" dist.shasum 2>/dev/null)"; then
-            local_sha="$(sha1sum "$package" | awk '{print $1}')"
-            if [[ "$published_sha" != "$local_sha" ]]; then
-              echo "@gamealgo/web@$version already exists with different contents" >&2
-              exit 1
-            fi
-            echo "@gamealgo/web@$version is already published with the same package; skipping"
-          else
-            npm publish "$package" --access public --provenance
-          fi
 
       - name: Publish GitHub Release
         env:

@@ -105,6 +105,6 @@ npm run check
 
 平台 SDK README 只描述与当前代码版本绑定的安装方式、公开 API 和运行时约束。业务流程与平台规则以 `gamealgo docs` 返回的在线文档为准。
 
-Android AAR、Godot 发布包（`gamealgo-godot-<version>.zip`，含 iOS / Android 运行时二进制）和 Web npm 包由语义化版本 tag（`v1.2.3` 或 `1.2.3`）触发 `.github/workflows/release.yml` 构建，并附加到对应 GitHub Release。三个平台在各自的 runner 上并行构建，由同一个 `publish` job 统一发布；Web 包同时发布到 npm。任一平台构建失败就不会发布，不会留下只有一部分产物的 Release。
+Android AAR、Godot 发布包（`gamealgo-godot-<version>.zip`，含 iOS / Android 运行时二进制）和 Web npm 包由语义化版本 tag（`v1.2.3` 或 `1.2.3`）触发 `.github/workflows/release.yml` 构建，并附加到对应 GitHub Release。三个平台在各自的 runner 上并行构建，由同一个 `publish` job 统一发布。任一平台构建失败就不会发布，不会留下只有一部分产物的 Release。
 
-npm 发布需要为 `@gamealgo/web` 配置对应 GitHub Actions trusted publisher，或在仓库 Secret 中提供具备发布权限的 `NPM_TOKEN`；工作流已开启 OIDC provenance。
+GitHub Release 成功后，独立的 `.github/workflows/publish.yml` 会仿照 GameAlgoCli 使用 `environment: npm` 和 OIDC trusted publishing 发布 `@gamealgo/web`。npm 侧需要把该仓库和 workflow 文件配置为 package trusted publisher，不再需要 `NPM_TOKEN`。
