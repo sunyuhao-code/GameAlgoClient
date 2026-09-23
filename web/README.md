@@ -167,6 +167,10 @@ Relay room from its current members. A matchmaking lobby freezes a complete
 party and matches it only with other complete parties, with no solo backfill.
 Rating-enabled queues anchor the longest-waiting player or party, then choose
 the closest compatible rating within the queue's current expanding range.
+Queues configured with `partialStartOnTimeout` may start with fewer complete
+parties when their matchmaking deadline expires. For example, a two-player
+party queue targeting six players starts with two, four, or six humans; the
+game host owns any AI used to fill the remaining gameplay slots.
 `matched.teamIndex`, `room.teamIndex`, and `room.roster`
 expose the server-assigned teams. A member Lobby snapshot includes each
 member's game-scoped `userId`; public listings do not expose member identity.
