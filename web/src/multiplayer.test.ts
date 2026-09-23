@@ -39,6 +39,20 @@ test("a promoted host sends a heartbeat immediately", async (context) => {
   assert.equal(room.hostEpoch, 2);
 });
 
+test("room roster keeps connection state in sync with peer lifecycle messages", async (context) => {
+  const { room, socket } = await connectedRoom({ seat: 0, hostSeat: 0, roster: [
+    { seat: 0, connected: true, canHost: true, teamIndex: 0 },
+    { seat: 1, connected: true, canHost: true, teamIndex: 1 },
+  ] });
+  context.after(() => room.disconnect({ reconnect: false }));
+
+  socket.receive(JSON.stringify({ type: "peer_disconnected", seat: 1 }));
+  assert.equal(room.roster.find((member) => member.seat === 1)?.connected, false);
+  socket.receive(JSON.stringify({ type: "peer_reconnected", seat: 1 }));
+  assert.equal(room.roster.find((member) => member.seat === 1)?.connected, true);
+  assert.equal(room.roster.find((member) => member.seat === 1)?.teamIndex, 1);
+});
+
 test("input queues retain paused values and reliable batches wait for acknowledgement", async (context) => {
   const { room, socket } = await connectedRoom({ seat: 1, hostSeat: 0 });
   context.after(() => room.disconnect({ reconnect: false }));
@@ -218,6 +232,123 @@ test("match timeout is terminal and not classified as a retryable connection fai
   assert.equal(sockets.length, 1);
 });
 
+test("lobby handles create, start and resolve the existing matched room contract", async () => {
+  const sockets: FakeSocket[] = [];
+  const matchmaking = new GameAlgoMatchmakingClient({
+    apiBaseUrl: "https://api.test",
+    gameKey: "ga_live_test",
+    fetchImpl: fetch,
+    identity: async () => ({ userId: "user-a", sessionId: "session-a" }),
+    socketFactory: () => {
+      const socket = new FakeSocket();
+      sockets.push(socket);
+      return socket as unknown as WebSocket;
+    },
+  });
+  const handle = matchmaking.createLobby({
+    accessToken: "access-token",
+    controllerUrl: "ws://controller.test/match",
+    queueId: "custom_duel",
+    protocolHash: protocol.hash,
+    visibility: "public",
+    metadata: { map: "small" },
+  });
+
+  await waitFor(() => sockets.length === 1);
+  sockets[0].open();
+  const create = JSON.parse(String(sockets[0].sent[0]));
+  assert.equal(create.type, "create_lobby");
+  assert.equal(create.queueId, "custom_duel");
+  assert.deepEqual(create.metadata, { map: "small" });
+
+  sockets[0].receive(JSON.stringify({
+    type: "lobby_snapshot",
+    lobby: {
+      lobbyId: "lobby-a",
+      roomCode: "ABC123",
+      queueId: "custom_duel",
+      protocolHash: protocol.hash,
+      visibility: "public",
+      launchMode: "direct",
+      state: "open",
+      minPlayers: 2,
+      maxPlayers: 2,
+      playerCount: 1,
+      metadata: { map: "small" },
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      selfMemberId: "member-a",
+      leaderMemberId: "member-a",
+      isLeader: true,
+      members: [{ memberId: "member-a", userId: "user-a", isLeader: true, canHost: true }],
+    },
+  }));
+  assert.equal((await handle.waitForLobby()).roomCode, "ABC123");
+
+  handle.kick("member-b");
+  assert.deepEqual(JSON.parse(String(sockets[0].sent.at(-1))), { type: "lobby_kick", memberId: "member-b" });
+  handle.start();
+  assert.equal(JSON.parse(String(sockets[0].sent.at(-1))).type, "lobby_start");
+  sockets[0].receive(JSON.stringify({
+    type: "matched",
+    roomId: "room-a",
+    relayId: "relay-a",
+    relayUrl: "ws://relay.test/room",
+    seat: 0,
+    hostSeat: 0,
+    teamIndex: 1,
+    ticket: "ticket-a",
+  }));
+  const matched = await handle.waitForMatched();
+  assert.equal(matched.roomId, "room-a");
+  assert.equal(matched.teamIndex, 1);
+});
+
+test("lobby listing uses the controller HTTP endpoint and bearer access token", async () => {
+  let requestedUrl = "";
+  let authorization = "";
+  const matchmaking = new GameAlgoMatchmakingClient({
+    apiBaseUrl: "https://api.test",
+    gameKey: "ga_live_test",
+    identity: async () => ({ userId: "user-a", sessionId: "session-a" }),
+    fetchImpl: async (input, init) => {
+      requestedUrl = String(input);
+      authorization = new Headers(init?.headers).get("authorization") ?? "";
+      return new Response(JSON.stringify({
+        items: [{
+          lobbyId: "lobby-a",
+          queueId: "custom_duel",
+          protocolHash: protocol.hash,
+          visibility: "public",
+          launchMode: "direct",
+          state: "open",
+          minPlayers: 2,
+          maxPlayers: 2,
+          playerCount: 1,
+          metadata: {},
+          createdAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+
+  const page = await matchmaking.listLobbies({
+    accessToken: "access-token",
+    controllerUrl: "wss://controller.test/match",
+    queueId: "custom_duel",
+    protocolHash: protocol.hash,
+    limit: 20,
+  });
+
+  const url = new URL(requestedUrl);
+  assert.equal(url.protocol, "https:");
+  assert.equal(url.pathname, "/match/lobbies");
+  assert.equal(url.searchParams.get("queueId"), "custom_duel");
+  assert.equal(authorization, "Bearer access-token");
+  assert.equal(page.items[0].lobbyId, "lobby-a");
+});
+
 test("matchmaking retries a transient controller connection with the same identity", async () => {
   const sockets: FakeSocket[] = [];
   const matchmaking = new GameAlgoMatchmakingClient({
@@ -261,7 +392,11 @@ test("matchmaking retries a transient controller connection with the same identi
   assert.equal(join.queueId, "casual_1v1");
 });
 
-async function connectedRoom(input: { seat: number; hostSeat: number }): Promise<{ room: MultiplayerRoom; socket: FakeSocket }> {
+async function connectedRoom(input: {
+  seat: number;
+  hostSeat: number;
+  roster?: Array<{ seat: number; connected: boolean; canHost: boolean; teamIndex?: number }>;
+}): Promise<{ room: MultiplayerRoom; socket: FakeSocket }> {
   const socket = new FakeSocket();
   const connecting = connectRoom("ws://relay.test/room", "ticket", protocol, {
     connectRetries: 0,
@@ -276,6 +411,7 @@ async function connectedRoom(input: { seat: number; hostSeat: number }): Promise
     hostEpoch: 1,
     phase: "active",
     sessionToken: "session-token",
+    roster: input.roster,
   }));
   return { room: await connecting, socket };
 }

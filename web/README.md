@@ -122,6 +122,60 @@ the client from the active queue. It rejects `waitForMatched()` with
 applies while queued: once the Controller has selected a group and started room
 allocation, it does not roll that room back.
 
+Queues configured for lobbies support public discovery, unlisted room codes,
+leader-controlled start, direct custom rooms, and whole-party matchmaking.
+Lobby queues do not accept the automatic `join()` API.
+
+```ts
+const page = await gameAlgo.matchmaking.listLobbies({
+  queueId: "custom_duel",
+  protocolHash: protocol.hash,
+  limit: 20,
+});
+
+const lobby = page.items.length > 0
+  ? gameAlgo.matchmaking.joinLobby({
+      lobbyId: page.items[0].lobbyId,
+      protocolHash: protocol.hash,
+    })
+  : gameAlgo.matchmaking.createLobby({
+      queueId: "custom_duel",
+      protocolHash: protocol.hash,
+      visibility: "public",
+      metadata: { map: "small", mode: "friendly" },
+    });
+
+const snapshot = await lobby.waitForLobby();
+renderLobby(snapshot);
+lobby.onChanged(renderLobby);
+
+startButton.addEventListener("click", () => lobby.start());
+kickButton.addEventListener("click", () => lobby.kick(selectedMemberId));
+leaveButton.addEventListener("click", () => lobby.leave());
+
+const matched = await lobby.waitForMatched();
+const room = await connectRoom(matched.relayUrl, matched.ticket, protocol);
+```
+
+Create an unlisted lobby and share `snapshot.roomCode` for private rooms. Only
+the current lobby leader may call `start()`, `cancelMatchmaking()`,
+`kick(memberId)`, or `closeLobby()`. A leader cannot kick itself. Kicking a
+member while a party is queued cancels that party's queue entry and restores
+the lobby to `open`; members cannot be kicked once room creation has started.
+Joining means ready; V1 has no separate ready toggle. A direct lobby creates a
+Relay room from its current members. A matchmaking lobby freezes a complete
+party and matches it only with other complete parties, with no solo backfill.
+Rating-enabled queues anchor the longest-waiting player or party, then choose
+the closest compatible rating within the queue's current expanding range.
+Queues configured with `partialStartOnTimeout` may start with fewer complete
+parties when their matchmaking deadline expires. For example, a two-player
+party queue targeting six players starts with two, four, or six humans; the
+game host owns any AI used to fill the remaining gameplay slots.
+`matched.teamIndex`, `room.teamIndex`, and `room.roster`
+expose the server-assigned teams. A member Lobby snapshot includes each
+member's game-scoped `userId`; public listings do not expose member identity.
+Lobby metadata is immutable, limited to 16 scalar fields and 512 encoded bytes.
+
 Non-host players send only aggregated input. The host publishes complete
 public and per-seat snapshots at up to 10 Hz and a self-contained recovery
 snapshot at up to 1 Hz. The SDK handles `hostEpoch`, reconnect and migration

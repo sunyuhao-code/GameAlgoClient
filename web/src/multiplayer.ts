@@ -9,7 +9,7 @@ import {
 
 export type MultiplayerSocketFactory = (url: string) => WebSocket;
 
-export type MultiplayerErrorPhase = "token" | "match" | "room_join" | "room_active" | "input";
+export type MultiplayerErrorPhase = "token" | "match" | "lobby" | "room_join" | "room_active" | "input";
 
 export class GameAlgoMultiplayerError extends Error {
   readonly code: string;
@@ -54,6 +54,72 @@ export type MatchedRoom = {
   seat: number;
   hostSeat: number;
   ticket: string;
+  teamIndex?: number;
+};
+
+export type LobbyMetadata = Record<string, string | number | boolean>;
+
+export type LobbySummary = {
+  lobbyId: string;
+  queueId: string;
+  protocolHash: string;
+  visibility: "public" | "unlisted";
+  launchMode: "direct" | "matchmaking";
+  state: "open" | "queued" | "starting";
+  minPlayers: number;
+  maxPlayers: number;
+  playerCount: number;
+  metadata: LobbyMetadata;
+  createdAt: string;
+  expiresAt: string;
+};
+
+export type LobbySnapshot = LobbySummary & {
+  roomCode: string;
+  selfMemberId: string;
+  leaderMemberId: string;
+  isLeader: boolean;
+  members: Array<{ memberId: string; userId: string; isLeader: boolean; canHost: boolean }>;
+};
+
+type LobbyAuthOptions = {
+  accessToken?: string;
+  controllerUrl?: string;
+  userId?: string;
+  sessionId?: string;
+  region?: string;
+  connectionRetries?: number;
+  connectionTimeoutMs?: number;
+  retryDelayMs?: number;
+};
+
+type LobbyMemberOptions = LobbyAuthOptions & {
+  protocolHash: string;
+  rating?: number;
+  canHost?: boolean;
+  foreground?: boolean;
+  rttMs?: number;
+  deviceScore?: number;
+};
+
+export type LobbyListOptions = LobbyAuthOptions & {
+  queueId: string;
+  protocolHash: string;
+  limit?: number;
+  cursor?: string;
+};
+
+export type LobbyPage = { items: LobbySummary[]; nextCursor?: string };
+
+export type CreateLobbyOptions = LobbyMemberOptions & {
+  queueId: string;
+  visibility?: "public" | "unlisted";
+  metadata?: LobbyMetadata;
+};
+
+export type JoinLobbyOptions = LobbyMemberOptions & {
+  lobbyId?: string;
+  roomCode?: string;
 };
 
 export type GameAlgoMatchmakingClientOptions = {
@@ -72,6 +138,213 @@ export class GameAlgoMatchmakingClient {
 
   join(options: MatchJoinOptions): MatchHandle {
     return new MatchHandle(this.options, options);
+  }
+
+  createLobby(options: CreateLobbyOptions): LobbyHandle {
+    return new LobbyHandle(this.options, { type: "create_lobby", ...options });
+  }
+
+  joinLobby(options: JoinLobbyOptions): LobbyHandle {
+    return new LobbyHandle(this.options, { type: "join_lobby", ...options });
+  }
+
+  async listLobbies(options: LobbyListOptions): Promise<LobbyPage> {
+    const identity = await this.options.identity(options.userId, options.sessionId);
+    const credentials = await controllerCredentials(this.options, options, identity);
+    const url = controllerHttpUrl(credentials.controllerUrl);
+    url.pathname = `${url.pathname.replace(/\/+$/, "")}/lobbies`;
+    url.searchParams.set("queueId", options.queueId);
+    url.searchParams.set("protocolHash", options.protocolHash);
+    if (options.limit !== undefined) url.searchParams.set("limit", String(options.limit));
+    if (options.cursor) url.searchParams.set("cursor", options.cursor);
+    const response = await this.options.fetchImpl(url, {
+      headers: { authorization: `Bearer ${credentials.accessToken}` },
+    });
+    const payload = await response.json() as { items?: unknown; nextCursor?: unknown; error?: unknown };
+    if (!response.ok) throw multiplayerError(String(payload.error || `lobby_list_failed_${response.status}`), "lobby", false);
+    if (!Array.isArray(payload.items)) throw multiplayerError("invalid_lobby_list", "lobby", false);
+    return {
+      items: payload.items as LobbySummary[],
+      ...(typeof payload.nextCursor === "string" ? { nextCursor: payload.nextCursor } : {}),
+    };
+  }
+}
+
+type LobbyHandleRequest = ({ type: "create_lobby" } & CreateLobbyOptions)
+  | ({ type: "join_lobby" } & JoinLobbyOptions);
+
+export class LobbyHandle {
+  private socket?: WebSocket;
+  private cancelled = false;
+  private finished = false;
+  private readySettled = false;
+  private readonly changedListeners = new Set<(lobby: LobbySnapshot) => void>();
+  private readonly matchedListeners = new Set<(match: MatchedRoom) => void>();
+  private readonly errorListeners = new Set<(error: Error) => void>();
+  private readonly lobbyPromise: Promise<LobbySnapshot>;
+  private resolveLobby!: (lobby: LobbySnapshot) => void;
+  private rejectLobby!: (error: Error) => void;
+  private readonly matchedPromise: Promise<MatchedRoom>;
+  private resolveMatched!: (match: MatchedRoom) => void;
+  private rejectMatched!: (error: Error) => void;
+  private readonly client: GameAlgoMatchmakingClientOptions;
+  private readonly request: LobbyHandleRequest;
+
+  constructor(
+    client: GameAlgoMatchmakingClientOptions,
+    request: LobbyHandleRequest,
+  ) {
+    this.client = client;
+    this.request = request;
+    this.lobbyPromise = new Promise<LobbySnapshot>((resolve, reject) => {
+      this.resolveLobby = resolve;
+      this.rejectLobby = reject;
+    });
+    this.matchedPromise = new Promise<MatchedRoom>((resolve, reject) => {
+      this.resolveMatched = resolve;
+      this.rejectMatched = reject;
+    });
+    void this.lobbyPromise.catch(() => undefined);
+    void this.matchedPromise.catch(() => undefined);
+    void this.connect();
+  }
+
+  waitForLobby(): Promise<LobbySnapshot> { return this.lobbyPromise; }
+  waitForMatched(): Promise<MatchedRoom> { return this.matchedPromise; }
+
+  onChanged(listener: (lobby: LobbySnapshot) => void): () => void {
+    this.changedListeners.add(listener);
+    return () => this.changedListeners.delete(listener);
+  }
+
+  onMatched(listener: (match: MatchedRoom) => void): () => void {
+    this.matchedListeners.add(listener);
+    return () => this.matchedListeners.delete(listener);
+  }
+
+  onError(listener: (error: Error) => void): () => void {
+    this.errorListeners.add(listener);
+    return () => this.errorListeners.delete(listener);
+  }
+
+  start(): void { this.send({ type: "lobby_start" }); }
+  cancelMatchmaking(): void { this.send({ type: "lobby_cancel_matchmaking" }); }
+  closeLobby(): void { this.send({ type: "lobby_close" }); }
+  kick(memberId: string): void {
+    if (!/^[A-Za-z0-9._:-]{1,128}$/.test(memberId)) throw multiplayerError("invalid_lobby_member_id", "lobby", false);
+    this.send({ type: "lobby_kick", memberId });
+  }
+
+  leave(): void {
+    if (this.cancelled || this.finished) return;
+    this.cancelled = true;
+    this.finished = true;
+    if (this.socket?.readyState === 1) this.socket.send(JSON.stringify({ type: "cancel" }));
+    this.socket?.close(1000, "lobby_left");
+    const error = multiplayerError("lobby_left", "lobby", false);
+    if (!this.readySettled) this.rejectLobby(error);
+    this.rejectMatched(error);
+  }
+
+  private async connect(): Promise<void> {
+    try {
+      const identity = await this.client.identity(this.request.userId, this.request.sessionId);
+      const credentials = await retryOperation(
+        () => controllerCredentials(this.client, this.request, identity),
+        boundedInteger(this.request.connectionRetries, 2, 0, 5),
+        boundedInteger(this.request.retryDelayMs, 250, 50, 5_000),
+        () => this.cancelled,
+      );
+      if (this.cancelled) return;
+      const socket = (this.client.socketFactory ?? defaultSocketFactory)(credentials.controllerUrl);
+      this.socket = socket;
+      const timeout = setTimeout(() => {
+        this.fail(multiplayerError("lobby_connection_timeout", "lobby", true));
+      }, boundedInteger(this.request.connectionTimeoutMs, 8_000, 1_000, 30_000));
+      socket.addEventListener("open", () => {
+        clearTimeout(timeout);
+        socket.send(JSON.stringify({
+          type: this.request.type,
+          accessToken: credentials.accessToken,
+          queueId: "queueId" in this.request ? this.request.queueId : undefined,
+          lobbyId: "lobbyId" in this.request ? this.request.lobbyId : undefined,
+          roomCode: "roomCode" in this.request ? this.request.roomCode : undefined,
+          protocolHash: this.request.protocolHash,
+          visibility: "visibility" in this.request ? this.request.visibility : undefined,
+          metadata: "metadata" in this.request ? this.request.metadata : undefined,
+          rating: this.request.rating,
+          canHost: this.request.canHost !== false,
+          foreground: this.request.foreground !== false,
+          rttMs: this.request.rttMs,
+          deviceScore: this.request.deviceScore,
+        }));
+      });
+      socket.addEventListener("message", (event) => this.onMessage(String(event.data)));
+      socket.addEventListener("error", () => this.fail(multiplayerError("lobby_connection_failed", "lobby", true)));
+      socket.addEventListener("close", (event) => {
+        clearTimeout(timeout);
+        if (!this.cancelled && !this.finished && event.code !== 1000) {
+          this.fail(multiplayerError(event.reason || "lobby_connection_closed", "lobby", true));
+        }
+      });
+    } catch (error) {
+      this.fail(asMultiplayerError(error, "lobby", "lobby_connection_failed", true));
+    }
+  }
+
+  private onMessage(raw: string): void {
+    let message: Record<string, unknown>;
+    try {
+      message = JSON.parse(raw) as Record<string, unknown>;
+    } catch (error) {
+      return this.fail(multiplayerError("invalid_lobby_message", "lobby", false, error));
+    }
+    if (message.type === "lobby_snapshot") {
+      const lobby = message.lobby as LobbySnapshot;
+      if (!lobby?.lobbyId) return this.fail(multiplayerError("invalid_lobby_snapshot", "lobby", false));
+      if (!this.readySettled) {
+        this.readySettled = true;
+        this.resolveLobby(lobby);
+      }
+      for (const listener of this.changedListeners) listener(lobby);
+      return;
+    }
+    if (message.type === "matched") {
+      const match = message as unknown as MatchedRoom;
+      if (!match.ticket || !match.relayUrl) return this.fail(multiplayerError("invalid_matched_message", "lobby", false));
+      this.finished = true;
+      this.resolveMatched(match);
+      for (const listener of this.matchedListeners) listener(match);
+      this.socket?.close(1000, "matched");
+      return;
+    }
+    if (message.type === "lobby_error" || message.type === "lobby_start_retrying") {
+      const code = String(message.code || "lobby_failed");
+      const error = multiplayerError(code, "lobby", retryableMultiplayerCode(code));
+      for (const listener of this.errorListeners) listener(error);
+      return;
+    }
+    if (message.type === "lobby_closed") {
+      return this.fail(multiplayerError(String(message.reason || "lobby_closed"), "lobby", false));
+    }
+    if (message.type === "error") {
+      const code = String(message.code || "lobby_failed");
+      this.fail(multiplayerError(code, "lobby", retryableMultiplayerCode(code)));
+    }
+  }
+
+  private send(message: Record<string, unknown>): void {
+    if (this.socket?.readyState !== 1) throw multiplayerError("lobby_connection_unavailable", "lobby", true);
+    this.socket.send(JSON.stringify(message));
+  }
+
+  private fail(error: Error): void {
+    if (this.finished) return;
+    this.finished = true;
+    this.socket?.close(1000, "lobby_failed");
+    if (!this.readySettled) this.rejectLobby(error);
+    this.rejectMatched(error);
+    for (const listener of this.errorListeners) listener(error);
   }
 }
 
@@ -192,24 +465,7 @@ export class MatchHandle {
   }
 
   private async issueAccessToken(identity: { userId: string; sessionId: string }): Promise<{ accessToken: string; controllerUrl: string }> {
-    const url = apiUrl(this.client.apiBaseUrl, "/v1/multiplayer/access-token");
-    const response = await this.client.fetchImpl(url, {
-      method: "POST",
-      headers: { "content-type": "application/json", "X-GameAlgo-Key": this.client.gameKey },
-      body: JSON.stringify({ userId: identity.userId, sessionId: identity.sessionId, region: this.options.region }),
-    });
-    if (!response.ok) {
-      throw multiplayerError(
-        `multiplayer_access_token_failed_${response.status}`,
-        "token",
-        response.status === 408 || response.status === 429 || response.status >= 500,
-      );
-    }
-    const payload = await response.json() as { accessToken?: unknown; controllerUrl?: unknown };
-    if (typeof payload.accessToken !== "string") throw multiplayerError("multiplayer_access_token_missing", "token", false);
-    const controllerUrl = typeof payload.controllerUrl === "string" ? payload.controllerUrl : this.client.controllerUrl;
-    if (!controllerUrl) throw multiplayerError("multiplayer_controller_url_missing", "token", false);
-    return { accessToken: payload.accessToken, controllerUrl };
+    return await controllerCredentials(this.client, this.options, identity);
   }
 
   private onMessage(raw: string): void {
@@ -267,6 +523,13 @@ export type MultiplayerRoomState = {
   stateRevision: number;
 };
 
+export type MultiplayerRoomMember = {
+  seat: number;
+  connected: boolean;
+  canHost: boolean;
+  teamIndex?: number;
+};
+
 type RoomEventMap = {
   initialized: Record<string, unknown>;
   input: { seat: number; input: Record<string, unknown>; sequence: number };
@@ -299,6 +562,8 @@ export class MultiplayerRoom {
   isHost = false;
   hostEpoch = 0;
   phase = "connecting";
+  teamIndex?: number;
+  roster: MultiplayerRoomMember[] = [];
   readonly protocolId: string;
   readonly protocolVersion: number;
 
@@ -532,6 +797,20 @@ export class MultiplayerRoom {
     this.hostSeat = Number(message.hostSeat);
     this.hostEpoch = Number(message.hostEpoch);
     this.phase = String(message.phase || "joining");
+    this.teamIndex = Number.isSafeInteger(message.teamIndex) ? Number(message.teamIndex) : undefined;
+    this.roster = Array.isArray(message.roster)
+      ? message.roster.flatMap((value) => {
+        if (typeof value !== "object" || value === null) return [];
+        const item = value as Record<string, unknown>;
+        if (!Number.isSafeInteger(item.seat)) return [];
+        return [{
+          seat: Number(item.seat),
+          connected: item.connected === true,
+          canHost: item.canHost === true,
+          ...(Number.isSafeInteger(item.teamIndex) ? { teamIndex: Number(item.teamIndex) } : {}),
+        }];
+      })
+      : [];
     this.isHost = this.seat === this.hostSeat;
     this.sessionToken = String(message.sessionToken);
     this.reconnectStartedAt = undefined;
@@ -544,6 +823,11 @@ export class MultiplayerRoom {
       return this.emit("error", multiplayerError(code, "room_active", retryableMultiplayerCode(code)));
     }
     if (message.type === "peer_joined" || message.type === "peer_disconnected" || message.type === "peer_reconnected" || message.type === "peer_ready") {
+      if (message.type !== "peer_ready") {
+        const seat = Number(message.seat);
+        const connected = message.type !== "peer_disconnected";
+        this.roster = this.roster.map((member) => member.seat === seat ? { ...member, connected } : member);
+      }
       return this.emit("peerChanged", { type: String(message.type), seat: Number(message.seat) });
     }
     if (message.type === "room_phase") {
@@ -892,6 +1176,45 @@ function apiUrl(baseUrl: string, path: string): URL {
   return url;
 }
 
+async function controllerCredentials(
+  client: GameAlgoMatchmakingClientOptions,
+  options: LobbyAuthOptions,
+  identity: { userId: string; sessionId: string },
+): Promise<{ accessToken: string; controllerUrl: string }> {
+  const explicitControllerUrl = options.controllerUrl ?? client.controllerUrl;
+  if (options.accessToken && explicitControllerUrl) {
+    return { accessToken: options.accessToken, controllerUrl: explicitControllerUrl };
+  }
+  const url = apiUrl(client.apiBaseUrl, "/v1/multiplayer/access-token");
+  const response = await client.fetchImpl(url, {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-GameAlgo-Key": client.gameKey },
+    body: JSON.stringify({ userId: identity.userId, sessionId: identity.sessionId, region: options.region }),
+  });
+  if (!response.ok) {
+    throw multiplayerError(
+      `multiplayer_access_token_failed_${response.status}`,
+      "token",
+      response.status === 408 || response.status === 429 || response.status >= 500,
+    );
+  }
+  const payload = await response.json() as { accessToken?: unknown; controllerUrl?: unknown };
+  if (typeof payload.accessToken !== "string") throw multiplayerError("multiplayer_access_token_missing", "token", false);
+  const controllerUrl = typeof payload.controllerUrl === "string" ? payload.controllerUrl : client.controllerUrl;
+  if (!controllerUrl) throw multiplayerError("multiplayer_controller_url_missing", "token", false);
+  return { accessToken: payload.accessToken, controllerUrl };
+}
+
+function controllerHttpUrl(controllerUrl: string): URL {
+  const url = new URL(controllerUrl);
+  if (url.protocol === "ws:") url.protocol = "http:";
+  else if (url.protocol === "wss:") url.protocol = "https:";
+  else if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("invalid multiplayer controller URL");
+  url.search = "";
+  url.hash = "";
+  return url;
+}
+
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
@@ -923,6 +1246,9 @@ function retryableMultiplayerCode(code: string): boolean {
     "match_connection_failed",
     "match_connection_closed",
     "match_connection_timeout",
+    "lobby_connection_failed",
+    "lobby_connection_closed",
+    "lobby_connection_timeout",
     "relay_unavailable",
     "room_connection_failed",
     "room_connection_closed",
