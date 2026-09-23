@@ -1,0 +1,54 @@
+name: Publish Web npm
+
+on:
+  # Releases created by a workflow with GITHUB_TOKEN do not emit a second
+  # workflow run, so the normal tag path follows the completed Release job.
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  # Keep the same entry points as GameAlgoCli for manually published releases
+  # and an explicit operator retry.
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.event.release.tag_name || github.ref }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - run: npm install --global npm@latest
+      - run: npm --version
+      - run: npm ci
+
+      - name: Verify release version
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          expected="${RELEASE_TAG#v}"
+          actual="$(node -p "require('./web/package.json').version")"
+          [[ "$actual" == "$expected" ]] || {
+            echo "Web package version $actual does not match release $RELEASE_TAG" >&2
+            exit 1
+          }
+
+      - run: npm run check:web
+      - run: npm run check:web:e2e
+      - run: npm run check:web:pack
+      - run: npm publish ./web --access public
