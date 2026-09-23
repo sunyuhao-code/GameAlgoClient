@@ -237,6 +237,7 @@ export {
   connectRoom,
   GameAlgoMatchmakingClient,
   GameAlgoMultiplayerError,
+  LobbyHandle,
   MatchHandle,
   MultiplayerInputQueue,
   MultiplayerRoom,
@@ -246,12 +247,20 @@ export type { GameAlgoWebScriptRuntimeOptions } from "./script-runtime.ts";
 export type { MultiplayerFieldSchema, MultiplayerPrimitive, MultiplayerProtocol, MultiplayerProtocolDefinition, MultiplayerStructSchema } from "./multiplayer-protocol.ts";
 export type {
   ConnectRoomOptions,
+  CreateLobbyOptions,
   GameAlgoMatchmakingClientOptions,
   InputQueueOptions,
+  JoinLobbyOptions,
+  LobbyListOptions,
+  LobbyMetadata,
+  LobbyPage,
+  LobbySnapshot,
+  LobbySummary,
   MatchedRoom,
   MatchJoinOptions,
   MultiplayerErrorPhase,
   MultiplayerRoomState,
+  MultiplayerRoomMember,
   MultiplayerSocketFactory,
 } from "./multiplayer.ts";
 export type {
