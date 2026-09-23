@@ -2,6 +2,15 @@
   "name": "@gamealgo/web",
   "version": "0.4.0",
   "description": "GameAlgo SDK for H5 games and browser WebViews",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sunyuhao-code/GameAlgoClient.git",
+    "directory": "web"
+  },
+  "homepage": "https://github.com/sunyuhao-code/GameAlgoClient#readme",
+  "bugs": {
+    "url": "https://github.com/sunyuhao-code/GameAlgoClient/issues"
+  },
   "type": "module",
   "exports": {
     ".": {
@@ -14,6 +23,9 @@
     "dist/",
     "README.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json && node ../scripts/rewrite-web-worker-path.mjs",
     "prepack": "npm run build && node ../scripts/check-web-package.mjs"
