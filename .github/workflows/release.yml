@@ -1,6 +1,6 @@
 name: Release
 
-# One workflow per tag. The two platform jobs build in parallel on the runner
+# One workflow per tag. The platform jobs build in parallel on the runner
 # each needs, and only `publish` touches the GitHub Release. Splitting it this
 # way is what makes a tag all-or-nothing: previously two workflows published
 # independently, so a tag could leave a Release holding only the AAR when the
@@ -14,6 +14,7 @@ name: Release
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   version:
@@ -100,6 +101,53 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: release-android
+          path: release/
+          if-no-files-found: error
+          retention-days: 1
+
+  web:
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Shanghai
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Verify Web SDK version
+        shell: bash
+        run: |
+          package_version="$(node -p "require('./web/package.json').version")"
+          if [[ "$package_version" != "${{ needs.version.outputs.value }}" ]]; then
+            echo "Web package version $package_version does not match tag ${{ needs.version.outputs.value }}" >&2
+            exit 1
+          fi
+
+      - name: Run Web SDK contracts
+        run: |
+          npm run check:web
+          npm run check:web:e2e
+          npm run check:web:pack
+
+      - name: Prepare Web SDK package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          package="$(npm pack ./web --pack-destination release --json | node -e 'let data=""; process.stdin.on("data", chunk => data += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(data)[0].filename))')"
+          expected="gamealgo-web-${{ needs.version.outputs.value }}.tgz"
+          [[ "$package" == "$expected" ]] || { echo "unexpected Web package name: $package" >&2; exit 1; }
+          sha256sum "release/$package" > "release/$package.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-web
           path: release/
           if-no-files-found: error
           retention-days: 1
@@ -209,9 +257,14 @@ jobs:
   publish:
     # Runs only when every platform built, so a tag either publishes a complete
     # Release or none at all.
-    needs: [version, android, godot]
+    needs: [version, android, godot, web]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
       - uses: actions/download-artifact@v4
         with:
           path: downloaded
@@ -223,11 +276,30 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ needs.version.outputs.value }}"
-          for asset in "gamealgo-android-$version.aar" "gamealgo-godot-$version.zip"; do
+          for asset in "gamealgo-android-$version.aar" "gamealgo-godot-$version.zip" "gamealgo-web-$version.tgz"; do
             [[ -f "downloaded/$asset" ]] || { echo "missing release asset: $asset" >&2; exit 1; }
             [[ -f "downloaded/$asset.sha256" ]] || { echo "missing checksum: $asset.sha256" >&2; exit 1; }
           done
           ls -l downloaded
+
+      - name: Publish Web SDK to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.version.outputs.value }}"
+          package="downloaded/gamealgo-web-$version.tgz"
+          if published_sha="$(npm view "@gamealgo/web@$version" dist.shasum 2>/dev/null)"; then
+            local_sha="$(sha1sum "$package" | awk '{print $1}')"
+            if [[ "$published_sha" != "$local_sha" ]]; then
+              echo "@gamealgo/web@$version already exists with different contents" >&2
+              exit 1
+            fi
+            echo "@gamealgo/web@$version is already published with the same package; skipping"
+          else
+            npm publish "$package" --access public --provenance
+          fi
 
       - name: Publish GitHub Release
         env:

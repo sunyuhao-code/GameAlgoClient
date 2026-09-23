@@ -1,6 +1,6 @@
 {
   "name": "@gamealgo/web",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "description": "GameAlgo SDK for H5 games and browser WebViews",
   "type": "module",
   "exports": {
@@ -16,7 +16,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && node ../scripts/rewrite-web-worker-path.mjs",
-    "prepack": "npm run build"
+    "prepack": "npm run build && node ../scripts/check-web-package.mjs"
   },
   "dependencies": {
     "quickjs-emscripten": "^0.32.0"

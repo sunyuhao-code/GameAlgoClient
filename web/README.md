@@ -127,6 +127,38 @@ public and per-seat snapshots at up to 10 Hz and a self-contained recovery
 snapshot at up to 1 Hz. The SDK handles `hostEpoch`, reconnect and migration
 handshakes. Multiplayer does not emit analytics events automatically.
 
+Use the default `latest` input delivery for transient controls where only the
+newest aggregate matters. Turn-based actions that must survive a pause or a
+short disconnect can opt into acknowledged, at-least-once delivery:
+
+```ts
+const actions = room.createInputQueue({
+  delivery: "reliable",
+  intervalMs: 50,
+  maxQueuedInputs: 128,
+  ackTimeoutMs: 3000,
+  aggregate: (pending) => ({ actions: pending.length }),
+  onError: reportNetworkError,
+});
+```
+
+Reliable batches remain queued while the room is paused, are retried until the
+host SDK acknowledges them, and are de-duplicated by sequence at the host.
+Delivery is at least once, so durable game actions should still carry a
+game-owned `actionNo` and be idempotent in host logic.
+
+Matchmaking retries transient token/controller failures twice by default.
+Initial Relay connection retries once, and established rooms reconnect for up
+to 30 seconds with bounded backoff. Tune this with `connectionRetries`,
+`connectionTimeoutMs`, `connectRetries`, `connectTimeoutMs`, and
+`reconnectWindowMs`. Failures are `GameAlgoMultiplayerError` values with stable
+`code`, `phase`, and `retryable` fields; `message` remains equal to `code` for
+backward compatibility.
+
+Telemetry still uses the general 30-second batching interval. Explicitly call
+`await gameAlgo.flush()` after a match result or another diagnostic boundary
+that needs to be visible immediately.
+
 Run `npm run check:web:multiplayer` for a real two-page Chrome E2E, or see
 `examples/multiplayer-web-demo` for the full sample.
 
