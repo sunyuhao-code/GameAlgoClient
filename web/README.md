@@ -142,10 +142,14 @@ const actions = room.createInputQueue({
 });
 ```
 
-Reliable batches remain queued while the room is paused, are retried until the
-host SDK acknowledges them, and are de-duplicated by sequence at the host.
-Delivery is at least once, so durable game actions should still carry a
-game-owned `actionNo` and be idempotent in host logic.
+Reliable delivery allows one queue per room and keeps only one batch in flight.
+Batches remain queued while the room is paused, are retried immediately when
+the room becomes active again, and continue retrying until the host SDK
+acknowledges them. Delivery is at least once across host migration. Games do
+not need to add a transport-level `actionNo` by default; when duplicate or
+stale actions can change the outcome, use a game-owned `turnId`, `roundId`,
+`commandId`, or an equivalent idempotent state transition. Creating a second
+reliable queue before closing the first throws `reliable_input_queue_exists`.
 
 Matchmaking retries transient token/controller failures twice by default.
 Initial Relay connection retries once, and established rooms reconnect for up
@@ -153,7 +157,9 @@ to 30 seconds with bounded backoff. Tune this with `connectionRetries`,
 `connectionTimeoutMs`, `connectRetries`, `connectTimeoutMs`, and
 `reconnectWindowMs`. Failures are `GameAlgoMultiplayerError` values with stable
 `code`, `phase`, and `retryable` fields; `message` remains equal to `code` for
-backward compatibility.
+backward compatibility. `match_timeout` ends the current matchmaking attempt
+and is not classified as retryable; the UI may let the player explicitly join
+again or choose another queue.
 
 Telemetry still uses the general 30-second batching interval. Explicitly call
 `await gameAlgo.flush()` after a match result or another diagnostic boundary

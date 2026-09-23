@@ -46,7 +46,7 @@ test("input queues retain paused values and reliable batches wait for acknowledg
   const queue = room.createInputQueue({
     delivery: "reliable",
     intervalMs: 10_000,
-    ackTimeoutMs: 500,
+    ackTimeoutMs: 10_000,
     aggregate: (values) => ({ actions: values.length }),
     onError: (error) => errors.push(error),
   });
@@ -59,7 +59,7 @@ test("input queues retain paused values and reliable batches wait for acknowledg
   assert.equal(binaryFrames(socket, MultiplayerMessageType.inputBatch).length, 0);
 
   socket.receive(JSON.stringify({ type: "room_phase", phase: "active" }));
-  queue.flush();
+  await settle();
   const first = binaryFrames(socket, MultiplayerMessageType.inputBatch);
   assert.equal(first.length, 1);
   assert.equal(first[0].flags & RELIABLE_INPUT_FLAG, RELIABLE_INPUT_FLAG);
@@ -67,6 +67,15 @@ test("input queues retain paused values and reliable batches wait for acknowledg
   queue.push({ action: "tap-again" });
   queue.flush();
   assert.equal(binaryFrames(socket, MultiplayerMessageType.inputBatch).length, 1, "only one reliable batch may be in flight");
+
+  socket.receive(JSON.stringify({ type: "room_phase", phase: "host_grace" }));
+  socket.receive(JSON.stringify({ type: "room_phase", phase: "active" }));
+  await settle();
+  assert.equal(
+    binaryFrames(socket, MultiplayerMessageType.inputBatch).length,
+    2,
+    "resuming must retry the in-flight batch without waiting for the acknowledgement timeout",
+  );
 
   socket.receive(encodeMultiplayerFrame({
     type: MultiplayerMessageType.inputAck,
@@ -78,9 +87,58 @@ test("input queues retain paused values and reliable batches wait for acknowledg
     payload: new Uint8Array(),
   }).buffer);
   await settle();
-  assert.equal(binaryFrames(socket, MultiplayerMessageType.inputBatch).length, 2);
+  assert.equal(binaryFrames(socket, MultiplayerMessageType.inputBatch).length, 3);
   assert.deepEqual(errors, []);
 
+});
+
+test("only one reliable input queue may exist per room", async (context) => {
+  const { room } = await connectedRoom({ seat: 1, hostSeat: 0 });
+  context.after(() => room.disconnect({ reconnect: false }));
+  const options = {
+    delivery: "reliable" as const,
+    aggregate: (values: readonly Record<string, unknown>[]) => ({ actions: values.length }),
+  };
+  const first = room.createInputQueue(options);
+  context.after(() => first.close());
+
+  assert.throws(() => room.createInputQueue(options), (error: unknown) => {
+    assert.ok(error instanceof GameAlgoMultiplayerError);
+    assert.equal(error.code, "reliable_input_queue_exists");
+    assert.equal(error.phase, "input");
+    assert.equal(error.retryable, false);
+    return true;
+  });
+
+  first.close();
+  const replacement = room.createInputQueue(options);
+  replacement.close();
+});
+
+test("a former host silently drops input already in transit", async (context) => {
+  const { room, socket } = await connectedRoom({ seat: 0, hostSeat: 0 });
+  context.after(() => room.disconnect({ reconnect: false }));
+  const inputs: number[] = [];
+  const errors: Error[] = [];
+  room.onInput(({ sequence }) => inputs.push(sequence));
+  room.onError((error) => errors.push(error));
+  socket.sent.length = 0;
+
+  socket.receive(JSON.stringify({ type: "host_changed", hostSeat: 1, hostEpoch: 2 }));
+  socket.receive(encodeMultiplayerFrame({
+    type: MultiplayerMessageType.inputBatch,
+    flags: RELIABLE_INPUT_FLAG,
+    targetSeat: 1,
+    hostEpoch: 1,
+    sequence: 7,
+    stateRevision: 0,
+    payload: protocol.encodeInput({ actions: 1 }),
+  }).buffer);
+  await settle();
+
+  assert.deepEqual(inputs, []);
+  assert.deepEqual(errors, []);
+  assert.equal(binaryFrames(socket, MultiplayerMessageType.inputAck).length, 0);
 });
 
 test("a host acknowledges and de-duplicates reliable input", async (context) => {
@@ -123,6 +181,41 @@ test("room join errors expose a stable code, phase and retryability", async () =
     assert.equal(error.retryable, false);
     return true;
   });
+});
+
+test("match timeout is terminal and not classified as a retryable connection failure", async () => {
+  const sockets: FakeSocket[] = [];
+  const matchmaking = new GameAlgoMatchmakingClient({
+    apiBaseUrl: "https://api.test",
+    gameKey: "ga_live_test",
+    fetchImpl: fetch,
+    identity: async () => ({ userId: "user-a", sessionId: "session-a" }),
+    socketFactory: () => {
+      const socket = new FakeSocket();
+      sockets.push(socket);
+      return socket as unknown as WebSocket;
+    },
+  });
+  const handle = matchmaking.join({
+    accessToken: "access-token",
+    controllerUrl: "ws://controller.test/match",
+    queueId: "casual_1v1",
+    protocolHash: protocol.hash,
+    connectionRetries: 2,
+  });
+
+  await waitFor(() => sockets.length === 1);
+  sockets[0].open();
+  sockets[0].receive(JSON.stringify({ type: "error", code: "match_timeout" }));
+
+  await assert.rejects(handle.waitForMatched(), (error: unknown) => {
+    assert.ok(error instanceof GameAlgoMultiplayerError);
+    assert.equal(error.code, "match_timeout");
+    assert.equal(error.phase, "match");
+    assert.equal(error.retryable, false);
+    return true;
+  });
+  assert.equal(sockets.length, 1);
 });
 
 test("matchmaking retries a transient controller connection with the same identity", async () => {

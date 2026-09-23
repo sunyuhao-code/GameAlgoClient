@@ -1,6 +1,6 @@
 {
   "name": "@gamealgo/web",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "GameAlgo SDK for H5 games and browser WebViews",
   "repository": {
     "type": "git",
