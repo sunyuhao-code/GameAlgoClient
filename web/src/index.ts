@@ -7,6 +7,7 @@ import type {
 } from "../../rest-api/src/types.ts";
 import { GameAlgoBrowserStorage, type GameAlgoBrowserStorageOptions } from "./browser-storage.ts";
 import { GameAlgoWebScriptRuntime } from "./script-runtime.ts";
+import { GameAlgoMatchmakingClient } from "./multiplayer.ts";
 
 export const GAMEALGO_WEB_SDK_VERSION = "0.2.0";
 const WEB_KEEPALIVE_BODY_LIMIT_BYTES = 60 * 1024;
@@ -45,6 +46,7 @@ export type GameAlgoWebClientOptions = Omit<
   autoUrlAttribution?: boolean | GameAlgoWebUrlAttributionOptions;
   scriptPrepareTimeoutMs?: number;
   scriptExecutionTimeoutMs?: number;
+  multiplayerControllerUrl?: string;
 };
 
 /** Browser-native GameAlgo client. The telemetry platform is always `web`. */
@@ -57,6 +59,7 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
   private readonly onPageShow: () => void;
   private readonly onOnline: () => void;
   private sessionEnded = false;
+  readonly matchmaking: GameAlgoMatchmakingClient;
 
   constructor(options: GameAlgoWebClientOptions) {
     const storage = options.storage ?? new GameAlgoBrowserStorage(options.browserStorage);
@@ -95,6 +98,16 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
     });
 
     this.webScriptRuntime = scriptRuntime;
+    this.matchmaking = new GameAlgoMatchmakingClient({
+      apiBaseUrl: options.baseUrl,
+      gameKey: options.gameKey,
+      controllerUrl: options.multiplayerControllerUrl,
+      fetchImpl,
+      identity: async (userId, sessionId) => ({
+        userId: (await this.userIdentity(userId)).userId,
+        sessionId: sessionId?.trim() || this.tracker.currentSessionId(),
+      }),
+    });
     this.lifecycleTarget = typeof window === "undefined" ? undefined : window;
     this.documentTarget = typeof document === "undefined" ? undefined : document;
     this.onVisibilityChange = () => {
@@ -219,8 +232,12 @@ function requestBodyBytes(body: BodyInit | null | undefined): number {
 
 export { GameAlgoBrowserStorage } from "./browser-storage.ts";
 export { GameAlgoWebScriptRuntime } from "./script-runtime.ts";
+export { defineMultiplayerProtocol } from "./multiplayer-protocol.ts";
+export { connectRoom, GameAlgoMatchmakingClient, MatchHandle, MultiplayerInputQueue, MultiplayerRoom } from "./multiplayer.ts";
 export type { GameAlgoBrowserStorageOptions } from "./browser-storage.ts";
 export type { GameAlgoWebScriptRuntimeOptions } from "./script-runtime.ts";
+export type { MultiplayerFieldSchema, MultiplayerPrimitive, MultiplayerProtocol, MultiplayerProtocolDefinition, MultiplayerStructSchema } from "./multiplayer-protocol.ts";
+export type { ConnectRoomOptions, GameAlgoMatchmakingClientOptions, InputQueueOptions, MatchedRoom, MatchJoinOptions, MultiplayerRoomState, MultiplayerSocketFactory } from "./multiplayer.ts";
 export type {
   ConfigResponse,
   EventBatchResponse,

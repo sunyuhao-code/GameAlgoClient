@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>GameAlgo Counter Duel</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <div>
+          <p class="eyebrow">GameAlgo · H5 Multiplayer V1</p>
+          <h1>Counter Duel</h1>
+          <p>两个页面自动匹配。先点击到 20 分的玩家获胜，权威计算始终由当前房主执行。</p>
+        </div>
+        <div id="status" class="status">准备连接</div>
+      </section>
+      <section class="room-meta">
+        <span>玩家 <strong id="player">-</strong></span>
+        <span>座位 <strong id="seat">-</strong></span>
+        <span>角色 <strong id="role">-</strong></span>
+        <span>hostEpoch <strong id="epoch">-</strong></span>
+      </section>
+      <section class="arena">
+        <article id="player-0" class="player-card">
+          <span>Seat 0</span>
+          <strong id="score-0">0</strong>
+        </article>
+        <div class="versus">VS</div>
+        <article id="player-1" class="player-card">
+          <span>Seat 1</span>
+          <strong id="score-1">0</strong>
+        </article>
+      </section>
+      <button id="tap" class="tap" disabled>点击得分</button>
+      <div class="actions">
+        <button id="migrate" disabled>房主主动迁移</button>
+        <button id="reconnect" disabled>模拟断线重连</button>
+      </div>
+      <pre id="log" aria-live="polite"></pre>
+    </main>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
