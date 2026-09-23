@@ -178,6 +178,34 @@ paths:
         "500":
           $ref: "#/components/responses/ServerError"
 
+  /v1/multiplayer/access-token:
+    post:
+      summary: Issue a short-lived token for the regional Match Controller.
+      operationId: issueMultiplayerAccessToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MultiplayerAccessTokenRequest"
+      responses:
+        "200":
+          description: A signed access token and Match Controller WebSocket URL.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MultiplayerAccessTokenResponse"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/MissingGameKey"
+        "403":
+          $ref: "#/components/responses/InvalidGameKey"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
 components:
   securitySchemes:
     gameKey:
@@ -224,6 +252,36 @@ components:
             $ref: "#/components/schemas/ErrorResponse"
 
   schemas:
+    MultiplayerAccessTokenRequest:
+      type: object
+      required: [userId, sessionId]
+      properties:
+        userId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        sessionId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        region:
+          type: string
+          minLength: 1
+          maxLength: 128
+
+    MultiplayerAccessTokenResponse:
+      type: object
+      required: [accessToken, expiresAt, controllerUrl]
+      properties:
+        accessToken:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+        controllerUrl:
+          type: string
+          format: uri
+
     ConfigRequest:
       type: object
       required:

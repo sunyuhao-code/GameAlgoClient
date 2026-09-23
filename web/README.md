@@ -74,6 +74,62 @@ The npm package includes the worker entry and declares its QuickJS dependency.
 Use a modern bundler that supports `new Worker(new URL(..., import.meta.url))`,
 such as Vite, webpack, Rollup, Parcel, or an equivalent WebView build pipeline.
 
+## Lightweight multiplayer
+
+Define a static binary protocol once. Its field order and bounds produce the
+`protocolHash` used by matchmaking, so incompatible builds never share a room.
+
+```ts
+import { connectRoom, defineMultiplayerProtocol, GameAlgoWebClient } from "@gamealgo/web";
+
+const protocol = defineMultiplayerProtocol({
+  id: "counter-duel",
+  version: 1,
+  roomInit: { seed: "u32" },
+  sharedState: { scores: { type: "array", items: "u16", maxLength: 2 } },
+  seatState: { ownScore: "u16" },
+  hostState: { scores: { type: "array", items: "u16", maxLength: 2 } },
+  input: { taps: "u8" },
+});
+
+const gameAlgo = GameAlgoWebClient.init({
+  baseUrl: "https://game-algo-sdk.dictapis.cn",
+  gameKey: "ga_live_xxx",
+});
+
+async function startMatch() {
+  const match = gameAlgo.matchmaking.join({
+    queueId: "casual_1v1",
+    protocolHash: protocol.hash,
+    canHost: true,
+  });
+
+  cancelButton.addEventListener("click", () => match.cancel(), { once: true });
+
+  try {
+    const matched = await match.waitForMatched();
+    return await connectRoom(matched.relayUrl, matched.ticket, protocol);
+  } catch (error) {
+    if (error instanceof Error && error.message === "match_cancelled") return undefined;
+    throw error;
+  }
+}
+```
+
+`MatchHandle.cancel()` is idempotent and cancels token acquisition or removes
+the client from the active queue. It rejects `waitForMatched()` with
+`match_cancelled` and intentionally does not call `onError`. Cancellation only
+applies while queued: once the Controller has selected a group and started room
+allocation, it does not roll that room back.
+
+Non-host players send only aggregated input. The host publishes complete
+public and per-seat snapshots at up to 10 Hz and a self-contained recovery
+snapshot at up to 1 Hz. The SDK handles `hostEpoch`, reconnect and migration
+handshakes. Multiplayer does not emit analytics events automatically.
+
+Run `npm run check:web:multiplayer` for a real two-page Chrome E2E, or see
+`examples/multiplayer-web-demo` for the full sample.
+
 ## Compatibility checks
 
 `npm run check:web:e2e` runs the packaged SDK in Chrome. On macOS with Xcode
