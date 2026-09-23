@@ -314,6 +314,7 @@ export class MultiplayerRoom {
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private pendingHostRecovery = false;
   private readonly lastReliableInputSequenceBySeat = new Map<number, number>();
+  private reliableInputQueue?: MultiplayerInputQueue;
   private sharedState?: Record<string, unknown>;
   private seatState?: Record<string, unknown>;
   private pendingState?: { sharedState: Record<string, unknown>; seatStates?: Record<number, Record<string, unknown>> };
@@ -379,7 +380,15 @@ export class MultiplayerRoom {
   }
 
   createInputQueue(options: InputQueueOptions): MultiplayerInputQueue {
-    return new MultiplayerInputQueue(this, options);
+    const delivery = options.delivery ?? "latest";
+    if (delivery === "reliable" && this.reliableInputQueue) {
+      throw multiplayerError("reliable_input_queue_exists", "input", false);
+    }
+    const queue = new MultiplayerInputQueue(this, options, () => {
+      if (this.reliableInputQueue === queue) this.reliableInputQueue = undefined;
+    });
+    if (delivery === "reliable") this.reliableInputQueue = queue;
+    return queue;
   }
 
   publishState(value: { sharedState: Record<string, unknown>; seatStates?: Record<number, Record<string, unknown>> }): void {
@@ -586,6 +595,7 @@ export class MultiplayerRoom {
       return this.emitState(frame.stateRevision);
     }
     if (frame.type === MultiplayerMessageType.inputBatch) {
+      if (!this.isHost || frame.hostEpoch !== this.hostEpoch) return;
       const reliable = (frame.flags & RELIABLE_INPUT_FLAG) !== 0;
       const previous = this.lastReliableInputSequenceBySeat.get(frame.targetSeat) ?? 0;
       if (!reliable || frame.sequence > previous) {
@@ -594,7 +604,6 @@ export class MultiplayerRoom {
         this.emit("input", { seat: frame.targetSeat, input, sequence: frame.sequence });
       }
       if (reliable) {
-        this.requireHost();
         this.sendFrame(MultiplayerMessageType.inputAck, new Uint8Array(), frame.targetSeat, 0, frame.sequence);
       }
       return;
@@ -770,12 +779,21 @@ export class MultiplayerInputQueue {
   private readonly options: InputQueueOptions;
   private readonly delivery: "latest" | "reliable";
   private readonly unsubscribeAck: () => void;
+  private readonly unsubscribePhase: () => void;
+  private readonly release: () => void;
+  private closed = false;
 
-  constructor(room: MultiplayerRoom, options: InputQueueOptions) {
+  constructor(room: MultiplayerRoom, options: InputQueueOptions, release: () => void = () => undefined) {
     this.room = room;
     this.options = options;
+    this.release = release;
     this.delivery = options.delivery ?? "latest";
     this.unsubscribeAck = room.onInputAcknowledged(({ sequence }) => this.acknowledge(sequence));
+    this.unsubscribePhase = room.onPhase(({ phase }) => {
+      if (phase !== "active" || this.delivery !== "reliable") return;
+      if (this.inFlight) this.inFlight.nextAttemptAt = 0;
+      this.flush();
+    });
     this.timer = setInterval(() => this.flush(), Math.max(50, options.intervalMs ?? 50));
   }
 
@@ -830,9 +848,13 @@ export class MultiplayerInputQueue {
   }
 
   close(): void {
+    if (this.closed) return;
+    this.closed = true;
     clearInterval(this.timer);
     this.unsubscribeAck();
+    this.unsubscribePhase();
     this.inFlight = undefined;
+    this.release();
   }
 
   private transmitReliable(batch: NonNullable<MultiplayerInputQueue["inFlight"]>): void {
@@ -901,7 +923,6 @@ function retryableMultiplayerCode(code: string): boolean {
     "match_connection_failed",
     "match_connection_closed",
     "match_connection_timeout",
-    "match_timeout",
     "relay_unavailable",
     "room_connection_failed",
     "room_connection_closed",
