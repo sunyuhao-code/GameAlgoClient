@@ -1006,6 +1006,13 @@ export class GameAlgoEventTracker {
     return this.track("level_end", payload);
   }
 
+  trackMilestone(milestoneType: string, milestonePoint: string, payload: JsonValue = {}): boolean {
+    const merged = objectPayload(payload);
+    merged.milestoneType = milestoneType;
+    merged.milestonePoint = milestonePoint;
+    return this.track("milestone", merged);
+  }
+
   trackAd(placement: string, adType: string, revenue: number, currency: string, payload?: JsonValue): boolean;
   trackAd(placement: string, adType: string, revenue: number, currency: string, network?: string, payload?: JsonValue): boolean;
   trackAd(

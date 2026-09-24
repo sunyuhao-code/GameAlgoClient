@@ -445,6 +445,17 @@ func track_level_end(payload: Variant = {}) -> bool:
 	return track("level_end", payload)
 
 
+func track_milestone(
+	milestone_type: String,
+	milestone_point: String,
+	payload: Variant = {}
+) -> bool:
+	var merged: Dictionary = payload.duplicate(true) if payload is Dictionary else {}
+	merged["milestoneType"] = milestone_type
+	merged["milestonePoint"] = milestone_point
+	return track("milestone", merged)
+
+
 func track_ad(
 	placement: String,
 	ad_type: String,

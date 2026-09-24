@@ -52,6 +52,7 @@ let result = levelGenerator.execute(.object(["turn": .number(7)]))
 let adsEnabled = sdk.config.bool("ads.rewarded.enabled", default: true, fileName: "gameplay.json")
 
 await sdk.tracker.trackLevelEnd(payload: .object(["level": .number(3), "result": .string("win")]))
+await sdk.tracker.trackMilestone(milestoneType: "new_user", milestonePoint: "进入第一关")
 await sdk.tracker.trackAd(placement: "rewarded_level_end", adType: "reward", revenue: 0.018, currency: "CNY", network: "admob")
 await sdk.tracker.trackPurchase(productId: "starter_pack", revenue: 4.99, currency: "CNY")
 await sdk.tracker.trackSessionEnd()
@@ -66,6 +67,9 @@ try await sdk.setAttribution(GameAlgoUserAttribution(
     ]
 ))
 ```
+
+里程碑必须使用 `trackMilestone`。`trackEvent("milestone", ...)` 是自定义事件入口，
+会实际发送 `_milestone`，不能用于标准里程碑漏斗。
 
 如果游戏启用 Adjust Server Callback，在初始化 Adjust SDK 前配置 GameAlgo 自定义 callback 参数：
 

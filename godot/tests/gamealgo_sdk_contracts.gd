@@ -559,19 +559,21 @@ func _test_milestone_deduplication() -> void:
 	var tracker: RefCounted = client.tracker
 
 	_check(
-		tracker.track("milestone", {"milestoneType": "new_user", "milestonePoint": "第一关"}),
+		tracker.track_milestone("new_user", "第一关", {
+			"milestoneType": "ignored", "milestonePoint": "ignored",
+		}),
 		"a milestone is reported the first time"
 	)
 	_check(
-		not tracker.track("milestone", {"milestoneType": "new_user", "milestonePoint": "第一关"}),
+		not tracker.track_milestone("new_user", "第一关"),
 		"the same milestone is refused the second time"
 	)
 	_check(
-		tracker.track("milestone", {"milestoneType": "new_user", "milestonePoint": "第二关"}),
+		tracker.track_milestone("new_user", "第二关"),
 		"a different milestone point still reports"
 	)
 	_check(
-		tracker.track("milestone", {"milestoneType": "retention", "milestonePoint": "第一关"}),
+		tracker.track_milestone("retention", "第一关"),
 		"a different milestone type still reports"
 	)
 	# Without both fields there is nothing to deduplicate on, so it passes through.
@@ -590,6 +592,9 @@ func _test_milestone_deduplication() -> void:
 				milestones.append(event)
 	# 7 tracked, 1 refused as a duplicate.
 	_check(milestones.size() == 6, "only the accepted milestones reach the wire")
+	var first_payload: Dictionary = milestones[0].get("payload", {}) if not milestones.is_empty() else {}
+	_check(first_payload.get("milestoneType") == "new_user", "track_milestone owns milestoneType")
+	_check(first_payload.get("milestonePoint") == "第一关", "track_milestone owns milestonePoint")
 	var spoofed: Dictionary = {}
 	for event: Dictionary in milestones:
 		if String(event.get("payload", {}).get("milestoneType", "")) == "spoof":

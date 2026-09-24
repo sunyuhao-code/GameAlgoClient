@@ -17,10 +17,7 @@ const gameAlgo = GameAlgoWebClient.init({
 await gameAlgo.waitForReady(1500);
 
 gameAlgo.tracker.trackLevelStart({ levelId: "level_1" });
-gameAlgo.tracker.track("milestone", {
-  milestoneType: "new_user",
-  milestonePoint: "进入第一关",
-});
+gameAlgo.tracker.trackMilestone("new_user", "进入第一关");
 
 const decision = await gameAlgo.executor("level_dda").execute({ level: 12 });
 ```

@@ -1372,6 +1372,14 @@ function GameAlgo.TrackLevelEnd(payload)
     return GameAlgo.Track("level_end", payload)
 end
 
+function GameAlgo.TrackMilestone(milestoneType, milestonePoint, payload)
+    local merged, payloadError = preparePayload(payload)
+    if payloadError then return false, payloadError end
+    merged.milestoneType = milestoneType
+    merged.milestonePoint = milestonePoint
+    return GameAlgo.Track("milestone", merged)
+end
+
 function GameAlgo.ExtractAdTrackId(result)
     if type(result) ~= "table" then return nil end
     local direct = nonEmptyString(result.trackId or result.track_id)

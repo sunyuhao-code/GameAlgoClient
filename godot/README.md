@@ -83,11 +83,11 @@ await client.tracker.flush()
 ### Milestone 去重
 
 ```gdscript
-client.tracker.track("milestone", {
-    "milestoneType": "new_user",
-    "milestonePoint": "进入第一关",
-})
+client.tracker.track_milestone("new_user", "进入第一关")
 ```
+
+不要使用 `track_event("milestone", ...)`；它是自定义事件入口，会实际发送
+`_milestone`，标准里程碑漏斗不会读取它。
 
 同一个 `milestoneType` + `milestonePoint` 组合只会上报一次，重复调用返回 `false`。已绑定 context 的里程碑会持久化，重启后不会再报；还没拿到 context 时到达的里程碑先记在本次 session，事件绑定 context 后转为持久，切换 session 则随未绑定事件一起释放。调试和正式构建的记录互相隔离。
 

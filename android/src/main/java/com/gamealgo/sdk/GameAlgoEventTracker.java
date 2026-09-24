@@ -396,6 +396,17 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         return track("level_end", payload);
     }
 
+    public boolean trackMilestone(String milestoneType, String milestonePoint) {
+        return trackMilestone(milestoneType, milestonePoint, new LinkedHashMap<String, Object>());
+    }
+
+    public boolean trackMilestone(String milestoneType, String milestonePoint, Map<String, Object> payload) {
+        Map<String, Object> merged = copyPayload(payload);
+        merged.put("milestoneType", milestoneType);
+        merged.put("milestonePoint", milestonePoint);
+        return track("milestone", merged);
+    }
+
     public boolean trackAd(String placement, String adType, double revenue, String currency) {
         return trackAd(placement, adType, revenue, currency, null, new LinkedHashMap<String, Object>());
     }

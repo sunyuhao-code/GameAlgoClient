@@ -163,11 +163,16 @@ GameAlgo.TrackLevelEnd({
     result = "win",
 })
 
+GameAlgo.TrackMilestone("new_user", "进入第一关")
+
 GameAlgo.TrackAd("rewarded_level_end", "reward", 0.018, "CNY", "admob")
 
 GameAlgo.TrackSessionEnd()
 GameAlgo.Flush()
 ```
+
+里程碑必须使用 `GameAlgo.TrackMilestone`。`GameAlgo.TrackEvent("milestone", ...)`
+是自定义事件入口，会实际发送 `_milestone`，不能用于标准里程碑漏斗。
 
 Lua SDK 为存量版本保留嵌套 JSON 的传输兼容，但新接入和新增字段一律使用上面的扁平 payload。需要描述多个属性时，把它们拆成稳定、含义明确的顶层字段，不要把业务对象或数组直接塞入事件。
 
