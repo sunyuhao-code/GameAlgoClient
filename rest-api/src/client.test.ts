@@ -948,22 +948,19 @@ test("milestones add registration elapsed time and stay deduplicated across data
   const first = createMilestoneClient(Date.parse("2026-09-15T10:00:05.000Z"));
   first.tracker.identify("u1", "s1", "2026-09-15T10:00:00.000Z");
   first.tracker.setContextId("ctx-v1");
-  assert.equal(first.tracker.track("milestone", {
-    milestoneType: "new_user",
-    milestonePoint: "完成引导",
+  assert.equal(first.tracker.trackMilestone("new_user", "完成引导", {
+    milestoneType: "ignored",
+    milestonePoint: "ignored",
     elapsedSinceRegistrationMs: 999_999,
   }), true);
-  assert.equal(first.tracker.track("milestone", {
-    milestoneType: "new_user",
-    milestonePoint: "完成引导",
-  }), false);
-  assert.equal(first.tracker.track("milestone", {
-    milestoneType: "global",
-    milestonePoint: "完成引导",
-  }), true);
+  assert.equal(first.tracker.trackMilestone("new_user", "完成引导"), false);
+  assert.equal(first.tracker.trackMilestone("global", "完成引导"), true);
   await first.tracker.flush();
 
   assert.equal(uploaded.length, 2);
+  assert.equal(uploaded[0].eventType, "milestone");
+  assert.equal((uploaded[0].payload as Record<string, unknown>).milestoneType, "new_user");
+  assert.equal((uploaded[0].payload as Record<string, unknown>).milestonePoint, "完成引导");
   assert.equal((uploaded[0].payload as Record<string, unknown>).elapsedSinceRegistrationMs, 5_000);
   assert.ok(storage.keys().some((key) => key.endsWith(":milestones")));
   first.tracker.close();
@@ -972,17 +969,11 @@ test("milestones add registration elapsed time and stay deduplicated across data
   await restored.tracker.flush();
   restored.tracker.identify("u1", "s2", "2026-09-15T10:00:00.000Z");
   restored.tracker.setContextId("ctx-v1-restored");
-  assert.equal(restored.tracker.track("milestone", {
-    milestoneType: "new_user",
-    milestonePoint: "完成引导",
-  }), false);
+  assert.equal(restored.tracker.trackMilestone("new_user", "完成引导"), false);
 
   restored.tracker.newSession("s3");
   restored.tracker.setContextId("ctx-v2");
-  assert.equal(restored.tracker.track("milestone", {
-    milestoneType: "new_user",
-    milestonePoint: "完成引导",
-  }), false);
+  assert.equal(restored.tracker.trackMilestone("new_user", "完成引导"), false);
   restored.tracker.close();
 });
 

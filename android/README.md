@@ -33,6 +33,7 @@ val result = levelGenerator.execute(mapOf("turn" to 7))
 val adsEnabled = sdk.config().bool("ads.rewarded.enabled", true, "gameplay.json")
 
 sdk.tracker().trackLevelEnd(mapOf("level" to 3, "result" to "win"))
+sdk.tracker().trackMilestone("new_user", "进入第一关")
 sdk.tracker().trackAd("rewarded_level_end", "reward", 0.018, "CNY", "admob")
 sdk.tracker().trackPurchase("starter_pack", 4.99, "CNY", mapOf())
 sdk.tracker().trackSessionEnd()
@@ -47,6 +48,9 @@ sdk.setAttribution(
     )
 )
 ```
+
+里程碑必须使用 `trackMilestone`。`trackEvent("milestone", ...)` 是自定义事件入口，
+会实际发送 `_milestone`，不能用于标准里程碑漏斗。
 
 如果游戏启用 Adjust Server Callback，在初始化 Adjust SDK 前配置 GameAlgo 自定义 callback 参数：
 

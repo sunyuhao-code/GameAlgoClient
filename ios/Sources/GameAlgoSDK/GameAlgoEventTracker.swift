@@ -460,6 +460,18 @@ public actor GameAlgoEventTracker {
     }
 
     @discardableResult
+    public func trackMilestone(
+        milestoneType: String,
+        milestonePoint: String,
+        payload: JSONValue = .object([:])
+    ) -> Bool {
+        var merged = payload.objectValue ?? [:]
+        merged["milestoneType"] = .string(milestoneType)
+        merged["milestonePoint"] = .string(milestonePoint)
+        return track("milestone", payload: .object(merged))
+    }
+
+    @discardableResult
     public func trackAd(
         placement: String,
         adType: String,

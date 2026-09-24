@@ -747,11 +747,11 @@ public final class GameAlgoClientSmokeTest {
         first.identify("u1", "s1", registeredAt);
         first.setContextId("ctx-v1");
         Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("milestoneType", "new_user");
-        payload.put("milestonePoint", "完成引导");
+        payload.put("milestoneType", "ignored");
+        payload.put("milestonePoint", "ignored");
         payload.put("elapsedSinceRegistrationMs", 999999L);
-        check(first.track("milestone", payload), "first milestone should queue");
-        check(!first.track("milestone", payload), "duplicate milestone should be suppressed");
+        check(first.trackMilestone("new_user", "完成引导", payload), "first milestone should queue");
+        check(!first.trackMilestone("new_user", "完成引导", payload), "duplicate milestone should be suppressed");
         first.flush();
 
         Map<String, Object> body = requestBody(httpClient.requests.get(0));
@@ -760,6 +760,9 @@ public final class GameAlgoClientSmokeTest {
                 "event"
         );
         Map<String, Object> uploadedPayload = GameAlgoJson.asObject(event.get("payload"), "payload");
+        check("milestone".equals(event.get("eventType")), "trackMilestone should upload milestone");
+        check("new_user".equals(uploadedPayload.get("milestoneType")), "trackMilestone should own milestoneType");
+        check("完成引导".equals(uploadedPayload.get("milestonePoint")), "trackMilestone should own milestonePoint");
         long elapsed = ((Number) uploadedPayload.get("elapsedSinceRegistrationMs")).longValue();
         check(elapsed >= 4000L && elapsed <= 7000L, "milestone should derive elapsed time from registration");
         check(storage.getItem("milestone-event-queue:milestones") != null,
@@ -771,10 +774,10 @@ public final class GameAlgoClientSmokeTest {
         );
         restored.identify("u1", "s2", registeredAt);
         restored.setContextId("ctx-v1-restored");
-        check(!restored.track("milestone", payload), "persisted milestone should remain deduplicated");
+        check(!restored.trackMilestone("new_user", "完成引导", payload), "persisted milestone should remain deduplicated");
         restored.newSession();
         restored.setContextId("ctx-v2");
-        check(!restored.track("milestone", payload), "milestone should stay deduplicated after a data version switch");
+        check(!restored.trackMilestone("new_user", "完成引导", payload), "milestone should stay deduplicated after a data version switch");
         restored.close();
     }
 

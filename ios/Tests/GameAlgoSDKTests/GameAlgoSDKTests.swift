@@ -826,21 +826,28 @@ final class GameAlgoSDKTests: XCTestCase {
         )
         await first.identify(userId: "u1", sessionId: "s1")
         await first.setContextId("ctx-v1")
-        let firstAccepted = await first.track("milestone", payload: .object([
-            "milestoneType": .string("new_user"),
-            "milestonePoint": .string("完成引导"),
-            "elapsedSinceRegistrationMs": .number(999_999),
-        ]))
-        let duplicateAccepted = await first.track("milestone", payload: .object([
-            "milestoneType": .string("new_user"),
-            "milestonePoint": .string("完成引导"),
-        ]))
+        let firstAccepted = await first.trackMilestone(
+            milestoneType: "new_user",
+            milestonePoint: "完成引导",
+            payload: .object([
+                "milestoneType": .string("ignored"),
+                "milestonePoint": .string("ignored"),
+                "elapsedSinceRegistrationMs": .number(999_999),
+            ])
+        )
+        let duplicateAccepted = await first.trackMilestone(
+            milestoneType: "new_user",
+            milestonePoint: "完成引导"
+        )
         XCTAssertTrue(firstAccepted)
         XCTAssertFalse(duplicateAccepted)
         await first.flush()
 
         let uploaded = await uploader.uploadedEvents()
         XCTAssertEqual(uploaded.count, 1)
+        XCTAssertEqual(uploaded[0].eventType, "milestone")
+        XCTAssertEqual(uploaded[0].payload["milestoneType"]?.stringValue, "new_user")
+        XCTAssertEqual(uploaded[0].payload["milestonePoint"]?.stringValue, "完成引导")
         XCTAssertEqual(uploaded[0].payload["elapsedSinceRegistrationMs"]?.doubleValue, 5_000)
         XCTAssertNotNil(storage.value(cacheKey: "milestone-event-queue:milestones"))
 
@@ -854,18 +861,18 @@ final class GameAlgoSDKTests: XCTestCase {
         )
         await restored.identify(userId: "u1", sessionId: "s2")
         await restored.setContextId("ctx-v1-restored")
-        let restoredDuplicate = await restored.track("milestone", payload: .object([
-            "milestoneType": .string("new_user"),
-            "milestonePoint": .string("完成引导"),
-        ]))
+        let restoredDuplicate = await restored.trackMilestone(
+            milestoneType: "new_user",
+            milestonePoint: "完成引导"
+        )
         XCTAssertFalse(restoredDuplicate)
 
         await restored.newSession("s3")
         await restored.setContextId("ctx-v2")
-        let nextVersionAccepted = await restored.track("milestone", payload: .object([
-            "milestoneType": .string("new_user"),
-            "milestonePoint": .string("完成引导"),
-        ]))
+        let nextVersionAccepted = await restored.trackMilestone(
+            milestoneType: "new_user",
+            milestonePoint: "完成引导"
+        )
         XCTAssertFalse(nextVersionAccepted)
     }
 

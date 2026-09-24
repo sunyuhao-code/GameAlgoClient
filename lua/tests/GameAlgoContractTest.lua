@@ -143,21 +143,20 @@ for key, value in pairs(snapshot.data) do
     if key:match(":events:jsonl$") then assert(value == "") end
 end
 
-assert(GameAlgo.Track("milestone", {
-    milestoneType = "new_user",
-    milestonePoint = "完成引导",
+assert(GameAlgo.TrackMilestone("new_user", "完成引导", {
+    milestoneType = "ignored",
+    milestonePoint = "ignored",
     elapsedSinceRegistrationMs = 999999,
 }))
-local duplicateMilestone, duplicateMilestoneError = GameAlgo.Track("milestone", {
-    milestoneType = "new_user",
-    milestonePoint = "完成引导",
-})
+local duplicateMilestone, duplicateMilestoneError = GameAlgo.TrackMilestone("new_user", "完成引导")
 assert(duplicateMilestone == false)
 assert(duplicateMilestoneError == "duplicate milestone")
 GameAlgo.Flush(function(error) assert(error == nil, tostring(error)) end)
 local milestoneEvents = eventRequests[#eventRequests].events
 assert(#milestoneEvents == 1)
 assert(milestoneEvents[1].eventType == "milestone")
+assert(milestoneEvents[1].payload.milestoneType == "new_user")
+assert(milestoneEvents[1].payload.milestonePoint == "完成引导")
 assert(type(milestoneEvents[1].payload.elapsedSinceRegistrationMs) == "number")
 assert(milestoneEvents[1].payload.elapsedSinceRegistrationMs ~= 999999)
 snapshot = cjson.decode(assert(files["gamealgo_sdk_storage_v1.json"]))
