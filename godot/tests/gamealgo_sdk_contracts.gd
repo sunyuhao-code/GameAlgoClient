@@ -131,6 +131,42 @@ class TransportFixture:
 		}
 
 
+class ImmediateDecoder:
+	extends RefCounted
+
+	func decode_dictionary(bytes: PackedByteArray, _limit: int) -> Dictionary:
+		return {"ok": true, "value": JSON.parse_string(bytes.get_string_from_utf8())}
+
+
+class RecoveryTransport:
+	extends TransportFixture
+
+	signal released
+	var config_ok := true
+	var hold_config := false
+	var hold_attribution := false
+
+	func send(spec: Dictionary) -> Dictionary:
+		var url := String(spec.get("url", ""))
+		if url.ends_with("/v1/config"):
+			requests.append(spec.duplicate(true))
+			config_calls += 1
+			if hold_config:
+				await released
+			if not config_ok:
+				return {"ok": false, "error": "offline"}
+			var body: Dictionary = JSON.parse_string(String(spec["body"]))
+			return _json({
+				"contextId": "context-" + String(body["sessionId"]),
+				"gameId": "fixture", "environment": "live", "configVersion": body["sessionId"],
+				"ttlSeconds": 60, "serverTime": "2026-01-01T00:00:00.000Z",
+				"experiments": [], "configFiles": [],
+			})
+		if url.ends_with("/v1/attribution") and hold_attribution:
+			await released
+		return await super.send(spec)
+
+
 class FailingStore:
 	extends MemoryStore
 
@@ -177,6 +213,18 @@ func _run() -> void:
 	await _test_milestone_survives_restart()
 	await _test_attribution_upload_and_ack()
 	await _test_attribution_status_normalization()
+	await _test_bound_events_bypass_unbound()
+	await _test_config_recovery_with_unresolved_measurement()
+	await _test_config_binding_storage_failure()
+	await _test_config_backoff_bound()
+	await _test_config_recovers_without_foreground()
+	await _test_unbound_sessions_survive_restart()
+	await _test_overlapping_config_sessions()
+	await _test_attribution_autonomous_retry()
+	await _test_attribution_consent_and_restart()
+	await _test_attribution_newer_value_race()
+	await _test_attribution_pause_inflight()
+	await _test_attribution_revoke_inflight()
 	await _test_context_identifiers()
 	await _test_observability()
 	await _test_automatic_idfv()
@@ -504,7 +552,7 @@ func _test_quota_buckets_follow_the_context() -> void:
 			after_context += 1
 	_check(after_context == 400, "pending quota usage follows the events onto the context")
 
-	# A new session discards its unbound events, and their usage with them.
+	# A new session uses a separate pending quota bucket.
 	client.new_session()
 	var fresh := 0
 	for index: int in range(20):
@@ -660,16 +708,16 @@ func _test_milestone_survives_restart() -> void:
 	)
 	after_bind.free()
 
-	# A new session releases only the milestones that never bound to a context.
+	# Retained unbound milestones stay deduplicated across sessions.
 	var session_client := _make_client({"transport": TransportFixture.new()})
 	_check(
 		session_client.tracker.track("milestone", {"milestoneType": "loose", "milestonePoint": "p"}),
 		"an unbound milestone is reported"
 	)
-	session_client.new_session()
+	await session_client.new_session()
 	_check(
-		session_client.tracker.track("milestone", {"milestoneType": "loose", "milestonePoint": "p"}),
-		"a new session releases unbound milestones with their discarded events"
+		not session_client.tracker.track("milestone", {"milestoneType": "loose", "milestonePoint": "p"}),
+		"a new session preserves dedupe for retained unbound milestones"
 	)
 	session_client.free()
 
@@ -772,6 +820,303 @@ func _test_attribution_status_normalization() -> void:
 		_check(statuses[2] == "unknown", "an unknown tracker name reports unknown")
 		_check(statuses[3] == "attributed", "a real network reports attributed")
 		_check(statuses[4] == "attributed", "only adjust gets the field-level folding")
+	client.free()
+
+
+func _recovery_client(storage: MemoryStore, transport: RecoveryTransport, session: String) -> Node:
+	var client := _make_client({
+		"storage": storage, "transport": transport, "session_id": session,
+		"json_decoder": ImmediateDecoder.new(), "logger": null, "platform": "android",
+	})
+	client.set_process(false)
+	return client
+
+
+func _test_bound_events_bypass_unbound() -> void:
+	var transport := RecoveryTransport.new()
+	var client := _recovery_client(MemoryStore.new(), transport, "old")
+	client.tracker.track_ad("banner", "banner", 0.1, "USD")
+	await client.new_session("new")
+	client.tracker.track_ad("banner", "banner", 0.2, "USD")
+	await client.tracker.flush()
+	var batches := transport.bodies_for("/v1/events/batch")
+	_check(batches.size() == 1 and batches[0]["events"].size() == 1 \
+		and batches[0]["events"][0]["sessionId"] == "new", "unbound older events do not block bound events")
+	_check(client.tracker.pending_count() == 1, "bypassed unbound event remains pending")
+	client._process(61.0)
+	await client.tracker.flush()
+	_check(client.tracker.pending_count() == 0, "bypassed event drains when its own context recovers")
+	client.free()
+
+
+func _test_config_recovery_with_unresolved_measurement() -> void:
+	var storage := MemoryStore.new()
+	var offline := RecoveryTransport.new()
+	offline.config_ok = false
+	var original := _recovery_client(storage, offline, "authorized")
+	await original.start()
+	original.tracker.track_ad("banner", "banner", 0.1, "USD")
+	original.free()
+	var transport := RecoveryTransport.new()
+	var client := _make_client({
+		"storage": storage, "transport": transport, "session_id": "pending-consent",
+		"json_decoder": ImmediateDecoder.new(), "logger": null, "platform": "android",
+		"measurement_allowed": false, "measurement_resolved": false,
+	})
+	client.set_process(false)
+	await client.start()
+	client._process(61.0)
+	client._notification(Node.NOTIFICATION_APPLICATION_PAUSED)
+	_check(client.set_measurement_allowed(true), "late measurement grant restores retained queue")
+	client._process(61.0)
+	await client.tracker.flush()
+	var batches := transport.bodies_for("/v1/events/batch")
+	_check(batches.size() == 1 and batches[0]["events"][0]["contextId"] == "context-authorized", "unresolved consent must not discard historical config ownership")
+	client.free()
+
+
+func _test_config_binding_storage_failure() -> void:
+	var storage := FailingStore.new()
+	var transport := RecoveryTransport.new()
+	transport.config_ok = false
+	var client := _recovery_client(storage, transport, "persist-old")
+	await client.start()
+	client.tracker.track_ad("banner", "banner", 0.1, "USD")
+	storage.refuse_saves = true
+	transport.events_ok = false
+	transport.config_ok = true
+	client._process(61.0)
+	client.free()
+	storage.refuse_saves = false
+	var restarted := _recovery_client(storage, RecoveryTransport.new(), "persist-restart")
+	_check(restarted.tracker.pending_count() == 1, "binding persistence failure fixture restores the original unbound event")
+	await restarted.start()
+	for index: int in range(3):
+		restarted._process(61.0)
+	await restarted.tracker.flush()
+	_check(restarted.tracker.pending_count() == 0, "failed context-binding save retains replayable original config request")
+	restarted.free()
+
+
+func _test_config_backoff_bound() -> void:
+	var transport := RecoveryTransport.new()
+	transport.config_ok = false
+	var client := _recovery_client(MemoryStore.new(), transport, "backoff")
+	await client.start()
+	for delay: float in [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0]:
+		var before := transport.config_calls
+		client._process(delay - 0.1)
+		_check(transport.config_calls == before, "backoff does not retry before its deadline")
+		client._process(0.11)
+		_check(transport.config_calls == before + 1, "backoff retries at a bounded deadline")
+	transport.config_ok = true
+	client._process(60.0)
+	_check(client.status == "ready", "backoff eventually recovers after repeated failures")
+	_check(await client.start(), "start reports recovered readiness after a prior failed startup")
+	client.free()
+
+
+func _test_config_recovers_without_foreground() -> void:
+	var transport := RecoveryTransport.new()
+	var client := _recovery_client(MemoryStore.new(), transport, "first")
+	await client.start()
+	transport.config_ok = false
+	_check(not await client.new_session("second"), "offline foreground reports the real config failure")
+	client.tracker.track_ad("rewarded", "reward", 0.25, "USD")
+	await client.tracker.track_session_end({}, false)
+	var original: Array = client.tracker.pending_events_for_testing()
+	client._process(0.1)
+	_check(transport.config_calls == 2, "config recovery respects backoff")
+	transport.config_ok = true
+	client._process(61.0)
+	await client.tracker.flush()
+	var batches := transport.bodies_for("/v1/events/batch")
+	_check(not batches.is_empty(), "network recovery uploads without another foreground")
+	if not batches.is_empty():
+		var events: Array = batches[0]["events"]
+		for index: int in range(events.size()):
+			var expected: Dictionary = original[index].duplicate(true)
+			expected["contextId"] = "context-second"
+			_check(events[index] == JSON.parse_string(Util.canonical_json(expected)), "recovery only binds context, preserving event identity and time")
+	client._process(61.0)
+	_check(client.tracker.pending_count() == 0 and batches.size() == 1, "successful recovery drains events once")
+	client.free()
+
+
+func _test_unbound_sessions_survive_restart() -> void:
+	var storage := MemoryStore.new()
+	var transport := RecoveryTransport.new()
+	transport.config_ok = false
+	var client := _recovery_client(storage, transport, "old")
+	await client.start()
+	client.tracker.track_ad("banner", "banner", 0.1, "USD")
+	await client.tracker.track_session_end({}, false)
+	var first: Array = client.tracker.pending_events_for_testing()
+	await client.new_session("middle")
+	client.tracker.track_ad("banner", "banner", 0.2, "USD")
+	_check(client.tracker.pending_count() == 3, "second foreground retains prior unbound events")
+	var old_requests := transport.bodies_for("/v1/config")
+	client.free()
+	var recovered := RecoveryTransport.new()
+	var restarted := _recovery_client(storage, recovered, "current")
+	_check(restarted.tracker.pending_count() == 3, "unbound revenue and session end survive restart")
+	await restarted.start()
+	for index: int in range(4):
+		restarted._process(61.0)
+	await restarted.tracker.flush()
+	var sent: Array = []
+	for batch: Dictionary in recovered.bodies_for("/v1/events/batch"):
+		sent.append_array(batch["events"])
+	_check(sent.size() == 3, "all retained sessions upload after restart")
+	for original: Dictionary in first:
+		var expected := original.duplicate(true)
+		expected["contextId"] = "context-old"
+		_check(sent.has(JSON.parse_string(Util.canonical_json(expected))), "restart preserves original event id, session and timestamps")
+	for original: Dictionary in old_requests:
+		_check(recovered.bodies_for("/v1/config").has(original), "original config request is replayed verbatim")
+	_check(restarted.snapshot()["config"]["configVersion"] == "current", "past recovery cannot overwrite current assignments")
+	restarted.free()
+
+
+func _test_overlapping_config_sessions() -> void:
+	var transport := RecoveryTransport.new()
+	transport.hold_config = true
+	var client := _recovery_client(MemoryStore.new(), transport, "old")
+	client.start()
+	client.tracker.track_ad("banner", "banner", 0.1, "USD")
+	client.new_session("new")
+	_check(client.tracker.current_session_id() == "new", "foreground switches session while old config is in flight")
+	client.tracker.track_ad("banner", "banner", 0.2, "USD")
+	transport.hold_config = false
+	transport.released.emit()
+	client._process(61.0)
+	await client.tracker.flush()
+	var sent: Array = []
+	for batch: Dictionary in transport.bodies_for("/v1/events/batch"):
+		sent.append_array(batch["events"])
+	_check(sent.size() == 2, "overlapping session config responses retain both events")
+	for event: Dictionary in sent:
+		_check(event["contextId"] == "context-" + event["sessionId"], "overlapping config binds only its originating session")
+	_check(client.snapshot().get("config", {}).get("configVersion", "") == "new", "overlapping response publishes only current config")
+	client.free()
+
+
+func _test_attribution_autonomous_retry() -> void:
+	var transport := RecoveryTransport.new()
+	var client := _recovery_client(MemoryStore.new(), transport, "attribution")
+	await client.start()
+	transport.attribution_ok = false
+	var failed: Dictionary = await client.set_attribution("adjust", {"network": "paid"}, {
+		"attributed_at": "2026-10-05T01:02:03.000Z",
+	})
+	_check(not failed.get("ok", true), "queued attribution returns actual network failure")
+	var original: Dictionary = transport.bodies_for("/v1/attribution")[0]
+	client._process(0.1)
+	_check(transport.bodies_for("/v1/attribution").size() == 1, "attribution recovery respects backoff")
+	transport.attribution_ok = true
+	client._process(61.0)
+	var bodies := transport.bodies_for("/v1/attribution")
+	_check(bodies.size() == 2 and bodies.back() == original, "autonomous attribution retry preserves exact occurrence and identity")
+	client._process(61.0)
+	_check(transport.bodies_for("/v1/attribution").size() == 2, "acknowledged attribution is not retried again")
+	client.free()
+
+
+func _test_attribution_consent_and_restart() -> void:
+	var storage := MemoryStore.new()
+	var transport := RecoveryTransport.new()
+	var client := _recovery_client(storage, transport, "original")
+	await client.start()
+	transport.attribution_ok = false
+	await client.set_attribution("adjust", {"network": "paid"})
+	var original: Dictionary = transport.bodies_for("/v1/attribution")[0]
+	client.free()
+	var recovered := RecoveryTransport.new()
+	var restarted := _make_client({
+		"storage": storage, "transport": recovered, "session_id": "restart",
+		"json_decoder": ImmediateDecoder.new(), "logger": null, "platform": "android",
+		"attribution_allowed": false,
+	})
+	restarted.set_process(false)
+	await restarted.start()
+	restarted._process(61.0)
+	_check(recovered.bodies_for("/v1/attribution").is_empty(), "configured attribution pause prevents restored uploads")
+	if not restarted.has_method("set_attribution_allowed"):
+		_check(false, "attribution pause and revoke API exists")
+		restarted.free()
+		return
+	var blocked: Dictionary = await restarted.set_attribution("adjust", {"network": "unauthorized"})
+	_check(not blocked.get("ok", true), "pause refuses new attribution collection")
+	restarted.set_attribution_allowed(true)
+	restarted._process(61.0)
+	_check(recovered.bodies_for("/v1/attribution") == [original], "resume recovers durable authorized attribution with original identity")
+	recovered.attribution_ok = false
+	await restarted.set_attribution("adjust", {"network": "revoke-me"})
+	restarted.set_attribution_allowed(false, true)
+	recovered.attribution_ok = true
+	restarted.set_attribution_allowed(true)
+	restarted._process(61.0)
+	_check(recovered.bodies_for("/v1/attribution").size() == 2, "explicit denial discards pending data before regrant")
+	_check(restarted.tracker.track("level_start", {}), "advertising consent changes leave basic events enabled")
+	restarted.free()
+
+
+func _test_attribution_newer_value_race() -> void:
+	var transport := RecoveryTransport.new()
+	var client := _recovery_client(MemoryStore.new(), transport, "race")
+	await client.start()
+	transport.hold_attribution = true
+	client.set_attribution("adjust", {"network": "old"})
+	var queued: Dictionary = await client.set_attribution("adjust", {"network": "new"})
+	_check(not queued.get("ok", true), "new value queued behind inflight request is not claimed accepted")
+	transport.hold_attribution = false
+	transport.released.emit()
+	client._process(61.0)
+	var bodies := transport.bodies_for("/v1/attribution")
+	_check(bodies.size() == 2, "stale attribution acknowledgement cannot clear newer pending value")
+	if bodies.size() == 2:
+		_check(bodies[0]["attribution"]["network"] == "old" and bodies[1]["attribution"]["network"] == "new", "provider values upload in occurrence order")
+	client._process(61.0)
+	_check(transport.bodies_for("/v1/attribution").size() == 2, "latest value acknowledged exactly once")
+	client.free()
+
+
+func _test_attribution_pause_inflight() -> void:
+	var transport := RecoveryTransport.new()
+	var client := _recovery_client(MemoryStore.new(), transport, "pause")
+	await client.start()
+	transport.hold_attribution = true
+	client.set_attribution("adjust", {"network": "authorized"})
+	client.set_attribution_allowed(false)
+	transport.hold_attribution = false
+	transport.released.emit()
+	client._process(61.0)
+	_check(transport.bodies_for("/v1/attribution").size() == 1, "paused in-flight completion cannot trigger a retry")
+	client.set_attribution_allowed(true)
+	client._process(61.0)
+	var bodies := transport.bodies_for("/v1/attribution")
+	_check(bodies.size() == 2 and bodies[0] == bodies[1], "pause retains the original authorized body across an in-flight completion")
+	client.free()
+
+
+func _test_attribution_revoke_inflight() -> void:
+	var transport := RecoveryTransport.new()
+	var client := _recovery_client(MemoryStore.new(), transport, "revoke")
+	await client.start()
+	if not client.has_method("set_attribution_allowed"):
+		client.free()
+		return
+	transport.hold_attribution = true
+	client.set_attribution("adjust", {"network": "old"})
+	client.set_attribution_allowed(false, true)
+	client.set_attribution_allowed(true)
+	var newer: Dictionary = await client.set_attribution("adjust", {"network": "new"})
+	_check(not newer.get("ok", true), "regrant waits for prior provider request to settle")
+	transport.hold_attribution = false
+	transport.released.emit()
+	client._process(61.0)
+	var bodies := transport.bodies_for("/v1/attribution")
+	_check(bodies.size() == 2 and bodies.back()["attribution"]["network"] == "new", "pre-denial response cannot erase regranted attribution")
 	client.free()
 
 

@@ -78,6 +78,10 @@ await client.tracker.flush()
 
 事件入队时即固定 `eventId`、UTC `timestamp`、本地 `createdLocalAt` 和当前 `sessionId`，延迟上传或重试不会改写发生时间。默认每批最多 100 条、每 30 秒 flush 一次。
 
+前台会话切换调用 `await client.new_session()`。配置请求失败时，`start()` / `new_session()` / `refresh()` 返回实际失败；SDK 在后续 `_process` 中按 1、2、4、8、16、32、60 秒退避自动重试，之后间隔最多 60 秒，不阻塞游戏。未取得 context 的事件立即持久化，并跨后续会话与重启保留。恢复使用原会话保存的 `/v1/config` 请求原文（包括 `sessionId`、`createdLocalAt`、平台、版本和设备信息），只给该会话的未绑定事件补上服务端返回的真实 context。历史响应不会发布为当前会话的实验分组。已绑定的事件可以先上传，不被未绑定的旧事件阻塞。
+
+恢复仍受配置的事件队列上限约束；存储适配器返回写入失败时只能保留内存状态并记录日志，无法保证进程退出后的恢复。
+
 国内游戏的广告和付费事件统一使用 `CNY`，不要默认 `USD`。
 
 ### Milestone 去重
@@ -89,7 +93,7 @@ client.tracker.track_milestone("new_user", "进入第一关")
 不要使用 `track_event("milestone", ...)`；它是自定义事件入口，会实际发送
 `_milestone`，标准里程碑漏斗不会读取它。
 
-同一个 `milestoneType` + `milestonePoint` 组合只会上报一次，重复调用返回 `false`。已绑定 context 的里程碑会持久化，重启后不会再报；还没拿到 context 时到达的里程碑先记在本次 session，事件绑定 context 后转为持久，切换 session 则随未绑定事件一起释放。调试和正式构建的记录互相隔离。
+同一个 `milestoneType` + `milestonePoint` 组合只会上报一次，重复调用返回 `false`。已绑定 context 的里程碑会持久化，重启后不会再报；还没拿到 context 时到达的里程碑随未绑定事件持久化，切换 session 和重启后继续去重，事件绑定 context 后转为已到达记录。调试和正式构建的记录互相隔离。
 
 `elapsedSinceRegistrationMs` 由 SDK 依据持久化的注册时间计算并覆写，接入方传入的值会被丢弃。两个字段缺任意一个时不做去重，事件照常上报。
 
@@ -97,7 +101,7 @@ client.tracker.track_milestone("new_user", "进入第一关")
 
 自定义事件有固定的本地配额：单 `context × eventType` 1,000 条、单 context 合计 5,000 条、单 context 最多 100 种。达到阈值后 `track` 返回 `false`、事件不入队，并异步采样上报一条 SDK 诊断。标准语义事件（`level_start`、`level_end`、`ad_view`、`purchase`、`session_end`、`milestone`）不占用这组配额。
 
-不要重试或改名绕过拒绝。配置还没返回 context 时产生的事件先记在本次 session 的暂挂额度上，context 到达后连同事件一起并入该 context；切换 session 会丢弃未绑定 context 的事件，对应的暂挂额度也一起释放。
+不要重试或改名绕过拒绝。配置还没返回 context 时产生的事件先记在本次 session 的暂挂额度上，context 到达后连同事件一起并入该 context；切换 session 后，旧事件和暂挂额度保留等待旧会话自己的 context，新会话使用独立的暂挂额度。
 
 ## 归因
 
@@ -111,7 +115,21 @@ await client.set_attribution("adjust", {
 })
 ```
 
-SDK 会自动带上 `platform`，计算并保存服务端返回的 `attributionHash`。同一份归因成功 ack 后不会重复上传；归因变化或上次失败时会重试。接入方不需要自己维护重试状态或 hash。
+SDK 会自动带上 `platform`，计算并保存服务端确认的 `attributionHash`。同一份归因成功 ack 后不会重复上传。每个 provider 的最新待发送归因先持久化；网络失败后按 1–60 秒退避自动重试，重启后继续。未提供 `attributed_at` 时记录首次回调的时间，重试保留原始归因内容、hash、时间、用户与会话。一个 provider 同时最多一个请求在途，旧回包不能删除较新的待发送归因。接入方不需要自己维护重试状态或 hash。
+
+`set_attribution()` 的 `ok` 表示实际上传／已确认去重的结果。网络失败、等待 context 或排队等待同 provider 的在途请求时返回 `ok: false`，不把入队当成服务端成功。后台重试不会改写公开的 `last_error`。
+
+广告归因有独立的授权开关，不改变基础事件的 `measurement_allowed`：
+
+```gdscript
+# 授权未确定时，在 configure 选项中设 attribution_allowed = false。
+# 默认 true 是为了兼容既有接入；应用应显式传入自己的授权状态。
+client.set_attribution_allowed(false)        # 暂停，保留此前已获授权的待发送归因
+client.set_attribution_allowed(false, true)  # 明确撤回，清除待发送归因和 ack hash
+client.set_attribution_allowed(true)         # 允许，恢复后台重试
+```
+
+暂停期间新的 `set_attribution()` 返回 `attribution_paused`，不会采集新数据。已交给 HTTP transport 的请求无法撤回，但它的回包不能修改暂停／撤回后的状态。撤回清理失败时该方法返回 `false` 并保持禁用，清理完成前不会恢复发送。
 
 Adjust 的 `organic` / `unknown` 在 `network`、`tracker_name`、`tracker_token` 上有多种拼法，SDK 会折叠成统一的 `status`，避免它们被当成真实渠道。
 
@@ -125,9 +143,9 @@ await client.set_idfa(idfa)
 await client.set_idfv(idfv)
 ```
 
-**iOS 上 IDFV 会自动上报一次**，和 iOS SDK 行为一致：启动拉完配置后，SDK 取 `OS.get_unique_id()`（在 iOS 上就是 `identifierForVendor`）上报一次，失败只记日志、不影响启动。IDFV 不需要 ATT 授权，所以不受 `measurement_allowed` 约束——那个开关管的是事件，`set_attribution` 和其他标识 setter 同样不受它约束，iOS SDK 也是无条件上报。
+**iOS 上 IDFV 会自动上报一次**，和 iOS SDK 行为一致：启动拉完配置后，SDK 取 `OS.get_unique_id()`（在 iOS 上就是 `identifierForVendor`）上报一次，失败只记日志、不影响启动。IDFV 不需要 ATT 授权，所以不受 `measurement_allowed` 约束——那个开关管的是事件，`set_attribution` 由独立的 `attribution_allowed` 控制，其他标识 setter 不受这两个开关约束，iOS SDK 的 IDFV 也是无条件上报。
 
-Android 和桌面没有 IDFV，不会触发。其余标识仍需游戏在拿到值后手动调用。
+Android 和桌面没有 IDFV，不会触发。其余标识仍需游戏在拿到值后手动调用。标识 setter 的失败重试仍由接入方负责，不进入上述归因重试队列。
 
 这些调用需要 context 已就绪，会自动关联当前 `contextId` 和 GameAlgo `userId`。用户撤回授权或标识不可用时传 `null`，服务端会记录清除操作；全零的 GAID / IDFA 会被自动识别为清除。只在取得用户授权且符合应用隐私政策时采集这些标识。
 
@@ -190,7 +208,9 @@ func save_json(key: String, value: Variant) -> bool
 func remove(key: String) -> bool
 ```
 
-SDK 用它持久化匿名身份、配置快照、脚本缓存和未上传的事件队列。连续 3 次上传失败后整个未发送队列会落盘，下次启动自动恢复，服务端 ACK 后删除。
+SDK 用它持久化匿名身份、配置快照、脚本缓存、原始会话配置请求、归因待发送队列及 ack hash、未上传的事件队列。未绑定 context 的事件立即落盘；已绑定事件仍在连续 3 次上传失败后落盘，应用暂停或关闭通知也会保存队列。下次启动自动恢复，服务端 ACK 后删除。
+
+`measurement_allowed: false, measurement_resolved: false` 表示事件授权未确定，保留已存事件及其历史配置请求但不恢复发送；显式 `set_measurement_allowed(false)` 才会清除事件。广告归因的暂停和撤回使用上面的独立 API。
 
 ## 脚本型策略失败关闭
 

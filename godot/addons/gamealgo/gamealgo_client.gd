@@ -63,6 +63,16 @@ var _prepared_script_hashes: Dictionary = {}
 ## A Callable taking one String, or null to silence the SDK.
 var _logger: Variant = null
 var _reported_idfv := false
+# Original config request envelopes survive session changes and process death.
+var _pending_configs: Dictionary = {}
+var _recovered_contexts: Dictionary = {}
+var _config_recovery_enabled := false
+var _retry_states: Dictionary = {}
+var _pending_attributions: Dictionary = {}
+var _attribution_inflight: Dictionary = {}
+var _attribution_allowed := true
+var _attribution_generation := 0
+var _attribution_clear_required := false
 
 
 func configure(options: Dictionary) -> bool:
@@ -87,6 +97,7 @@ func configure(options: Dictionary) -> bool:
 		return false
 	var device_value: Variant = options.get("device", {})
 	var measurement_value: Variant = options.get("measurement_allowed", false)
+	var attribution_value: Variant = options.get("attribution_allowed", true)
 	var measurement_resolved_value: Variant = options.get("measurement_resolved", true)
 	if not device_value is Dictionary or not GameAlgoUtil.valid_json_value(device_value):
 		last_error = "invalid_device"
@@ -94,6 +105,9 @@ func configure(options: Dictionary) -> bool:
 	var preload_value: Variant = options.get("preload_config_files", DEFAULT_PRELOAD)
 	if not _valid_preload(preload_value):
 		last_error = "invalid_preload_config_files"
+		return false
+	if not attribution_value is bool:
+		last_error = "invalid_attribution_allowed"
 		return false
 	if not measurement_value is bool or not measurement_resolved_value is bool \
 			or (bool(measurement_value) and not bool(measurement_resolved_value)):
@@ -182,6 +196,11 @@ func configure(options: Dictionary) -> bool:
 	if not tracker_configured:
 		last_error = "event_storage_cleanup_failed"
 		return false
+	_attribution_allowed = bool(attribution_value)
+	if not _restore_pending_requests():
+		last_error = "pending_request_storage_read_failed"
+		return false
+	_remember_config_request()
 	last_error = ""
 	status = "configured"
 	set_process(true)
@@ -209,7 +228,11 @@ func start() -> bool:
 		_ready = true
 		status = "ready_cached"
 		sdk_ready.emit(true)
+	var startup_session := tracker.current_session_id()
 	var refreshed := await refresh(true)
+	if startup_session != tracker.current_session_id():
+		_finish_startup(false)
+		return false
 	_report_identifier_for_vendor()
 	if refreshed:
 		if not _ready or not used_cache:
@@ -262,44 +285,60 @@ func refresh(force_refresh: bool = false) -> bool:
 	if status == "unconfigured":
 		last_error = "not_configured"
 		return false
-	if _refreshing:
-		last_error = "refresh_in_progress"
-		return false
+	_config_recovery_enabled = true
 	var request_body := _config_request()
-	var fingerprint_body := request_body.duplicate(true)
-	fingerprint_body.erase("createdLocalAt")
-	var fingerprint := GameAlgoUtil.sha256_text(GameAlgoUtil.canonical_json(fingerprint_body))
+	var fingerprint := _config_fingerprint(request_body)
 	if not force_refresh and fingerprint == _cached_request_fingerprint \
 			and _cached_expiry_unix > Time.get_unix_time_from_system() \
 			and _snapshot.get("config", null) is Dictionary:
 		last_error = ""
 		_log("config cache hit: %s" % String(_snapshot["config"].get("configVersion", "")))
 		return true
+	_remember_config_request()
+	if _refreshing:
+		last_error = "refresh_in_progress"
+		return false
+	return await _fetch_pending_config(tracker.current_session_id())
+
+
+func _config_fingerprint(body: Dictionary) -> String:
+	var fingerprint_body := body.duplicate(true)
+	fingerprint_body.erase("createdLocalAt")
+	return GameAlgoUtil.sha256_text(GameAlgoUtil.canonical_json(fingerprint_body))
+
+
+func _remember_config_request() -> void:
+	var session := tracker.current_session_id()
+	if not _pending_configs.has(session):
+		_pending_configs[session] = _config_request()
+		_persist_request_queue("config_requests_", _pending_configs)
+
+
+func _fetch_pending_config(session: String) -> bool:
 	_refreshing = true
-	status = "refreshing"
-	var request_session_id := tracker.current_session_id()
+	var request_body: Dictionary = _pending_configs[session].duplicate(true)
+	if session == tracker.current_session_id():
+		status = "refreshing"
 	_log("fetching config: userId=%s, platform=%s" % [_identity["userId"], _platform])
 	var response := await _request_json("POST", "/v1/config", request_body)
-	_refreshing = false
-	if request_session_id != tracker.current_session_id():
-		last_error = "stale_config_response"
-		request_failed.emit(last_error)
-		return false
-	if not response.get("ok", null) is bool or not response["ok"]:
-		last_error = String(response.get("error", "config_request_failed"))
-		request_failed.emit(last_error)
-		status = "degraded" if _snapshot.get("config", null) is Dictionary else "failed"
-		_log("config fetch failed%s: %s" % [
-			", using cached config" if status == "degraded" else "", last_error
-		])
-		return false
-	var config := _normalize_config(response.get("value", null))
+	var config := _normalize_config(response.get("value", null)) if bool(response.get("ok", false)) else {}
 	if config.is_empty():
-		last_error = "invalid_config_response"
-		_log("config fetch failed: invalid_config_response")
-		request_failed.emit(last_error)
-		status = "degraded" if _snapshot.get("config", null) is Dictionary else "failed"
+		_schedule_retry("config:" + session)
+		_refreshing = false
+		var error := String(response.get("error", "invalid_config_response"))
+		if session == tracker.current_session_id():
+			last_error = error
+			status = "degraded" if _snapshot.get("config", null) is Dictionary else "failed"
+		request_failed.emit(error)
+		_log("config fetch failed: " + error)
 		return false
+	# A historical response supplies ownership for its retained events only.
+	_recovered_contexts[session] = String(config["contextId"])
+	if not _bind_pending_config(session):
+		_schedule_retry("config:" + session)
+	if session != tracker.current_session_id():
+		_refreshing = false
+		return true
 	_generation += 1
 	_snapshot = {
 		"schemaVersion": 1,
@@ -312,34 +351,59 @@ func refresh(force_refresh: bool = false) -> bool:
 		String(config["configVersion"]), (config["experiments"] as Array).size(),
 		(config["configFiles"] as Array).size(), int(config["ttlSeconds"])
 	])
-	_cached_request_fingerprint = fingerprint
+	_cached_request_fingerprint = _config_fingerprint(request_body)
 	_cached_expiry_unix = Time.get_unix_time_from_system() + maxf(float(config["ttlSeconds"]), 0.0)
-	tracker.set_context_id(String(config["contextId"]))
 	var snapshot_saved := _persist_snapshot()
 	_prepared_script_hashes.clear()
 	var preload_ok := await _preload_config(config)
+	_refreshing = false
+	# new_session() may run while config files are loading. Do not publish stale
+	# assignments or ready signals into that new session.
+	if session != tracker.current_session_id():
+		return true
 	_publish_snapshot_assignments()
 	for raw_assignment: Variant in config["experiments"]:
 		_log("assignment: %s -> %s" % [
 			String(raw_assignment.get("key", "")), String(raw_assignment.get("variant", ""))
 		])
+	var became_ready := not _ready
 	_ready = true
 	status = "ready" if preload_ok and snapshot_saved else "degraded"
 	last_error = "" if preload_ok and snapshot_saved \
-			else ("snapshot_persistence_failed" if not snapshot_saved else "preload_failed")
+		else ("snapshot_persistence_failed" if not snapshot_saved else "preload_failed")
 	config_refreshed.emit(config.duplicate(true))
+	if _startup_finished:
+		_startup_success = true
+		if became_ready:
+			sdk_ready.emit(false)
+	return true
+
+
+func _bind_pending_config(session: String) -> bool:
+	var context_id := String(_recovered_contexts[session])
+	var events_saved := tracker.bind_session_context(session, context_id)
+	for provider: String in _pending_attributions:
+		var body: Dictionary = _pending_attributions[provider]
+		if String(body["sessionId"]) == session and String(body.get("contextId", "")).is_empty():
+			body["contextId"] = context_id
+	var attribution_saved := _persist_request_queue("pending_attribution_", _pending_attributions)
+	if not events_saved or not attribution_saved or not tracker.measurement_resolved():
+		return false
+	_pending_configs.erase(session)
+	_recovered_contexts.erase(session)
+	_retry_states.erase("config:" + session)
+	_persist_request_queue("config_requests_", _pending_configs)
 	return true
 
 
 func new_session(session_id: String = "") -> bool:
-	while _refreshing and status != "unconfigured":
-		await get_tree().process_frame
 	if status == "unconfigured":
 		last_error = "not_configured"
 		return false
 	tracker.new_session(session_id)
 	_cached_request_fingerprint = ""
 	_cached_expiry_unix = 0.0
+	_remember_config_request()
 	return await refresh(true)
 
 
@@ -440,16 +504,49 @@ func upload_events(events: Array[Dictionary]) -> Dictionary:
 func set_attribution(
 	provider: String, attribution: Dictionary, options: Dictionary = {}
 ) -> Dictionary:
+	var result := await _queue_attribution(provider, attribution, options)
+	last_error = "" if bool(result.get("ok", false)) else String(result.get("error", ""))
+	return result
+
+
+## Advertising attribution is independent of event measurement. Pausing keeps
+## already authorized data; explicit revocation also clears pending and ack data.
+## An HTTP request already handed to the transport cannot be recalled, but its
+## response cannot mutate a later consent generation.
+func set_attribution_allowed(allowed: bool, clear_pending: bool = false) -> bool:
+	if status == "unconfigured":
+		return false
+	if allowed and clear_pending:
+		return false
+	if _attribution_allowed != allowed or clear_pending:
+		_attribution_generation += 1
+	_attribution_allowed = false
+	if clear_pending:
+		_attribution_clear_required = true
+		_pending_attributions.clear()
+		for key: String in _retry_states.keys():
+			if key.begins_with("attribution:"):
+				_retry_states.erase(key)
+	if _attribution_clear_required:
+		var pending_cleared := _persist_request_queue("pending_attribution_", {})
+		var acks_cleared := _persist_request_queue("attribution_", {})
+		if not pending_cleared or not acks_cleared:
+			return false
+		_attribution_clear_required = false
+	_attribution_allowed = allowed
+	return true
+
+
+func _queue_attribution(provider: String, attribution: Dictionary, options: Dictionary) -> Dictionary:
 	var clean_provider := GameAlgoUtil.clean(provider)
 	if clean_provider.is_empty():
-		last_error = "invalid_attribution_provider"
-		return {"ok": false, "accepted": 0, "error": last_error}
+		return {"ok": false, "accepted": 0, "error": "invalid_attribution_provider"}
 	if status == "unconfigured":
-		last_error = "not_configured"
-		return {"ok": false, "accepted": 0, "error": last_error}
+		return {"ok": false, "accepted": 0, "error": "not_configured"}
+	if not _attribution_allowed:
+		return {"ok": false, "accepted": 0, "error": "attribution_paused"}
 	if not GameAlgoUtil.valid_json_value(attribution):
-		last_error = "invalid_attribution"
-		return {"ok": false, "accepted": 0, "error": last_error}
+		return {"ok": false, "accepted": 0, "error": "invalid_attribution"}
 	var payload := attribution.duplicate(true)
 	var status_value := GameAlgoUtil.attribution_status(
 		clean_provider, GameAlgoUtil.clean(options.get("status", "")), payload
@@ -458,50 +555,68 @@ func set_attribution(
 	var hash_value := GameAlgoUtil.clean(options.get("attribution_hash", ""))
 	if hash_value.is_empty():
 		hash_value = GameAlgoUtil.sha256_text(GameAlgoUtil.canonical_json({
-			"platform": _platform,
-			"provider": clean_provider,
-			"status": status_value,
-			"attribution": payload,
-			"attributedAt": attributed_at,
+			"platform": _platform, "provider": clean_provider, "status": status_value,
+			"attribution": payload, "attributedAt": attributed_at,
 		}))
 	var acknowledged := _attribution_acks()
-	if String(acknowledged.get(clean_provider, "")) == hash_value:
-		last_error = ""
-		_log("attribution already synced: provider=%s" % clean_provider)
+	if not _pending_attributions.has(clean_provider) and not _attribution_inflight.has(clean_provider) \
+			and String(acknowledged.get(clean_provider, "")) == hash_value:
 		return {"ok": true, "accepted": 0, "attributionHash": hash_value}
+	# An unchanged callback keeps its original occurrence and session. A newer
+	# callback replaces only the pending slot, never the in-flight request.
+	if String(_pending_attributions.get(clean_provider, {}).get("attributionHash", "")) != hash_value:
+		_pending_attributions[clean_provider] = {
+			"userId": _identity["userId"], "userCreatedAt": _identity["userCreatedAt"],
+			"sessionId": tracker.current_session_id(), "contextId": _context_id(),
+			"platform": _platform, "provider": clean_provider, "status": status_value,
+			"attribution": payload,
+			"attributedAt": attributed_at if not attributed_at.is_empty() else GameAlgoUtil.utc_timestamp(),
+			"attributionHash": hash_value,
+		}
+		_retry_states.erase("attribution:" + clean_provider)
+	if not _persist_request_queue("pending_attribution_", _pending_attributions):
+		_schedule_retry("attribution:" + clean_provider)
+		return {"ok": false, "accepted": 0, "error": "attribution_persistence_failed"}
+	if _attribution_inflight.has(clean_provider):
+		return {"ok": false, "accepted": 0, "error": "attribution_in_progress"}
+	return await _send_pending_attribution(clean_provider)
 
-	var body := {
-		"userId": _identity["userId"],
-		"userCreatedAt": _identity["userCreatedAt"],
-		"sessionId": tracker.current_session_id(),
-		"contextId": _context_id(),
-		"platform": _platform,
-		"provider": clean_provider,
-		"status": status_value,
-		"attribution": payload,
-		"attributedAt": attributed_at if not attributed_at.is_empty() else null,
-		"attributionHash": hash_value,
-	}
+
+func _send_pending_attribution(provider: String) -> Dictionary:
+	if not _attribution_allowed:
+		return {"ok": false, "accepted": 0, "error": "attribution_paused"}
+	var body: Dictionary = _pending_attributions[provider].duplicate(true)
+	if String(body.get("contextId", "")).is_empty():
+		_schedule_retry("attribution:" + provider)
+		return {"ok": false, "accepted": 0, "error": "context_not_ready"}
+	if not _persist_request_queue("pending_attribution_", _pending_attributions):
+		_schedule_retry("attribution:" + provider)
+		return {"ok": false, "accepted": 0, "error": "attribution_persistence_failed"}
+	var generation := _attribution_generation
+	_attribution_inflight[provider] = true
 	var response := await _request_json("POST", "/v1/attribution", body)
-	if not response.get("ok", null) is bool or not response["ok"] \
-			or not response.get("value", null) is Dictionary:
-		last_error = String(response.get("error", "attribution_failed"))
-		_log("attribution sync failed: provider=%s, error=%s" % [clean_provider, last_error])
-		return {"ok": false, "accepted": 0, "error": last_error}
-	var value := response["value"] as Dictionary
-	var acknowledged_hash := GameAlgoUtil.clean(value.get("attributionHash", ""))
-	if not acknowledged_hash.is_empty():
-		acknowledged[clean_provider] = acknowledged_hash
-		_store_attribution_acks(acknowledged)
-	last_error = ""
-	_log("attribution synced: provider=%s, accepted=%d" % [
-		clean_provider, int(value.get("accepted", 0))
-	])
-	return {
-		"ok": bool(value.get("ok", false)),
-		"accepted": int(value.get("accepted", 0)),
-		"attributionHash": acknowledged_hash,
-	}
+	_attribution_inflight.erase(provider)
+	if not _attribution_allowed or generation != _attribution_generation:
+		return {"ok": false, "accepted": 0, "error": "attribution_consent_changed"}
+	var value: Variant = response.get("value", null)
+	if not bool(response.get("ok", false)) or not value is Dictionary \
+			or not value.get("ok", null) is bool or not value["ok"] or not _integer_value(value.get("accepted", null), 0, 1) \
+			or String(value.get("attributionHash", "")) != String(body["attributionHash"]):
+		_schedule_retry("attribution:" + provider)
+		var error := String(response.get("error", "invalid_attribution_response"))
+		_log("attribution sync failed: provider=%s, error=%s" % [provider, error])
+		return {"ok": false, "accepted": 0, "error": error}
+	var acknowledged := _attribution_acks()
+	acknowledged[provider] = String(body["attributionHash"])
+	if not _store_attribution_acks(acknowledged):
+		_schedule_retry("attribution:" + provider)
+		return {"ok": false, "accepted": int(value["accepted"]), "error": "attribution_ack_persistence_failed"}
+	if _pending_attributions.get(provider, {}) == body:
+		_pending_attributions.erase(provider)
+		_persist_request_queue("pending_attribution_", _pending_attributions)
+	_retry_states.erase("attribution:" + provider)
+	_log("attribution synced: provider=%s, accepted=%d" % [provider, int(value["accepted"])])
+	return {"ok": true, "accepted": int(value["accepted"]), "attributionHash": body["attributionHash"]}
 
 
 func set_adjust_adid(value: Variant, observed_at: String = "") -> Dictionary:
@@ -586,12 +701,93 @@ func execute_assignment_script(assignment: Dictionary, state: Variant) -> Dictio
 	}
 
 
+func _restore_pending_requests() -> bool:
+	for prefix: String in ["config_requests_", "pending_attribution_"]:
+		var loaded := _load_json_result(prefix + _namespace)
+		if loaded["status"] == GameAlgoJsonStore.STATUS_MISSING:
+			continue
+		var value: Variant = loaded.get("value", null)
+		if loaded["status"] != GameAlgoJsonStore.STATUS_LOADED or not value is Dictionary:
+			return false
+		for key: Variant in value:
+			var body: Variant = value[key]
+			if not key is String or not body is Dictionary or not GameAlgoUtil.valid_json_value(body) \
+					or String(body.get("userId", "")) != String(_identity["userId"]) \
+					or GameAlgoUtil.clean(body.get("sessionId", "")).is_empty():
+				return false
+			if prefix == "config_requests_" and String(key) != String(body["sessionId"]):
+				return false
+			if prefix == "pending_attribution_" and (String(key) != String(body.get("provider", "")) \
+					or GameAlgoUtil.clean(body.get("attributionHash", "")).is_empty()):
+				return false
+		if prefix == "config_requests_":
+			_pending_configs = value.duplicate(true)
+		else:
+			_pending_attributions = value.duplicate(true)
+	return true
+
+
+func _persist_request_queue(prefix: String, queue: Dictionary) -> bool:
+	var result: Variant = _storage.call("remove", prefix + _namespace) if queue.is_empty() \
+		else _storage.call("save_json", prefix + _namespace, queue)
+	return result is bool and bool(result)
+
+
+func _schedule_retry(key: String) -> void:
+	var attempt := mini(int(_retry_states.get(key, {}).get("attempt", 0)) + 1, 7)
+	_retry_states[key] = {"attempt": attempt, "remaining": minf(pow(2.0, attempt - 1), 60.0)}
+
+
+func _retry_ready(key: String) -> bool:
+	return float(_retry_states.get(key, {}).get("remaining", 0.0)) <= 0.0
+
+
+func _tick_pending_requests(delta: float) -> void:
+	for state: Dictionary in _retry_states.values():
+		state["remaining"] = maxf(float(state["remaining"]) - maxf(delta, 0.0), 0.0)
+	if _config_recovery_enabled and not _refreshing:
+		for session: String in _pending_configs.keys():
+			# An unresolved measurement decision leaves events on disk, outside
+			# the in-memory tracker. Retain their ownership requests until grant.
+			if not tracker.measurement_resolved() and session != tracker.current_session_id() \
+					and not _attribution_needs_context(session):
+				continue
+			if _recovered_contexts.has(session):
+				if _retry_ready("config:" + session) and not _bind_pending_config(session):
+					_schedule_retry("config:" + session)
+				continue
+			if session != tracker.current_session_id() and not tracker.has_unbound_session(session) \
+					and not _attribution_needs_context(session):
+				if not tracker.persist_pending():
+					continue
+				_pending_configs.erase(session)
+				_retry_states.erase("config:" + session)
+				_persist_request_queue("config_requests_", _pending_configs)
+				continue
+			if _retry_ready("config:" + session):
+				_fetch_pending_config(session)
+				break
+	if _attribution_allowed:
+		for provider: String in _pending_attributions.keys():
+			if not _attribution_inflight.has(provider) and _retry_ready("attribution:" + provider):
+				_send_pending_attribution(provider)
+
+
+func _attribution_needs_context(session: String) -> bool:
+	for body: Dictionary in _pending_attributions.values():
+		if String(body["sessionId"]) == session and String(body.get("contextId", "")).is_empty():
+			return true
+	return false
+
+
 func _process(delta: float) -> void:
+	_tick_pending_requests(delta)
 	tracker.tick(delta)
 
 
 func _notification(what: int) -> void:
 	if what in [NOTIFICATION_APPLICATION_PAUSED, NOTIFICATION_WM_CLOSE_REQUEST]:
+		tracker.persist_pending()
 		tracker.flush()
 
 
@@ -722,8 +918,8 @@ func _attribution_acks() -> Dictionary:
 	return (value as Dictionary).duplicate(true) if value is Dictionary else {}
 
 
-func _store_attribution_acks(acknowledged: Dictionary) -> void:
-	_storage.call("save_json", "attribution_" + _namespace, acknowledged)
+func _store_attribution_acks(acknowledged: Dictionary) -> bool:
+	return _persist_request_queue("attribution_", acknowledged)
 
 
 ## Maps one advertising or analytics identifier onto the current context. The

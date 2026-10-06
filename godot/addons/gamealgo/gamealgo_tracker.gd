@@ -53,7 +53,7 @@ var _milestone_storage_key := ""
 ## Milestones already bound to a context. Persisted, so a reinstall-free restart
 ## does not report the same milestone twice.
 var _reached_milestone_keys: Dictionary = {}
-## Milestones reached before a context existed. Dropped with the session.
+## Milestones retained while their original session is waiting for a context.
 var _pending_milestone_keys: Dictionary = {}
 
 
@@ -107,6 +107,7 @@ func set_measurement_allowed(allowed: bool) -> bool:
 		_retry_batch.clear()
 		_queue.clear()
 		_inflight_batch.clear()
+		_pending_milestone_keys.clear()
 		return _clear_persisted()
 	if _measurement_allowed == allowed:
 		return true if allowed else _clear_persisted()
@@ -119,6 +120,7 @@ func set_measurement_allowed(allowed: bool) -> bool:
 		_measurement_allowed = true
 		return true
 	_measurement_allowed = false
+	_pending_milestone_keys.clear()
 	_retry_batch.clear()
 	_queue.clear()
 	_inflight_batch.clear()
@@ -127,6 +129,10 @@ func set_measurement_allowed(allowed: bool) -> bool:
 
 func measurement_allowed() -> bool:
 	return _measurement_allowed
+
+
+func measurement_resolved() -> bool:
+	return _measurement_resolved
 
 
 func identify(options: Dictionary) -> void:
@@ -151,19 +157,6 @@ func identify(options: Dictionary) -> void:
 
 
 func new_session(session_id: String = "") -> void:
-	var previous := _session_id
-	_retry_batch = _retry_batch.filter(func(event: Dictionary) -> bool:
-		return not (String(event.get("contextId", "")).is_empty() \
-			and String(event.get("sessionId", "")) == previous)
-	)
-	_queue = _queue.filter(func(event: Dictionary) -> bool:
-		return not (String(event.get("contextId", "")).is_empty() \
-			and String(event.get("sessionId", "")) == previous)
-	)
-	# The previous session's unbound events were just discarded, so its pending
-	# quota usage goes with them. Usage already charged to a context stays.
-	_custom_counts.erase("pending:" + previous)
-	_pending_milestone_keys.clear()
 	_diagnostic_keys.clear()
 	_diagnostic_count = 0
 	_session_id = GameAlgoUtil.clean(session_id)
@@ -180,16 +173,31 @@ func current_session_id() -> String:
 
 
 func set_context_id(context_id: String) -> void:
-	var pending_key := "pending:" + _session_id
-	_context_id = GameAlgoUtil.clean(context_id)
-	if _context_id.is_empty():
-		return
-	_merge_custom_bucket(pending_key, "context:" + _context_id)
-	_bind_context(_retry_batch)
-	_bind_context(_queue)
-	_remember_bound_milestones(_context_id)
+	bind_session_context(_session_id, context_id)
+
+
+func bind_session_context(session_id: String, context_id: String) -> bool:
+	var normalized := GameAlgoUtil.clean(context_id)
+	if normalized.is_empty():
+		return false
+	if session_id == _session_id:
+		_context_id = normalized
+	_merge_custom_bucket("pending:" + session_id, "context:" + normalized)
+	_bind_context(_retry_batch, session_id, normalized)
+	_bind_context(_queue, session_id, normalized)
+	_remember_bound_milestones(normalized)
 	if _has_persisted_queue:
-		_persist_pending()
+		return _persist_pending()
+	return true
+
+
+func has_unbound_session(session_id: String) -> bool:
+	for events: Array[Dictionary] in [_retry_batch, _queue]:
+		for event: Dictionary in events:
+			if String(event.get("sessionId", "")) == session_id \
+					and String(event.get("contextId", "")).is_empty():
+				return true
+	return false
 
 
 func tick(delta: float) -> void:
@@ -233,6 +241,11 @@ func track(event_type: String, payload: Variant = {}) -> bool:
 		_remember_milestone(String(milestone["key"]), bool(milestone.get("durable", false)))
 	if _queue.size() > _queue_limit:
 		_queue = _queue.slice(_queue.size() - _queue_limit)
+	# Unbound events cannot upload yet. Persist them immediately, including their
+	# original event IDs and timestamps, so process death cannot erase revenue.
+	if _context_id.is_empty() or _has_persisted_queue:
+		if not _persist_pending():
+			_log("event persistence failed: pending=%d" % pending_count())
 	if _queue.size() >= _max_batch_size:
 		flush()
 	return true
@@ -257,7 +270,7 @@ func _prepare_milestone(payload: Dictionary, event_unix: float) -> Dictionary:
 	])
 	var durable := not _context_id.is_empty()
 	var seen: Dictionary = _reached_milestone_keys if durable else _pending_milestone_keys
-	return {"duplicate": seen.has(key), "key": key, "durable": durable}
+	return {"duplicate": seen.has(key) or _pending_milestone_keys.has(key), "key": key, "durable": durable}
 
 
 func _remember_milestone(key: String, durable: bool) -> void:
@@ -515,28 +528,18 @@ func flush() -> bool:
 		var pending: Array[Dictionary] = []
 		pending.append_array(_retry_batch)
 		pending.append_array(_queue)
-		var size := mini(_max_batch_size, pending.size())
-		var batch_source := pending.slice(0, size)
-		if _context_id.is_empty():
-			var has_unbound := batch_source.any(func(event: Dictionary) -> bool:
-				return String(event.get("contextId", "")).is_empty()
-			)
-			if has_unbound:
-				_retry_batch.clear()
-				_queue = pending
-				_is_flushing = false
-				return false
 		var batch: Array[Dictionary] = []
-		for index: int in range(size):
-			var event := pending[index].duplicate(true)
-			if String(event.get("contextId", "")).is_empty() \
-					and String(event.get("sessionId", "")) == _session_id:
-				event["contextId"] = _context_id
-			batch.append(event)
 		_queue.clear()
-		for index: int in range(size, pending.size()):
-			_queue.append(pending[index])
 		_retry_batch.clear()
+		for event: Dictionary in pending:
+			if not String(event.get("contextId", "")).is_empty() and batch.size() < _max_batch_size:
+				batch.append(event.duplicate(true))
+			else:
+				_queue.append(event)
+		if batch.is_empty():
+			_persist_pending()
+			_is_flushing = false
+			return false
 		_inflight_batch = batch.duplicate(true)
 		var response: Variant = await _client.call("upload_events", batch)
 		if not _measurement_allowed or consent_generation != _consent_generation:
@@ -583,12 +586,12 @@ func pending_events_for_testing() -> Array[Dictionary]:
 	return result
 
 
-func _bind_context(events: Array[Dictionary]) -> void:
+func _bind_context(events: Array[Dictionary], session_id: String, context_id: String) -> void:
 	for index: int in range(events.size()):
 		var event := events[index]
 		if String(event.get("contextId", "")).is_empty() \
-				and String(event.get("sessionId", "")) == _session_id:
-			event["contextId"] = _context_id
+				and String(event.get("sessionId", "")) == session_id:
+			event["contextId"] = context_id
 			events[index] = event
 
 
@@ -608,9 +611,15 @@ func _restore_queue() -> bool:
 		if not _valid_event(value):
 			continue
 		var event := value as Dictionary
-		if String(event["contextId"]).is_empty() and String(event["sessionId"]) != _session_id:
-			continue
 		_retry_batch.append(event.duplicate(true))
+		if String(event["eventType"]) == "milestone":
+			var payload: Dictionary = event["payload"]
+			var key := GameAlgoUtil.canonical_json([
+				"debug" if bool(event["isDebug"]) else "live", String(event["userId"]),
+				GameAlgoUtil.clean(payload.get("milestoneType", "")),
+				GameAlgoUtil.clean(payload.get("milestonePoint", "")),
+			])
+			_pending_milestone_keys[key] = true
 	_has_persisted_queue = not _retry_batch.is_empty()
 	if not _retry_batch.is_empty():
 		_log("restored %d persisted event(s)" % _retry_batch.size())
@@ -636,6 +645,8 @@ func _valid_event(value: Variant) -> bool:
 
 
 func persist_pending() -> bool:
+	if not _measurement_resolved:
+		return true
 	if not _measurement_allowed:
 		return _clear_persisted()
 	return _persist_pending()
