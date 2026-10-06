@@ -145,6 +145,8 @@ class RecoveryTransport:
 	var config_ok := true
 	var hold_config := false
 	var hold_attribution := false
+	var hold_events := false
+	var held_event_batches: Array = []
 
 	func send(spec: Dictionary) -> Dictionary:
 		var url := String(spec.get("url", ""))
@@ -162,6 +164,9 @@ class RecoveryTransport:
 				"ttlSeconds": 60, "serverTime": "2026-01-01T00:00:00.000Z",
 				"experiments": [], "configFiles": [],
 			})
+		if url.ends_with("/v1/events/batch") and hold_events:
+			held_event_batches.append(JSON.parse_string(String(spec["body"]))["events"])
+			await released
 		if url.ends_with("/v1/attribution") and hold_attribution:
 			await released
 		return await super.send(spec)
@@ -174,6 +179,19 @@ class FailingStore:
 
 	func save_json(key: String, value: Variant) -> bool:
 		if refuse_saves:
+			return false
+		return super.save_json(key, value)
+
+
+class ConfigSaveFailureStore:
+	extends MemoryStore
+
+	var failures_remaining := 1
+	var failing_prefix := "config_requests_"
+
+	func save_json(key: String, value: Variant) -> bool:
+		if key.begins_with(failing_prefix) and failures_remaining > 0:
+			failures_remaining -= 1
 			return false
 		return super.save_json(key, value)
 
@@ -203,6 +221,14 @@ func _run() -> void:
 	await _test_config_request_envelope()
 	await _test_event_envelope_and_batching()
 	await _test_queue_limit_drops_oldest_silently()
+	await _test_queue_limit_across_restarts()
+	await _test_queue_limit_restores_oversized_storage()
+	await _test_queue_limit_preserves_inflight()
+	await _test_queue_limit_mixed_sessions()
+	await _test_queue_restore_trim_storage_retry()
+	await _test_config_envelope_recovers_first_save_failure()
+	await _test_config_envelope_lifecycle_retries_save()
+	await _test_config_envelope_waits_for_attribution_save()
 	await _test_cross_origin_rejected()
 	await _test_executor_typed_reads()
 	await _test_script_runtime_fails_closed()
@@ -386,6 +412,199 @@ func _test_queue_limit_drops_oldest_silently() -> void:
 	var first_index := int(pending[0].get("payload", {}).get("index", -1)) if pending.size() > 0 else -1
 	_check(first_index == 6, "the oldest events are the ones discarded")
 	client.free()
+
+
+func _bounded_client(storage: MemoryStore, transport: RecoveryTransport, session: String, limit: int, batch: int = 5) -> Node:
+	var client := _make_client({
+		"storage": storage, "transport": transport, "session_id": session,
+		"json_decoder": ImmediateDecoder.new(), "logger": null, "platform": "android",
+		"event_max_batch_size": batch, "event_queue_limit": limit,
+	})
+	client.set_process(false)
+	return client
+
+
+func _event_ids(events: Array) -> Array:
+	return events.map(func(event: Dictionary) -> String: return String(event["eventId"]))
+
+
+func _test_queue_limit_across_restarts() -> void:
+	var storage := MemoryStore.new()
+	var accepted_ids: Array = []
+	for iteration: int in range(4):
+		var transport := RecoveryTransport.new()
+		transport.config_ok = false
+		var client := _bounded_client(storage, transport, "bounded-%d" % iteration, 5)
+		await client.start()
+		for event_index: int in range(4):
+			_check(client.tracker.track_ad("banner", "banner", 0.1, "USD"), "offline queue accepts newest event within bounded storage policy")
+			var pending: Array = client.tracker.pending_events_for_testing()
+			accepted_ids.append(pending.back()["eventId"])
+			_check(pending.size() <= 5, "total pending count stays bounded across repeated restarts")
+		var expected := accepted_ids.slice(maxi(accepted_ids.size() - 5, 0))
+		_check(_event_ids(client.tracker.pending_events_for_testing()) == expected, "overflow deterministically retains newest event IDs")
+		var persisted: Array = storage.values["events_" + client._namespace]
+		_check(_event_ids(persisted) == expected, "disk queue shares the same total cap and event identities")
+		var requests: Dictionary = storage.values["config_requests_" + client._namespace]
+		_check(requests.size() <= 2, "overflow removes retired config envelopes no longer referenced by events")
+		client.free()
+
+
+func _test_queue_limit_restores_oversized_storage() -> void:
+	var storage := MemoryStore.new()
+	var offline := RecoveryTransport.new()
+	offline.config_ok = false
+	var original := _bounded_client(storage, offline, "oversized", 10)
+	await original.start()
+	for index: int in range(9):
+		original.tracker.track_ad("banner", "banner", 0.1, "USD")
+	var ids := _event_ids(original.tracker.pending_events_for_testing()).slice(4)
+	original.free()
+	var restored := _bounded_client(storage, RecoveryTransport.new(), "limited", 5)
+	_check(restored.tracker.pending_count() == 5, "restoring a larger legacy queue enforces the configured limit")
+	_check(_event_ids(restored.tracker.pending_events_for_testing()) == ids, "restore trimming retains original IDs of newest events")
+	_check(_event_ids(storage.values["events_" + restored._namespace]) == ids, "restore trimming reconciles the durable queue")
+	restored.free()
+
+
+func _test_queue_limit_preserves_inflight() -> void:
+	var transport := RecoveryTransport.new()
+	var client := _bounded_client(MemoryStore.new(), transport, "inflight", 5, 3)
+	await client.start()
+	transport.hold_events = true
+	for index: int in range(3):
+		client.tracker.track_ad("banner", "banner", 0.1, "USD")
+	var inflight_ids := _event_ids(transport.held_event_batches[0])
+	var newest: Array = []
+	for index: int in range(4):
+		_check(client.tracker.track_ad("banner", "banner", 0.2, "USD"), "new event replaces oldest evictable event behind an in-flight batch")
+		newest.append(client.tracker.pending_events_for_testing().back()["eventId"])
+		_check(client.tracker.pending_count() <= 5, "in-flight events count toward the total limit")
+	_check(_event_ids(client.tracker.pending_events_for_testing()) == inflight_ids + newest.slice(2), "overflow never evicts outstanding event identities")
+	transport.events_ok = false
+	transport.hold_events = false
+	transport.released.emit()
+	_check(client.tracker.pending_count() == 5, "failed in-flight batch returns to retry storage within the same cap")
+	client.free()
+
+	var full_transport := RecoveryTransport.new()
+	var full := _bounded_client(MemoryStore.new(), full_transport, "full-inflight", 3, 3)
+	await full.start()
+	full_transport.hold_events = true
+	for index: int in range(3):
+		full.tracker.track_ad("banner", "banner", 0.1, "USD")
+	_check(not full.tracker.track_ad("banner", "banner", 0.2, "USD"), "when all capacity is in-flight a new event is truthfully refused")
+	_check(full.tracker.pending_count() == 3, "a fully in-flight queue remains bounded")
+	full_transport.hold_events = false
+	full_transport.released.emit()
+	full.free()
+
+
+func _test_queue_limit_mixed_sessions() -> void:
+	var transport := RecoveryTransport.new()
+	transport.config_ok = false
+	transport.events_ok = false
+	var client := _bounded_client(MemoryStore.new(), transport, "mixed-old", 5, 2)
+	await client.start()
+	for index: int in range(2):
+		client.tracker.track_ad("banner", "banner", 0.1, "USD")
+	var old_ids := _event_ids(client.tracker.pending_events_for_testing())
+	transport.config_ok = true
+	await client.new_session("mixed-current")
+	var newer_ids: Array = []
+	for index: int in range(4):
+		client.tracker.track_ad("banner", "banner", 0.2, "USD")
+		newer_ids.append(client.tracker.pending_events_for_testing().back()["eventId"])
+	_check(_event_ids(client.tracker.pending_events_for_testing()) == [old_ids[1]] + newer_ids, "overflow uses original acceptance order after bound-event retry bypasses older unbound events")
+	client.free()
+
+
+func _test_queue_restore_trim_storage_retry() -> void:
+	var storage := FailingStore.new()
+	var original := _bounded_client(storage, RecoveryTransport.new(), "trim-original", 10)
+	for index: int in range(9):
+		original.tracker.track_ad("banner", "banner", 0.1, "USD")
+	var ids := _event_ids(original.tracker.pending_events_for_testing()).slice(4)
+	original.free()
+	var client := _make_client({
+		"storage": storage, "transport": RecoveryTransport.new(), "session_id": "trim-retry",
+		"json_decoder": ImmediateDecoder.new(), "logger": null, "platform": "android",
+		"event_max_batch_size": 5, "event_queue_limit": 5,
+		"measurement_allowed": false, "measurement_resolved": false,
+	})
+	client.set_process(false)
+	storage.refuse_saves = true
+	_check(not client.set_measurement_allowed(true), "failed trimmed queue persistence keeps restoration unresolved")
+	storage.refuse_saves = false
+	_check(client.set_measurement_allowed(true), "restoration retries when storage recovers")
+	_check(_event_ids(client.tracker.pending_events_for_testing()) == ids, "retrying a failed trim neither duplicates nor loses retained event identities")
+	client.free()
+
+
+func _test_config_envelope_recovers_first_save_failure() -> void:
+	var storage := ConfigSaveFailureStore.new()
+	var offline := RecoveryTransport.new()
+	offline.config_ok = false
+	var client := _recovery_client(storage, offline, "save-original")
+	await client.start()
+	client.tracker.track_ad("banner", "banner", 0.1, "USD")
+	var expected: Dictionary = client._pending_configs["save-original"].duplicate(true)
+	client._process(61.0)
+	_check(storage.values.has("config_requests_" + client._namespace), "failed first envelope save is retried before config recovery")
+	client.free()
+	var online := RecoveryTransport.new()
+	var restarted := _recovery_client(storage, online, "save-restarted")
+	await restarted.start()
+	for index: int in range(3):
+		restarted._process(61.0)
+	await restarted.tracker.flush()
+	_check(online.bodies_for("/v1/config").has(JSON.parse_string(Util.canonical_json(expected))), "storage recovery replays the exact original config envelope")
+	_check(restarted.tracker.pending_count() == 0, "one failed envelope write cannot orphan a later durable event")
+	restarted.free()
+
+
+func _test_config_envelope_lifecycle_retries_save() -> void:
+	var storage := ConfigSaveFailureStore.new()
+	storage.failures_remaining = 100
+	var transport := RecoveryTransport.new()
+	transport.config_ok = false
+	var client := _recovery_client(storage, transport, "lifecycle-original")
+	var failures: Array = []
+	client.request_failed.connect(func(code: String) -> void: failures.append(code))
+	await client.start()
+	var expected: Dictionary = client._pending_configs["lifecycle-original"].duplicate(true)
+	client.tracker.track_ad("banner", "banner", 0.1, "USD")
+	_check(failures.has("config_request_persistence_failed"), "config-envelope persistence failure is observable")
+	storage.failures_remaining = 0
+	client._notification(Node.NOTIFICATION_APPLICATION_PAUSED)
+	_check(storage.values.get("config_requests_" + client._namespace, {}).get("lifecycle-original", {}) == expected, "lifecycle save reconciles the original request without retiming it")
+	client.free()
+
+
+func _test_config_envelope_waits_for_attribution_save() -> void:
+	var storage := ConfigSaveFailureStore.new()
+	storage.failures_remaining = 0
+	var transport := RecoveryTransport.new()
+	transport.config_ok = false
+	var client := _recovery_client(storage, transport, "attr-save-old")
+	await client.start()
+	await client.set_attribution("adjust", {"network": "paid"})
+	transport.config_ok = true
+	await client.new_session("attr-save-current")
+	storage.failing_prefix = "pending_attribution_"
+	storage.failures_remaining = 100
+	client._process(61.0)
+	client._process(61.0)
+	client.free()
+	storage.failures_remaining = 0
+	var online := RecoveryTransport.new()
+	var restarted := _recovery_client(storage, online, "attr-save-restart")
+	await restarted.start()
+	for index: int in range(4):
+		restarted._process(61.0)
+	var bodies := online.bodies_for("/v1/attribution")
+	_check(bodies.size() == 1 and bodies[0]["contextId"] == "context-attr-save-old", "historical envelope remains until attribution context binding is durable")
+	restarted.free()
 
 
 func _test_cross_origin_rejected() -> void:

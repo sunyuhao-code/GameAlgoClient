@@ -200,8 +200,9 @@ func configure(options: Dictionary) -> bool:
 	if not _restore_pending_requests():
 		last_error = "pending_request_storage_read_failed"
 		return false
-	_remember_config_request()
-	last_error = ""
+	_prune_pending_configs()
+	var config_request_saved := _remember_config_request()
+	last_error = "" if config_request_saved else "config_request_persistence_failed"
 	status = "configured"
 	set_process(true)
 	_log("userId: %s" % _identity["userId"])
@@ -307,14 +308,25 @@ func _config_fingerprint(body: Dictionary) -> String:
 	return GameAlgoUtil.sha256_text(GameAlgoUtil.canonical_json(fingerprint_body))
 
 
-func _remember_config_request() -> void:
+func _remember_config_request() -> bool:
 	var session := tracker.current_session_id()
 	if not _pending_configs.has(session):
 		_pending_configs[session] = _config_request()
-		_persist_request_queue("config_requests_", _pending_configs)
+	return _persist_config_requests()
+
+
+func _persist_config_requests() -> bool:
+	if _persist_request_queue("config_requests_", _pending_configs):
+		return true
+	_log("config request persistence failed")
+	request_failed.emit("config_request_persistence_failed")
+	return false
 
 
 func _fetch_pending_config(session: String) -> bool:
+	# Retry a failed durable write even when the original envelope is already
+	# in memory. Never regenerate its timestamps, device, or session identity.
+	_persist_config_requests()
 	_refreshing = true
 	var request_body: Dictionary = _pending_configs[session].duplicate(true)
 	if session == tracker.current_session_id():
@@ -742,10 +754,33 @@ func _retry_ready(key: String) -> bool:
 	return float(_retry_states.get(key, {}).get("remaining", 0.0)) <= 0.0
 
 
+func _prune_pending_configs() -> void:
+	if not tracker.measurement_resolved():
+		return
+	var retired: Array[String] = []
+	for session: String in _pending_configs:
+		# A recovered context can still be waiting for an event/attribution write.
+		# Its binder is responsible for deleting the request after both persist.
+		if _recovered_contexts.has(session):
+			continue
+		if session != tracker.current_session_id() and not tracker.has_unbound_session(session) \
+				and not _attribution_needs_context(session):
+			retired.append(session)
+	if retired.is_empty() or not tracker.persist_pending():
+		return
+	# Confirm event removals on disk before removing their recovery envelopes.
+	for session: String in retired:
+		_pending_configs.erase(session)
+		_recovered_contexts.erase(session)
+		_retry_states.erase("config:" + session)
+	_persist_config_requests()
+
+
 func _tick_pending_requests(delta: float) -> void:
 	for state: Dictionary in _retry_states.values():
 		state["remaining"] = maxf(float(state["remaining"]) - maxf(delta, 0.0), 0.0)
 	if _config_recovery_enabled and not _refreshing:
+		_prune_pending_configs()
 		for session: String in _pending_configs.keys():
 			# An unresolved measurement decision leaves events on disk, outside
 			# the in-memory tracker. Retain their ownership requests until grant.
@@ -755,14 +790,6 @@ func _tick_pending_requests(delta: float) -> void:
 			if _recovered_contexts.has(session):
 				if _retry_ready("config:" + session) and not _bind_pending_config(session):
 					_schedule_retry("config:" + session)
-				continue
-			if session != tracker.current_session_id() and not tracker.has_unbound_session(session) \
-					and not _attribution_needs_context(session):
-				if not tracker.persist_pending():
-					continue
-				_pending_configs.erase(session)
-				_retry_states.erase("config:" + session)
-				_persist_request_queue("config_requests_", _pending_configs)
 				continue
 			if _retry_ready("config:" + session):
 				_fetch_pending_config(session)
@@ -787,6 +814,9 @@ func _process(delta: float) -> void:
 
 func _notification(what: int) -> void:
 	if what in [NOTIFICATION_APPLICATION_PAUSED, NOTIFICATION_WM_CLOSE_REQUEST]:
+		if status == "unconfigured":
+			return
+		_persist_config_requests()
 		tracker.persist_pending()
 		tracker.flush()
 

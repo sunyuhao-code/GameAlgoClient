@@ -38,6 +38,8 @@ var _is_debug := false
 var _queue: Array[Dictionary] = []
 var _retry_batch: Array[Dictionary] = []
 var _inflight_batch: Array[Dictionary] = []
+var _event_sequence: Dictionary = {}
+var _next_event_sequence := 0
 var _is_flushing := false
 var _session_start_unix := 0.0
 var _consecutive_failures := 0
@@ -108,6 +110,7 @@ func set_measurement_allowed(allowed: bool) -> bool:
 		_queue.clear()
 		_inflight_batch.clear()
 		_pending_milestone_keys.clear()
+		_event_sequence.clear()
 		return _clear_persisted()
 	if _measurement_allowed == allowed:
 		return true if allowed else _clear_persisted()
@@ -121,6 +124,7 @@ func set_measurement_allowed(allowed: bool) -> bool:
 		return true
 	_measurement_allowed = false
 	_pending_milestone_keys.clear()
+	_event_sequence.clear()
 	_retry_batch.clear()
 	_queue.clear()
 	_inflight_batch.clear()
@@ -214,6 +218,9 @@ func track(event_type: String, payload: Variant = {}) -> bool:
 	if not _measurement_allowed or _user_id.is_empty() \
 			or event_type.is_empty() or event_type != event_type.strip_edges():
 		return false
+	# An outstanding batch cannot be evicted: the server may already have it.
+	if _inflight_batch.size() >= _queue_limit:
+		return false
 	if not _consume_custom_event_quota(event_type):
 		return false
 	var event_unix := Time.get_unix_time_from_system()
@@ -236,16 +243,19 @@ func track(event_type: String, payload: Variant = {}) -> bool:
 	}
 	if not _account_user_id.is_empty():
 		event["accountUserId"] = _account_user_id
+	_event_sequence[event["eventId"]] = _next_event_sequence
+	_next_event_sequence += 1
 	_queue.append(event)
 	if not String(milestone.get("key", "")).is_empty():
 		_remember_milestone(String(milestone["key"]), bool(milestone.get("durable", false)))
-	if _queue.size() > _queue_limit:
-		_queue = _queue.slice(_queue.size() - _queue_limit)
+	var trimmed := _enforce_queue_limit()
 	# Unbound events cannot upload yet. Persist them immediately, including their
 	# original event IDs and timestamps, so process death cannot erase revenue.
 	if _context_id.is_empty() or _has_persisted_queue:
 		if not _persist_pending():
 			_log("event persistence failed: pending=%d" % pending_count())
+	if trimmed and is_instance_valid(_client) and _client.has_method("_prune_pending_configs"):
+		_client.call("_prune_pending_configs")
 	if _queue.size() >= _max_batch_size:
 		flush()
 	return true
@@ -525,9 +535,7 @@ func flush() -> bool:
 	_is_flushing = true
 	var consent_generation := _consent_generation
 	while not _retry_batch.is_empty() or not _queue.is_empty():
-		var pending: Array[Dictionary] = []
-		pending.append_array(_retry_batch)
-		pending.append_array(_queue)
+		var pending := _pending_events()
 		var batch: Array[Dictionary] = []
 		_queue.clear()
 		_retry_batch.clear()
@@ -561,6 +569,8 @@ func flush() -> bool:
 				_persist_pending()
 			_is_flushing = false
 			return false
+		for event: Dictionary in _inflight_batch:
+			_event_sequence.erase(event["eventId"])
 		_inflight_batch.clear()
 		_consecutive_failures = 0
 		_log("flush ok: accepted=%d, remaining=%d" % [batch.size(), _queue.size()])
@@ -579,11 +589,57 @@ func pending_count() -> int:
 
 
 func pending_events_for_testing() -> Array[Dictionary]:
+	return _pending_events().duplicate(true)
+
+
+func _pending_events() -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
-	result.append_array(_retry_batch.duplicate(true))
-	result.append_array(_inflight_batch.duplicate(true))
-	result.append_array(_queue.duplicate(true))
+	result.append_array(_retry_batch)
+	result.append_array(_inflight_batch)
+	result.append_array(_queue)
+	result.sort_custom(func(left: Dictionary, right: Dictionary) -> bool:
+		return int(_event_sequence.get(left["eventId"], 0)) < int(_event_sequence.get(right["eventId"], 0))
+	)
 	return result
+
+
+func _enforce_queue_limit() -> bool:
+	var overflow := pending_count() - _queue_limit
+	if overflow <= 0:
+		return false
+	var protected_ids: Dictionary = {}
+	for event: Dictionary in _inflight_batch:
+		protected_ids[event["eventId"]] = true
+	var discarded: Dictionary = {}
+	for event: Dictionary in _pending_events():
+		if protected_ids.has(event["eventId"]):
+			continue
+		discarded[event["eventId"]] = true
+		_event_sequence.erase(event["eventId"])
+		if discarded.size() == overflow:
+			break
+	_retry_batch = _retry_batch.filter(func(event: Dictionary) -> bool:
+		return not discarded.has(event["eventId"])
+	)
+	_queue = _queue.filter(func(event: Dictionary) -> bool:
+		return not discarded.has(event["eventId"])
+	)
+	_restore_pending_milestones()
+	return true
+
+
+func _restore_pending_milestones() -> void:
+	_pending_milestone_keys.clear()
+	for event: Dictionary in _pending_events():
+		if String(event["eventType"]) != "milestone" or not String(event["contextId"]).is_empty():
+			continue
+		var payload: Dictionary = event["payload"]
+		var key := GameAlgoUtil.canonical_json([
+			"debug" if bool(event["isDebug"]) else "live", String(event["userId"]),
+			GameAlgoUtil.clean(payload.get("milestoneType", "")),
+			GameAlgoUtil.clean(payload.get("milestonePoint", "")),
+		])
+		_pending_milestone_keys[key] = true
 
 
 func _bind_context(events: Array[Dictionary], session_id: String, context_id: String) -> void:
@@ -607,23 +663,24 @@ func _restore_queue() -> bool:
 	var restored: Variant = loaded.get("value", null)
 	if status != GameAlgoJsonStore.STATUS_LOADED or not restored is Array:
 		return false
+	# A previous restore may have trimmed successfully in memory but failed to
+	# save. Replace that attempt instead of appending the same durable events.
+	for event: Dictionary in _retry_batch:
+		_event_sequence.erase(event["eventId"])
+	_retry_batch.clear()
 	for value: Variant in restored:
 		if not _valid_event(value):
 			continue
 		var event := value as Dictionary
+		_event_sequence[event["eventId"]] = _next_event_sequence
+		_next_event_sequence += 1
 		_retry_batch.append(event.duplicate(true))
-		if String(event["eventType"]) == "milestone":
-			var payload: Dictionary = event["payload"]
-			var key := GameAlgoUtil.canonical_json([
-				"debug" if bool(event["isDebug"]) else "live", String(event["userId"]),
-				GameAlgoUtil.clean(payload.get("milestoneType", "")),
-				GameAlgoUtil.clean(payload.get("milestonePoint", "")),
-			])
-			_pending_milestone_keys[key] = true
+	var trimmed := _enforce_queue_limit()
+	_restore_pending_milestones()
 	_has_persisted_queue = not _retry_batch.is_empty()
 	if not _retry_batch.is_empty():
 		_log("restored %d persisted event(s)" % _retry_batch.size())
-	return true
+	return _persist_pending() if trimmed else true
 
 
 func _valid_event(value: Variant) -> bool:
@@ -655,10 +712,7 @@ func persist_pending() -> bool:
 func _persist_pending() -> bool:
 	if _storage == null or not _storage.has_method("save_json"):
 		return false
-	var pending: Array[Dictionary] = []
-	pending.append_array(_retry_batch)
-	pending.append_array(_inflight_batch)
-	pending.append_array(_queue)
+	var pending := _pending_events()
 	if pending.is_empty():
 		return _clear_persisted()
 	var result: Variant = _storage.call("save_json", _storage_key, pending)
