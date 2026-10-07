@@ -76,11 +76,11 @@ client.tracker.track_session_end()
 await client.tracker.flush()
 ```
 
-事件入队时即固定 `eventId`、UTC `timestamp`、本地 `createdLocalAt` 和当前 `sessionId`，延迟上传或重试不会改写发生时间。默认每批最多 100 条、每 30 秒 flush 一次。
+事件入队时即固定 `eventId`、UTC `timestamp`、本地 `createdLocalAt` 和当前 `sessionId`，延迟上传或重试不会改写发生时间。所有事件（包括已绑定 context 的广告和会话事件）先确认队列落盘，再返回 `true`；这个返回值表示本地持久化接纳，不表示服务端收到。默认每批最多 100 条、每 30 秒 flush 一次。
 
-前台会话切换调用 `await client.new_session()`。配置请求失败时，`start()` / `new_session()` / `refresh()` 返回实际失败；SDK 在后续 `_process` 中按 1、2、4、8、16、32、60 秒退避自动重试，之后间隔最多 60 秒，不阻塞游戏。未取得 context 的事件立即持久化，并跨后续会话与重启保留。恢复使用原会话保存的 `/v1/config` 请求原文（包括 `sessionId`、`createdLocalAt`、平台、版本和设备信息），只给该会话的未绑定事件补上服务端返回的真实 context。历史响应不会发布为当前会话的实验分组。已绑定的事件可以先上传，不被未绑定的旧事件阻塞。
+前台会话切换调用 `await client.new_session()`。配置请求失败时，`start()` / `new_session()` / `refresh()` 返回实际失败；SDK 在后续 `_process` 中按 1、2、4、8、16、32、60 秒退避自动重试，之后间隔最多 60 秒，不阻塞游戏。未取得 context 的事件立即持久化，并跨后续会话与重启保留。恢复使用原会话保存的 `/v1/config` 请求原文（包括 `sessionId`、`createdLocalAt`、平台、版本和设备信息），只给该会话的未绑定事件补上服务端返回的真实 context。历史响应不会发布为当前会话的实验分组。冷启动缓存仍可提供实验分组与配置，但它的旧 context 不会绑定新会话；新事件等待自己会话的真实 context。已绑定的事件可以先上传，不被未绑定的旧事件阻塞。
 
-队列上限覆盖待发送、重试及在途事件的总数，并在恢复旧磁盘队列时同样生效。满队列按原始入队顺序淘汰最旧的非在途事件；如果全部容量都已在途，新事件返回 `false`，不会把被丢弃的新事件声称为已接受。在途事件的 ID 和内容保持到请求完成。事件移除确认落盘后，不再需要的旧会话恢复请求也会清理。
+队列上限覆盖待发送、重试及在途事件的总数，并在恢复旧磁盘队列时同样生效。满队列按原始入队顺序淘汰最旧的非在途事件；如果全部容量都已在途，新事件返回 `false`，不会把被丢弃的新事件声称为已接受。在途事件的 ID 和内容保持到请求完成。新事件落盘失败时返回 `false`，不保留该事件、不淘汰旧事件，也不消耗配额或里程碑去重记录；存储恢复后可以重试。事件移除确认落盘后，不再需要的旧会话恢复请求也会清理。
 
 原始配置请求在每次请求／后台重试及应用暂停时重新确认落盘，写入失败发出 `config_request_persistence_failed`，后续写入继续使用同一份请求。存储适配器持续返回写入失败时只能保留内存状态并记录日志，无法保证进程退出后的恢复。
 
@@ -145,11 +145,11 @@ await client.set_idfa(idfa)
 await client.set_idfv(idfv)
 ```
 
-**iOS 上 IDFV 会自动上报一次**，和 iOS SDK 行为一致：启动拉完配置后，SDK 取 `OS.get_unique_id()`（在 iOS 上就是 `identifierForVendor`）上报一次，失败只记日志、不影响启动。IDFV 不需要 ATT 授权，所以不受 `measurement_allowed` 约束——那个开关管的是事件，`set_attribution` 由独立的 `attribution_allowed` 控制，其他标识 setter 不受这两个开关约束，iOS SDK 的 IDFV 也是无条件上报。
+**iOS 上 IDFV 会自动上报一次**，和 iOS SDK 行为一致：启动取得当前会话配置后（离线启动则等后台恢复），SDK 取 `OS.get_unique_id()`（在 iOS 上就是 `identifierForVendor`）上报一次，失败只记日志、不影响启动。IDFV 不需要 ATT 授权，所以不受 `measurement_allowed` 约束——那个开关管的是事件，`set_attribution` 由独立的 `attribution_allowed` 控制，其他标识 setter 不受这两个开关约束，iOS SDK 的 IDFV 也是无条件上报。
 
 Android 和桌面没有 IDFV，不会触发。其余标识仍需游戏在拿到值后手动调用。标识 setter 的失败重试仍由接入方负责，不进入上述归因重试队列。
 
-这些调用需要 context 已就绪，会自动关联当前 `contextId` 和 GameAlgo `userId`。用户撤回授权或标识不可用时传 `null`，服务端会记录清除操作；全零的 GAID / IDFA 会被自动识别为清除。只在取得用户授权且符合应用隐私政策时采集这些标识。
+这些调用需要当前会话自己的 context 已就绪，会自动关联匹配的 `sessionId`、`contextId` 和 GameAlgo `userId`。新会话配置还未返回时，标识 setter 返回 `context_not_ready`，接入方可稍后重试；归因则保留原会话，待它自己的 context 恢复后发送，不会借用缓存或其他会话的 context。用户撤回授权或标识不可用时传 `null`，服务端会记录清除操作；全零的 GAID / IDFA 会被自动识别为清除。只在取得用户授权且符合应用隐私政策时采集这些标识。
 
 ## 日志与可观测性
 
@@ -210,7 +210,9 @@ func save_json(key: String, value: Variant) -> bool
 func remove(key: String) -> bool
 ```
 
-SDK 用它持久化匿名身份、配置快照、脚本缓存、原始会话配置请求、归因待发送队列及 ack hash、未上传的事件队列。未绑定 context 的事件立即落盘；已绑定事件仍在连续 3 次上传失败后落盘，应用暂停或关闭通知也会保存队列。下次启动自动恢复，服务端 ACK 后删除。
+SDK 用它持久化匿名身份、配置快照、脚本缓存、原始会话配置请求、归因待发送队列及 ack hash、未上传的事件队列。所有接受的事件立即落盘，应用暂停或关闭通知也会保存队列。下次启动自动恢复，服务端 ACK 后删除。
+
+`save_json` 必须原子替换单个 key：`true` 表示写入已提交、可供进程重启恢复；`false` 必须保留此前已提交的值。不要先写入新值，再因后续 sync 失败返回 `false` 却仍保留新值，否则调用方重试被拒绝的事件可能生成重复事件。具体文件系统和设备断电保证由游戏存储适配器负责验证。
 
 `measurement_allowed: false, measurement_resolved: false` 表示事件授权未确定，保留已存事件及其历史配置请求但不恢复发送；显式 `set_measurement_allowed(false)` 才会清除事件。广告归因的暂停和撤回使用上面的独立 API。
 

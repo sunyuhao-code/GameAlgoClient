@@ -388,6 +388,11 @@ func _fetch_pending_config(session: String) -> bool:
 		_startup_success = true
 		if became_ready:
 			sdk_ready.emit(false)
+	# Offline startup defers IDFV until this session has a real context. Only
+	# the current-session path reaches here; historical recovery cannot claim
+	# the once-per-startup report. Direct refresh without start stays unchanged.
+	if _started:
+		_report_identifier_for_vendor()
 	return true
 
 
@@ -936,8 +941,9 @@ func _log(message: String) -> void:
 
 
 func _context_id() -> String:
-	var config: Variant = _snapshot.get("config", null)
-	return String(config.get("contextId", "")) if config is Dictionary else ""
+	# Cached assignments may belong to an earlier session. Telemetry ownership
+	# comes only from a context matched to the tracker's current session.
+	return tracker.current_context_id()
 
 
 func _attribution_acks() -> Dictionary:
@@ -988,10 +994,14 @@ func _send_context_identifier(
 		_log("context identifier sync failed: type=%s, error=%s" % [identifier_type, error])
 		return {"ok": false, "accepted": 0, "error": error}
 	var value_dict := response["value"] as Dictionary
+	if not value_dict.get("ok", null) is bool or not value_dict["ok"] \
+			or not _integer_value(value_dict.get("accepted", null), 0, 1):
+		_log("context identifier sync failed: type=%s, error=invalid_context_identifier_response" % identifier_type)
+		return {"ok": false, "accepted": 0, "error": "invalid_context_identifier_response"}
 	_log("context identifier synced: type=%s, accepted=%d" % [
 		identifier_type, int(value_dict.get("accepted", 0))
 	])
-	return {"ok": bool(value_dict.get("ok", false)), "accepted": int(value_dict.get("accepted", 0))}
+	return {"ok": true, "accepted": int(value_dict["accepted"])}
 
 
 ## The caller-facing path: the public setters own last_error.
@@ -1090,7 +1100,7 @@ func _load_cached_snapshot() -> bool:
 	_prepared_script_hashes.clear()
 	_prepare_cached_scripts(config)
 	_generation += 1
-	tracker.set_context_id(String(config["contextId"]))
+	# Preserve cached assignments without binding the new session to an old context.
 	return true
 
 

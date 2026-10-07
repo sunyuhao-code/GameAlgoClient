@@ -176,6 +176,10 @@ func current_session_id() -> String:
 	return _session_id
 
 
+func current_context_id() -> String:
+	return _context_id
+
+
 func set_context_id(context_id: String) -> void:
 	bind_session_context(_session_id, context_id)
 
@@ -221,7 +225,7 @@ func track(event_type: String, payload: Variant = {}) -> bool:
 	# An outstanding batch cannot be evicted: the server may already have it.
 	if _inflight_batch.size() >= _queue_limit:
 		return false
-	if not _consume_custom_event_quota(event_type):
+	if not _consume_custom_event_quota(event_type, false):
 		return false
 	var event_unix := Time.get_unix_time_from_system()
 	var normalized := GameAlgoUtil.normalize_payload(payload)
@@ -243,17 +247,26 @@ func track(event_type: String, payload: Variant = {}) -> bool:
 	}
 	if not _account_user_id.is_empty():
 		event["accountUserId"] = _account_user_id
+	# Commit the bounded candidate before accepting it. A refused write must not
+	# leave an event queued for later upload, evict existing events, or consume
+	# quota/milestone state; callers may retry an admission that returned false.
+	var pending := _pending_events()
+	pending.append(event)
+	var discarded := _overflow_event_ids(pending)
+	if not discarded.is_empty():
+		pending = pending.filter(func(candidate: Dictionary) -> bool:
+			return not discarded.has(candidate["eventId"])
+		)
+	if not _persist_events(pending):
+		_log("event persistence failed: pending=%d" % pending_count())
+		return false
 	_event_sequence[event["eventId"]] = _next_event_sequence
 	_next_event_sequence += 1
 	_queue.append(event)
+	_consume_custom_event_quota(event_type)
+	var trimmed := _enforce_queue_limit()
 	if not String(milestone.get("key", "")).is_empty():
 		_remember_milestone(String(milestone["key"]), bool(milestone.get("durable", false)))
-	var trimmed := _enforce_queue_limit()
-	# Unbound events cannot upload yet. Persist them immediately, including their
-	# original event IDs and timestamps, so process death cannot erase revenue.
-	if _context_id.is_empty() or _has_persisted_queue:
-		if not _persist_pending():
-			_log("event persistence failed: pending=%d" % pending_count())
 	if trimmed and is_instance_valid(_client) and _client.has_method("_prune_pending_configs"):
 		_client.call("_prune_pending_configs")
 	if _queue.size() >= _max_batch_size:
@@ -376,7 +389,7 @@ func _quota_bucket_key() -> String:
 ## Charges one custom event against the current context. Standard semantic events
 ## are exempt. Returns false when a limit is reached; the event is then refused
 ## outright rather than queued, so the game learns about it from track().
-func _consume_custom_event_quota(event_type: String) -> bool:
+func _consume_custom_event_quota(event_type: String, consume: bool = true) -> bool:
 	if event_type in STANDARD_EVENT_TYPES:
 		return true
 	var bucket_key := _quota_bucket_key()
@@ -404,6 +417,8 @@ func _consume_custom_event_quota(event_type: String) -> bool:
 		])
 		_report_quota_diagnostic(event_type, scope, limit, observed)
 		return false
+	if not consume:
+		return true
 	bucket["total"] = int(bucket["total"]) + 1
 	by_type[event_type] = current + 1
 	_custom_counts[bucket_key] = bucket
@@ -603,21 +618,31 @@ func _pending_events() -> Array[Dictionary]:
 	return result
 
 
-func _enforce_queue_limit() -> bool:
-	var overflow := pending_count() - _queue_limit
+func _overflow_event_ids(events: Array[Dictionary]) -> Dictionary:
+	var overflow := events.size() - _queue_limit
 	if overflow <= 0:
-		return false
+		return {}
 	var protected_ids: Dictionary = {}
 	for event: Dictionary in _inflight_batch:
 		protected_ids[event["eventId"]] = true
 	var discarded: Dictionary = {}
-	for event: Dictionary in _pending_events():
+	for event: Dictionary in events:
 		if protected_ids.has(event["eventId"]):
 			continue
 		discarded[event["eventId"]] = true
-		_event_sequence.erase(event["eventId"])
 		if discarded.size() == overflow:
 			break
+	return discarded
+
+
+func _enforce_queue_limit() -> bool:
+	if pending_count() <= _queue_limit:
+		return false
+	var discarded := _overflow_event_ids(_pending_events())
+	if discarded.is_empty():
+		return false
+	for event_id: String in discarded:
+		_event_sequence.erase(event_id)
 	_retry_batch = _retry_batch.filter(func(event: Dictionary) -> bool:
 		return not discarded.has(event["eventId"])
 	)
@@ -710,9 +735,12 @@ func persist_pending() -> bool:
 
 
 func _persist_pending() -> bool:
+	return _persist_events(_pending_events())
+
+
+func _persist_events(pending: Array[Dictionary]) -> bool:
 	if _storage == null or not _storage.has_method("save_json"):
 		return false
-	var pending := _pending_events()
 	if pending.is_empty():
 		return _clear_persisted()
 	var result: Variant = _storage.call("save_json", _storage_key, pending)

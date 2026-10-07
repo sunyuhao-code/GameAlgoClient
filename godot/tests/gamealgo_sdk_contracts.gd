@@ -54,6 +54,7 @@ class TransportFixture:
 	var events_ok := true
 	var identifiers_ok := true
 	var attribution_hash_override := ""
+	var identifier_response: Dictionary = {"ok": true, "accepted": 1}
 
 	func send(spec: Dictionary) -> Dictionary:
 		requests.append(spec.duplicate(true))
@@ -77,7 +78,7 @@ class TransportFixture:
 					"ok": false, "status": 404, "headers": {},
 					"body": PackedByteArray(), "error": "http_404",
 				}
-			return _json({"ok": true, "accepted": 1})
+			return _json(identifier_response)
 		if url.ends_with("/v1/diagnostics/sdk"):
 			return _json({"ok": true, "accepted": 1})
 		if url.ends_with("/v1/config"):
@@ -162,7 +163,7 @@ class RecoveryTransport:
 				"contextId": "context-" + String(body["sessionId"]),
 				"gameId": "fixture", "environment": "live", "configVersion": body["sessionId"],
 				"ttlSeconds": 60, "serverTime": "2026-01-01T00:00:00.000Z",
-				"experiments": [], "configFiles": [],
+				"experiments": experiments.duplicate(true), "configFiles": [],
 			})
 		if url.ends_with("/v1/events/batch") and hold_events:
 			held_event_batches.append(JSON.parse_string(String(spec["body"]))["events"])
@@ -220,6 +221,10 @@ func _run() -> void:
 	_test_base_url_and_key_validation()
 	await _test_config_request_envelope()
 	await _test_event_envelope_and_batching()
+	await _test_bound_event_admission_survives_restart()
+	await _test_event_admission_storage_failure()
+	await _test_cached_snapshot_does_not_own_new_session()
+	await _test_attribution_and_identifiers_wait_for_matching_context()
 	await _test_queue_limit_drops_oldest_silently()
 	await _test_queue_limit_across_restarts()
 	await _test_queue_limit_restores_oversized_storage()
@@ -252,8 +257,10 @@ func _run() -> void:
 	await _test_attribution_pause_inflight()
 	await _test_attribution_revoke_inflight()
 	await _test_context_identifiers()
+	await _test_malformed_identifier_responses()
 	await _test_observability()
 	await _test_automatic_idfv()
+	await _test_automatic_idfv_after_context_recovery()
 	await _test_idfv_does_not_steal_last_error()
 	print("RESULT: %d passed, %d failed" % [_passed, _failed])
 	quit(0 if _failed == 0 else 1)
@@ -385,6 +392,102 @@ func _test_event_envelope_and_batching() -> void:
 			ids[String(queued.get("eventId", ""))] = true
 	_check(ids.size() == 5, "every event gets a distinct eventId")
 	client.free()
+
+
+func _test_bound_event_admission_survives_restart() -> void:
+	var storage := MemoryStore.new()
+	var client := _bounded_client(storage, RecoveryTransport.new(), "durable-bound", 10)
+	await client.start()
+	_check(client.tracker.track_ad("banner", "banner", 0.1, "USD"), "bound revenue is accepted durably")
+	_check(await client.tracker.track_session_end({}, false), "bound session end is accepted durably before flush")
+	var events: Array = client.tracker.pending_events_for_testing()
+	_check(storage.values.get("events_" + client._namespace, []) == events, "bound events reach durable storage before track returns")
+	client.free()
+	var restored := _bounded_client(storage, RecoveryTransport.new(), "durable-restart", 10)
+	_check(restored.tracker.pending_events_for_testing() == events, "crash before first flush preserves original bound event IDs and envelopes")
+	restored.free()
+
+
+func _test_event_admission_storage_failure() -> void:
+	for bound: bool in [false, true]:
+		var storage := FailingStore.new()
+		var transport := RecoveryTransport.new()
+		transport.config_ok = bound
+		transport.events_ok = false
+		var client := _bounded_client(storage, transport, "atomic-admission", 3, 3)
+		await client.start()
+		for index: int in range(3):
+			client.tracker.track_ad("banner", "banner", 0.1, "USD", "", {"index": index})
+		var before: Array = client.tracker.pending_events_for_testing()
+		var event_key: String = "events_" + client._namespace
+		var durable_before: Array = storage.values.get(event_key, []).duplicate(true)
+		storage.refuse_saves = true
+		_check(not client.tracker.track("_admission_probe", {}), "failed persistence truthfully rejects a new event with bound=%s" % bound)
+		_check(client.tracker.pending_events_for_testing() == before, "rejected event cannot evict or remain queued with bound=%s" % bound)
+		_check(storage.values.get(event_key, []) == durable_before, "failed admission preserves prior durable queue with bound=%s" % bound)
+		_check(client.tracker._custom_counts.is_empty(), "rejected event consumes no custom quota")
+		_check(not client.tracker.track_milestone("admission", "retry"), "failed milestone persistence rejects admission")
+		_check(client.tracker._reached_milestone_keys.is_empty() and client.tracker._pending_milestone_keys.is_empty(), "rejected milestone consumes no dedupe key")
+		storage.refuse_saves = false
+		_check(client.tracker.track_milestone("admission", "retry"), "same milestone is accepted after storage recovers")
+		var after: Array = client.tracker.pending_events_for_testing()
+		_check(after.size() == 3 and _event_ids(after).slice(0, 2) == _event_ids(before).slice(1), "successful retry evicts only the oldest prior event")
+		_check(storage.values.get(event_key, []) == after, "successful admission commits exactly the bounded live queue")
+		client.free()
+
+
+func _test_cached_snapshot_does_not_own_new_session() -> void:
+	var storage := MemoryStore.new()
+	var original_transport := RecoveryTransport.new()
+	original_transport.experiments = [{"key": "cached_probe", "experimentId": "cached-experiment", "variant": "cached", "config": {"enabled": true}}]
+	var original := _bounded_client(storage, original_transport, "cache-old", 10)
+	await original.start()
+	original.free()
+	var transport := RecoveryTransport.new()
+	transport.config_ok = false
+	var client := _bounded_client(storage, transport, "cache-new", 10)
+	_check(await client.start(), "cached assignments remain available during offline startup")
+	_check(client.executor("cached_probe").variant("missing") == "cached", "cache preserves experiment assignment usability")
+	_check(client.tracker.track_ad("banner", "banner", 0.1, "USD"), "cached offline event is accepted")
+	var before: Dictionary = client.tracker.pending_events_for_testing()[0]
+	_check(before["contextId"] == "" and before["sessionId"] == "cache-new", "cached context never binds events from the new session")
+	await client.tracker.flush()
+	_check(transport.bodies_for("/v1/events/batch").is_empty(), "cached offline events wait for their own session context")
+	transport.config_ok = true
+	await client.refresh(true)
+	var after: Array = client.tracker.pending_events_for_testing()
+	_check(after.size() == 1 and after[0]["contextId"] == "context-cache-new" and after[0]["eventId"] == before["eventId"], "fresh config binds the original cached-start event to its matching session")
+	client.free()
+
+
+func _test_attribution_and_identifiers_wait_for_matching_context() -> void:
+	var storage := MemoryStore.new()
+	var transport := RecoveryTransport.new()
+	var client := _bounded_client(storage, transport, "ownership-old", 10)
+	await client.start()
+	transport.config_ok = false
+	await client.new_session("ownership-pending")
+	var result: Dictionary = await client.set_attribution("adjust", {"network": "network-new"})
+	_check(result.get("error") == "context_not_ready", "attribution waits while the new session has no matching context")
+	_check(transport.bodies_for("/v1/attribution").is_empty(), "old cached context never leaks into new attribution requests")
+	var original: Dictionary = client._pending_attributions.get("adjust", {}).duplicate(true)
+	_check(original.get("contextId") == "" and original.get("sessionId") == "ownership-pending", "waiting attribution durably retains its original session without a stale context")
+	var identifier: Dictionary = await client.set_adjust_adid("adid-new")
+	_check(identifier.get("error") == "context_not_ready" and transport.bodies_for("/v1/context-identifiers").is_empty(), "identifier setter refuses a stale context during new-session recovery")
+	client.free()
+	var recovered_transport := RecoveryTransport.new()
+	var recovered := _bounded_client(storage, recovered_transport, "ownership-current", 10)
+	await recovered.start()
+	recovered._tick_pending_requests(60.0)
+	var bodies: Array = recovered_transport.bodies_for("/v1/attribution")
+	_check(bodies.size() == 1 and bodies[0]["sessionId"] == "ownership-pending" and bodies[0]["contextId"] == "context-ownership-pending", "historical attribution recovers with its original matching context after restart")
+	if bodies.size() == 1:
+		for field: String in ["userId", "attributionHash", "attributedAt", "attribution"]:
+			_check(bodies[0][field] == original[field], "attribution recovery preserves " + field)
+	await recovered.set_adjust_adid("adid-current")
+	var identifiers := recovered_transport.bodies_for("/v1/context-identifiers")
+	_check(identifiers.size() == 1 and identifiers[0]["sessionId"] == "ownership-current" and identifiers[0]["contextId"] == "context-ownership-current", "identifier uses the current session after historical attribution recovery")
+	recovered.free()
 
 
 func _test_queue_limit_drops_oldest_silently() -> void:
@@ -1339,6 +1442,25 @@ func _test_attribution_revoke_inflight() -> void:
 	client.free()
 
 
+func _test_malformed_identifier_responses() -> void:
+	var transport := TransportFixture.new()
+	var client := _make_client({"transport": transport, "platform": "android", "logger": null, "json_decoder": ImmediateDecoder.new()})
+	await client.refresh(true)
+	for malformed: Dictionary in [
+		{"ok": "false", "accepted": 1}, {"ok": true, "accepted": "1"},
+		{"ok": true, "accepted": -1}, {"ok": true, "accepted": 1.5},
+		{"ok": true, "accepted": 2}, {"ok": false, "accepted": 0}, {},
+	]:
+		transport.identifier_response = malformed
+		var result: Dictionary = await client.set_adjust_adid("adid-1")
+		_check(result.get("ok") == false and result.get("accepted") == 0 and result.get("error") == "invalid_context_identifier_response", "malformed identifier response returns a structured failure: " + JSON.stringify(malformed))
+		_check(client.last_error == "invalid_context_identifier_response", "malformed identifier failure sets the public error")
+	transport.identifier_response = {"ok": true, "accepted": 0}
+	var duplicate: Dictionary = await client.set_adjust_adid("adid-1")
+	_check(duplicate.get("ok") == true and duplicate.get("accepted") == 0, "valid identifier duplicate acknowledgement succeeds")
+	client.free()
+
+
 func _test_context_identifiers() -> void:
 	var transport := TransportFixture.new()
 	var client := _make_client({"transport": transport})
@@ -1451,6 +1573,47 @@ func _test_automatic_idfv() -> void:
 		"idfv does not depend on measurement consent"
 	)
 	denied.free()
+
+
+func _test_automatic_idfv_after_context_recovery() -> void:
+	for has_cache: bool in [false, true]:
+		var storage := MemoryStore.new()
+		if has_cache:
+			var previous := _make_client({
+				"transport": RecoveryTransport.new(), "storage": storage, "platform": "ios",
+				"session_id": "idfv-previous", "json_decoder": ImmediateDecoder.new(), "logger": null,
+			})
+			previous.set_process(false)
+			await previous.start()
+			previous.free()
+		var transport := RecoveryTransport.new()
+		transport.config_ok = false
+		var client := _make_client({
+			"transport": transport, "storage": storage, "platform": "ios",
+			"session_id": "idfv-offline", "json_decoder": ImmediateDecoder.new(), "logger": null,
+			"measurement_allowed": false, "measurement_resolved": true,
+		})
+		client.set_process(false)
+		await client.start()
+		_check(transport.bodies_for("/v1/context-identifiers").is_empty() and not client._reported_idfv,
+			"offline startup defers IDFV without using cached context: cached=%s" % has_cache)
+		await client.new_session("idfv-current")
+		transport.config_ok = true
+		await client._fetch_pending_config("idfv-offline")
+		_check(transport.bodies_for("/v1/context-identifiers").is_empty() and not client._reported_idfv,
+			"historical config recovery cannot trigger automatic IDFV")
+		client._tick_pending_requests(60.0)
+		var bodies: Array = transport.bodies_for("/v1/context-identifiers")
+		_check(bodies.size() == 1 and client._reported_idfv,
+			"first recovered current context automatically reports the deferred IDFV: cached=%s" % has_cache)
+		if bodies.size() == 1:
+			_check(bodies[0]["identifierType"] == "idfv" and bodies[0]["sessionId"] == "idfv-current" \
+				and bodies[0]["contextId"] == "context-idfv-current", "recovered IDFV has matching current-session ownership")
+		await client.refresh(true)
+		await client.new_session("idfv-later")
+		_check(transport.bodies_for("/v1/context-identifiers").size() == 1,
+			"later refreshes and sessions preserve once-per-startup automatic IDFV")
+		client.free()
 
 
 ## The automatic report is fire-and-forget from start(). It must not write to
