@@ -217,6 +217,30 @@ jobs:
           cp -R godot/addons/gamealgo "$staging/gamealgo"
           cp godot/README.md "$staging/README.md"
 
+          # Raw GDScript is the release artifact, so inject the immutable tag
+          # version into the staged copy instead of leaving the source default
+          # embedded in every future archive.
+          VERSION="$version" STAGING="$staging" node <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+
+          const version = process.env.VERSION;
+          const staging = process.env.STAGING;
+          const replacements = [
+            ["gamealgo/gamealgo_client.gd", /const SDK_VERSION := "[^"]+"/, `const SDK_VERSION := "${version}"`],
+            ["gamealgo/gamealgo_tracker.gd", /var _sdk_version := "[^"]+"/, `var _sdk_version := "${version}"`],
+            ["gamealgo/gamealgo_tracker.gd", /options\.get\("sdk_version", "[^"]+"\)/, `options.get("sdk_version", "${version}")`],
+          ];
+          for (const [relative, pattern, replacement] of replacements) {
+            const filename = path.join(staging, relative);
+            const source = fs.readFileSync(filename, "utf8");
+            if (!pattern.test(source)) {
+              throw new Error(`release version marker missing from ${relative}: ${pattern}`);
+            }
+            fs.writeFileSync(filename, source.replace(pattern, replacement));
+          }
+          NODE
+
           # The macOS runtime is a test-host artifact, never shipped.
           rm -rf "$staging/gamealgo/runtime/macos"
 

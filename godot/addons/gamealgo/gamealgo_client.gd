@@ -603,6 +603,15 @@ func _send_pending_attribution(provider: String) -> Dictionary:
 	if not _attribution_allowed:
 		return {"ok": false, "accepted": 0, "error": "attribution_paused"}
 	var body: Dictionary = _pending_attributions[provider].duplicate(true)
+	# A server acknowledgement is persisted before the pending envelope is
+	# removed. If that cleanup failed before a restart, reconcile storage without
+	# sending the already acknowledged occurrence over the network again.
+	if String(_attribution_acks().get(provider, "")) == String(body["attributionHash"]):
+		if _remove_pending_attribution(provider, body):
+			_retry_states.erase("attribution:" + provider)
+		else:
+			_schedule_retry("attribution:" + provider)
+		return {"ok": true, "accepted": 0, "attributionHash": body["attributionHash"]}
 	if String(body.get("contextId", "")).is_empty():
 		_schedule_retry("attribution:" + provider)
 		return {"ok": false, "accepted": 0, "error": "context_not_ready"}
@@ -628,12 +637,24 @@ func _send_pending_attribution(provider: String) -> Dictionary:
 	if not _store_attribution_acks(acknowledged):
 		_schedule_retry("attribution:" + provider)
 		return {"ok": false, "accepted": int(value["accepted"]), "error": "attribution_ack_persistence_failed"}
-	if _pending_attributions.get(provider, {}) == body:
-		_pending_attributions.erase(provider)
-		_persist_request_queue("pending_attribution_", _pending_attributions)
-	_retry_states.erase("attribution:" + provider)
+	if _remove_pending_attribution(provider, body):
+		_retry_states.erase("attribution:" + provider)
+	else:
+		_schedule_retry("attribution:" + provider)
+		_log("attribution pending cleanup deferred: provider=%s" % provider)
 	_log("attribution synced: provider=%s, accepted=%d" % [provider, int(value["accepted"])])
 	return {"ok": true, "accepted": int(value["accepted"]), "attributionHash": body["attributionHash"]}
+
+
+func _remove_pending_attribution(provider: String, body: Dictionary) -> bool:
+	if _pending_attributions.get(provider, {}) != body:
+		return true
+	var remaining := _pending_attributions.duplicate(true)
+	remaining.erase(provider)
+	if not _persist_request_queue("pending_attribution_", remaining):
+		return false
+	_pending_attributions.erase(provider)
+	return true
 
 
 func set_adjust_adid(value: Variant, observed_at: String = "") -> Dictionary:

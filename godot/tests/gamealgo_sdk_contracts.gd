@@ -197,6 +197,19 @@ class ConfigSaveFailureStore:
 		return super.save_json(key, value)
 
 
+class RemovalFailureStore:
+	extends MemoryStore
+
+	var failures_remaining := 0
+	var failing_prefix := ""
+
+	func remove(key: String) -> bool:
+		if key.begins_with(failing_prefix) and failures_remaining > 0:
+			failures_remaining -= 1
+			return false
+		return super.remove(key)
+
+
 class UnavailableRuntime:
 	extends RefCounted
 
@@ -239,6 +252,7 @@ func _run() -> void:
 	await _test_script_runtime_fails_closed()
 	await _test_custom_event_quota()
 	await _test_quota_buckets_follow_the_context()
+	await _test_quota_survives_restart()
 	await _test_quota_diagnostic_is_reported_once()
 	await _test_milestone_deduplication()
 	await _test_milestone_survives_restart()
@@ -252,6 +266,7 @@ func _run() -> void:
 	await _test_unbound_sessions_survive_restart()
 	await _test_overlapping_config_sessions()
 	await _test_attribution_autonomous_retry()
+	await _test_attribution_ack_cleanup_survives_restart()
 	await _test_attribution_consent_and_restart()
 	await _test_attribution_newer_value_race()
 	await _test_attribution_pause_inflight()
@@ -884,6 +899,32 @@ func _test_quota_buckets_follow_the_context() -> void:
 	client.free()
 
 
+func _test_quota_survives_restart() -> void:
+	var storage := MemoryStore.new()
+	var first := _make_client({
+		"storage": storage, "transport": RecoveryTransport.new(),
+		"session_id": "quota-restart", "json_decoder": ImmediateDecoder.new(),
+		"logger": null, "platform": "android",
+	})
+	first.set_process(false)
+	for index: int in range(600):
+		first.tracker.track("restart_probe", {"index": index})
+	first.free()
+
+	var restarted := _make_client({
+		"storage": storage, "transport": RecoveryTransport.new(),
+		"session_id": "quota-restart", "json_decoder": ImmediateDecoder.new(),
+		"logger": null, "platform": "android",
+	})
+	restarted.set_process(false)
+	var accepted := 0
+	for index: int in range(500):
+		if restarted.tracker.track("restart_probe", {"index": index + 600}):
+			accepted += 1
+	_check(accepted == 400, "restored custom events retain their pending quota usage")
+	restarted.free()
+
+
 func _test_quota_diagnostic_is_reported_once() -> void:
 	var transport := TransportFixture.new()
 	var client := _make_client({"transport": transport})
@@ -1342,6 +1383,29 @@ func _test_attribution_autonomous_retry() -> void:
 	client._process(61.0)
 	_check(transport.bodies_for("/v1/attribution").size() == 2, "acknowledged attribution is not retried again")
 	client.free()
+
+
+func _test_attribution_ack_cleanup_survives_restart() -> void:
+	var storage := RemovalFailureStore.new()
+	var transport := RecoveryTransport.new()
+	var client := _recovery_client(storage, transport, "ack-cleanup")
+	await client.start()
+	storage.failing_prefix = "pending_attribution_"
+	storage.failures_remaining = 1
+	var result: Dictionary = await client.set_attribution("adjust", {"network": "paid"})
+	var pending_key: String = "pending_attribution_" + String(client._namespace)
+	_check(bool(result.get("ok", false)), "a durable server acknowledgement remains successful when local cleanup is deferred")
+	_check(storage.values.has(pending_key), "failed pending cleanup leaves the acknowledged envelope recoverable")
+	_check(transport.bodies_for("/v1/attribution").size() == 1, "the acknowledged attribution is sent once before restart")
+	client.free()
+
+	var recovered := RecoveryTransport.new()
+	var restarted := _recovery_client(storage, recovered, "ack-cleanup-restart")
+	await restarted.start()
+	restarted._process(61.0)
+	_check(recovered.bodies_for("/v1/attribution").is_empty(), "restart reconciles an acknowledged pending envelope without retransmission")
+	_check(not storage.values.has(pending_key), "restart removes the stale acknowledged pending envelope")
+	restarted.free()
 
 
 func _test_attribution_consent_and_restart() -> void:

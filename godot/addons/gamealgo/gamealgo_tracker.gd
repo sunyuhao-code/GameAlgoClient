@@ -440,6 +440,27 @@ func _merge_custom_bucket(from_key: String, to_key: String) -> void:
 	_custom_counts.erase(from_key)
 
 
+## Quota usage belongs to the event's original context/session, not to the
+## process that happens to restore it. Rebuild the buckets from every durable
+## event before trimming the queue so a restart cannot reset the admission
+## guard or make a previously admitted event disappear from its quota.
+func _restore_custom_event_quota(events: Array[Dictionary]) -> void:
+	_custom_counts.clear()
+	for event: Dictionary in events:
+		var event_type := String(event.get("eventType", ""))
+		if event_type in STANDARD_EVENT_TYPES:
+			continue
+		var context_id := String(event.get("contextId", ""))
+		var session_id := String(event.get("sessionId", ""))
+		var bucket_key := "context:" + context_id if not context_id.is_empty() \
+			else "pending:" + session_id
+		var bucket: Dictionary = _custom_counts.get(bucket_key, {"total": 0, "byType": {}})
+		var by_type: Dictionary = bucket["byType"]
+		bucket["total"] = int(bucket["total"]) + 1
+		by_type[event_type] = int(by_type.get(event_type, 0)) + 1
+		_custom_counts[bucket_key] = bucket
+
+
 func _report_quota_diagnostic(event_type: String, scope: String, limit: int, observed: int) -> void:
 	if not is_instance_valid(_client) or not _client.has_method("report_sdk_diagnostic"):
 		return
@@ -700,6 +721,7 @@ func _restore_queue() -> bool:
 		_event_sequence[event["eventId"]] = _next_event_sequence
 		_next_event_sequence += 1
 		_retry_batch.append(event.duplicate(true))
+	_restore_custom_event_quota(_pending_events())
 	var trimmed := _enforce_queue_limit()
 	_restore_pending_milestones()
 	_has_persisted_queue = not _retry_batch.is_empty()
