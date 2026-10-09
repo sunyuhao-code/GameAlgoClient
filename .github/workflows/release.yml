@@ -303,6 +303,7 @@ jobs:
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           # Only this job touches the Release, so `create` cannot race another
           # workflow. `upload --clobber` still covers a re-run of the same tag.
