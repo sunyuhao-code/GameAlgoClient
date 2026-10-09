@@ -38,9 +38,9 @@ function resolveGodot() {
   return candidate;
 }
 
-function run(godot, args) {
+function run(godot, args, capture = false) {
   return spawnSync(godot, ["--headless", "--path", projectPath, ...args], {
-    stdio: "inherit",
+    stdio: capture ? "pipe" : "inherit",
     encoding: "utf8",
   });
 }
@@ -72,8 +72,13 @@ if (hasRuntime) {
 let failed = 0;
 for (const suite of suites) {
   console.log(`\n== ${suite} ==`);
-  const result = run(godot, ["--script", suite]);
-  if (result.status !== 0) {
+  const result = run(godot, ["--script", suite], true);
+  process.stdout.write(result.stdout ?? "");
+  process.stderr.write(result.stderr ?? "");
+  const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  const completionMarker = suite.endsWith("parse_check.gd") ? "parse_check ok:" : "RESULT:";
+  const scriptLoadFailed = /SCRIPT ERROR:|Failed to load script/.test(output);
+  if (result.status !== 0 || scriptLoadFailed || !output.includes(completionMarker)) {
     console.error(`FAILED: ${suite} (exit ${result.status})`);
     failed += 1;
   }
