@@ -139,7 +139,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release
-          package="$(npm pack ./web --pack-destination release --json | node -e 'let data=""; process.stdin.on("data", chunk => data += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(data)[0].filename))')"
+          package="$(npm pack ./web --pack-destination release --ignore-scripts --json | node -e 'let data=""; process.stdin.on("data", chunk => data += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(data)[0].filename))')"
           expected="gamealgo-web-${{ needs.version.outputs.value }}.tgz"
           [[ "$package" == "$expected" ]] || { echo "unexpected Web package name: $package" >&2; exit 1; }
           sha256sum "release/$package" > "release/$package.sha256"
