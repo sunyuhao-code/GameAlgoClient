@@ -78,7 +78,7 @@ export function defineMultiplayerProtocol(definition: MultiplayerProtocolDefinit
   return {
     id: definition.id,
     version: definition.version,
-    hash: `ga1_${fnv1a64(JSON.stringify(definition))}`,
+    hash: `ga1_${fnv1a64(JSON.stringify(canonicalDefinition(definition)))}`,
     encodeRoomInit: roomInit.encode,
     decodeRoomInit: roomInit.decode,
     encodeSharedState: sharedState.encode,
@@ -104,6 +104,40 @@ export function defineMultiplayerProtocol(definition: MultiplayerProtocolDefinit
       return { type: event.name, payload: codec(event.schema).decode(value.subarray(1)) };
     },
   };
+}
+
+function canonicalDefinition(definition: MultiplayerProtocolDefinition): Record<string, unknown> {
+  return {
+    id: definition.id,
+    version: definition.version,
+    roomInit: canonicalStruct(definition.roomInit),
+    sharedState: canonicalStruct(definition.sharedState),
+    seatState: canonicalStruct(definition.seatState),
+    hostState: canonicalStruct(definition.hostState),
+    input: canonicalStruct(definition.input),
+    ...(definition.events === undefined ? {} : {
+      events: Object.fromEntries(Object.entries(definition.events).map(([name, schema]) => [name, canonicalStruct(schema)])),
+    }),
+  };
+}
+
+function canonicalStruct(schema: MultiplayerStructSchema): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(schema).map(([name, field]) => [name, canonicalSchema(field)]));
+}
+
+function canonicalSchema(schema: MultiplayerFieldSchema): unknown {
+  if (typeof schema === "string") return schema;
+  switch (schema.type) {
+    case "string":
+    case "bytes":
+      return { type: schema.type, maxBytes: schema.maxBytes };
+    case "enum":
+      return { type: schema.type, values: [...schema.values] };
+    case "array":
+      return { type: schema.type, items: canonicalSchema(schema.items), maxLength: schema.maxLength };
+    case "struct":
+      return { type: schema.type, fields: canonicalStruct(schema.fields) };
+  }
 }
 
 class BinaryWriter {
