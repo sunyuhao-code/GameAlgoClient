@@ -14,9 +14,33 @@ test("static multiplayer protocol round-trips bounded binary values", () => {
     events: { winner: { seat: "u8" } },
   });
   assert.match(protocol.hash, /^ga1_[0-9a-f]{16}$/);
+  assert.equal(protocol.hash, "ga1_5108590b8da4fbfe");
   assert.deepEqual(protocol.decodeRoomInit(protocol.encodeRoomInit({ seed: 42, map: "island" })), { seed: 42, map: "island" });
   assert.deepEqual(protocol.decodeSharedState(protocol.encodeSharedState({ tick: 7, x: -12, alive: true })), { tick: 7, x: -12, alive: true });
   assert.deepEqual(protocol.decodeHostState(protocol.encodeHostState({ tick: 9, scores: [1, 2] })), { tick: 9, scores: [1, 2] });
   assert.deepEqual(protocol.decodeEvent(protocol.encodeEvent("winner", { seat: 1 })), { type: "winner", payload: { seat: 1 } });
   assert.throws(() => protocol.encodeRoomInit({ seed: 1, map: "x".repeat(17) }), /bound/);
+});
+
+test("protocol hash ignores schema property insertion order", () => {
+  const base = {
+    id: "canonical",
+    version: 1,
+    roomInit: { map: { type: "string", maxBytes: 16 } },
+    sharedState: {},
+    seatState: {},
+    hostState: { scores: { type: "array", items: "u16", maxLength: 4 } },
+    input: {},
+  } as const;
+  const reordered = {
+    id: "canonical",
+    version: 1,
+    roomInit: { map: { maxBytes: 16, type: "string" } },
+    sharedState: {},
+    seatState: {},
+    hostState: { scores: { maxLength: 4, items: "u16", type: "array" } },
+    input: {},
+  } as const;
+
+  assert.equal(defineMultiplayerProtocol(base).hash, defineMultiplayerProtocol(reordered).hash);
 });
