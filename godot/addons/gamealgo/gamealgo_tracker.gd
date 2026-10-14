@@ -6,6 +6,7 @@ const GameAlgoJsonStore := preload("res://addons/gamealgo/internal/json_store.gd
 const DEFAULT_MAX_BATCH_SIZE := 100
 const DEFAULT_QUEUE_LIMIT := 1000
 const DEFAULT_FLUSH_INTERVAL := 30.0
+const DEFAULT_FLUSH_TIMEOUT_MS := 2500
 
 ## Standard semantic events are never charged against the custom-event quota.
 const STANDARD_EVENT_TYPES := [
@@ -21,6 +22,8 @@ const QUOTA_DIAGNOSTIC_LIMIT := 10
 var _client: Object
 var _storage: Variant
 var _storage_key := ""
+var _event_backend: Variant
+var _native_events := false
 var _max_batch_size := DEFAULT_MAX_BATCH_SIZE
 var _queue_limit := DEFAULT_QUEUE_LIMIT
 var _flush_interval := DEFAULT_FLUSH_INTERVAL
@@ -68,6 +71,8 @@ func configure(client: Object, storage: Variant, options: Dictionary) -> bool:
 	_client = client
 	_storage = storage
 	_storage_key = String(options.get("storage_key", "events"))
+	_event_backend = options.get("event_backend", null)
+	_native_events = _event_backend != null
 	_milestone_storage_key = String(options.get("milestone_storage_key", ""))
 	_restore_reached_milestones()
 	_max_batch_size = clampi(int(options.get("max_batch_size", 100)), 1, 100)
@@ -87,6 +92,18 @@ func configure(client: Object, storage: Variant, options: Dictionary) -> bool:
 	_measurement_allowed = bool(measurement_value)
 	_measurement_resolved = bool(measurement_resolved_value)
 	_session_start_unix = Time.get_unix_time_from_system()
+	if _native_events:
+		var configured: Variant = _event_backend.call(
+			"event_backend_configure",
+			String(options.get("native_event_storage_path", "")),
+			String(options.get("event_endpoint", "")),
+			String(options.get("game_key", "")),
+			_max_batch_size,
+			_queue_limit,
+			_platform
+		)
+		if not configured is bool or not bool(configured):
+			return false
 	if _measurement_allowed:
 		return _restore_queue()
 	return _clear_persisted() if _measurement_resolved else true
@@ -188,12 +205,20 @@ func bind_session_context(session_id: String, context_id: String) -> bool:
 	var normalized := GameAlgoUtil.clean(context_id)
 	if normalized.is_empty():
 		return false
+	if _native_events:
+		var bound: Variant = _event_backend.call(
+			"event_backend_bind_context", session_id, normalized
+		)
+		if not bound is bool or not bool(bound) or not _sync_native_queue(false):
+			return false
 	if session_id == _session_id:
 		_context_id = normalized
 	_merge_custom_bucket("pending:" + session_id, "context:" + normalized)
 	_bind_context(_retry_batch, session_id, normalized)
 	_bind_context(_queue, session_id, normalized)
 	_remember_bound_milestones(normalized)
+	if _native_events:
+		return true
 	if _has_persisted_queue:
 		return _persist_pending()
 	return true
@@ -223,7 +248,7 @@ func track(event_type: String, payload: Variant = {}) -> bool:
 			or event_type.is_empty() or event_type != event_type.strip_edges():
 		return false
 	# An outstanding batch cannot be evicted: the server may already have it.
-	if _inflight_batch.size() >= _queue_limit:
+	if not _native_events and _inflight_batch.size() >= _queue_limit:
 		return false
 	if not _consume_custom_event_quota(event_type, false):
 		return false
@@ -247,6 +272,31 @@ func track(event_type: String, payload: Variant = {}) -> bool:
 	}
 	if not _account_user_id.is_empty():
 		event["accountUserId"] = _account_user_id
+	if _native_events:
+		var count_before := pending_count()
+		var stored: Variant = _event_backend.call(
+			"event_backend_enqueue", GameAlgoUtil.canonical_json(event)
+		)
+		if not stored is bool or not bool(stored):
+			_log("event persistence failed: error=%s, pending=%d" % [
+				_native_backend_error(), pending_count(),
+			])
+			return false
+		if not _sync_native_queue(false):
+			# The native write is already durable, so never tell the app to retry
+			# with a second event ID merely because this in-memory mirror failed.
+			_queue.append(event.duplicate(true))
+			_event_sequence[event["eventId"]] = _next_event_sequence
+			_next_event_sequence += 1
+		_consume_custom_event_quota(event_type)
+		if not String(milestone.get("key", "")).is_empty():
+			_remember_milestone(String(milestone["key"]), bool(milestone.get("durable", false)))
+		if count_before >= _queue_limit and is_instance_valid(_client) \
+				and _client.has_method("_prune_pending_configs"):
+			_client.call("_prune_pending_configs")
+		if pending_count() >= _max_batch_size:
+			flush()
+		return true
 	# Commit the bounded candidate before accepting it. A refused write must not
 	# leave an event queued for later upload, evict existing events, or consume
 	# quota/milestone state; callers may retry an admission that returned false.
@@ -565,11 +615,44 @@ func track_session_end(payload: Variant = {}, flush_immediately: bool = true) ->
 	return accepted
 
 
-func flush() -> bool:
+func flush(timeout_ms: int = DEFAULT_FLUSH_TIMEOUT_MS) -> Dictionary:
+	if _native_events:
+		return await _flush_native(timeout_ms)
+	return await _flush_legacy()
+
+
+func _flush_native(timeout_ms: int) -> Dictionary:
+	if not _measurement_allowed:
+		return _flush_result(false, 0, false, "measurement_not_allowed", [])
+	if not is_instance_valid(_client):
+		return _flush_result(false, 0, false, "client_unavailable", [])
+	# This call starts the native worker synchronously. The process-frame await is
+	# only for returning a result to foreground callers; upload and ACK handling
+	# continue when Android/iOS stops Godot frame delivery.
+	var job_value: Variant = _event_backend.call("event_backend_flush", timeout_ms)
+	var job_id := int(job_value) if job_value is int else -1
+	if job_id <= 0:
+		return _flush_result(false, 0, false, _native_backend_error(), [])
+	while true:
+		var encoded := String(_event_backend.call("event_backend_result_json", job_id))
+		if not encoded.is_empty():
+			var parsed: Variant = JSON.parse_string(encoded)
+			if not parsed is Dictionary:
+				return _flush_result(false, 0, false, "invalid_native_flush_result", [])
+			_sync_native_queue(false)
+			return (parsed as Dictionary).duplicate(true)
+		await _client.get_tree().process_frame
+	return _flush_result(false, 0, false, "native_flush_interrupted", [])
+
+
+func _flush_legacy() -> Dictionary:
 	if not _measurement_allowed or _is_flushing or not is_instance_valid(_client):
-		return false
+		return _flush_result(false, 0, false, "flush_unavailable", [])
 	_is_flushing = true
 	var consent_generation := _consent_generation
+	var accepted_total := 0
+	var acked_event_ids: Array[String] = []
+	var acked_events: Array[Dictionary] = []
 	while not _retry_batch.is_empty() or not _queue.is_empty():
 		var pending := _pending_events()
 		var batch: Array[Dictionary] = []
@@ -583,7 +666,9 @@ func flush() -> bool:
 		if batch.is_empty():
 			_persist_pending()
 			_is_flushing = false
-			return false
+			return _flush_result(
+				false, accepted_total, false, "context_not_ready", acked_event_ids, acked_events
+			)
 		_inflight_batch = batch.duplicate(true)
 		var response: Variant = await _client.call("upload_events", batch)
 		if not _measurement_allowed or consent_generation != _consent_generation:
@@ -591,7 +676,9 @@ func flush() -> bool:
 			# accepted after a later grant while this upload was in flight.
 			_inflight_batch.clear()
 			_is_flushing = false
-			return false
+			return _flush_result(
+				false, accepted_total, false, "measurement_changed", acked_event_ids, acked_events
+			)
 		if not response is Dictionary or not response.get("ok", null) is bool \
 				or not response["ok"] or int(response.get("accepted", -1)) != batch.size():
 			_retry_batch = _inflight_batch.duplicate(true)
@@ -604,27 +691,67 @@ func flush() -> bool:
 				_has_persisted_queue = true
 				_persist_pending()
 			_is_flushing = false
-			return false
+			var error := String(response.get("error", "upload_failed")) \
+					if response is Dictionary else "upload_failed"
+			return _flush_result(
+				false, accepted_total, false, error, acked_event_ids, acked_events
+			)
 		for event: Dictionary in _inflight_batch:
 			_event_sequence.erase(event["eventId"])
+			acked_event_ids.append(String(event["eventId"]))
+			acked_events.append({
+				"event_id": String(event["eventId"]),
+				"event_type": String(event["eventType"]),
+			})
+		accepted_total += batch.size()
 		_inflight_batch.clear()
 		_consecutive_failures = 0
 		_log("flush ok: accepted=%d, remaining=%d" % [batch.size(), _queue.size()])
 		if _has_persisted_queue and not _persist_pending():
 			_is_flushing = false
-			return false
+			return _flush_result(
+				false, accepted_total, false, "event_persistence_failed", acked_event_ids,
+				acked_events
+			)
 	if _has_persisted_queue and not _clear_persisted():
 		_is_flushing = false
-		return false
+		return _flush_result(
+			false, accepted_total, false, "event_persistence_failed", acked_event_ids,
+			acked_events
+		)
 	_is_flushing = false
-	return true
+	return _flush_result(true, accepted_total, false, "", acked_event_ids, acked_events)
+
+
+func _flush_result(
+	ok: bool,
+	accepted: int,
+	timed_out: bool,
+	error: String,
+	acked_event_ids: Array[String],
+	acked_events: Array[Dictionary] = []
+) -> Dictionary:
+	return {
+		"ok": ok,
+		"accepted": accepted,
+		"remaining": pending_count(),
+		"timed_out": timed_out,
+		"error": error,
+		"acked_event_ids": acked_event_ids.duplicate(),
+		"acked_events": acked_events.duplicate(true),
+	}
 
 
 func pending_count() -> int:
+	if _native_events:
+		var value: Variant = _event_backend.call("event_backend_pending_count")
+		return int(value) if value is int else -1
 	return _retry_batch.size() + _inflight_batch.size() + _queue.size()
 
 
 func pending_events_for_testing() -> Array[Dictionary]:
+	if _native_events:
+		_sync_native_queue(false)
 	return _pending_events().duplicate(true)
 
 
@@ -698,6 +825,8 @@ func _bind_context(events: Array[Dictionary], session_id: String, context_id: St
 
 
 func _restore_queue() -> bool:
+	if _native_events:
+		return _restore_native_queue()
 	if _storage == null or not _storage.has_method("load_json_result"):
 		return false
 	var loaded: Variant = _storage.call("load_json_result", _storage_key)
@@ -730,6 +859,74 @@ func _restore_queue() -> bool:
 	return _persist_pending() if trimmed else true
 
 
+func _restore_native_queue() -> bool:
+	# Import the former app-owned event key once. Deduplication happens by
+	# eventId in native storage; the old key is removed only after import commits.
+	if _storage == null or not _storage.has_method("load_json_result"):
+		return false
+	var loaded: Variant = _storage.call("load_json_result", _storage_key)
+	if not loaded is Dictionary:
+		return false
+	var status := String(loaded.get("status", ""))
+	if status == GameAlgoJsonStore.STATUS_LOADED:
+		var restored: Variant = loaded.get("value", null)
+		if not restored is Array:
+			return false
+		var valid_events: Array[Dictionary] = []
+		for value: Variant in restored:
+			if _valid_event(value):
+				valid_events.append((value as Dictionary).duplicate(true))
+		var imported: Variant = _event_backend.call(
+			"event_backend_import", GameAlgoUtil.canonical_json(valid_events)
+		)
+		if not imported is bool or not bool(imported):
+			return false
+		var removed: Variant = _storage.call("remove", _storage_key)
+		if not removed is bool or not bool(removed):
+			_log("legacy event queue imported but cleanup will retry")
+	elif status != GameAlgoJsonStore.STATUS_MISSING:
+		return false
+	if not _sync_native_queue(true):
+		return false
+	if not _retry_batch.is_empty():
+		_log("restored %d persisted event(s)" % _retry_batch.size())
+	return true
+
+
+func _sync_native_queue(rebuild_derived: bool) -> bool:
+	var encoded := String(_event_backend.call("event_backend_snapshot_json"))
+	var decoded: Variant = JSON.parse_string(encoded)
+	if not decoded is Array:
+		return false
+	var events: Array[Dictionary] = []
+	for value: Variant in decoded:
+		if not _valid_event(value):
+			return false
+		events.append((value as Dictionary).duplicate(true))
+	_retry_batch.clear()
+	_inflight_batch.clear()
+	_queue.clear()
+	_event_sequence.clear()
+	_next_event_sequence = 0
+	for event: Dictionary in events:
+		_event_sequence[event["eventId"]] = _next_event_sequence
+		_next_event_sequence += 1
+		_retry_batch.append(event)
+	_has_persisted_queue = false
+	if rebuild_derived:
+		_restore_custom_event_quota(events)
+	_restore_pending_milestones()
+	return true
+
+
+func _native_backend_error() -> String:
+	if not _native_events:
+		return "native_event_backend_unavailable"
+	var value: Variant = _event_backend.call("event_backend_last_error")
+	var error := String(value)
+	return error if not error.is_empty() else "native_event_backend_failed"
+
+
 func _valid_event(value: Variant) -> bool:
 	if not value is Dictionary or not GameAlgoUtil.valid_json_value(value):
 		return false
@@ -757,6 +954,8 @@ func persist_pending() -> bool:
 
 
 func _persist_pending() -> bool:
+	if _native_events:
+		return true
 	return _persist_events(_pending_events())
 
 
@@ -773,6 +972,14 @@ func _persist_events(pending: Array[Dictionary]) -> bool:
 
 
 func _clear_persisted() -> bool:
+	if _native_events:
+		var native_value: Variant = _event_backend.call("event_backend_clear")
+		var native_removed := native_value is bool and bool(native_value)
+		var legacy_value: Variant = _storage.call("remove", _storage_key) \
+				if _storage != null and _storage.has_method("remove") else false
+		var legacy_removed := legacy_value is bool and bool(legacy_value)
+		_has_persisted_queue = false
+		return native_removed and legacy_removed
 	var result: Variant = _storage.call("remove", _storage_key) \
 			if _storage != null and _storage.has_method("remove") else false
 	var removed := result is bool and bool(result)

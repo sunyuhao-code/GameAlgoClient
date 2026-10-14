@@ -47,6 +47,7 @@ var _storage: Variant
 var _transport: Variant
 var _json_decoder: Variant
 var _runtime: Variant
+var _event_backend: Variant
 var _identity: Dictionary = {}
 var _snapshot: Dictionary = {}
 var _namespace := ""
@@ -175,9 +176,27 @@ func configure(options: Dictionary) -> bool:
 		"%s:%s:%s" % [_base_url, GameAlgoUtil.sha256_text(_game_key), _identity["userId"]]
 	)
 	_snapshot_key = "snapshot_" + _namespace
+	_event_backend = options.get("event_backend", null)
+	var native_events_required := _event_backend != null or (
+		not options.has("transport") and OS.get_name().to_lower() in ALLOWED_PLATFORMS
+	)
+	if native_events_required and _event_backend == null:
+		if not Engine.has_singleton("GameAlgoRuntime"):
+			last_error = "native_event_backend_unavailable"
+			return false
+		_event_backend = Engine.get_singleton("GameAlgoRuntime")
+	if _event_backend != null and not _valid_event_backend(_event_backend):
+		last_error = "native_event_backend_unavailable"
+		return false
 	var tracker_configured := tracker.configure(self, _storage, {
 		"storage_key": "events_" + _namespace,
 		"milestone_storage_key": "milestones_" + _namespace,
+		"event_backend": _event_backend,
+		"native_event_storage_path": ProjectSettings.globalize_path(
+			"user://gamealgo/events_" + _namespace + ".json"
+		),
+		"event_endpoint": GameAlgoUtil.endpoint(_base_url, "/v1/events/batch"),
+		"game_key": _game_key,
 		"max_batch_size": int(options.get("event_max_batch_size", 100)),
 		"queue_limit": int(options.get("event_queue_limit", 1000)),
 		"flush_interval": float(options.get("event_flush_interval", 30.0)),
@@ -194,7 +213,8 @@ func configure(options: Dictionary) -> bool:
 		"measurement_resolved": bool(measurement_resolved_value),
 	})
 	if not tracker_configured:
-		last_error = "event_storage_cleanup_failed"
+		last_error = "native_event_backend_configuration_failed" \
+				if _event_backend != null else "event_storage_cleanup_failed"
 		return false
 	_attribution_allowed = bool(attribution_value)
 	if not _restore_pending_requests():
@@ -513,6 +533,13 @@ func upload_events(events: Array[Dictionary]) -> Dictionary:
 		request_failed.emit("invalid_event_response")
 		return {"ok": false, "accepted": 0, "error": "invalid_event_response"}
 	return {"ok": bool(value["ok"]), "accepted": int(value["accepted"])}
+
+
+## Starts the event upload before the first await. On Android and iOS the
+## default backend then owns the work, so callers may intentionally omit await
+## when entering the background. Await it when the ACK result is needed.
+func flush(timeout_ms: int = 2500) -> Dictionary:
+	return await tracker.flush(timeout_ms)
 
 
 ## Uploads install attribution for one provider. Call it after every attribution
@@ -844,7 +871,7 @@ func _notification(what: int) -> void:
 			return
 		_persist_config_requests()
 		tracker.persist_pending()
-		tracker.flush()
+		tracker.flush(2500)
 
 
 func _config_request() -> Dictionary:
@@ -1309,6 +1336,26 @@ func _valid_preload(value: Variant) -> bool:
 				return false
 		return true
 	return false
+
+
+func _valid_event_backend(backend: Variant) -> bool:
+	if not backend is Object:
+		return false
+	for method: String in [
+		"event_backend_configure",
+		"event_backend_enqueue",
+		"event_backend_import",
+		"event_backend_bind_context",
+		"event_backend_clear",
+		"event_backend_snapshot_json",
+		"event_backend_pending_count",
+		"event_backend_flush",
+		"event_backend_result_json",
+		"event_backend_last_error",
+	]:
+		if not backend.has_method(method):
+			return false
+	return true
 
 
 func _normalize_file_name(value: String) -> String:

@@ -195,6 +195,7 @@ jobs:
           unzip -q "$archive"
           export GODOT_BIN="$PWD/Godot.app/Contents/MacOS/Godot"
           cargo test --locked --manifest-path runtime/rust/Cargo.toml
+          cargo test --locked --manifest-path runtime/godot/Cargo.toml
           npm run build:godot-runtime
           npm run check:godot
 

@@ -1,6 +1,6 @@
 # GameAlgo Godot SDK
 
-这是符合 Protocol v1 的 Godot 4 SDK，用 GDScript 直接访问 GameAlgo HTTPS API，**不桥接** iOS / Android SDK。
+这是符合 Protocol v1 的 Godot 4 SDK。配置、实验和归因仍由 GDScript 直接访问 GameAlgo HTTPS API；事件队列与 `/v1/events/batch` 上传使用包内的跨平台原生 GDExtension，使 Android/iOS 停止 Godot 帧循环后仍能完成 ACK。
 
 支持 `android` 和 `ios` 两个导出目标。桌面导出（macOS / Windows / Linux）不支持：GameAlgo 服务端只接受 `ios`、`android`、`maker`、`web` 四个平台值，桌面构建会在 `configure` 时以 `invalid_platform` 拒绝，不会发出请求。
 
@@ -12,7 +12,7 @@
 
 支持 `android` 和 `ios` 两个导出目标。
 
-iOS 的运行时是 **framework 而不是裸 dylib**：dyld 按二进制自带的 install name 解析嵌入的库，只有 framework bundle 能带上这个名字。设备和模拟器各一份（`runtime/ios/` 和 `runtime/ios-simulator/`），两份都要放进去，否则对应环境里运行时单例加载不出来，脚本型策略会失败关闭。
+iOS 的运行时是 **framework 而不是裸 dylib**：dyld 按二进制自带的 install name 解析嵌入的库，只有 framework bundle 能带上这个名字。设备和模拟器各一份（`runtime/ios/` 和 `runtime/ios-simulator/`），两份都要放进去，否则对应环境里运行时单例加载不出来，SDK 会以 `native_event_backend_unavailable` 拒绝配置。
 
 本仓库的 `godot/project.godot` 和 `godot/tests/` 只用于跑测试，游戏不需要。
 
@@ -70,13 +70,24 @@ var decision: Dictionary = await dda.execute({"turn": 7})
 ```gdscript
 client.tracker.track_level_start({"levelId": "level_1"})
 client.tracker.track_level_end({"level": 3, "result": "win"})
-client.tracker.track_ad("rewarded_level_end", "reward", 0.018, "CNY", "admob")
+var admitted := client.tracker.track_ad(
+    "rewarded_level_end", "reward", 0.018, "CNY", "admob"
+)
+# 在 MAX paid callback 内调用。无需 await 也会先启动原生后台任务。
+if admitted:
+    client.flush(2500)
 client.tracker.track_purchase("starter_pack", 4.99, "CNY", {})
 client.tracker.track_session_end()
-await client.tracker.flush()
+var result: Dictionary = await client.flush()
+# result: ok, accepted, remaining, timed_out, error, acked_event_ids, acked_events
+# acked_events: [{"event_id": "...", "event_type": "ad_view"}]
 ```
 
-事件入队时即固定 `eventId`、UTC `timestamp`、本地 `createdLocalAt` 和当前 `sessionId`，延迟上传或重试不会改写发生时间。所有事件（包括已绑定 context 的广告和会话事件）先确认队列落盘，再返回 `true`；这个返回值表示本地持久化接纳，不表示服务端收到。默认每批最多 100 条、每 30 秒 flush 一次。
+事件入队时即固定 `eventId`、UTC `timestamp`、本地 `createdLocalAt` 和当前 `sessionId`，延迟上传或重试不会改写发生时间。所有事件（包括已绑定 context 的广告和会话事件）先确认原生队列落盘，再返回 `true`；这个返回值表示本地持久化接纳，不表示服务端收到。默认每批最多 100 条；队列达到 100 条或经过 30 秒时自动 flush。
+
+`flush(timeout_ms)` 是统一接口。Android/iOS 默认使用与 `SceneTree`、帧循环及 `HTTPRequest` 回调无关的原生 worker；超时是整个 drain 的总预算，队列超过一批时会在预算内连续发送。每批只有在服务端返回完整 ACK 后才原子删除；超时、断网、进程中断或本地提交失败都会保留原 `eventId`，下次启动继续重试。多个同时发生的 flush 会串行合并到当前任务。
+
+SDK 在应用暂停/关闭通知时自动以 2.5 秒预算补一次 flush，但这不能代替 paid callback 中的显式调用：Android force-stop 没有可靠回调，而且 `OnPause` 可能早于 MAX `onPaidEvent`。SDK 不理解 rewarded/interstitial 业务规则，因此由 App 在对应 paid callback 成功入队后触发。
 
 前台会话切换调用 `await client.new_session()`。配置请求失败时，`start()` / `new_session()` / `refresh()` 返回实际失败；SDK 在后续 `_process` 中按 1、2、4、8、16、32、60 秒退避自动重试，之后间隔最多 60 秒，不阻塞游戏。未取得 context 的事件立即持久化，并跨后续会话与重启保留。恢复使用原会话保存的 `/v1/config` 请求原文（包括 `sessionId`、`createdLocalAt`、平台、版本和设备信息），只给该会话的未绑定事件补上服务端返回的真实 context。历史响应不会发布为当前会话的实验分组。冷启动缓存仍可提供实验分组与配置，但它的旧 context 不会绑定新会话；新事件等待自己会话的真实 context。已绑定的事件可以先上传，不被未绑定的旧事件阻塞。
 
@@ -173,7 +184,7 @@ client.configure({ ..., "logger": Callable(self, "_on_gamealgo_log") })
 client.configure({ ..., "logger": null })   # 关掉默认输出，信号照常发
 ```
 
-默认 `logger` 是 `print`，在 Android 和桌面直接可用；**iOS 上必须接 `sdk_log` 信号**，否则什么都看不到。信号不受 `logger` 影响，关掉 `logger` 它照发。
+默认 `logger` 是 `print`，在 Android 和桌面直接可用；**iOS 上 GDScript 日志必须接 `sdk_log` 信号**。原生 flush 的最终 `accepted`、`remaining` 和错误会直接写 Android logcat / iOS NSLog，因此即使 Godot 已停帧也能看到 ACK。信号不受 `logger` 影响，关掉 `logger` 它照发。
 
 所有日志带 `[GameAlgoSDK] ` 前缀，和 iOS / Android SDK 一致。
 
@@ -200,7 +211,7 @@ client.request_failed.connect(func(code: String) -> void:
 
 不要传 `"godot"`，那是引擎不是平台，SDK 会拒绝。取值大小写会被归一化，所以直接传 `OS.get_name().to_lower()` 在移动端是安全的；桌面端会得到 `invalid_platform`，游戏应据此跳过 GameAlgo 初始化。
 
-## 持久化由游戏提供
+## 持久化
 
 `configure` 必须传 `storage`，一个实现了三个方法的对象：
 
@@ -210,9 +221,9 @@ func save_json(key: String, value: Variant) -> bool
 func remove(key: String) -> bool
 ```
 
-SDK 用它持久化匿名身份、配置快照、脚本缓存、原始会话配置请求、归因待发送队列及 ack hash、未上传的事件队列。所有接受的事件立即落盘，应用暂停或关闭通知也会保存队列。下次启动自动恢复，服务端 ACK 后删除。
+SDK 用游戏提供的 storage 持久化匿名身份、配置快照、脚本缓存、原始会话配置请求、归因待发送队列及 ack hash。未上传事件改由包内原生 backend 存储，不经过这个适配器；升级时会一次性导入旧 `events_*` 队列，确认原生写入成功后才删除旧值。所有接受的事件立即落盘，下次启动自动恢复，服务端 ACK 并完成本地原子提交后删除。
 
-`save_json` 必须原子替换单个 key：`true` 表示写入已提交、可供进程重启恢复；`false` 必须保留此前已提交的值。不要先写入新值，再因后续 sync 失败返回 `false` 却仍保留新值，否则调用方重试被拒绝的事件可能生成重复事件。具体文件系统和设备断电保证由游戏存储适配器负责验证。
+`save_json` 必须原子替换单个 key：`true` 表示写入已提交、可供进程重启恢复；`false` 必须保留此前已提交的值。具体文件系统和设备断电保证由游戏存储适配器负责验证。事件文件的原子替换、fsync 和 ACK 删除由原生 backend 自己完成。
 
 `measurement_allowed: false, measurement_resolved: false` 表示事件授权未确定，保留已存事件及其历史配置请求但不恢复发送；显式 `set_measurement_allowed(false)` 才会清除事件。广告归因的暂停和撤回使用上面的独立 API。
 
@@ -224,7 +235,7 @@ SDK 用它持久化匿名身份、配置快照、脚本缓存、原始会话配�
 
 ## 策略运行时
 
-`addons/gamealgo/runtime/` 是 `GameAlgoRuntime` GDExtension，注册为引擎单例。它是 `runtime/rust/`（同时服务 iOS、Android 和服务端的那份）的薄封装——沙箱预算、prelude 和执行语义全在那个 crate 里，这里不重复实现，所以不存在两份 QuickJS 需要人工对齐。
+`addons/gamealgo/runtime/` 是 `GameAlgoRuntime` GDExtension，注册为引擎单例。它提供原生事件队列/后台 transport，同时也是 `runtime/rust/` 策略运行时的薄封装——沙箱预算、prelude 和执行语义全在那个 crate 里，这里不重复实现，所以不存在两份 QuickJS 需要人工对齐。
 
 [`dirichlet-ai/pocket-native-plugins`](https://github.com/dirichlet-ai/pocket-native-plugins) 里另有一份独立的 C++ QuickJS 实现，供既有接入使用。新接入用本仓库这套。
 
