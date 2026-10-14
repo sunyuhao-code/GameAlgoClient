@@ -210,6 +210,116 @@ class RemovalFailureStore:
 		return super.remove(key)
 
 
+class NativeEventBackendFixture:
+	extends RefCounted
+
+	var queue: Array[Dictionary] = []
+	var results: Dictionary = {}
+	var next_job_id := 1
+	var max_batch := 100
+	var queue_limit := 1000
+	var flush_calls := 0
+	var fail_with_timeout := false
+	var last_error := ""
+
+	func event_backend_configure(
+		_storage_path: String,
+		_endpoint: String,
+		_game_key: String,
+		configured_max_batch: int,
+		configured_queue_limit: int,
+		_platform: String
+	) -> bool:
+		max_batch = configured_max_batch
+		queue_limit = configured_queue_limit
+		return true
+
+	func event_backend_enqueue(event_json: String) -> bool:
+		var value: Variant = JSON.parse_string(event_json)
+		if not value is Dictionary:
+			last_error = "invalid_native_event_json"
+			return false
+		var event := (value as Dictionary).duplicate(true)
+		for existing: Dictionary in queue:
+			if existing.get("eventId", "") == event.get("eventId", ""):
+				return true
+		queue.append(event)
+		while queue.size() > queue_limit:
+			queue.pop_front()
+		last_error = ""
+		return true
+
+	func event_backend_import(events_json: String) -> bool:
+		var values: Variant = JSON.parse_string(events_json)
+		if not values is Array:
+			last_error = "invalid_native_event_import"
+			return false
+		for value: Variant in values:
+			if not value is Dictionary:
+				return false
+			var exists := false
+			for current: Dictionary in queue:
+				if current.get("eventId", "") == value.get("eventId", ""):
+					exists = true
+					break
+			if not exists:
+				queue.append((value as Dictionary).duplicate(true))
+		while queue.size() > queue_limit:
+			queue.pop_front()
+		return true
+
+	func event_backend_bind_context(session_id: String, context_id: String) -> bool:
+		for index: int in range(queue.size()):
+			if queue[index].get("sessionId", "") == session_id \
+					and String(queue[index].get("contextId", "")).is_empty():
+				queue[index]["contextId"] = context_id
+		return true
+
+	func event_backend_clear() -> bool:
+		queue.clear()
+		return true
+
+	func event_backend_snapshot_json() -> String:
+		return JSON.stringify(queue)
+
+	func event_backend_pending_count() -> int:
+		return queue.size()
+
+	func event_backend_flush(_timeout_ms: int) -> int:
+		flush_calls += 1
+		var job_id := next_job_id
+		next_job_id += 1
+		if fail_with_timeout:
+			results[job_id] = JSON.stringify({
+				"ok": false, "accepted": 0, "remaining": queue.size(),
+				"timed_out": true, "error": "timeout", "acked_event_ids": [],
+			})
+			return job_id
+		var retained: Array[Dictionary] = []
+		var acked: Array[String] = []
+		for event: Dictionary in queue:
+			if String(event.get("contextId", "")).is_empty():
+				retained.append(event)
+			else:
+				acked.append(String(event["eventId"]))
+		queue = retained
+		results[job_id] = JSON.stringify({
+			"ok": queue.is_empty(),
+			"accepted": acked.size(),
+			"remaining": queue.size(),
+			"timed_out": false,
+			"error": "" if queue.is_empty() else "context_not_ready",
+			"acked_event_ids": acked,
+		})
+		return job_id
+
+	func event_backend_result_json(job_id: int) -> String:
+		return String(results.get(job_id, ""))
+
+	func event_backend_last_error() -> String:
+		return last_error
+
+
 class UnavailableRuntime:
 	extends RefCounted
 
@@ -234,6 +344,8 @@ func _run() -> void:
 	_test_base_url_and_key_validation()
 	await _test_config_request_envelope()
 	await _test_event_envelope_and_batching()
+	await _test_native_event_backend_migration_and_recovery()
+	await _test_native_queue_full_triggers_flush()
 	await _test_bound_event_admission_survives_restart()
 	await _test_event_admission_storage_failure()
 	await _test_cached_snapshot_does_not_own_new_session()
@@ -406,6 +518,92 @@ func _test_event_envelope_and_batching() -> void:
 		for queued: Dictionary in batch.get("events", []):
 			ids[String(queued.get("eventId", ""))] = true
 	_check(ids.size() == 5, "every event gets a distinct eventId")
+	client.free()
+
+
+func _test_native_event_backend_migration_and_recovery() -> void:
+	var storage := MemoryStore.new()
+	var legacy := _make_client({
+		"storage": storage,
+		"transport": TransportFixture.new(),
+		"session_id": "native-migration",
+	})
+	legacy.tracker.set_context_id("native-context")
+	_check(
+		legacy.tracker.track_ad("rewarded", "reward", 0.1, "CNY"),
+		"legacy event is durable before native migration"
+	)
+	var legacy_event: Dictionary = legacy.tracker.pending_events_for_testing()[0]
+	var event_id := String(legacy_event["eventId"])
+	var legacy_key: String = "events_" + String(legacy._namespace)
+	_check(storage.values.has(legacy_key), "legacy event queue fixture is app-owned")
+	legacy.free()
+
+	var backend := NativeEventBackendFixture.new()
+	var migrated := _make_client({
+		"storage": storage,
+		"transport": TransportFixture.new(),
+		"event_backend": backend,
+		"session_id": "native-current",
+	})
+	_check(
+		_event_ids(migrated.tracker.pending_events_for_testing()) == [event_id],
+		"native backend imports the legacy queue without changing event IDs"
+	)
+	_check(not storage.values.has(legacy_key), "legacy queue is removed after native import commits")
+	var ack: Dictionary = await migrated.flush(2500)
+	_check(
+		bool(ack.get("ok", false)) and int(ack.get("accepted", 0)) == 1 \
+				and int(ack.get("remaining", -1)) == 0 \
+				and ack.get("acked_event_ids", []).has(event_id) \
+				and not ack.has("acked_events"),
+		"unified flush returns the original ACK shape without test-only event details"
+	)
+	migrated.free()
+	var after_ack := _make_client({
+		"storage": storage,
+		"transport": TransportFixture.new(),
+		"event_backend": backend,
+	})
+	_check(after_ack.tracker.pending_count() == 0, "ACKed native event is not restored")
+	after_ack.tracker.set_context_id("timeout-context")
+	_check(
+		after_ack.tracker.track_ad("interstitial", "interstitial", 0.2, "CNY"),
+		"paid callback event enters native storage"
+	)
+	var timeout_id := String(after_ack.tracker.pending_events_for_testing()[0]["eventId"])
+	backend.fail_with_timeout = true
+	var timed_out: Dictionary = await after_ack.flush(2500)
+	_check(
+		not bool(timed_out.get("ok", true)) and bool(timed_out.get("timed_out", false)) \
+				and int(timed_out.get("remaining", 0)) == 1,
+		"native timeout retains the paid event"
+	)
+	after_ack.free()
+	var after_timeout := _make_client({
+		"storage": storage,
+		"transport": TransportFixture.new(),
+		"event_backend": backend,
+	})
+	_check(
+		_event_ids(after_timeout.tracker.pending_events_for_testing()) == [timeout_id],
+		"timed-out native event restores with the same event ID"
+	)
+	after_timeout.free()
+
+
+func _test_native_queue_full_triggers_flush() -> void:
+	var backend := NativeEventBackendFixture.new()
+	var client := _make_client({
+		"transport": TransportFixture.new(),
+		"event_backend": backend,
+		"event_max_batch_size": 100,
+	})
+	client.tracker.set_context_id("auto-flush-context")
+	for index: int in range(100):
+		_check(client.tracker.track("level_end", {"level": index}), "native event %d admitted" % index)
+	_check(backend.flush_calls == 1, "native queue reaching 100 starts one automatic flush")
+	_check(client.tracker.pending_count() == 0, "automatic native flush commits its ACK")
 	client.free()
 
 

@@ -55,7 +55,7 @@ gamealgo experiment run create --help
 
 ## Godot SDK
 
-Godot 客户端是独立的 Protocol v1 实现，用 GDScript 直接访问 GameAlgo HTTPS API，不桥接 iOS / Android SDK。协议层在 [`godot/`](./godot/README.md)，策略脚本运行时在 [`runtime/godot/`](./godot/README.md#策略运行时)——它是 `runtime/rust/` 的 gdext 绑定，和 iOS / Android 共用同一个 crate。
+Godot 客户端是独立的 Protocol v1 实现：配置、实验和归因用 GDScript 直接访问 GameAlgo HTTPS API，事件持久化与后台 flush 由包内原生 GDExtension 完成，不桥接 iOS / Android SDK。协议层在 [`godot/`](./godot/README.md)，原生事件 backend 和策略脚本运行时在 [`runtime/godot/`](./godot/README.md#策略运行时)。
 
 [`dirichlet-ai/pocket-native-plugins`](https://github.com/dirichlet-ai/pocket-native-plugins) 里另有一份独立实现，供既有接入使用；新接入用本仓库这套。
 
@@ -74,7 +74,7 @@ web/        H5 / Web 浏览器 SDK
 rest-api/   底层 TypeScript HTTP helper 和协议示例
 lua/        TapTap Maker / Lua SDK
 godot/      Godot 4 GDScript SDK
-runtime/    Rust 脚本运行时和它的 Godot 绑定
+runtime/    Rust 脚本运行时、Godot 原生事件 backend 和 GDExtension 绑定
 protocol/   客户端协议定义
 examples/   接入示例
 ```

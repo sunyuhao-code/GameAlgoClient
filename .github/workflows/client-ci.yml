@@ -20,6 +20,8 @@ jobs:
           cache: npm
       - run: npm ci
       - uses: dtolnay/rust-toolchain@stable
+      - name: Test the Godot native backend
+        run: cargo test --locked --manifest-path runtime/godot/Cargo.toml
       - name: Build the Godot runtime for this host
         run: npm run build:godot-runtime
       - name: Install Godot ${{ env.GODOT_VERSION }}

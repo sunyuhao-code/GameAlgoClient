@@ -13,6 +13,10 @@ use godot::prelude::*;
 use serde_json::Value;
 use std::collections::HashMap;
 
+mod event_backend;
+
+use event_backend::EventBackend;
+
 /// Keeping a few prepared contexts alive covers the handful of strategies one
 /// game runs. Beyond that the least recently used one is dropped.
 const MAX_PREPARED_SCRIPTS: usize = 4;
@@ -27,8 +31,7 @@ unsafe impl ExtensionLibrary for GameAlgoRuntimeExtension {
         if stage != InitStage::Scene {
             return;
         }
-        Engine::singleton()
-            .register_singleton(SINGLETON_NAME, &GameAlgoRuntime::new_alloc());
+        Engine::singleton().register_singleton(SINGLETON_NAME, &GameAlgoRuntime::new_alloc());
     }
 
     fn on_stage_deinit(stage: InitStage) {
@@ -54,6 +57,7 @@ struct GameAlgoRuntime {
     base: Base<Object>,
     prepared: HashMap<String, Entry>,
     clock: u64,
+    event_backend: EventBackend,
 }
 
 #[godot_api]
@@ -63,6 +67,7 @@ impl IObject for GameAlgoRuntime {
             base,
             prepared: HashMap::new(),
             clock: 0,
+            event_backend: EventBackend::new(),
         }
     }
 }
@@ -92,7 +97,13 @@ impl GameAlgoRuntime {
             Ok(prepared) => {
                 self.clock += 1;
                 let last_use = self.clock;
-                self.prepared.insert(key, Entry { script: prepared, last_use });
+                self.prepared.insert(
+                    key,
+                    Entry {
+                        script: prepared,
+                        last_use,
+                    },
+                );
                 self.evict_if_needed();
                 true
             }
@@ -136,6 +147,72 @@ impl GameAlgoRuntime {
             }
             Err(error) => error_envelope(&error.to_string()),
         }
+    }
+
+    #[func]
+    fn event_backend_configure(
+        &self,
+        storage_path: GString,
+        endpoint: GString,
+        game_key: GString,
+        max_batch: i64,
+        queue_limit: i64,
+        platform: GString,
+    ) -> bool {
+        self.event_backend.configure(
+            &storage_path.to_string(),
+            &endpoint.to_string(),
+            &game_key.to_string(),
+            max_batch,
+            queue_limit,
+            &platform.to_string(),
+        )
+    }
+
+    #[func]
+    fn event_backend_enqueue(&self, event_json: GString) -> bool {
+        self.event_backend.enqueue(&event_json.to_string())
+    }
+
+    #[func]
+    fn event_backend_import(&self, events_json: GString) -> bool {
+        self.event_backend.import_events(&events_json.to_string())
+    }
+
+    #[func]
+    fn event_backend_bind_context(&self, session_id: GString, context_id: GString) -> bool {
+        self.event_backend
+            .bind_context(&session_id.to_string(), &context_id.to_string())
+    }
+
+    #[func]
+    fn event_backend_clear(&self) -> bool {
+        self.event_backend.clear()
+    }
+
+    #[func]
+    fn event_backend_snapshot_json(&self) -> GString {
+        GString::from(self.event_backend.snapshot_json().as_str())
+    }
+
+    #[func]
+    fn event_backend_pending_count(&self) -> i64 {
+        self.event_backend.pending_count()
+    }
+
+    #[func]
+    fn event_backend_flush(&self, timeout_ms: i64) -> i64 {
+        self.event_backend.start_flush(timeout_ms)
+    }
+
+    #[func]
+    fn event_backend_result_json(&self, job_id: i64) -> GString {
+        GString::from(self.event_backend.result_json(job_id).as_str())
+    }
+
+    #[func]
+    fn event_backend_last_error(&self) -> GString {
+        GString::from(self.event_backend.last_error().as_str())
     }
 
     fn touch(&mut self, key: &str) {
