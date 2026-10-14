@@ -293,21 +293,15 @@ class NativeEventBackendFixture:
 			results[job_id] = JSON.stringify({
 				"ok": false, "accepted": 0, "remaining": queue.size(),
 				"timed_out": true, "error": "timeout", "acked_event_ids": [],
-				"acked_events": [],
 			})
 			return job_id
 		var retained: Array[Dictionary] = []
 		var acked: Array[String] = []
-		var acked_events: Array[Dictionary] = []
 		for event: Dictionary in queue:
 			if String(event.get("contextId", "")).is_empty():
 				retained.append(event)
 			else:
 				acked.append(String(event["eventId"]))
-				acked_events.append({
-					"event_id": String(event["eventId"]),
-					"event_type": String(event["eventType"]),
-				})
 		queue = retained
 		results[job_id] = JSON.stringify({
 			"ok": queue.is_empty(),
@@ -316,7 +310,6 @@ class NativeEventBackendFixture:
 			"timed_out": false,
 			"error": "" if queue.is_empty() else "context_not_ready",
 			"acked_event_ids": acked,
-			"acked_events": acked_events,
 		})
 		return job_id
 
@@ -563,10 +556,8 @@ func _test_native_event_backend_migration_and_recovery() -> void:
 		bool(ack.get("ok", false)) and int(ack.get("accepted", 0)) == 1 \
 				and int(ack.get("remaining", -1)) == 0 \
 				and ack.get("acked_event_ids", []).has(event_id) \
-				and ack.get("acked_events", []) == [{
-					"event_id": event_id, "event_type": "ad_view",
-				}],
-		"unified flush returns the native ACK with accepted event ID and type"
+				and not ack.has("acked_events"),
+		"unified flush returns the original ACK shape without test-only event details"
 	)
 	migrated.free()
 	var after_ack := _make_client({

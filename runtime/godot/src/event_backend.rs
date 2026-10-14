@@ -352,7 +352,6 @@ impl EventBackend {
 fn run_flush(shared: Arc<Mutex<Inner>>, job_id: u64, generation: u64) {
     let mut accepted_total = 0usize;
     let mut accepted_ids: Vec<String> = Vec::new();
-    let mut accepted_events: Vec<Value> = Vec::new();
     loop {
         let (config, batch, deadline) = {
             let mut inner = match shared.lock() {
@@ -374,7 +373,6 @@ fn run_flush(shared: Arc<Mutex<Inner>>, job_id: u64, generation: u64) {
                     job_id,
                     accepted_total,
                     accepted_ids,
-                    accepted_events,
                     false,
                     false,
                     "flush_generation_changed",
@@ -387,7 +385,6 @@ fn run_flush(shared: Arc<Mutex<Inner>>, job_id: u64, generation: u64) {
                     job_id,
                     accepted_total,
                     accepted_ids,
-                    accepted_events,
                     false,
                     true,
                     "timeout",
@@ -402,7 +399,6 @@ fn run_flush(shared: Arc<Mutex<Inner>>, job_id: u64, generation: u64) {
                         job_id,
                         accepted_total,
                         accepted_ids,
-                        accepted_events,
                         false,
                         false,
                         "native_event_backend_unconfigured",
@@ -430,7 +426,6 @@ fn run_flush(shared: Arc<Mutex<Inner>>, job_id: u64, generation: u64) {
                     job_id,
                     accepted_total,
                     accepted_ids,
-                    accepted_events,
                     pending == 0,
                     false,
                     if pending == 0 {
@@ -463,7 +458,6 @@ fn run_flush(shared: Arc<Mutex<Inner>>, job_id: u64, generation: u64) {
                         job_id,
                         accepted_total,
                         accepted_ids,
-                        accepted_events,
                         false,
                         false,
                         "accepted_count_mismatch",
@@ -480,7 +474,6 @@ fn run_flush(shared: Arc<Mutex<Inner>>, job_id: u64, generation: u64) {
                         job_id,
                         accepted_total,
                         accepted_ids,
-                        accepted_events,
                         false,
                         timed_out,
                         &error,
@@ -494,7 +487,6 @@ fn run_flush(shared: Arc<Mutex<Inner>>, job_id: u64, generation: u64) {
             .iter()
             .filter_map(|event| event_id_of(event).map(str::to_owned))
             .collect();
-        let batch_events_in_order: Vec<Value> = batch.iter().filter_map(acked_event_of).collect();
         let batch_ids: HashSet<String> = batch_ids_in_order.iter().cloned().collect();
         let mut inner = match shared.lock() {
             Ok(inner) => inner,
@@ -507,7 +499,6 @@ fn run_flush(shared: Arc<Mutex<Inner>>, job_id: u64, generation: u64) {
                 job_id,
                 accepted_total,
                 accepted_ids,
-                accepted_events,
                 false,
                 false,
                 "flush_generation_changed",
@@ -527,13 +518,11 @@ fn run_flush(shared: Arc<Mutex<Inner>>, job_id: u64, generation: u64) {
         if let Err(error) = persist_queue(&config.path, &candidate) {
             inner.active_event_ids.clear();
             accepted_ids.extend(batch_ids_in_order);
-            accepted_events.extend(batch_events_in_order);
             finish(
                 &mut inner,
                 job_id,
                 accepted_total + accepted,
                 accepted_ids,
-                accepted_events,
                 false,
                 false,
                 &format!("server_acked_local_commit_failed:{error}"),
@@ -544,7 +533,6 @@ fn run_flush(shared: Arc<Mutex<Inner>>, job_id: u64, generation: u64) {
         inner.active_event_ids.clear();
         accepted_total += accepted;
         accepted_ids.extend(batch_ids_in_order);
-        accepted_events.extend(batch_events_in_order);
     }
 }
 
@@ -627,13 +615,10 @@ fn finish(
     job_id: u64,
     accepted: usize,
     acked_event_ids: Vec<String>,
-    acked_events: Vec<Value>,
     ok: bool,
     timed_out: bool,
     error: &str,
 ) {
-    let acked_events_log =
-        serde_json::to_string(&acked_events).unwrap_or_else(|_| "[]".to_string());
     let result = json!({
         "ok": ok,
         "accepted": accepted,
@@ -641,10 +626,9 @@ fn finish(
         "timed_out": timed_out,
         "error": error,
         "acked_event_ids": acked_event_ids,
-        "acked_events": acked_events,
     });
     let encoded = serde_json::to_string(&result).unwrap_or_else(|_| {
-        "{\"ok\":false,\"accepted\":0,\"remaining\":0,\"timed_out\":false,\"error\":\"result_encoding_failed\",\"acked_event_ids\":[],\"acked_events\":[]}".to_string()
+        "{\"ok\":false,\"accepted\":0,\"remaining\":0,\"timed_out\":false,\"error\":\"result_encoding_failed\",\"acked_event_ids\":[]}".to_string()
     });
     inner.last_error = error.to_string();
     inner.results.push_back((job_id, encoded));
@@ -654,11 +638,10 @@ fn finish(
     inner.active = None;
     inner.active_event_ids.clear();
     platform_support::log(&format!(
-        "[GameAlgoSDK] flush {}: accepted={}, remaining={}, acked_events={}, error={}",
+        "[GameAlgoSDK] flush {}: accepted={}, remaining={}, error={}",
         if ok { "ok" } else { "failed" },
         accepted,
         inner.queue.len(),
-        acked_events_log,
         if error.is_empty() { "<none>" } else { error }
     ));
 }
@@ -713,13 +696,6 @@ fn valid_event_id(event: &Value) -> Result<String, String> {
 
 fn event_id_of(event: &Value) -> Option<&str> {
     event.get("eventId").and_then(Value::as_str)
-}
-
-fn acked_event_of(event: &Value) -> Option<Value> {
-    Some(json!({
-        "event_id": event_id_of(event)?,
-        "event_type": event.get("eventType").and_then(Value::as_str)?,
-    }))
 }
 
 fn load_queue(path: &Path) -> Result<Vec<Value>, String> {
@@ -1045,15 +1021,6 @@ mod tests {
         assert_eq!(queue[0]["eventId"], "event-2");
         assert_eq!(queue[1]["eventId"], "event-3");
         assert!(backend.clear());
-    }
-
-    #[test]
-    fn acknowledged_event_summary_contains_only_id_and_type() {
-        let summary = acked_event_of(&event("event-ad", "session", "context")).unwrap();
-        assert_eq!(
-            summary,
-            json!({"event_id": "event-ad", "event_type": "ad_view"})
-        );
     }
 
     #[test]

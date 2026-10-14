@@ -652,7 +652,6 @@ func _flush_legacy() -> Dictionary:
 	var consent_generation := _consent_generation
 	var accepted_total := 0
 	var acked_event_ids: Array[String] = []
-	var acked_events: Array[Dictionary] = []
 	while not _retry_batch.is_empty() or not _queue.is_empty():
 		var pending := _pending_events()
 		var batch: Array[Dictionary] = []
@@ -667,7 +666,7 @@ func _flush_legacy() -> Dictionary:
 			_persist_pending()
 			_is_flushing = false
 			return _flush_result(
-				false, accepted_total, false, "context_not_ready", acked_event_ids, acked_events
+				false, accepted_total, false, "context_not_ready", acked_event_ids
 			)
 		_inflight_batch = batch.duplicate(true)
 		var response: Variant = await _client.call("upload_events", batch)
@@ -677,7 +676,7 @@ func _flush_legacy() -> Dictionary:
 			_inflight_batch.clear()
 			_is_flushing = false
 			return _flush_result(
-				false, accepted_total, false, "measurement_changed", acked_event_ids, acked_events
+				false, accepted_total, false, "measurement_changed", acked_event_ids
 			)
 		if not response is Dictionary or not response.get("ok", null) is bool \
 				or not response["ok"] or int(response.get("accepted", -1)) != batch.size():
@@ -693,16 +692,10 @@ func _flush_legacy() -> Dictionary:
 			_is_flushing = false
 			var error := String(response.get("error", "upload_failed")) \
 					if response is Dictionary else "upload_failed"
-			return _flush_result(
-				false, accepted_total, false, error, acked_event_ids, acked_events
-			)
+			return _flush_result(false, accepted_total, false, error, acked_event_ids)
 		for event: Dictionary in _inflight_batch:
 			_event_sequence.erase(event["eventId"])
 			acked_event_ids.append(String(event["eventId"]))
-			acked_events.append({
-				"event_id": String(event["eventId"]),
-				"event_type": String(event["eventType"]),
-			})
 		accepted_total += batch.size()
 		_inflight_batch.clear()
 		_consecutive_failures = 0
@@ -710,17 +703,15 @@ func _flush_legacy() -> Dictionary:
 		if _has_persisted_queue and not _persist_pending():
 			_is_flushing = false
 			return _flush_result(
-				false, accepted_total, false, "event_persistence_failed", acked_event_ids,
-				acked_events
+				false, accepted_total, false, "event_persistence_failed", acked_event_ids
 			)
 	if _has_persisted_queue and not _clear_persisted():
 		_is_flushing = false
 		return _flush_result(
-			false, accepted_total, false, "event_persistence_failed", acked_event_ids,
-			acked_events
+			false, accepted_total, false, "event_persistence_failed", acked_event_ids
 		)
 	_is_flushing = false
-	return _flush_result(true, accepted_total, false, "", acked_event_ids, acked_events)
+	return _flush_result(true, accepted_total, false, "", acked_event_ids)
 
 
 func _flush_result(
@@ -728,8 +719,7 @@ func _flush_result(
 	accepted: int,
 	timed_out: bool,
 	error: String,
-	acked_event_ids: Array[String],
-	acked_events: Array[Dictionary] = []
+	acked_event_ids: Array[String]
 ) -> Dictionary:
 	return {
 		"ok": ok,
@@ -738,7 +728,6 @@ func _flush_result(
 		"timed_out": timed_out,
 		"error": error,
 		"acked_event_ids": acked_event_ids.duplicate(),
-		"acked_events": acked_events.duplicate(true),
 	}
 
 

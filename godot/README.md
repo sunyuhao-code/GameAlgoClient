@@ -79,8 +79,7 @@ if admitted:
 client.tracker.track_purchase("starter_pack", 4.99, "CNY", {})
 client.tracker.track_session_end()
 var result: Dictionary = await client.flush()
-# result: ok, accepted, remaining, timed_out, error, acked_event_ids, acked_events
-# acked_events: [{"event_id": "...", "event_type": "ad_view"}]
+# result: ok, accepted, remaining, timed_out, error, acked_event_ids
 ```
 
 事件入队时即固定 `eventId`、UTC `timestamp`、本地 `createdLocalAt` 和当前 `sessionId`，延迟上传或重试不会改写发生时间。所有事件（包括已绑定 context 的广告和会话事件）先确认原生队列落盘，再返回 `true`；这个返回值表示本地持久化接纳，不表示服务端收到。默认每批最多 100 条；队列达到 100 条或经过 30 秒时自动 flush。
