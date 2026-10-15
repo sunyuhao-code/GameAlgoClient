@@ -783,6 +783,64 @@ test("tracker binds context once and preserves it across same-session refreshes"
   client.tracker.close();
 });
 
+test("tracker applies the downloaded ordinary-event limit per context and exempts revenue", async () => {
+  const diagnostics: Array<Record<string, unknown>> = [];
+  const uploaded: Array<Record<string, unknown>> = [];
+  const client = createClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    userId: "u1",
+    autoStart: false,
+    eventFlushIntervalMs: 0,
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      if (request.url.endsWith("/v1/config")) {
+        return jsonResponse({
+          contextId: "ctx-quota",
+          gameId: "Mahjong",
+          environment: "live",
+          configVersion: "quota-v1",
+          ttlSeconds: 60,
+          serverTime: "2026-10-15T10:00:00.000Z",
+          eventQuota: {
+            mode: "enforce",
+            policyVersion: 4,
+            ordinaryEventLimit: 2,
+            quotaDate: "2026-10-15",
+            resetAt: "2026-10-16T00:00:00.000Z",
+            exemptEventTypes: ["purchase", "ad_view"],
+          },
+          experiments: [],
+          configFiles: [],
+        });
+      }
+      if (request.url.endsWith("/v1/diagnostics/sdk")) {
+        diagnostics.push(await request.json() as Record<string, unknown>);
+        return jsonResponse({ ok: true, accepted: 1 });
+      }
+      const body = await request.json() as { events: Array<Record<string, unknown>> };
+      uploaded.push(...body.events);
+      return jsonResponse({ ok: true, accepted: body.events.length, rejected: [] });
+    },
+  });
+
+  await client.fetchConfig({ userId: "u1" });
+  assert.equal(client.tracker.trackLevelStart({ level: 1 }), true);
+  assert.equal(client.tracker.trackLevelEnd({ level: 1 }), true);
+  assert.equal(client.tracker.trackEvent("overflow"), false);
+  assert.equal(client.tracker.trackEvent("overflow"), false);
+  assert.equal(client.tracker.trackPurchase("sku", 1, "USD"), true);
+  assert.equal(client.tracker.trackAd("home", "rewarded", 1, "USD"), true);
+  await client.tracker.flush();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(uploaded.map((event) => event.eventType), ["level_start", "level_end", "purchase", "ad_view"]);
+  assert.equal(diagnostics.length, 1);
+  assert.equal(diagnostics[0].reasonCode, "context_event_quota_exceeded");
+  assert.match(String(diagnostics[0].reasonDetail), /limit=2;observed=3;policyVersion=4/);
+  client.tracker.close();
+});
+
 test("tracker limits custom events per context and reports one guard diagnostic", async () => {
   const diagnostics: Array<Record<string, unknown>> = [];
   const client = createClient({

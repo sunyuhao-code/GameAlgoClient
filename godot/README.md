@@ -115,6 +115,8 @@ client.tracker.track_milestone("new_user", "进入第一关")
 
 不要重试或改名绕过拒绝。配置还没返回 context 时产生的事件先记在本次 session 的暂挂额度上，context 到达后连同事件一起并入该 context；切换 session 后，旧事件和暂挂额度保留等待旧会话自己的 context，新会话使用独立的暂挂额度。
 
+SDK 初始化从 `/v1/config` 获取当前普通事件额度，并把它作为单 Context 的本地安全上限；达到上限后新的普通事件会返回 `false` 且不入队，`purchase`、`ad_view` 不受该上限影响。该保护用于阻止错误埋点循环持续请求，服务端的每用户每日额度仍是最终判定。
+
 ## 归因
 
 接了 Adjust 等归因 SDK 时，每次归因回调返回后都可以调用 `set_attribution`：

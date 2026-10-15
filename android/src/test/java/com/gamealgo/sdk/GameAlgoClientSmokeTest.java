@@ -35,6 +35,7 @@ public final class GameAlgoClientSmokeTest {
         testMilestoneAddsRegistrationElapsedTimeAndDeduplicatesPerDataVersion();
         testTrackerQueuesAndFlushesEvents();
         testTrackerLimitsCustomEventsAndReportsGuardDiagnostic();
+        testTrackerAppliesDownloadedContextQuotaAndExemptsRevenue();
         testCustomEventsPreservePayload();
         testTrackAdUploadsStandardAdViewPayload();
         testDDAControllerPersistsBehaviorWindowAndReturnsDecision();
@@ -75,7 +76,7 @@ public final class GameAlgoClientSmokeTest {
 
     private static void testFetchConfigSendsHeadersAndCaches() throws Exception {
         FakeHttpClient httpClient = new FakeHttpClient();
-        httpClient.enqueue(jsonResponse(configJson("v1")));
+        httpClient.enqueue(jsonResponse(configJsonWithQuota("v1")));
         GameAlgoClient client = new GameAlgoClient(
                 "ga_live_test_key_0123456789abcdef",
                 "https://gamealgo.test",
@@ -96,6 +97,10 @@ public final class GameAlgoClientSmokeTest {
 
         check("Mahjong".equals(first.getGameId()), "gameId should decode");
         check("v1".equals(second.getConfigVersion()), "configVersion should decode");
+        check(first.getEventQuota() != null, "event quota should decode");
+        check(first.getEventQuota().getOrdinaryEventLimit() == 2, "ordinary event limit should decode");
+        check(first.getEventQuota().getExemptEventTypes().equals(Arrays.asList("purchase", "ad_view")),
+                "quota exemptions should decode");
         check(httpClient.requests.size() == 1, "config should be cached");
         GameAlgoHttpRequest request = httpClient.requests.get(0);
         check("ga_live_test_key_0123456789abcdef".equals(request.getHeaders().get("X-GameAlgo-Key")), "game key header should be sent");
@@ -977,6 +982,47 @@ public final class GameAlgoClientSmokeTest {
         client.tracker().close();
     }
 
+    private static void testTrackerAppliesDownloadedContextQuotaAndExemptsRevenue() throws Exception {
+        FakeHttpClient httpClient = new FakeHttpClient();
+        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":1}"));
+        GameAlgoClient client = new GameAlgoClient(
+                "ga_live_test_key_0123456789abcdef",
+                "https://gamealgo.test",
+                "1.0.0",
+                null,
+                "android",
+                httpClient,
+                new FakeScriptRuntime(),
+                null,
+                null,
+                GameAlgoLogger.console(),
+                false
+        );
+        client.tracker().identify("u1", "s1");
+        client.tracker().setEventQuota(new GameAlgoEventQuotaConfig(
+                "enforce", 4, 2, "2026-10-15", "2026-10-16T00:00:00.000Z",
+                Arrays.asList("purchase", "ad_view")
+        ));
+        client.tracker().setContextId("ctx-quota");
+        check(client.tracker().trackLevelStart(new LinkedHashMap<String, Object>()), "first ordinary event should enqueue");
+        check(client.tracker().trackLevelEnd(new LinkedHashMap<String, Object>()), "second ordinary event should enqueue");
+        check(!client.tracker().trackEvent("overflow"), "ordinary event above the context quota should be rejected");
+        check(!client.tracker().trackEvent("overflow"), "later ordinary events should stay rejected");
+        check(client.tracker().trackPurchase("sku", 1.0, "USD", new LinkedHashMap<String, Object>()),
+                "purchase should be exempt");
+        check(client.tracker().trackAd("home", "rewarded", 1.0, "USD", null, new LinkedHashMap<String, Object>()),
+                "ad_view should be exempt");
+        for (int index = 0; index < 100 && httpClient.requests.isEmpty(); index += 1) Thread.sleep(10L);
+        check(httpClient.requests.size() == 1, "context quota should emit one diagnostic");
+        Map<String, Object> body = GameAlgoJson.asObject(
+                GameAlgoJson.parse(new String(httpClient.requests.get(0).getBody(), StandardCharsets.UTF_8)), "body");
+        check("context_event_quota_exceeded".equals(body.get("reasonCode")),
+                "context quota diagnostic should use its own reason code");
+        check(String.valueOf(body.get("reasonDetail")).contains("limit=2;observed=3;policyVersion=4"),
+                "context quota diagnostic should include policy details");
+        client.tracker().close();
+    }
+
     private static String configJson(String version) {
         return "{"
                 + "\"contextId\":\"ctx-1\","
@@ -988,6 +1034,15 @@ public final class GameAlgoClientSmokeTest {
                 + "\"experiments\":[],"
                 + "\"configFiles\":[]"
                 + "}";
+    }
+
+    private static String configJsonWithQuota(String version) {
+        return configJson(version).replace(
+                "\"experiments\":[]",
+                "\"eventQuota\":{\"mode\":\"enforce\",\"policyVersion\":4,\"ordinaryEventLimit\":2,"
+                        + "\"quotaDate\":\"2026-10-15\",\"resetAt\":\"2026-10-16T00:00:00.000Z\","
+                        + "\"exemptEventTypes\":[\"purchase\",\"ad_view\"]},\"experiments\":[]"
+        );
     }
 
     private static String configJsonWithExperiment(String version) {

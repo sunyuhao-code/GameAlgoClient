@@ -366,6 +366,8 @@ func _fetch_pending_config(session: String) -> bool:
 		return false
 	# A historical response supplies ownership for its retained events only.
 	_recovered_contexts[session] = String(config["contextId"])
+	if session == tracker.current_session_id():
+		tracker.set_event_quota(config.get("eventQuota", {}))
 	if not _bind_pending_config(session):
 		_schedule_retry("config:" + session)
 	if session != tracker.current_session_id():
@@ -1258,7 +1260,7 @@ func _normalize_config(value: Variant) -> Dictionary:
 		if file.is_empty():
 			return {}
 		files.append(file)
-	return {
+	var normalized := {
 		"contextId": String(config["contextId"]),
 		"gameId": String(config["gameId"]),
 		"environment": String(config["environment"]),
@@ -1267,6 +1269,38 @@ func _normalize_config(value: Variant) -> Dictionary:
 		"serverTime": String(config["serverTime"]),
 		"experiments": experiments,
 		"configFiles": files,
+	}
+	if config.has("eventQuota"):
+		var event_quota := _normalize_event_quota(config["eventQuota"])
+		if event_quota.is_empty():
+			return {}
+		normalized["eventQuota"] = event_quota
+	return normalized
+
+
+func _normalize_event_quota(value: Variant) -> Dictionary:
+	if not value is Dictionary:
+		return {}
+	var quota := value as Dictionary
+	if String(quota.get("mode", "")) not in ["off", "shadow", "enforce"] \
+			or not _integer_value(quota.get("policyVersion", null), 0) \
+			or not _integer_value(quota.get("ordinaryEventLimit", null), 0) \
+			or not quota.get("quotaDate", null) is String \
+			or not quota.get("resetAt", null) is String \
+			or not quota.get("exemptEventTypes", null) is Array:
+		return {}
+	var exempt_types: Array[String] = []
+	for raw_event_type: Variant in quota["exemptEventTypes"]:
+		if not raw_event_type is String or String(raw_event_type).is_empty():
+			return {}
+		exempt_types.append(String(raw_event_type))
+	return {
+		"mode": String(quota["mode"]),
+		"policyVersion": int(quota["policyVersion"]),
+		"ordinaryEventLimit": int(quota["ordinaryEventLimit"]),
+		"quotaDate": String(quota["quotaDate"]),
+		"resetAt": String(quota["resetAt"]),
+		"exemptEventTypes": exempt_types,
 	}
 
 

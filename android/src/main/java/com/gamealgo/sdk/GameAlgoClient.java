@@ -342,6 +342,7 @@ public final class GameAlgoClient {
                     System.currentTimeMillis() + Math.max(response.getTtlSeconds(), 0) * 1000L
             );
             snapshotStore.updateConfig(response, System.currentTimeMillis(), resolvedRequest.getUserId());
+            tracker.setEventQuota(response.getEventQuota());
             tracker.setContextId(response.getContextId());
             tracker.setAssignments(response.getExperiments());
             persistSnapshot();
@@ -447,7 +448,8 @@ public final class GameAlgoClient {
         return parseEventBatchResponse(parseJsonObject(response));
     }
 
-    void reportEventGuardDiagnostic(String userId, String sessionId, String contextId, boolean isDebug, String reasonDetail) {
+    void reportEventGuardDiagnostic(String userId, String sessionId, String contextId, boolean isDebug,
+                                    String reasonCode, String reasonDetail) {
         CompletableFuture.runAsync(() -> {
             try {
                 Date created = new Date();
@@ -461,7 +463,7 @@ public final class GameAlgoClient {
                 if (!isBlank(defaultAppVersion)) body.put("appVersion", defaultAppVersion);
                 body.put("stage", "event_guard");
                 body.put("status", "degraded");
-                body.put("reasonCode", "custom_event_quota_exceeded");
+                body.put("reasonCode", reasonCode);
                 body.put("reasonDetail", reasonDetail);
                 body.put("createdAt", isoTimestamp(created));
                 body.put("createdLocalAt", localTimestamp(created));
@@ -889,8 +891,32 @@ public final class GameAlgoClient {
                 GameAlgoJson.stringValue(object, "configVersion", true),
                 GameAlgoJson.intValue(object, "ttlSeconds", true),
                 GameAlgoJson.stringValue(object, "serverTime", true),
+                parseEventQuotaConfig(object.get("eventQuota")),
                 experiments,
                 configFiles
+        );
+    }
+
+    private GameAlgoEventQuotaConfig parseEventQuotaConfig(Object value) throws GameAlgoException {
+        if (value == null) return null;
+        Map<String, Object> quota = GameAlgoJson.asObject(value, "eventQuota");
+        List<String> exemptEventTypes = new ArrayList<>();
+        Object rawExempt = quota.get("exemptEventTypes");
+        if (rawExempt != null) {
+            for (Object item : GameAlgoJson.asArray(rawExempt, "eventQuota.exemptEventTypes")) {
+                if (!(item instanceof String)) {
+                    throw new GameAlgoException("Expected string entries for eventQuota.exemptEventTypes");
+                }
+                exemptEventTypes.add((String) item);
+            }
+        }
+        return new GameAlgoEventQuotaConfig(
+                GameAlgoJson.stringValue(quota, "mode", true),
+                GameAlgoJson.intValue(quota, "policyVersion", true),
+                GameAlgoJson.intValue(quota, "ordinaryEventLimit", true),
+                GameAlgoJson.stringValue(quota, "quotaDate", true),
+                GameAlgoJson.stringValue(quota, "resetAt", true),
+                exemptEventTypes
         );
     }
 
@@ -986,6 +1012,17 @@ public final class GameAlgoClient {
         object.put("configVersion", config.getConfigVersion());
         object.put("ttlSeconds", config.getTtlSeconds());
         object.put("serverTime", config.getServerTime());
+        if (config.getEventQuota() != null) {
+            GameAlgoEventQuotaConfig quota = config.getEventQuota();
+            Map<String, Object> quotaJson = new LinkedHashMap<>();
+            quotaJson.put("mode", quota.getMode());
+            quotaJson.put("policyVersion", quota.getPolicyVersion());
+            quotaJson.put("ordinaryEventLimit", quota.getOrdinaryEventLimit());
+            quotaJson.put("quotaDate", quota.getQuotaDate());
+            quotaJson.put("resetAt", quota.getResetAt());
+            quotaJson.put("exemptEventTypes", quota.getExemptEventTypes());
+            object.put("eventQuota", quotaJson);
+        }
 
         List<Object> experiments = new ArrayList<>();
         for (GameAlgoExperimentAssignment assignment : config.getExperiments()) {
@@ -1034,6 +1071,7 @@ public final class GameAlgoClient {
                 GameAlgoJson.stringValue(object, "configVersion", true),
                 GameAlgoJson.intValue(object, "ttlSeconds", true),
                 GameAlgoJson.stringValue(object, "serverTime", true),
+                parseEventQuotaConfig(object.get("eventQuota")),
                 experiments,
                 configFiles
         );

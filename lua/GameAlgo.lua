@@ -104,6 +104,8 @@ local state_ = {
     initWatchdogHandle = nil,
     initDiagnosticReported = false,
     customEventCounts = {},
+    ordinaryEventCounts = {},
+    eventQuota = nil,
     eventGuardDiagnosticKeys = {},
     eventGuardDiagnosticCount = 0,
     reachedMilestoneKeys = {},
@@ -491,8 +493,15 @@ local function mergeCustomEventCountBucket(from, to)
     state_.customEventCounts[from] = nil
 end
 
-local function reportEventGuardDiagnostic(eventType, scope, limit, observed)
-    local key = tostring(state_.sessionId) .. "\0" .. tostring(eventType) .. "\0" .. tostring(scope)
+local function mergeOrdinaryEventCountBucket(from, to)
+    local pending = state_.ordinaryEventCounts[from]
+    if pending == nil then return end
+    state_.ordinaryEventCounts[to] = (state_.ordinaryEventCounts[to] or 0) + pending
+    state_.ordinaryEventCounts[from] = nil
+end
+
+local function reportEventGuardDiagnostic(eventType, scope, limit, observed, reasonCode, detailSuffix, diagnosticKey)
+    local key = diagnosticKey or (tostring(state_.sessionId) .. "\0" .. tostring(eventType) .. "\0" .. tostring(scope))
     if state_.eventGuardDiagnosticKeys[key] or state_.eventGuardDiagnosticCount >= 10 then return end
     state_.eventGuardDiagnosticKeys[key] = true
     state_.eventGuardDiagnosticCount = state_.eventGuardDiagnosticCount + 1
@@ -508,15 +517,61 @@ local function reportEventGuardDiagnostic(eventType, scope, limit, observed)
         appVersion = state_.appVersion,
         stage = "event_guard",
         status = "degraded",
-        reasonCode = "custom_event_quota_exceeded",
+        reasonCode = reasonCode or "custom_event_quota_exceeded",
         reasonDetail = "eventType=" .. safeEventType .. ";scope=" .. scope .. ";limit=" .. tostring(limit)
-            .. ";observed=" .. tostring(observed) .. ";dropped=1",
+            .. ";observed=" .. tostring(observed) .. (detailSuffix or "") .. ";dropped=1",
         createdAt = isoNow(),
         createdLocalAt = localIsoNow(),
         isDebug = state_.isDebug,
     }, function(error)
         if error then log("event guard diagnostic upload failed: " .. tostring(error)) end
     end)
+end
+
+local function consumeOrdinaryEventQuota(eventType, consume)
+    local quota = state_.eventQuota
+    if eventType == "purchase" or eventType == "ad_view"
+        or (quota and quota.exemptEventTypes and quota.exemptEventTypes[eventType]) then
+        return true, nil
+    end
+    local bucketKey = state_.contextId and state_.contextId ~= ""
+        and ("context:" .. state_.contextId) or ("pending:" .. tostring(state_.sessionId))
+    local current = state_.ordinaryEventCounts[bucketKey] or 0
+    if quota and current >= quota.ordinaryEventLimit then
+        reportEventGuardDiagnostic(
+            eventType,
+            "context_total",
+            quota.ordinaryEventLimit,
+            current + 1,
+            "context_event_quota_exceeded",
+            ";policyVersion=" .. tostring(quota.policyVersion) .. ";quotaDate=" .. tostring(quota.quotaDate),
+            bucketKey .. "\0context_event_quota"
+        )
+        return false, "context event quota exceeded (limit=" .. tostring(quota.ordinaryEventLimit) .. ")"
+    end
+    if consume ~= false then state_.ordinaryEventCounts[bucketKey] = current + 1 end
+    return true, nil
+end
+
+local function normalizeEventQuota(config)
+    local quota = type(config) == "table" and config.eventQuota or nil
+    local limit = quota and tonumber(quota.ordinaryEventLimit) or nil
+    if type(quota) ~= "table" or quota.mode ~= "enforce" or limit == nil or limit < 0 or limit % 1 ~= 0 then
+        return nil
+    end
+    local exempt = { purchase = true, ad_view = true }
+    if type(quota.exemptEventTypes) == "table" then
+        for _, eventType in ipairs(quota.exemptEventTypes) do
+            if type(eventType) == "string" and eventType ~= "" then exempt[eventType] = true end
+        end
+    end
+    return {
+        ordinaryEventLimit = limit,
+        policyVersion = tonumber(quota.policyVersion) or 0,
+        quotaDate = tostring(quota.quotaDate or ""),
+        resetAt = tostring(quota.resetAt or ""),
+        exemptEventTypes = exempt,
+    }
 end
 
 local function consumeCustomEventQuota(eventType)
@@ -1040,6 +1095,8 @@ function GameAlgo.Init(options)
     state_.queue = {}
     state_.pendingTracks = {}
     state_.customEventCounts = {}
+    state_.ordinaryEventCounts = {}
+    state_.eventQuota = nil
     state_.eventGuardDiagnosticKeys = {}
     state_.eventGuardDiagnosticCount = 0
     state_.reachedMilestoneKeys = {}
@@ -1192,9 +1249,11 @@ performConfigFetchAttempt = function()
             return
         end
         state_.config = config
+        state_.eventQuota = normalizeEventQuota(config)
         state_.contextId = config and config.contextId or nil
         if state_.contextId and state_.contextId ~= "" then
             mergeCustomEventCountBucket("pending:" .. tostring(state_.sessionId), "context:" .. state_.contextId)
+            mergeOrdinaryEventCountBucket("pending:" .. tostring(state_.sessionId), "context:" .. state_.contextId)
         end
         bindQueuedEvents(state_.contextId, state_.sessionId)
         rememberBoundMilestones(state_.contextId)
@@ -1351,11 +1410,6 @@ function GameAlgo.Track(eventType, payload)
             log("event rejected: " .. tostring(eventType) .. " " .. queueError)
             return false, queueError
         end
-        local quotaAccepted, quotaError = consumeCustomEventQuota(eventType)
-        if not quotaAccepted then
-            log("event rejected: " .. tostring(eventType) .. " " .. tostring(quotaError))
-            return false, quotaError
-        end
         if eventType == "milestone"
             and type(payloadCopy.milestoneType) == "string" and payloadCopy.milestoneType ~= ""
             and type(payloadCopy.milestonePoint) == "string" and payloadCopy.milestonePoint ~= "" then
@@ -1367,6 +1421,17 @@ function GameAlgo.Track(eventType, payload)
                 end
             end
         end
+        local ordinaryAccepted, ordinaryError = consumeOrdinaryEventQuota(eventType, false)
+        if not ordinaryAccepted then
+            log("event rejected: " .. tostring(eventType) .. " " .. tostring(ordinaryError))
+            return false, ordinaryError
+        end
+        local quotaAccepted, quotaError = consumeCustomEventQuota(eventType)
+        if not quotaAccepted then
+            log("event rejected: " .. tostring(eventType) .. " " .. tostring(quotaError))
+            return false, quotaError
+        end
+        consumeOrdinaryEventQuota(eventType, true)
         table.insert(state_.pendingTracks, {
             eventType = eventType,
             payload = payloadCopy,
@@ -1383,17 +1448,23 @@ function GameAlgo.Track(eventType, payload)
         log("event rejected: " .. tostring(eventType) .. " " .. queueError)
         return false, queueError
     end
-    local quotaAccepted, quotaError = consumeCustomEventQuota(eventType)
-    if not quotaAccepted then
-        log("event rejected: " .. tostring(eventType) .. " " .. tostring(quotaError))
-        return false, quotaError
-    end
     local prepared, key, durable, duplicate = prepareMilestone(
         eventType,
         payloadCopy,
         clockMs()
     )
     if duplicate then return false, "duplicate milestone" end
+    local ordinaryAccepted, ordinaryError = consumeOrdinaryEventQuota(eventType, false)
+    if not ordinaryAccepted then
+        log("event rejected: " .. tostring(eventType) .. " " .. tostring(ordinaryError))
+        return false, ordinaryError
+    end
+    local quotaAccepted, quotaError = consumeCustomEventQuota(eventType)
+    if not quotaAccepted then
+        log("event rejected: " .. tostring(eventType) .. " " .. tostring(quotaError))
+        return false, quotaError
+    end
+    consumeOrdinaryEventQuota(eventType, true)
     local tracked, trackError = enqueueTrack(eventType, prepared, nil, nil)
     if not tracked then
         log("event rejected: " .. tostring(eventType) .. " " .. tostring(trackError))
@@ -1720,18 +1791,21 @@ function GameAlgo.Flush(callback)
 end
 
 function GameAlgo.NewSession(sessionId, callback)
+    local previousSessionId = state_.sessionId
     local nextSessionId = sessionId or randomId("ga_session")
     local retained = {}
     for _, event in ipairs(state_.queue) do
         if event.contextId and event.contextId ~= "" then table.insert(retained, event) end
     end
     state_.queue = retained
+    state_.ordinaryEventCounts["pending:" .. tostring(previousSessionId)] = nil
     state_.sessionId = nextSessionId
     state_.eventGuardDiagnosticKeys = {}
     state_.eventGuardDiagnosticCount = 0
     state_.sessionStartMs = nowMs()
     state_.contextId = nil
     state_.config = nil
+    state_.eventQuota = nil
     state_.pendingMilestoneKeys = {}
     if state_.queuePersistenceActive then persistEventQueue() end
     GameAlgo.FetchConfig(callback)

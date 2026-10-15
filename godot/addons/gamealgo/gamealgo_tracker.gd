@@ -52,6 +52,8 @@ var _measurement_resolved := true
 var _consent_generation := 0
 ## bucket key -> {"total": int, "byType": {event_type: int}}
 var _custom_counts: Dictionary = {}
+var _ordinary_counts: Dictionary = {}
+var _event_quota: Dictionary = {}
 var _diagnostic_keys: Dictionary = {}
 var _diagnostic_count := 0
 var _milestone_storage_key := ""
@@ -178,12 +180,15 @@ func identify(options: Dictionary) -> void:
 
 
 func new_session(session_id: String = "") -> void:
+	var previous_session_id := _session_id
 	_diagnostic_keys.clear()
 	_diagnostic_count = 0
 	_session_id = GameAlgoUtil.clean(session_id)
 	if _session_id.is_empty():
 		_session_id = GameAlgoUtil.uuid()
+	_ordinary_counts.erase("pending:" + previous_session_id)
 	_context_id = ""
+	_event_quota = {}
 	_session_start_unix = Time.get_unix_time_from_system()
 	if _has_persisted_queue:
 		_persist_pending()
@@ -201,6 +206,12 @@ func set_context_id(context_id: String) -> void:
 	bind_session_context(_session_id, context_id)
 
 
+func set_event_quota(quota: Variant) -> void:
+	_event_quota = quota.duplicate(true) \
+		if quota is Dictionary and String(quota.get("mode", "")) == "enforce" \
+			and int(quota.get("ordinaryEventLimit", -1)) >= 0 else {}
+
+
 func bind_session_context(session_id: String, context_id: String) -> bool:
 	var normalized := GameAlgoUtil.clean(context_id)
 	if normalized.is_empty():
@@ -214,6 +225,7 @@ func bind_session_context(session_id: String, context_id: String) -> bool:
 	if session_id == _session_id:
 		_context_id = normalized
 	_merge_custom_bucket("pending:" + session_id, "context:" + normalized)
+	_merge_ordinary_bucket("pending:" + session_id, "context:" + normalized)
 	_bind_context(_retry_batch, session_id, normalized)
 	_bind_context(_queue, session_id, normalized)
 	_remember_bound_milestones(normalized)
@@ -252,6 +264,8 @@ func track(event_type: String, payload: Variant = {}) -> bool:
 		return false
 	if not _consume_custom_event_quota(event_type, false):
 		return false
+	if not _consume_ordinary_event_quota(event_type, false):
+		return false
 	var event_unix := Time.get_unix_time_from_system()
 	var normalized := GameAlgoUtil.normalize_payload(payload)
 	var milestone: Dictionary = {}
@@ -289,6 +303,7 @@ func track(event_type: String, payload: Variant = {}) -> bool:
 			_event_sequence[event["eventId"]] = _next_event_sequence
 			_next_event_sequence += 1
 		_consume_custom_event_quota(event_type)
+		_consume_ordinary_event_quota(event_type)
 		if not String(milestone.get("key", "")).is_empty():
 			_remember_milestone(String(milestone["key"]), bool(milestone.get("durable", false)))
 		if count_before >= _queue_limit and is_instance_valid(_client) \
@@ -314,6 +329,7 @@ func track(event_type: String, payload: Variant = {}) -> bool:
 	_next_event_sequence += 1
 	_queue.append(event)
 	_consume_custom_event_quota(event_type)
+	_consume_ordinary_event_quota(event_type)
 	var trimmed := _enforce_queue_limit()
 	if not String(milestone.get("key", "")).is_empty():
 		_remember_milestone(String(milestone["key"]), bool(milestone.get("durable", false)))
@@ -490,20 +506,58 @@ func _merge_custom_bucket(from_key: String, to_key: String) -> void:
 	_custom_counts.erase(from_key)
 
 
+func _consume_ordinary_event_quota(event_type: String, consume: bool = true) -> bool:
+	var exempt_types: Array = _event_quota.get("exemptEventTypes", [])
+	if event_type in ["purchase", "ad_view"] or event_type in exempt_types:
+		return true
+	var bucket_key := _quota_bucket_key()
+	var current := int(_ordinary_counts.get(bucket_key, 0))
+	if not _event_quota.is_empty() and current >= int(_event_quota["ordinaryEventLimit"]):
+		var limit := int(_event_quota["ordinaryEventLimit"])
+		_log("event refused by context quota: type=%s, limit=%d, observed=%d" % [
+			event_type, limit, current + 1,
+		])
+		_report_quota_diagnostic(
+			event_type,
+			"context_total",
+			limit,
+			current + 1,
+			"context_event_quota_exceeded",
+			";policyVersion=%d;quotaDate=%s" % [
+				int(_event_quota.get("policyVersion", 0)), String(_event_quota.get("quotaDate", "")),
+			],
+			bucket_key + "\u001fcontext_event_quota"
+		)
+		return false
+	if consume:
+		_ordinary_counts[bucket_key] = current + 1
+	return true
+
+
+func _merge_ordinary_bucket(from_key: String, to_key: String) -> void:
+	if not _ordinary_counts.has(from_key) or from_key == to_key:
+		return
+	_ordinary_counts[to_key] = int(_ordinary_counts.get(to_key, 0)) + int(_ordinary_counts[from_key])
+	_ordinary_counts.erase(from_key)
+
+
 ## Quota usage belongs to the event's original context/session, not to the
 ## process that happens to restore it. Rebuild the buckets from every durable
 ## event before trimming the queue so a restart cannot reset the admission
 ## guard or make a previously admitted event disappear from its quota.
 func _restore_custom_event_quota(events: Array[Dictionary]) -> void:
 	_custom_counts.clear()
+	_ordinary_counts.clear()
 	for event: Dictionary in events:
 		var event_type := String(event.get("eventType", ""))
-		if event_type in STANDARD_EVENT_TYPES:
-			continue
 		var context_id := String(event.get("contextId", ""))
 		var session_id := String(event.get("sessionId", ""))
 		var bucket_key := "context:" + context_id if not context_id.is_empty() \
 			else "pending:" + session_id
+		if event_type not in ["purchase", "ad_view"]:
+			_ordinary_counts[bucket_key] = int(_ordinary_counts.get(bucket_key, 0)) + 1
+		if event_type in STANDARD_EVENT_TYPES:
+			continue
 		var bucket: Dictionary = _custom_counts.get(bucket_key, {"total": 0, "byType": {}})
 		var by_type: Dictionary = bucket["byType"]
 		bucket["total"] = int(bucket["total"]) + 1
@@ -511,12 +565,21 @@ func _restore_custom_event_quota(events: Array[Dictionary]) -> void:
 		_custom_counts[bucket_key] = bucket
 
 
-func _report_quota_diagnostic(event_type: String, scope: String, limit: int, observed: int) -> void:
+func _report_quota_diagnostic(
+	event_type: String,
+	scope: String,
+	limit: int,
+	observed: int,
+	reason_code: String = "custom_event_quota_exceeded",
+	detail_suffix: String = "",
+	diagnostic_key: String = ""
+) -> void:
 	if not is_instance_valid(_client) or not _client.has_method("report_sdk_diagnostic"):
 		return
 	# Unit separator: event types are validated to have no surrounding whitespace
 	# but may contain most printable characters, so avoid a printable delimiter.
-	var key := "%s%s%s" % [_session_id, event_type, scope]
+	var key := diagnostic_key if not diagnostic_key.is_empty() \
+		else "%s%s%s" % [_session_id, event_type, scope]
 	if _diagnostic_keys.has(key) or _diagnostic_count >= QUOTA_DIAGNOSTIC_LIMIT:
 		return
 	_diagnostic_keys[key] = true
@@ -532,9 +595,9 @@ func _report_quota_diagnostic(event_type: String, scope: String, limit: int, obs
 		"appVersion": _app_version,
 		"stage": "event_guard",
 		"status": "degraded",
-		"reasonCode": "custom_event_quota_exceeded",
-		"reasonDetail": "eventType=%s;scope=%s;limit=%d;observed=%d;dropped=1" % [
-			safe_event_type, scope, limit, observed
+		"reasonCode": reason_code,
+		"reasonDetail": "eventType=%s;scope=%s;limit=%d;observed=%d%s;dropped=1" % [
+			safe_event_type, scope, limit, observed, detail_suffix
 		],
 		"createdAt": GameAlgoUtil.utc_timestamp(),
 		"createdLocalAt": GameAlgoUtil.local_timestamp(),

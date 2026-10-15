@@ -10,6 +10,7 @@ public final class GameAlgoConfigResponse {
     private final String configVersion;
     private final int ttlSeconds;
     private final String serverTime;
+    private final GameAlgoEventQuotaConfig eventQuota;
     private final List<GameAlgoExperimentAssignment> experiments;
     private final List<GameAlgoConfigFileRef> configFiles;
 
@@ -20,6 +21,7 @@ public final class GameAlgoConfigResponse {
             String configVersion,
             int ttlSeconds,
             String serverTime,
+            GameAlgoEventQuotaConfig eventQuota,
             List<GameAlgoExperimentAssignment> experiments,
             List<GameAlgoConfigFileRef> configFiles) {
         this.contextId = contextId;
@@ -28,6 +30,7 @@ public final class GameAlgoConfigResponse {
         this.configVersion = configVersion;
         this.ttlSeconds = ttlSeconds;
         this.serverTime = serverTime;
+        this.eventQuota = eventQuota;
         this.experiments = Collections.unmodifiableList(experiments);
         this.configFiles = Collections.unmodifiableList(configFiles);
     }
@@ -54,6 +57,10 @@ public final class GameAlgoConfigResponse {
 
     public String getServerTime() {
         return serverTime;
+    }
+
+    public GameAlgoEventQuotaConfig getEventQuota() {
+        return eventQuota;
     }
 
     public List<GameAlgoExperimentAssignment> getExperiments() {

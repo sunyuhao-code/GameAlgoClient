@@ -192,6 +192,51 @@ assert(#eventGuardDiagnostics == 1)
 assert(eventGuardDiagnostics[1].stage == "event_guard")
 assert(eventGuardDiagnostics[1].reasonDetail:find("eventType=_frame_sample;scope=context_event_type;limit=1000", 1, true) ~= nil)
 
+local contextQuotaDiagnostics = {}
+local quotaConfig = cjson.decode(configFixture)
+quotaConfig.contextId = "ctx-quota"
+quotaConfig.eventQuota = {
+    mode = "enforce",
+    policyVersion = 4,
+    ordinaryEventLimit = 2,
+    quotaDate = "2026-10-15",
+    resetAt = "2026-10-16T00:00:00.000Z",
+    exemptEventTypes = { "purchase", "ad_view" },
+}
+local quotaTransport = {}
+function quotaTransport.Request(options, callback)
+    if options.url:match("/v1/config$") then
+        callback(nil, { status = 200, body = cjson.encode(quotaConfig), headers = {} })
+        return
+    end
+    if options.url:match("/v1/diagnostics/sdk$") then
+        table.insert(contextQuotaDiagnostics, cjson.decode(options.body))
+        callback(nil, { status = 200, body = '{"ok":true,"accepted":1}', headers = {} })
+        return
+    end
+    callback("unexpected request: " .. tostring(options.url), nil)
+end
+GameAlgo.Init({
+    gameKey = "ga_live_fixture_key",
+    userId = "quota-user",
+    sessionId = "session-quota",
+    transport = quotaTransport,
+    autoFetch = false,
+    preloadConfigFiles = false,
+})
+GameAlgo.FetchConfig(function(error) assert(error == nil, tostring(error)) end)
+assert(GameAlgo.TrackLevelStart({}))
+assert(GameAlgo.TrackLevelEnd({}))
+local contextQuotaAccepted, contextQuotaError = GameAlgo.TrackEvent("overflow", {})
+assert(contextQuotaAccepted == false)
+assert(tostring(contextQuotaError):find("context event quota exceeded", 1, true) ~= nil)
+assert(GameAlgo.TrackEvent("overflow", {}) == false)
+assert(GameAlgo.TrackPurchase("sku", 1, "USD", {}))
+assert(GameAlgo.TrackAd("home", "rewarded", 1, "USD", {}))
+assert(#contextQuotaDiagnostics == 1)
+assert(contextQuotaDiagnostics[1].reasonCode == "context_event_quota_exceeded")
+assert(contextQuotaDiagnostics[1].reasonDetail:find("limit=2;observed=3;policyVersion=4", 1, true) ~= nil)
+
 local preloadConfig = cjson.decode(configFixture)
 preloadConfig.contextId = "ctx-preload"
 preloadConfig.configFiles = {}

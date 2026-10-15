@@ -412,6 +412,7 @@ public actor GameAlgoSDK {
                 expiresAt: now().addingTimeInterval(TimeInterval(max(response.ttlSeconds, 0)))
             )
             snapshotStore.updateConfig(response, updatedAt: now(), userId: identity.userId)
+            await tracker.setEventQuota(response.eventQuota)
             await tracker.setContextId(response.contextId)
             await tracker.setAssignments(response.experiments)
             persistSnapshot()

@@ -5,6 +5,7 @@ import type {
   ContextIdentifierResponse,
   ContextIdentifierType,
   EventBatchResponse,
+  EventQuotaConfig,
   EventPayload,
   EventPayloadValue,
   ExperimentAssignment,
@@ -305,6 +306,7 @@ export class GameAlgoRestClient {
         cacheKey,
         expiresAt: this.now() + Math.max(Number(config.ttlSeconds) || 0, 0) * 1000,
       };
+      this.tracker.setEventQuota(config.eventQuota);
       this.tracker.setContextId(config.contextId);
       this.tracker.setAssignments(config.experiments);
       this.snapshot = {
@@ -717,6 +719,8 @@ export class GameAlgoEventTracker {
   private consecutiveFailures = 0;
   private hasPersistedQueue = false;
   private readonly customCounts = new Map<string, { total: number; byType: Map<string, number> }>();
+  private readonly ordinaryCounts = new Map<string, number>();
+  private eventQuota?: EventQuotaConfig;
   private readonly diagnosticKeys = new Set<string>();
   private diagnosticCount = 0;
   private readonly reachedMilestoneKeys = new Set<string>();
@@ -778,6 +782,7 @@ export class GameAlgoEventTracker {
     this.retryBatch = this.retryBatch.filter((event) => clean(event.contextId) || event.sessionId !== previousSessionId);
     this.queue = this.queue.filter((event) => clean(event.contextId) || event.sessionId !== previousSessionId);
     this.sessionId = sessionId;
+    this.ordinaryCounts.delete(`pending:${previousSessionId}`);
     this.diagnosticKeys.clear();
     this.diagnosticCount = 0;
     this.pendingMilestoneKeys.clear();
@@ -799,6 +804,7 @@ export class GameAlgoEventTracker {
     this.contextId = resolved;
     if (!resolved) return;
     this.mergeCustomCountBucket(`pending:${this.sessionId}`, `context:${resolved}`);
+    this.mergeOrdinaryCountBucket(`pending:${this.sessionId}`, `context:${resolved}`);
     const bind = (event: GameEvent) => (
       !clean(event.contextId) && event.sessionId === this.sessionId
         ? { ...event, contextId: resolved }
@@ -825,6 +831,19 @@ export class GameAlgoEventTracker {
     }
   }
 
+  setEventQuota(quota?: EventQuotaConfig): void {
+    const limit = Math.floor(Number(quota?.ordinaryEventLimit));
+    this.eventQuota = quota?.mode === "enforce" && Number.isSafeInteger(limit) && limit >= 0
+      ? {
+          ...quota,
+          ordinaryEventLimit: limit,
+          exemptEventTypes: Array.isArray(quota.exemptEventTypes)
+            ? quota.exemptEventTypes.filter((value): value is string => typeof value === "string" && value.length > 0)
+            : [],
+        }
+      : undefined;
+  }
+
   markSessionStarted(): void {
     this.sessionStartMs = this.now();
   }
@@ -834,7 +853,6 @@ export class GameAlgoEventTracker {
     if (!userId) return false;
     const contextId = clean(options.contextId ?? this.contextId);
     const resolvedSessionId = clean(options.sessionId) ?? this.sessionId;
-    if (!this.consumeCustomEventQuota(eventType, contextId, resolvedSessionId)) return false;
 
     const eventTimeMs = options.timestamp ? Date.parse(options.timestamp) : this.now();
     const resolvedIsDebug = options.isDebug ?? this.isDebug;
@@ -843,6 +861,9 @@ export class GameAlgoEventTracker {
       ? this.prepareMilestone(userId, contextId, resolvedIsDebug, normalizedPayload, eventTimeMs)
       : undefined;
     if (milestone?.duplicate) return false;
+    if (!this.consumeOrdinaryEventQuota(eventType, contextId, resolvedSessionId, false)) return false;
+    if (!this.consumeCustomEventQuota(eventType, contextId, resolvedSessionId)) return false;
+    this.consumeOrdinaryEventQuota(eventType, contextId, resolvedSessionId, true);
 
     this.enqueue({
       eventId: randomId(),
@@ -959,6 +980,65 @@ export class GameAlgoEventTracker {
     for (const [eventType, count] of pending.byType) target.byType.set(eventType, (target.byType.get(eventType) ?? 0) + count);
     this.customCounts.set(to, target);
     this.customCounts.delete(from);
+  }
+
+  private consumeOrdinaryEventQuota(
+    eventType: string,
+    contextId: string | undefined,
+    sessionId: string,
+    consume: boolean,
+  ): boolean {
+    const quota = this.eventQuota;
+    const exempt = eventType === "purchase"
+      || eventType === "ad_view"
+      || quota?.exemptEventTypes.includes(eventType);
+    if (exempt) return true;
+    const bucketKey = contextId ? `context:${contextId}` : `pending:${sessionId}`;
+    const current = this.ordinaryCounts.get(bucketKey) ?? 0;
+    if (quota && current >= quota.ordinaryEventLimit) {
+      this.reportContextQuotaDiagnostic(eventType, sessionId, contextId, quota, current + 1);
+      return false;
+    }
+    if (consume) this.ordinaryCounts.set(bucketKey, current + 1);
+    return true;
+  }
+
+  private mergeOrdinaryCountBucket(from: string, to: string): void {
+    const pending = this.ordinaryCounts.get(from);
+    if (pending === undefined) return;
+    this.ordinaryCounts.set(to, (this.ordinaryCounts.get(to) ?? 0) + pending);
+    this.ordinaryCounts.delete(from);
+  }
+
+  private reportContextQuotaDiagnostic(
+    eventType: string,
+    sessionId: string,
+    contextId: string | undefined,
+    quota: EventQuotaConfig,
+    observed: number,
+  ): void {
+    const key = `${contextId ?? `pending:${sessionId}`}\u0000context_event_quota`;
+    if (!this.reportDiagnostic || this.diagnosticKeys.has(key) || this.diagnosticCount >= 10) return;
+    this.diagnosticKeys.add(key);
+    this.diagnosticCount += 1;
+    const createdAt = new Date(this.now()).toISOString();
+    const safeEventType = eventType.replace(/[;\r\n]/g, "_").slice(0, 96);
+    void this.reportDiagnostic({
+      diagnosticId: randomId(),
+      userId: this.userId,
+      sessionId,
+      contextId,
+      platform: this.platform,
+      sdkVersion: this.sdkVersion,
+      appVersion: this.appVersion,
+      stage: "event_guard",
+      status: "degraded",
+      reasonCode: "context_event_quota_exceeded",
+      reasonDetail: `eventType=${safeEventType};scope=context_total;limit=${quota.ordinaryEventLimit};observed=${observed};policyVersion=${quota.policyVersion};quotaDate=${quota.quotaDate};dropped=1`,
+      createdAt,
+      createdLocalAt: localTimestamp(this.now()),
+      isDebug: this.isDebug,
+    }).catch(() => undefined);
   }
 
   private reportQuotaDiagnostic(eventType: string, sessionId: string, contextId: string | undefined, scope: string, limit: number, observed: number): void {

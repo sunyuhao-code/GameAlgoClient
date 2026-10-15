@@ -61,6 +61,8 @@ public final class GameAlgoEventTracker implements AutoCloseable {
     private int consecutiveFailures;
     private boolean hasPersistedQueue;
     private final Map<String, CustomCountBucket> customCounts = new LinkedHashMap<>();
+    private final Map<String, Integer> ordinaryCounts = new LinkedHashMap<>();
+    private GameAlgoEventQuotaConfig eventQuota;
     private final Set<String> diagnosticKeys = new HashSet<>();
     private int diagnosticCount;
     private final Set<String> reachedMilestoneKeys = new HashSet<>();
@@ -124,6 +126,7 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         removeUnboundEvents(retryBatch, previousSessionId);
         removeUnboundEvents(queue, previousSessionId);
         sessionId = UUID.randomUUID().toString();
+        ordinaryCounts.remove("pending:" + previousSessionId);
         diagnosticKeys.clear();
         diagnosticCount = 0;
         pendingMilestoneKeys.clear();
@@ -140,6 +143,7 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         this.contextId = isBlank(contextId) ? null : contextId;
         if (this.contextId == null) return;
         mergeCustomCountBucket("pending:" + sessionId, "context:" + this.contextId);
+        mergeOrdinaryCountBucket("pending:" + sessionId, "context:" + this.contextId);
         bindCurrentSession(retryBatch, this.contextId);
         bindCurrentSession(queue, this.contextId);
         rememberBoundMilestones(this.contextId);
@@ -160,6 +164,14 @@ public final class GameAlgoEventTracker implements AutoCloseable {
 
     public synchronized void setAssignments(List<GameAlgoExperimentAssignment> assignments) {
         // Experiment assignments are captured in the SDK context log, not copied onto each event.
+    }
+
+    public synchronized void setEventQuota(GameAlgoEventQuotaConfig quota) {
+        eventQuota = quota != null
+                && "enforce".equals(quota.getMode())
+                && quota.getOrdinaryEventLimit() >= 0
+                ? quota
+                : null;
     }
 
     public synchronized void markSessionStarted() {
@@ -187,9 +199,6 @@ public final class GameAlgoEventTracker implements AutoCloseable {
             if (isBlank(userId)) {
                 return false;
             }
-            if (!consumeCustomEventQuota(eventType, isBlank(contextId) ? null : contextId, sessionId)) {
-                return false;
-            }
             resolvedUserId = userId;
             resolvedSessionId = sessionId;
             resolvedContextId = isBlank(contextId) ? "" : contextId;
@@ -204,8 +213,14 @@ public final class GameAlgoEventTracker implements AutoCloseable {
                         eventDate
                 );
                 if (milestone.duplicate) return false;
-                if (milestone.key != null) rememberMilestone(milestone.key, milestone.durable);
             }
+            String quotaContextId = isBlank(resolvedContextId) ? null : resolvedContextId;
+            if (!consumeOrdinaryEventQuota(eventType, quotaContextId, resolvedSessionId, false)
+                    || !consumeCustomEventQuota(eventType, quotaContextId, resolvedSessionId)) {
+                return false;
+            }
+            consumeOrdinaryEventQuota(eventType, quotaContextId, resolvedSessionId, true);
+            if (milestone != null && milestone.key != null) rememberMilestone(milestone.key, milestone.durable);
         }
 
         GameAlgoEvent event = new GameAlgoEvent(resolvedContextId, resolvedUserId, resolvedSessionId, eventType)
@@ -352,6 +367,48 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         customCounts.put(to, target);
     }
 
+    private boolean consumeOrdinaryEventQuota(String eventType, String resolvedContextId, String resolvedSessionId,
+                                              boolean consume) {
+        GameAlgoEventQuotaConfig quota = eventQuota;
+        if ("purchase".equals(eventType) || "ad_view".equals(eventType)
+                || (quota != null && quota.getExemptEventTypes().contains(eventType))) {
+            return true;
+        }
+        String bucketKey = resolvedContextId == null ? "pending:" + resolvedSessionId : "context:" + resolvedContextId;
+        Integer stored = ordinaryCounts.get(bucketKey);
+        int current = stored == null ? 0 : stored;
+        if (quota != null && current >= quota.getOrdinaryEventLimit()) {
+            reportContextQuotaDiagnostic(eventType, resolvedSessionId, resolvedContextId, quota, current + 1);
+            return false;
+        }
+        if (consume) ordinaryCounts.put(bucketKey, current + 1);
+        return true;
+    }
+
+    private void mergeOrdinaryCountBucket(String from, String to) {
+        Integer pending = ordinaryCounts.remove(from);
+        if (pending == null) return;
+        Integer current = ordinaryCounts.get(to);
+        ordinaryCounts.put(to, (current == null ? 0 : current) + pending);
+    }
+
+    private void reportContextQuotaDiagnostic(String eventType, String resolvedSessionId, String resolvedContextId,
+                                              GameAlgoEventQuotaConfig quota, int observed) {
+        String key = (resolvedContextId == null ? "pending:" + resolvedSessionId : resolvedContextId)
+                + "\u0000context_event_quota";
+        if (diagnosticKeys.contains(key) || diagnosticCount >= 10) return;
+        diagnosticKeys.add(key);
+        diagnosticCount += 1;
+        String safeEventType = eventType == null ? "" : eventType.replace(';', '_').replace('\n', '_').replace('\r', '_');
+        if (safeEventType.length() > 96) safeEventType = safeEventType.substring(0, 96);
+        client.reportEventGuardDiagnostic(
+                userId, resolvedSessionId, resolvedContextId, isDebug,
+                "context_event_quota_exceeded",
+                "eventType=" + safeEventType + ";scope=context_total;limit=" + quota.getOrdinaryEventLimit()
+                        + ";observed=" + observed + ";policyVersion=" + quota.getPolicyVersion()
+                        + ";quotaDate=" + quota.getQuotaDate() + ";dropped=1");
+    }
+
     private void reportQuotaDiagnostic(String eventType, String resolvedSessionId, String resolvedContextId,
                                        String scope, int limit, int observed) {
         String key = resolvedSessionId + "\u0000" + eventType + "\u0000" + scope;
@@ -362,6 +419,7 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         if (safeEventType.length() > 96) safeEventType = safeEventType.substring(0, 96);
         client.reportEventGuardDiagnostic(
                 userId, resolvedSessionId, resolvedContextId, isDebug,
+                "custom_event_quota_exceeded",
                 "eventType=" + safeEventType + ";scope=" + scope + ";limit=" + limit + ";observed=" + observed + ";dropped=1");
     }
 

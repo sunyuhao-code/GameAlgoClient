@@ -359,6 +359,8 @@ components:
         serverTime:
           type: string
           format: date-time
+        eventQuota:
+          $ref: "#/components/schemas/EventQuotaConfig"
         experiments:
           type: array
           items:
@@ -367,6 +369,36 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ConfigFileRef"
+
+    EventQuotaConfig:
+      type: object
+      required:
+        - mode
+        - policyVersion
+        - ordinaryEventLimit
+        - quotaDate
+        - resetAt
+        - exemptEventTypes
+      properties:
+        mode:
+          type: string
+          enum: [off, shadow, enforce]
+        policyVersion:
+          type: integer
+          minimum: 0
+        ordinaryEventLimit:
+          type: integer
+          minimum: 0
+        quotaDate:
+          type: string
+          format: date
+        resetAt:
+          type: string
+          format: date-time
+        exemptEventTypes:
+          type: array
+          items:
+            type: string
 
     ExperimentAssignment:
       type: object

@@ -228,6 +228,14 @@ final class GameAlgoSDKTests: XCTestCase {
             "configVersion": "v1",
             "ttlSeconds": 60,
             "serverTime": "2026-05-28T10:00:00.000Z",
+            "eventQuota": [
+                "mode": "enforce",
+                "policyVersion": 4,
+                "ordinaryEventLimit": 2,
+                "quotaDate": "2026-05-28",
+                "resetAt": "2026-05-29T00:00:00.000Z",
+                "exemptEventTypes": ["purchase", "ad_view"],
+            ],
             "experiments": [],
             "configFiles": [],
         ])
@@ -249,6 +257,8 @@ final class GameAlgoSDKTests: XCTestCase {
         let requests = await httpClient.requests
 
         XCTAssertEqual(first.gameId, "Mahjong")
+        XCTAssertEqual(first.eventQuota?.ordinaryEventLimit, 2)
+        XCTAssertEqual(first.eventQuota?.exemptEventTypes, ["purchase", "ad_view"])
         XCTAssertEqual(second.configVersion, "v1")
         XCTAssertEqual(requests.count, 1)
         XCTAssertEqual(requests[0].headers["X-GameAlgo-Key"], gameKey)
@@ -903,6 +913,52 @@ final class GameAlgoSDKTests: XCTestCase {
         let diagnostics = await uploader.diagnostics()
         XCTAssertEqual(diagnostics.count, 1)
         XCTAssertTrue(diagnostics[0].reasonDetail.contains("eventType=_frame_sample;scope=context_event_type;limit=1000"))
+    }
+
+    func testTrackerAppliesDownloadedContextQuotaAndExemptsRevenue() async throws {
+        let uploader = QueueEventUploader(failures: 0)
+        let tracker = GameAlgoEventTracker(
+            uploader: uploader,
+            flushInterval: 0,
+            initialIdentity: GameAlgoUserIdentity(userId: "u1", userCreatedAt: "2026-10-15T10:00:00.000Z", userCreatedLocalAt: "2026-10-15T18:00:00.000+08:00"),
+            initialPlatform: .ios,
+            initialSDKVersion: "1.0.0"
+        )
+        await tracker.identify(userId: "u1", sessionId: "s1")
+        await tracker.setEventQuota(GameAlgoEventQuotaConfig(
+            mode: "enforce",
+            policyVersion: 4,
+            ordinaryEventLimit: 2,
+            quotaDate: "2026-10-15",
+            resetAt: "2026-10-16T00:00:00.000Z",
+            exemptEventTypes: ["purchase", "ad_view"]
+        ))
+        await tracker.setContextId("ctx-quota")
+
+        let first = await tracker.trackLevelStart()
+        let second = await tracker.trackLevelEnd()
+        let firstOverflow = await tracker.trackEvent("overflow")
+        let secondOverflow = await tracker.trackEvent("overflow")
+        let purchase = await tracker.trackPurchase(productId: "sku", revenue: 1, currency: "USD")
+        let adView = await tracker.trackAd(placement: "home", adType: "rewarded", revenue: 1, currency: "USD")
+        XCTAssertTrue(first)
+        XCTAssertTrue(second)
+        XCTAssertFalse(firstOverflow)
+        XCTAssertFalse(secondOverflow)
+        XCTAssertTrue(purchase)
+        XCTAssertTrue(adView)
+        await tracker.flush()
+        for _ in 0..<100 {
+            if (await uploader.diagnostics()).count == 1 { break }
+            await Task.yield()
+        }
+
+        let events = await uploader.uploadedEvents()
+        XCTAssertEqual(events.map(\.eventType), ["level_start", "level_end", "purchase", "ad_view"])
+        let diagnostics = await uploader.diagnostics()
+        XCTAssertEqual(diagnostics.count, 1)
+        XCTAssertEqual(diagnostics[0].reasonCode, "context_event_quota_exceeded")
+        XCTAssertTrue(diagnostics[0].reasonDetail.contains("limit=2;observed=3;policyVersion=4"))
     }
 
     func testCustomEventsPreservePayload() async throws {

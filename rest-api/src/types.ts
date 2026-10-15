@@ -29,8 +29,18 @@ export type ConfigResponse = {
   configVersion: string;
   ttlSeconds: number;
   serverTime: string;
+  eventQuota?: EventQuotaConfig;
   experiments: ExperimentAssignment[];
   configFiles: ConfigFileRef[];
+};
+
+export type EventQuotaConfig = {
+  mode: "off" | "shadow" | "enforce";
+  policyVersion: number;
+  ordinaryEventLimit: number;
+  quotaDate: string;
+  resetAt: string;
+  exemptEventTypes: string[];
 };
 
 export type FetchConfigOptions = {
@@ -77,6 +87,17 @@ export type EventPayload = Record<string, EventPayloadValue>;
 export type EventBatchResponse = {
   ok: boolean;
   accepted: number;
+  rejected?: EventBatchRejection[];
+};
+
+export type EventBatchRejection = {
+  index: number;
+  eventId?: string;
+  code?: string;
+  reason?: string;
+  quotaDate?: string;
+  limit?: number;
+  resetAt?: string;
 };
 
 export type AttributionStatus = "attributed" | "organic" | "unknown" | string;

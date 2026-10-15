@@ -48,6 +48,7 @@ class TransportFixture:
 	var requests: Array[Dictionary] = []
 	var experiments: Array = []
 	var config_files: Array = []
+	var event_quota: Dictionary = {}
 	var accepted_override := -1
 	var config_calls := 0
 	var attribution_ok := true
@@ -83,7 +84,7 @@ class TransportFixture:
 			return _json({"ok": true, "accepted": 1})
 		if url.ends_with("/v1/config"):
 			config_calls += 1
-			return _json({
+			var config := {
 				"contextId": "context-1",
 				"gameId": "fixture",
 				"environment": "live",
@@ -92,7 +93,10 @@ class TransportFixture:
 				"serverTime": "2026-01-01T00:00:00.000Z",
 				"experiments": experiments.duplicate(true),
 				"configFiles": config_files.duplicate(true),
-			})
+			}
+			if not event_quota.is_empty():
+				config["eventQuota"] = event_quota.duplicate(true)
+			return _json(config)
 		if url.ends_with("/v1/events/batch"):
 			if not events_ok:
 				return {
@@ -363,6 +367,7 @@ func _run() -> void:
 	await _test_executor_typed_reads()
 	await _test_script_runtime_fails_closed()
 	await _test_custom_event_quota()
+	await _test_downloaded_context_event_quota()
 	await _test_quota_buckets_follow_the_context()
 	await _test_quota_survives_restart()
 	await _test_quota_diagnostic_is_reported_once()
@@ -1065,6 +1070,40 @@ func _test_custom_event_quota() -> void:
 	_check(not total.tracker.track("bulk_last", {}), "a context is capped at 5,000 custom events")
 	_check(total.tracker.track("level_start", {}), "standard events still pass a full context")
 	total.free()
+	client.free()
+
+
+func _test_downloaded_context_event_quota() -> void:
+	var transport := TransportFixture.new()
+	transport.event_quota = {
+		"mode": "enforce",
+		"policyVersion": 4,
+		"ordinaryEventLimit": 2,
+		"quotaDate": "2026-10-15",
+		"resetAt": "2026-10-16T00:00:00.000Z",
+		"exemptEventTypes": ["purchase", "ad_view"],
+	}
+	var client := _make_client({"transport": transport})
+	if client == null:
+		_check(false, "context quota fixture configured")
+		return
+	await client.refresh(true)
+	_check(client.tracker.track_level_start(), "first ordinary event fits the downloaded context quota")
+	_check(client.tracker.track_level_end(), "second ordinary event fits the downloaded context quota")
+	_check(not client.tracker.track_event("overflow"), "ordinary event above the context quota is refused")
+	_check(not client.tracker.track_event("overflow"), "later ordinary events stay refused")
+	_check(client.tracker.track_purchase("sku", 1.0, "USD"), "purchase is exempt from the context quota")
+	_check(client.tracker.track_ad("home", "rewarded", 1.0, "USD"), "ad_view is exempt from the context quota")
+	var diagnostics: Array[Dictionary] = []
+	for request: Dictionary in transport.requests:
+		if String(request.get("url", "")).ends_with("/v1/diagnostics/sdk"):
+			var body: Variant = JSON.parse_string(String(request.get("body", "")))
+			if body is Dictionary:
+				diagnostics.append(body)
+	_check(diagnostics.size() == 1, "context quota emits one diagnostic")
+	if diagnostics.size() == 1:
+		_check(String(diagnostics[0].get("reasonCode", "")) == "context_event_quota_exceeded", "context quota diagnostic has a distinct reason code")
+		_check(String(diagnostics[0].get("reasonDetail", "")).contains("limit=2;observed=3;policyVersion=4"), "context quota diagnostic includes policy details")
 	client.free()
 
 

@@ -33,7 +33,7 @@ test("OpenAPI exposes immutable scripts and every shared request contract", () =
   };
 
   assert.ok(document.paths["/v1/scripts/{versionId}"]);
-  for (const schema of ["ConfigRequest", "EventBatchRequest", "UserAttributionRequest", "ContextIdentifierRequest"]) {
+  for (const schema of ["ConfigRequest", "EventQuotaConfig", "EventBatchRequest", "UserAttributionRequest", "ContextIdentifierRequest"]) {
     assert.ok(document.components.schemas[schema], `missing OpenAPI schema ${schema}`);
   }
 });

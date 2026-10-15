@@ -22,7 +22,7 @@ struct GameAlgoEventGuardDiagnostic: Encodable, Sendable {
     let appVersion: String?
     let stage = "event_guard"
     let status = "degraded"
-    let reasonCode = "custom_event_quota_exceeded"
+    let reasonCode: String
     let reasonDetail: String
     let createdAt: String
     let createdLocalAt: String
@@ -66,6 +66,8 @@ public actor GameAlgoEventTracker {
     private var consecutiveFailures = 0
     private var hasPersistedQueue = false
     private var customCounts: [String: CustomCountBucket] = [:]
+    private var ordinaryCounts: [String: Int] = [:]
+    private var eventQuota: GameAlgoEventQuotaConfig?
     private var diagnosticKeys: Set<String> = []
     private var diagnosticCount = 0
     private var reachedMilestoneKeys: Set<String> = []
@@ -182,6 +184,7 @@ public actor GameAlgoEventTracker {
         retryBatch.removeAll { clean($0.contextId) == nil && $0.sessionId == previousSessionId }
         queue.removeAll { clean($0.contextId) == nil && $0.sessionId == previousSessionId }
         self.sessionId = sessionId
+        ordinaryCounts.removeValue(forKey: "pending:\(previousSessionId)")
         diagnosticKeys.removeAll()
         diagnosticCount = 0
         pendingMilestoneKeys.removeAll()
@@ -199,6 +202,7 @@ public actor GameAlgoEventTracker {
         self.contextId = resolved
         guard let resolved else { return }
         mergeCustomCountBucket(from: "pending:\(sessionId)", to: "context:\(resolved)")
+        mergeOrdinaryCountBucket(from: "pending:\(sessionId)", to: "context:\(resolved)")
         retryBatch = retryBatch.map { bindContext($0, contextId: resolved) }
         queue = queue.map { bindContext($0, contextId: resolved) }
         rememberBoundMilestones(contextId: resolved)
@@ -215,6 +219,10 @@ public actor GameAlgoEventTracker {
 
     public func setAssignments(_ assignments: [GameAlgoExperimentAssignment]) {
         currentAssignments = assignments
+    }
+
+    public func setEventQuota(_ quota: GameAlgoEventQuotaConfig?) {
+        eventQuota = quota?.mode == "enforce" && (quota?.ordinaryEventLimit ?? -1) >= 0 ? quota : nil
     }
 
     public func markSessionStarted() {
@@ -234,9 +242,6 @@ public actor GameAlgoEventTracker {
         }
         let resolvedContextId = clean(contextId ?? self.contextId) ?? ""
         let resolvedSessionId = clean(sessionId) ?? self.sessionId
-        guard consumeCustomEventQuota(eventType, contextId: clean(resolvedContextId), sessionId: resolvedSessionId) else {
-            return false
-        }
 
         let eventDate = now()
         var normalizedPayload = normalizePayload(payload)
@@ -250,6 +255,11 @@ public actor GameAlgoEventTracker {
             )
             : nil
         if milestone?.duplicate == true { return false }
+        guard consumeOrdinaryEventQuota(eventType, contextId: clean(resolvedContextId), sessionId: resolvedSessionId, consume: false),
+              consumeCustomEventQuota(eventType, contextId: clean(resolvedContextId), sessionId: resolvedSessionId) else {
+            return false
+        }
+        _ = consumeOrdinaryEventQuota(eventType, contextId: clean(resolvedContextId), sessionId: resolvedSessionId, consume: true)
         let event = GameAlgoEvent(
             eventId: UUID().uuidString,
             contextId: resolvedContextId,
@@ -393,6 +403,63 @@ public actor GameAlgoEventTracker {
         customCounts[to] = target
     }
 
+    private func consumeOrdinaryEventQuota(
+        _ eventType: String,
+        contextId: String?,
+        sessionId: String,
+        consume: Bool
+    ) -> Bool {
+        let quota = eventQuota
+        if eventType == "purchase" || eventType == "ad_view" || quota?.exemptEventTypes.contains(eventType) == true {
+            return true
+        }
+        let bucketKey = contextId.map { "context:\($0)" } ?? "pending:\(sessionId)"
+        let current = ordinaryCounts[bucketKey] ?? 0
+        if let quota, current >= quota.ordinaryEventLimit {
+            reportContextQuotaDiagnostic(eventType, sessionId: sessionId, contextId: contextId, quota: quota,
+                                         observed: current + 1)
+            return false
+        }
+        if consume { ordinaryCounts[bucketKey] = current + 1 }
+        return true
+    }
+
+    private func mergeOrdinaryCountBucket(from: String, to: String) {
+        guard let pending = ordinaryCounts.removeValue(forKey: from) else { return }
+        ordinaryCounts[to, default: 0] += pending
+    }
+
+    private func reportContextQuotaDiagnostic(
+        _ eventType: String,
+        sessionId: String,
+        contextId: String?,
+        quota: GameAlgoEventQuotaConfig,
+        observed: Int
+    ) {
+        guard let platform, let sdkVersion else { return }
+        let key = "\(contextId ?? "pending:\(sessionId)")\u{0}context_event_quota"
+        guard !diagnosticKeys.contains(key), diagnosticCount < 10 else { return }
+        diagnosticKeys.insert(key)
+        diagnosticCount += 1
+        let safeEventType = String(eventType.replacingOccurrences(of: ";", with: "_").replacingOccurrences(of: "\n", with: "_").prefix(96))
+        let created = now()
+        let diagnostic = GameAlgoEventGuardDiagnostic(
+            diagnosticId: UUID().uuidString,
+            userId: userId,
+            sessionId: sessionId,
+            contextId: contextId,
+            platform: platform,
+            sdkVersion: sdkVersion,
+            appVersion: appVersion,
+            reasonCode: "context_event_quota_exceeded",
+            reasonDetail: "eventType=\(safeEventType);scope=context_total;limit=\(quota.ordinaryEventLimit);observed=\(observed);policyVersion=\(quota.policyVersion);quotaDate=\(quota.quotaDate);dropped=1",
+            createdAt: GameAlgoEventBatchUploader.isoTimestamp(created),
+            createdLocalAt: GameAlgoEventBatchUploader.localTimestamp(created),
+            isDebug: isDebug
+        )
+        Task { try? await uploader.uploadEventGuardDiagnostic(diagnostic) }
+    }
+
     private func reportQuotaDiagnostic(_ eventType: String, sessionId: String, contextId: String?, scope: String, limit: Int, observed: Int) {
         guard let platform, let sdkVersion else { return }
         let key = "\(sessionId)\u{0}\(eventType)\u{0}\(scope)"
@@ -409,6 +476,7 @@ public actor GameAlgoEventTracker {
             platform: platform,
             sdkVersion: sdkVersion,
             appVersion: appVersion,
+            reasonCode: "custom_event_quota_exceeded",
             reasonDetail: "eventType=\(safeEventType);scope=\(scope);limit=\(limit);observed=\(observed);dropped=1",
             createdAt: GameAlgoEventBatchUploader.isoTimestamp(created),
             createdLocalAt: GameAlgoEventBatchUploader.localTimestamp(created),

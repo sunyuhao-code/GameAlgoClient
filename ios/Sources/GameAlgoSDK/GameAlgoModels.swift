@@ -66,6 +66,7 @@ public struct GameAlgoConfigResponse: Sendable, Equatable, Codable {
     public let configVersion: String
     public let ttlSeconds: Int
     public let serverTime: String
+    public let eventQuota: GameAlgoEventQuotaConfig?
     public let experiments: [GameAlgoExperimentAssignment]
     public let configFiles: [GameAlgoConfigFileRef]
 
@@ -76,6 +77,7 @@ public struct GameAlgoConfigResponse: Sendable, Equatable, Codable {
         configVersion: String,
         ttlSeconds: Int,
         serverTime: String,
+        eventQuota: GameAlgoEventQuotaConfig? = nil,
         experiments: [GameAlgoExperimentAssignment],
         configFiles: [GameAlgoConfigFileRef]
     ) {
@@ -85,8 +87,34 @@ public struct GameAlgoConfigResponse: Sendable, Equatable, Codable {
         self.configVersion = configVersion
         self.ttlSeconds = ttlSeconds
         self.serverTime = serverTime
+        self.eventQuota = eventQuota
         self.experiments = experiments
         self.configFiles = configFiles
+    }
+}
+
+public struct GameAlgoEventQuotaConfig: Sendable, Equatable, Codable {
+    public let mode: String
+    public let policyVersion: Int
+    public let ordinaryEventLimit: Int
+    public let quotaDate: String
+    public let resetAt: String
+    public let exemptEventTypes: [String]
+
+    public init(
+        mode: String,
+        policyVersion: Int,
+        ordinaryEventLimit: Int,
+        quotaDate: String,
+        resetAt: String,
+        exemptEventTypes: [String]
+    ) {
+        self.mode = mode
+        self.policyVersion = policyVersion
+        self.ordinaryEventLimit = ordinaryEventLimit
+        self.quotaDate = quotaDate
+        self.resetAt = resetAt
+        self.exemptEventTypes = exemptEventTypes
     }
 }
 
