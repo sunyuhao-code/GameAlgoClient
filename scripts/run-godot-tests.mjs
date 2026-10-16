@@ -84,6 +84,21 @@ for (const suite of suites) {
   }
 }
 
+console.log("\n== HTTP transport timeout integration ==");
+const timeoutTest = spawnSync(
+  "python3",
+  [fileURLToPath(new URL("./test-godot-http-timeout.py", import.meta.url))],
+  {
+    stdio: "inherit",
+    env: { ...process.env, GODOT_BIN: godot },
+    timeout: 60_000,
+  },
+);
+if (timeoutTest.status !== 0) {
+  console.error(`FAILED: HTTP transport timeout integration (exit ${timeoutTest.status})`);
+  failed += 1;
+}
+
 if (failed > 0) {
   console.error(`\n${failed} Godot suite(s) failed.`);
   process.exit(1);

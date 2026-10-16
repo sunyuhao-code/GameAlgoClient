@@ -9,7 +9,28 @@ const ABSOLUTE_BODY_LIMIT_BYTES := 10 * 1024 * 1024
 
 var timeout_seconds := DEFAULT_TIMEOUT_SECONDS
 var body_limit_bytes := DEFAULT_BODY_LIMIT_BYTES
-var use_threads := true
+# Godot 4.7.x can synchronously join the HTTP worker from the main thread when
+# a threaded request times out. If the worker is blocked in a TLS read, this
+# freezes the SceneTree and can make iOS terminate the app with 0x8BADF00D.
+# Non-threaded HTTPRequest still advances asynchronously from the SceneTree,
+# but its socket polling and cancellation never wait for a worker to exit.
+var use_threads := false
+
+var _active_requests: Dictionary = {}
+
+
+class PendingRequest:
+	extends RefCounted
+
+	signal finished(response: Dictionary, completed: bool)
+
+	var completed := false
+
+	func complete(response: Dictionary) -> void:
+		if completed:
+			return
+		completed = true
+		finished.emit(response, true)
 
 
 func send(spec: Dictionary) -> Dictionary:
@@ -50,24 +71,70 @@ func send(spec: Dictionary) -> Dictionary:
 	request.body_size_limit = int(limit_value)
 	request.max_redirects = 0
 	request.use_threads = use_threads
+	_configure_request(request)
 	add_child(request)
+	var pending := PendingRequest.new()
+	_active_requests[request] = pending
+	request.request_completed.connect(
+		_on_request_completed.bind(request, pending), CONNECT_ONE_SHOT
+	)
 	var start_error := OK
 	if body_value is PackedByteArray:
 		start_error = request.request_raw(url, header_lines, method, body_value)
 	else:
 		start_error = request.request(url, header_lines, method, String(body_value))
 	if start_error != OK:
+		_active_requests.erase(request)
 		request.queue_free()
 		return _failure("request_start_failed")
-	var completed: Array = await request.request_completed
-	request.queue_free()
-	if completed.size() != 4 or not completed[2] is PackedStringArray \
-			or not completed[3] is PackedByteArray:
+	var completion: Array = await pending.finished
+	if completion.size() != 2 or not completion[0] is Dictionary:
 		return _failure("invalid_transport_result")
-	var result_code := int(completed[0])
-	var status_code := int(completed[1])
-	var response_headers: PackedStringArray = completed[2]
-	var response_body: PackedByteArray = completed[3]
+	return completion[0]
+
+
+func cancel_requests() -> void:
+	# Duplicate the keys because completing a request removes it from the live
+	# map. PendingRequest makes cancellation and a same-frame network callback
+	# idempotent, so callers can safely cancel during shutdown.
+	for request_value: Variant in _active_requests.keys():
+		var request := request_value as HTTPRequest
+		var pending_value: Variant = _active_requests.get(request)
+		_active_requests.erase(request)
+		if is_instance_valid(request):
+			request.cancel_request()
+			request.queue_free()
+		if pending_value is PendingRequest:
+			(pending_value as PendingRequest).complete(_failure("request_cancelled"))
+
+
+func _exit_tree() -> void:
+	cancel_requests()
+
+
+func _on_request_completed(
+	result_code: int,
+	status_code: int,
+	response_headers: PackedStringArray,
+	response_body: PackedByteArray,
+	request: HTTPRequest,
+	pending: PendingRequest
+) -> void:
+	if not _active_requests.has(request):
+		return
+	_active_requests.erase(request)
+	request.queue_free()
+	pending.complete(_response(
+		result_code, status_code, response_headers, response_body
+	))
+
+
+func _response(
+	result_code: int,
+	status_code: int,
+	response_headers: PackedStringArray,
+	response_body: PackedByteArray
+) -> Dictionary:
 	if result_code != HTTPRequest.RESULT_SUCCESS:
 		return {
 			"ok": false,
@@ -83,6 +150,12 @@ func send(spec: Dictionary) -> Dictionary:
 		"body": response_body,
 		"error": "" if status_code >= 200 and status_code < 300 else "http_%d" % status_code,
 	}
+
+
+## Overridden only by the TLS fixture in the transport integration test. The
+## production SDK always uses Godot's default certificate validation.
+func _configure_request(_request: HTTPRequest) -> void:
+	pass
 
 
 func _method(name: String) -> int:
