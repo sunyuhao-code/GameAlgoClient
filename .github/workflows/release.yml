@@ -158,7 +158,7 @@ jobs:
     runs-on: macos-14
     env:
       TZ: Asia/Shanghai
-      GODOT_VERSION: "4.7"
+      GODOT_VERSION: "4.7.2"
     steps:
       - uses: actions/checkout@v5
 

@@ -566,8 +566,8 @@ local function normalizeEventQuota(config)
         end
     end
     return {
-        ordinaryEventLimit = limit,
-        policyVersion = tonumber(quota.policyVersion) or 0,
+        ordinaryEventLimit = math.floor(limit),
+        policyVersion = math.floor(tonumber(quota.policyVersion) or 0),
         quotaDate = tostring(quota.quotaDate or ""),
         resetAt = tostring(quota.resetAt or ""),
         exemptEventTypes = exempt,

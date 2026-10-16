@@ -2,6 +2,8 @@
 
 这是符合 Protocol v1 的 Godot 4 SDK。配置、实验和归因仍由 GDScript 直接访问 GameAlgo HTTPS API；事件队列与 `/v1/events/batch` 上传使用包内的跨平台原生 GDExtension，使 Android/iOS 停止 Godot 帧循环后仍能完成 ACK。
 
+GDScript HTTPS transport 默认使用 `HTTPRequest.use_threads = false`。请求仍是异步的，但网络轮询由 Godot 主循环驱动；这样超时、取消、销毁 Client 或退出 App 时不会在主线程同步等待卡在 TLS read 的 HTTP worker。这个设置只影响配置、归因、设备标识符和诊断等非事件请求，不改变原生事件 `flush()`。
+
 支持 `android` 和 `ios` 两个导出目标。桌面导出（macOS / Windows / Linux）不支持：GameAlgo 服务端只接受 `ios`、`android`、`maker`、`web` 四个平台值，桌面构建会在 `configure` 时以 `invalid_platform` 拒绝，不会发出请求。
 
 ## 安装

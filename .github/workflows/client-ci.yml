@@ -11,7 +11,7 @@ jobs:
     # macOS is the only shipped desktop target.
     runs-on: macos-14
     env:
-      GODOT_VERSION: "4.7"
+      GODOT_VERSION: "4.7.2"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
