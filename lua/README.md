@@ -8,9 +8,6 @@ TapTap Maker 客户端支持直接访问 GameAlgo HTTPS API。接入时把以下
 - `Sha256.lua`
 - `DDA.lua`
 - `MakerAutoStorage.lua`
-- `Multiplayer.lua`
-- `MultiplayerProtocol.lua`
-- `MultiplayerWire.lua`
 
 `client_main.lua` 是可直接参考的初始化示例。
 
@@ -35,145 +32,13 @@ GameAlgo.Init({
 
 Lua SDK 会自动上报 `platform=maker`，接入代码不需要也不能选择运行平台。
 
+Maker / Lua SDK 不提供匹配、Lobby、房间连接或实时状态同步；需要这些能力的 H5 游戏请使用 [`@gamealgo/web`](../web/README.md)。
+
 `ga_live_xxx` 只是示例占位。实际接入必须使用真实 `ga_live_*`；如果当前没有真实 key，AI Agent 应使用 `ga_admin_*` 通过 GameAlgo CLI 创建或读取。`ga_admin_*` 只能给 CLI 使用，不能放入客户端。
 
 `experimentIntegrationVersion` 来自 `gamealgo experiment integration-version create`，表示当前小游戏版本支持的实验参数能力。它需要固定在发布代码中，不能在运行时查询 latest；没有接入实验时可省略，默认是 `0`。
 
 关于何时创建新版本、Strategy 最低版本和托管实验覆盖率门槛，运行 `gamealgo docs experiments --host <admin-host>` 查看当前平台规则。
-
-## 轻实时联机
-
-Maker SDK 提供和 `@gamealgo/web` 相同的匹配、Lobby、房间、房主迁移、状态同步与输入聚合协议。Lua 使用回调而不是 Promise，方法名遵循现有 Maker SDK 的 PascalCase 约定。
-
-Maker Lua 运行时没有浏览器原生 `WebSocket` 对象；引擎的 `TRANSPORT_WEBSOCKET` 又是 UrhoX Network 协议，不能直接替代 GameAlgo 的原生 WebSocket 帧。因此宿主必须在 `Init` 时注入一个原生 Socket 适配器，SDK 不会误用引擎 Network 连接：
-
-```lua
-GameAlgo.Init({
-    baseUrl = "https://game-algo-sdk.dictapis.cn",
-    gameKey = "ga_live_xxx",
-    appVersion = "1.0.0",
-    multiplayerSocketFactory = makerWebSocketFactory,
-})
-```
-
-`makerWebSocketFactory(url, handlers)` 返回一个连接对象。连接对象实现：
-
-- `SendText(text)`：发送 UTF-8 文本帧；
-- `SendBinary(bytes)`：发送二进制帧，`bytes` 是 Lua string；
-- `Close(code, reason)`：关闭连接。
-
-适配器在对应网络事件发生时调用 `handlers.open()`、`handlers.text(text)`、`handlers.binary(bytes)`、`handlers.error(reason)` 和 `handlers.close(code, reason)`。SDK 会把同步触发的连接事件延迟到工厂返回以后处理。测试或特殊容器也可以在单次 `Join` / `ConnectRoom` 的 options 中传 `socketFactory` 覆盖全局适配器。
-
-### 静态协议
-
-字段使用有序 `{ name, schema }` 列表声明；这个顺序同时决定二进制布局和 `protocol.hash`，可与 H5 客户端直接互通：
-
-```lua
-local Protocol = GameAlgo.DefineMultiplayerProtocol({
-    id = "counter-duel",
-    version = 1,
-    roomInit = {
-        { "seed", "u32" },
-        { "mapId", { type = "enum", values = { "small", "large" } } },
-    },
-    sharedState = {
-        { "tick", "u32" },
-        { "scores", { type = "array", items = "u16", maxLength = 2 } },
-    },
-    seatState = {
-        { "hand", { type = "array", items = "u8", maxLength = 16 } },
-    },
-    hostState = {
-        { "tick", "u32" },
-        { "scores", { type = "array", items = "u16", maxLength = 2 } },
-        { "deck", { type = "array", items = "u8", maxLength = 64 } },
-    },
-    input = {
-        { "action", { type = "enum", values = { "tap", "pass" } } },
-        { "value", "u8" },
-    },
-    events = {
-        { "winner", { { "seat", "u8" } } },
-    },
-})
-```
-
-可用类型和 H5 一致：`bool/u8/i8/u16/i16/u32/i32/f32`、有界 `string` / `bytes`、`enum`、`array` 和 `struct`。Lua 的 `bytes` 值使用 string。不要把顶层字段写成无序 map，否则不同运行时无法保证二进制布局一致。
-
-### 匹配、取消和进房
-
-```lua
-local match = GameAlgo.Matchmaking.Join({
-    queueId = "casual_1v1",
-    protocolHash = Protocol.hash,
-    rating = 1200,
-    canHost = true,
-})
-
-match:OnError(function(err)
-    print(err.code, err.phase, err.retryable)
-end)
-
-match:WaitForMatched(function(err, matched)
-    if err then
-        if err.code ~= "match_cancelled" then print("match failed", err.code) end
-        return
-    end
-    GameAlgo.ConnectRoom(matched.relayUrl, matched.ticket, Protocol, function(roomErr, room)
-        if roomErr then print("room failed", roomErr.code) return end
-        -- 保存 room，继续下面的初始化和对局流程。
-    end)
-end)
-
--- 玩家在排队 UI 点击取消；调用幂等，主动取消不会触发 OnError。
-match:Cancel()
-```
-
-匹配凭证默认由 SDK 使用当前 Maker 匿名 `userId/sessionId` 调用 `/v1/multiplayer/access-token` 获取。`Init` 的身份存储尚未恢复时，匹配会在连接超时窗口内等待，不会临时生成第二个用户身份。
-
-### 房间与输入
-
-```lua
-room:OnInitialized(function(init)
-    LoadMap(init.mapId, init.seed)
-    room:Ready()
-end)
-
-room:OnBecomeHost(function(hostState)
-    if hostState then RestoreCompleteState(hostState) end
-end)
-
-room:OnInput(function(message)
-    if not room.isHost or room.phase ~= "active" then return end
-    ApplyInput(message.seat, message.input)
-    room:PublishState({
-        sharedState = BuildSharedState(),
-        seatStates = { [message.seat] = BuildPrivateState(message.seat) },
-    })
-    room:CommitHostState(BuildCompleteRecoveryState())
-end)
-
-if room.isHost and room.phase == "initializing" then
-    room:Initialize({ seed = CreateSeed(), mapId = "small" })
-end
-
-local inputs = room:CreateInputQueue({
-    delivery = "reliable",
-    intervalMs = 50,
-    aggregate = function(items)
-        return { action = "tap", value = math.min(255, #items) }
-    end,
-})
-inputs:Push({ action = "tap", value = 1 })
-```
-
-房间还提供 `SendEvent`、`YieldHost`、`SetForeground`、`Disconnect` 和仅房主可用的 `Close`。`PublishState` 最多 10 Hz，`CommitHostState` 最多 1 Hz；等待中的状态只保留最新完整快照。`delivery="reliable"` 的输入会自动 ACK、去重和重发，每个房间只能有一个可靠输入队列，销毁对局时调用 `inputs:Close()`。
-
-Lobby 接口为 `GameAlgo.Matchmaking.ListLobbies(options, callback)`、`CreateLobby(options)` 和 `JoinLobby(options)`；返回的 LobbyHandle 提供 `WaitForLobby`、`OnChanged`、`Start`、`CancelMatchmaking`、`Kick`、`Leave`、`CloseLobby` 和 `WaitForMatched`。字段、错误码、包大小限制和 H5 文档一致。
-
-联机 SDK 不自动写入 GameAlgo 事件。对局开始、结束和业务行为仍由游戏按自己的口径调用 `Track*`。
-
-Lua SDK 会自动调用 Maker 环境的 `lobby:GetMyUserId()` 作为稳定的 `accountUserId`，游戏接入代码不需要读取或传入该值。GameAlgo 自己的匿名 `userId` 仍从内部持久化快照读取，首次使用时才生成。不要使用昵称、头像、手机号等可识别信息作为 `userId`。
 
 ### 持久化存储
 

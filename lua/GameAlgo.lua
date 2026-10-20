@@ -24,13 +24,11 @@ local LuaScriptRuntime = requireSdkModule("LuaScriptRuntime")
 local Sha256 = requireSdkModule("Sha256")
 local DDA = requireSdkModule("DDA")
 local MakerAutoStorage = requireSdkModule("MakerAutoStorage")
-local MultiplayerProtocol = requireSdkModule("MultiplayerProtocol")
-local Multiplayer = requireSdkModule("Multiplayer")
 
 local GameAlgo = {}
 local unpackArgs = table.unpack or unpack
 
-local SDK_VERSION = "1.6.0-lua"
+local SDK_VERSION = "2.0.0-lua"
 local DEFAULT_BASE_URL = "https://game-algo-sdk.dictapis.cn"
 local DEFAULT_FLUSH_INTERVAL_MS = 5000
 local DEFAULT_FLUSH_TIMEOUT_MS = 15000
@@ -119,8 +117,6 @@ local state_ = {
     logger = nil,
     transport = HttpTransport,
     scheduler = nil,
-    multiplayerSocketFactory = nil,
-    multiplayerControllerUrl = nil,
 }
 
 local function log(message)
@@ -424,35 +420,6 @@ local function httpRequest(method, path, bodyTable, callback)
         return nil
     end
     return requestOrError
-end
-
-local function multiplayerHttpRequest(request, callback)
-    callback = callback or function() end
-    local headers = {}
-    for name, value in pairs(request.headers or {}) do headers[name] = value end
-    if state_.gameKey and state_.gameKey ~= "" and headers["X-GameAlgo-Key"] == nil then
-        headers["X-GameAlgo-Key"] = state_.gameKey
-    end
-    local settled = false
-    local function complete(error, response)
-        if settled then return end
-        settled = true
-        safeCallback(callback, error, response)
-    end
-    local ok, handleOrError = pcall(function()
-        return state_.transport.Request({
-            method = request.method or "GET",
-            url = request.url,
-            headers = headers,
-            body = request.body or "",
-            timeoutMs = request.timeoutMs or 10000,
-        }, complete)
-    end)
-    if not ok then
-        complete("request failed: " .. tostring(handleOrError), nil)
-        return nil
-    end
-    return handleOrError
 end
 
 local function reportInitTimeout()
@@ -1036,7 +1003,6 @@ function GameAlgo.Init(options)
     if options.storage ~= nil then
         error("options.storage is not supported; TapTap Maker storage is managed automatically by the Lua SDK")
     end
-    Multiplayer.Reset()
     local previousActive = state_.activeFlush
     local previousConfigRequestHandle = state_.configFetchRequestHandle
     local previousTransport = state_.transport
@@ -1065,8 +1031,6 @@ function GameAlgo.Init(options)
     state_.isDebug = options.isDebug == true
     state_.logger = options.logger
     state_.transport = options.transport or HttpTransport
-    state_.multiplayerSocketFactory = options.multiplayerSocketFactory
-    state_.multiplayerControllerUrl = options.multiplayerControllerUrl
     state_.maxBatchSize = math.max(1, math.floor(tonumber(options.maxBatchSize) or 100))
     state_.maxQueueSize = math.max(state_.maxBatchSize,
         math.floor(tonumber(options.maxQueueSize) or DEFAULT_MAX_QUEUE_SIZE))
@@ -1137,20 +1101,6 @@ function GameAlgo.Init(options)
         nowMs = state_.clock,
         externallyDriven = state_.internalUpdateSubscribed,
     })
-    Multiplayer.Configure({
-        baseUrl = state_.baseUrl,
-        gameKey = state_.gameKey,
-        controllerUrl = state_.multiplayerControllerUrl,
-        socketFactory = state_.multiplayerSocketFactory,
-        scheduler = state_.scheduler,
-        nowMs = state_.clock,
-        logger = log,
-        request = multiplayerHttpRequest,
-        userId = function() return state_.userId end,
-        sessionId = function() return state_.sessionId end,
-        identityPending = function() return not state_.storageReady end,
-    })
-
     local storage, storageError = MakerAutoStorage.New({
         logger = log,
         scheduler = state_.scheduler,
@@ -1987,18 +1937,6 @@ function GameAlgo.ConfigValue(path, defaultValue, fileName)
     if value == nil then return defaultValue end
     return value
 end
-
-function GameAlgo.DefineMultiplayerProtocol(definition)
-    return MultiplayerProtocol.Define(definition)
-end
-
-GameAlgo.Matchmaking = Multiplayer.Matchmaking
-
-function GameAlgo.ConnectRoom(relayUrl, ticket, protocol, options, callback)
-    return Multiplayer.ConnectRoom(relayUrl, ticket, protocol, options, callback)
-end
-
-GameAlgo.MultiplayerError = Multiplayer.Error
 
 function GameAlgo.Snapshot()
     local active = state_.activeFlush

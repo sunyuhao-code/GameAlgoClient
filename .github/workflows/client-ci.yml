@@ -65,4 +65,3 @@ jobs:
       - run: lua lua/tests/GameAlgoContractTest.lua
       - run: lua lua/tests/GameAlgoFlushRecoveryTest.lua
       - run: lua lua/tests/MakerAutoStorageFirstRunTest.lua
-      - run: lua lua/tests/MultiplayerTest.lua
