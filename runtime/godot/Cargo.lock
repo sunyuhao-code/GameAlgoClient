@@ -170,8 +170,11 @@ dependencies = [
 name = "gamealgo-godot-runtime"
 version = "1.0.0"
 dependencies = [
+ "cc",
  "gamealgo-script-runtime",
  "godot",
+ "jni",
+ "serde",
  "serde_json",
  "ureq",
 ]

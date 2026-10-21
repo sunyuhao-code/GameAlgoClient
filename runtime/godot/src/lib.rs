@@ -13,7 +13,11 @@ use godot::prelude::*;
 use serde_json::Value;
 use std::collections::HashMap;
 
+#[cfg(target_os = "android")]
+mod android_lifecycle;
 mod event_backend;
+#[cfg(target_os = "ios")]
+mod ios_lifecycle;
 
 use event_backend::EventBackend;
 
@@ -38,6 +42,8 @@ unsafe impl ExtensionLibrary for GameAlgoRuntimeExtension {
         if stage != InitStage::Scene {
             return;
         }
+        #[cfg(target_os = "ios")]
+        ios_lifecycle::unregister();
         let mut engine = Engine::singleton();
         if let Some(singleton) = engine.get_singleton(SINGLETON_NAME) {
             engine.unregister_singleton(SINGLETON_NAME);
@@ -159,14 +165,29 @@ impl GameAlgoRuntime {
         queue_limit: i64,
         platform: GString,
     ) -> bool {
-        self.event_backend.configure(
+        let configured = self.event_backend.configure(
             &storage_path.to_string(),
             &endpoint.to_string(),
             &game_key.to_string(),
             max_batch,
             queue_limit,
             &platform.to_string(),
-        )
+        );
+        #[cfg(target_os = "android")]
+        if configured {
+            android_lifecycle::register(self.event_backend.clone());
+        }
+        #[cfg(target_os = "ios")]
+        if configured && !ios_lifecycle::register(self.event_backend.clone()) {
+            return false;
+        }
+        configured
+    }
+
+    #[func]
+    fn event_backend_start_session(&self, event_json: GString, started_at_ms: i64) -> bool {
+        self.event_backend
+            .start_session(&event_json.to_string(), started_at_ms)
     }
 
     #[func]

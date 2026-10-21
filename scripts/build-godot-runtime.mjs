@@ -88,7 +88,7 @@ function build(entry) {
   copyFileSync(built, join(destination, entry.file));
   // Desktop loads by absolute path, but leaving the build machine's path as the
   // install name is noise at best; make it relocatable like the iOS binary.
-  setInstallName(join(destination, entry.file), `@rpath/${entry.file}`);
+  if (!isAndroid && !setInstallName(join(destination, entry.file), `@rpath/${entry.file}`)) return false;
   console.log(`installed ${entry.rustTarget} -> addons/gamealgo/runtime/${entry.dir}/${entry.file}`);
   return true;
 }
@@ -172,6 +172,24 @@ for (const platform of platforms) {
   }
   for (const entry of entries) {
     if (!build(entry)) failed += 1;
+  }
+}
+
+if (platforms.includes("android")) {
+  const androidProject = fileURLToPath(new URL("../android", import.meta.url));
+  const result = spawnSync(join(androidProject, "gradlew"), [
+    ":godot-lifecycle:testReleaseUnitTest", ":godot-lifecycle:assembleRelease", "--no-daemon",
+  ], { cwd: androidProject, stdio: "inherit" });
+  if (result.status !== 0) {
+    console.error("FAILED: Godot Android lifecycle bridge");
+    failed += 1;
+  } else {
+    mkdirSync(join(installRoot, "android"), { recursive: true });
+    copyFileSync(
+      join(androidProject, "godot-lifecycle/build/outputs/aar/godot-lifecycle-release.aar"),
+      join(installRoot, "android/gamealgo-lifecycle.aar"),
+    );
+    console.log("installed Android lifecycle bridge -> addons/gamealgo/runtime/android/gamealgo-lifecycle.aar");
   }
 }
 

@@ -37,8 +37,46 @@ func _run() -> void:
 	_test_error_envelopes(native)
 	_test_prepared_scripts_are_evicted(native)
 	_test_sdk_wrapper_uses_the_runtime()
+	_test_native_session_recovery(native)
 	print("RESULT: %d passed, %d failed" % [_passed, _failed])
 	quit(0 if _failed == 0 else 1)
+
+
+func _test_native_session_recovery(native: Object) -> void:
+	for platform: String in ["android", "ios"]:
+		_test_native_session_recovery_for_platform(native, platform)
+
+
+func _test_native_session_recovery_for_platform(native: Object, platform: String) -> void:
+	var path := ProjectSettings.globalize_path("user://native-session-contract-%d.json" % Time.get_ticks_usec())
+	var configure := func() -> bool:
+		return bool(native.call("event_backend_configure", path,
+			"https://gamealgo.invalid/v1/events/batch", "ga_live_fixture", 100, 1000, platform))
+	_check(configure.call(), "native session backend configures")
+	var event := {
+		"eventId": "old-end", "contextId": "", "userId": "old-user",
+		"sessionId": "old-session", "eventType": "session_end", "isDebug": false,
+		"timestamp": "2026-10-21T04:00:00.000Z", "createdLocalAt": "2026-10-21T12:00:00.000+08:00",
+		"payload": {},
+	}
+	_check(native.call("event_backend_start_session", JSON.stringify(event), 1000),
+		"Godot binding persists the open session without requiring an ordinary event")
+	_check(native.call("event_backend_bind_context", "old-session", "old-context"),
+		"context binding also persists the native session template")
+	_check(configure.call(), "native session backend reloads its durable state")
+	event["sessionId"] = "new-session"
+	event["eventId"] = "new-end"
+	_check(native.call("event_backend_start_session", JSON.stringify(event), 100_000),
+		"Godot binding starts a new session and recovers the old end atomically")
+	var events: Array = JSON.parse_string(String(native.call("event_backend_snapshot_json")))
+	_check(events.size() == 1 and events[0]["eventId"] == "old-end" \
+		and events[0]["sessionId"] == "old-session" and events[0]["contextId"] == "old-context",
+		"native recovery retains the previous session and context")
+	_check(events[0]["payload"]["reason"] == "process_restart" \
+		and events[0]["payload"]["endTimeEstimated"] == true,
+		"native recovery labels its estimated end time")
+	_check(native.call("event_backend_clear") and not FileAccess.file_exists(path),
+		"native clear deletes the recovered event and session marker")
 
 
 func _test_shared_fixture(native: Object) -> void:

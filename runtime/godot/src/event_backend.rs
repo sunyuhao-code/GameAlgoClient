@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashSet, VecDeque};
 use std::error::Error as StdError;
@@ -44,6 +45,24 @@ struct Inner {
     generation: u64,
     results: VecDeque<(u64, String)>,
     last_error: String,
+    session: Option<Session>,
+    session_tracking: bool,
+    foreground: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct Session {
+    event: Value,
+    started_at_ms: u64,
+    last_seen_ms: u64,
+    open: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoredState {
+    version: u32,
+    events: Vec<Value>,
+    session: Option<Session>,
 }
 
 impl EventBackend {
@@ -58,6 +77,9 @@ impl EventBackend {
                 generation: 0,
                 results: VecDeque::new(),
                 last_error: String::new(),
+                session: None,
+                session_tracking: false,
+                foreground: true,
             })),
         }
     }
@@ -85,7 +107,7 @@ impl EventBackend {
             if !path.is_absolute() {
                 return Err("native_event_path_not_absolute".to_string());
             }
-            let queue = load_queue(&path)?;
+            let (queue, session) = load_state(&path)?;
             if queue.len() > queue_limit as usize {
                 return Err("native_event_queue_exceeds_limit".to_string());
             }
@@ -106,6 +128,10 @@ impl EventBackend {
                 platform: platform.to_string(),
             });
             inner.queue = queue;
+            inner.session = session;
+            // Consent must be confirmed before recovery or lifecycle collection.
+            inner.session_tracking = false;
+            inner.foreground = true;
             inner.active_event_ids.clear();
             inner.results.clear();
             inner.last_error.clear();
@@ -132,7 +158,7 @@ impl EventBackend {
                 return Ok(());
             }
             let mut candidate = inner.queue.clone();
-            candidate.push(event);
+            candidate.push(event.clone());
             while candidate.len() > config.queue_limit {
                 let removable = candidate.iter().position(|queued| {
                     event_id_of(queued)
@@ -147,8 +173,17 @@ impl EventBackend {
                 }
                 candidate.remove(index);
             }
-            persist_queue(&config.path, &candidate)?;
+            let mut session = inner.session.clone();
+            if event.get("eventType").and_then(Value::as_str) == Some("session_end") {
+                if let Some(session) = session.as_mut() {
+                    if event.get("sessionId") == session.event.get("sessionId") {
+                        session.open = false;
+                    }
+                }
+            }
+            persist_state(&config.path, &candidate, session.as_ref())?;
             inner.queue = candidate;
+            inner.session = session;
             Ok(())
         })();
         self.record(result)
@@ -180,7 +215,7 @@ impl EventBackend {
             if candidate.len() > config.queue_limit {
                 candidate.drain(0..candidate.len() - config.queue_limit);
             }
-            persist_queue(&config.path, &candidate)?;
+            persist_state(&config.path, &candidate, inner.session.as_ref())?;
             inner.queue = candidate;
             Ok(())
         })();
@@ -213,9 +248,17 @@ impl EventBackend {
                     changed = true;
                 }
             }
+            let mut session = inner.session.clone();
+            if let Some(session) = session.as_mut() {
+                if session.event["sessionId"].as_str() == Some(session_id) {
+                    session.event["contextId"] = json!(context_id);
+                    changed = true;
+                }
+            }
             if changed {
-                persist_queue(&config.path, &candidate)?;
+                persist_state(&config.path, &candidate, session.as_ref())?;
                 inner.queue = candidate;
+                inner.session = session;
             }
             Ok(())
         })();
@@ -232,10 +275,127 @@ impl EventBackend {
             remove_queue(&config.path)?;
             inner.generation = inner.generation.wrapping_add(1);
             inner.queue.clear();
+            inner.session = None;
+            inner.session_tracking = false;
             inner.active_event_ids.clear();
             Ok(())
         })();
         self.record(result)
+    }
+
+    /// Starts collection only after measurement consent. Recovery and the new
+    /// session marker commit in the same file as the queue, including when the
+    /// old end was uploaded before the process died.
+    pub(crate) fn start_session(&self, event_json: &str, started_at_ms: i64) -> bool {
+        let result = (|| {
+            let event: Value = serde_json::from_str(event_json)
+                .map_err(|_| "invalid_native_session_json".to_string())?;
+            valid_event_id(&event)?;
+            if event["eventType"] != "session_end" || started_at_ms <= 0 {
+                return Err("invalid_native_session".to_string());
+            }
+            let mut inner = self.lock()?;
+            let config = inner
+                .config
+                .clone()
+                .ok_or_else(|| "native_event_backend_unconfigured".to_string())?;
+            let mut candidate = inner.queue.clone();
+            let mut recovered_session = None;
+            if !inner.session_tracking {
+                if let Some(previous) = inner.session.as_ref().filter(|session| session.open) {
+                    let recovered = session_end(previous, "process_restart", true);
+                    push_session_end(&inner, &config, &mut candidate, recovered)?;
+                    recovered_session = previous.event["sessionId"].as_str().map(str::to_owned);
+                }
+            }
+            let session = Session {
+                event,
+                started_at_ms: started_at_ms as u64,
+                last_seen_ms: started_at_ms as u64,
+                open: inner.foreground,
+            };
+            persist_state(&config.path, &candidate, Some(&session))?;
+            inner.queue = candidate;
+            inner.session = Some(session);
+            inner.session_tracking = true;
+            if let Some(session_id) = recovered_session {
+                platform_support::log(&format!(
+                    "[GameAlgoSDK] session_end persisted: sessionId={session_id}, reason=process_restart, estimated=true"
+                ));
+            }
+            Ok(())
+        })();
+        self.record(result)
+    }
+
+    /// Called directly from the platform UI thread, without entering Godot or
+    /// relying on SceneTree frames. Timestamps are supplied by the bridge so
+    /// local UTC offsets remain correct while the game is paused under an ad.
+    #[cfg(any(target_os = "android", target_os = "ios", test))]
+    pub(crate) fn lifecycle(
+        &self,
+        foreground: bool,
+        now_ms: i64,
+        timestamp: &str,
+        created_local_at: &str,
+        next_event_id: &str,
+    ) -> bool {
+        let mut should_flush = false;
+        let result = (|| {
+            if now_ms <= 0 || timestamp.is_empty() || created_local_at.is_empty() {
+                return Err("invalid_native_lifecycle_time".to_string());
+            }
+            let mut inner = self.lock()?;
+            let changed = inner.foreground != foreground;
+            if !inner.session_tracking {
+                inner.foreground = foreground;
+                return Ok(());
+            }
+            let config = inner
+                .config
+                .clone()
+                .ok_or_else(|| "native_event_backend_unconfigured".to_string())?;
+            let mut session = inner
+                .session
+                .clone()
+                .ok_or_else(|| "native_session_missing".to_string())?;
+            session.last_seen_ms = now_ms as u64;
+            session.event["timestamp"] = json!(timestamp);
+            session.event["createdLocalAt"] = json!(created_local_at);
+            let mut candidate = inner.queue.clone();
+            if changed && foreground {
+                if next_event_id.is_empty() {
+                    return Err("invalid_native_session_event_id".to_string());
+                }
+                session.event["eventId"] = json!(next_event_id);
+                session.open = true;
+            } else if changed {
+                let event = session_end(&session, "background", false);
+                push_session_end(&inner, &config, &mut candidate, event)?;
+                session.open = false;
+            }
+            persist_state(&config.path, &candidate, Some(&session))?;
+            inner.queue = candidate;
+            inner.session = Some(session);
+            inner.foreground = foreground;
+            should_flush = changed && !foreground;
+            if should_flush {
+                platform_support::log(&format!(
+                    "[GameAlgoSDK] session_end persisted: sessionId={}, reason=background",
+                    inner
+                        .session
+                        .as_ref()
+                        .and_then(|s| s.event["sessionId"].as_str())
+                        .unwrap_or_default()
+                ));
+            }
+            Ok(())
+        })();
+        let accepted = self.record(result);
+        if accepted && should_flush {
+            self.start_flush(2_500);
+        }
+        accepted
     }
 
     pub(crate) fn snapshot_json(&self) -> String {
@@ -515,7 +675,7 @@ fn run_flush(shared: Arc<Mutex<Inner>>, job_id: u64, generation: u64) {
             })
             .cloned()
             .collect();
-        if let Err(error) = persist_queue(&config.path, &candidate) {
+        if let Err(error) = persist_state(&config.path, &candidate, inner.session.as_ref()) {
             inner.active_event_ids.clear();
             accepted_ids.extend(batch_ids_in_order);
             finish(
@@ -698,21 +858,78 @@ fn event_id_of(event: &Value) -> Option<&str> {
     event.get("eventId").and_then(Value::as_str)
 }
 
-fn load_queue(path: &Path) -> Result<Vec<Value>, String> {
+fn session_end(session: &Session, reason: &str, recovered: bool) -> Value {
+    let mut event = session.event.clone();
+    event["payload"] = json!({
+        "reason": reason,
+        "recovered": recovered,
+        "endTimeEstimated": recovered,
+        "sessionDurationMs": session.last_seen_ms.saturating_sub(session.started_at_ms),
+    });
+    event
+}
+
+fn push_session_end(
+    inner: &Inner,
+    config: &Config,
+    candidate: &mut Vec<Value>,
+    event: Value,
+) -> Result<(), String> {
+    if candidate
+        .iter()
+        .any(|queued| event_id_of(queued) == event_id_of(&event))
+    {
+        return Ok(());
+    }
+    if candidate.len() >= config.queue_limit {
+        let index = candidate
+            .iter()
+            .position(|queued| {
+                event_id_of(queued).is_some_and(|id| !inner.active_event_ids.contains(id))
+            })
+            .ok_or_else(|| "native_event_queue_full".to_string())?;
+        candidate.remove(index);
+    }
+    candidate.push(event);
+    Ok(())
+}
+
+fn load_state(path: &Path) -> Result<(Vec<Value>, Option<Session>), String> {
     if !path.exists() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), None));
     }
     let bytes = fs::read(path).map_err(|error| format!("native_event_read_failed:{error}"))?;
-    let queue: Vec<Value> =
+    let value: Value =
         serde_json::from_slice(&bytes).map_err(|_| "native_event_storage_invalid".to_string())?;
+    // Accept the original array-only queue without losing any event IDs.
+    let (queue, session): (Vec<Value>, Option<Session>) = if value.is_array() {
+        (
+            serde_json::from_value(value)
+                .map_err(|_| "native_event_storage_invalid".to_string())?,
+            None,
+        )
+    } else {
+        let state: StoredState = serde_json::from_value(value)
+            .map_err(|_| "native_event_storage_invalid".to_string())?;
+        if state.version != 2 {
+            return Err("native_event_storage_version_invalid".to_string());
+        }
+        if let Some(session) = state.session.as_ref() {
+            valid_event_id(&session.event)?;
+            if session.started_at_ms == 0 || session.event["eventType"] != "session_end" {
+                return Err("invalid_native_session".to_string());
+            }
+        }
+        (state.events, state.session)
+    };
     for event in &queue {
         valid_event_id(event)?;
     }
-    Ok(queue)
+    Ok((queue, session))
 }
 
-fn persist_queue(path: &Path, queue: &[Value]) -> Result<(), String> {
-    if queue.is_empty() {
+fn persist_state(path: &Path, queue: &[Value], session: Option<&Session>) -> Result<(), String> {
+    if queue.is_empty() && session.is_none() {
         return remove_queue(path);
     }
     let parent = path
@@ -736,8 +953,13 @@ fn persist_queue(path: &Path, queue: &[Value]) -> Result<(), String> {
             .unwrap_or("events"),
         nonce
     ));
-    let encoded =
-        serde_json::to_vec(queue).map_err(|_| "native_event_encoding_failed".to_string())?;
+    let encoded = if session.is_some() {
+        serde_json::to_vec(&json!({"version": 2, "events": queue, "session": session}))
+    } else {
+        // Keep the original wire format for backends without session tracking.
+        serde_json::to_vec(queue)
+    }
+    .map_err(|_| "native_event_encoding_failed".to_string())?;
     let write_result = (|| {
         let mut file = OpenOptions::new()
             .write(true)
@@ -959,6 +1181,210 @@ mod tests {
                 .unwrap_or_default()
                 .as_nanos()
         ))
+    }
+
+    fn configured(path: &Path) -> EventBackend {
+        let backend = EventBackend::new();
+        assert!(backend.configure(
+            path.to_str().unwrap(),
+            "https://gamealgo.example/v1/events/batch",
+            "ga_live_test",
+            100,
+            1000,
+            "android"
+        ));
+        backend
+    }
+
+    fn session_event(id: &str, session: &str, context: &str) -> Value {
+        let mut value = event(id, session, context);
+        value["eventType"] = json!("session_end");
+        value
+    }
+
+    fn heartbeat(backend: &EventBackend, foreground: bool, now_ms: i64, id: &str) {
+        assert!(
+            backend.lifecycle(
+                foreground,
+                now_ms,
+                "2026-10-21T04:00:01.000Z",
+                "2026-10-21T12:00:01.000+08:00",
+                id
+            ),
+            "{}",
+            backend.last_error()
+        );
+    }
+
+    #[test]
+    fn killed_session_recovers_original_identity_context_and_last_seen_time() {
+        let path = temporary_path("killed-session");
+        let backend = configured(&path);
+        assert!(backend.start_session(
+            &session_event("old-end", "old-session", "").to_string(),
+            1000
+        ));
+        assert!(backend.bind_context("old-session", "old-context"));
+        heartbeat(&backend, true, 3500, "unused");
+        let restored = configured(&path);
+        // Loading while consent is unresolved does not generate or upload data.
+        heartbeat(&restored, false, 20_000, "unused");
+        assert_eq!(restored.pending_count(), 0);
+        assert!(restored.lock().unwrap().active.is_none());
+        assert!(restored.start_session(
+            &session_event("new-end", "new-session", "").to_string(),
+            50_000
+        ));
+        let queue: Vec<Value> = serde_json::from_str(&restored.snapshot_json()).unwrap();
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0]["eventId"], "old-end");
+        assert_eq!(queue[0]["sessionId"], "old-session");
+        assert_eq!(queue[0]["contextId"], "old-context");
+        assert_eq!(queue[0]["payload"]["sessionDurationMs"], 2500);
+        assert_eq!(queue[0]["payload"]["reason"], "process_restart");
+        assert_eq!(queue[0]["payload"]["endTimeEstimated"], true);
+        assert_eq!(queue[0]["timestamp"], "2026-10-21T04:00:01.000Z");
+        let again = configured(&path);
+        assert!(again.start_session(
+            &session_event("next-end", "next-session", "").to_string(),
+            100_000
+        ));
+        let queue: Vec<Value> = serde_json::from_str(&again.snapshot_json()).unwrap();
+        assert_eq!(
+            queue.iter().filter(|e| e["eventId"] == "old-end").count(),
+            1
+        );
+        assert!(again.clear());
+    }
+
+    #[test]
+    fn every_background_reports_but_closed_sessions_do_not_recover_after_ack() {
+        let path = temporary_path("background");
+        let backend = configured(&path);
+        assert!(backend.start_session(&session_event("end-1", "session", "").to_string(), 1000));
+        // The app may already have reported; the process transition is allowed
+        // to produce its own end, without a global sessionId deduplication rule.
+        assert!(backend.enqueue(&session_event("app-end", "session", "").to_string()));
+        heartbeat(&backend, false, 2000, "unused");
+        heartbeat(&backend, true, 3000, "end-2");
+        heartbeat(&backend, false, 4000, "unused");
+        let queue: Vec<Value> = serde_json::from_str(&backend.snapshot_json()).unwrap();
+        assert_eq!(queue.len(), 3);
+        assert_eq!(queue[1]["eventId"], "end-1");
+        assert_eq!(queue[2]["eventId"], "end-2");
+        assert_eq!(queue[2]["payload"]["sessionDurationMs"], 3000);
+        // Simulate the same atomic removal that the upload worker performs.
+        {
+            let inner = backend.lock().unwrap();
+            persist_state(&path, &[], inner.session.as_ref()).unwrap();
+        }
+        let restored = configured(&path);
+        assert!(restored.start_session(
+            &session_event("new-end", "new-session", "").to_string(),
+            5000
+        ));
+        assert_eq!(restored.pending_count(), 0);
+        assert!(restored.clear());
+    }
+
+    #[test]
+    fn consent_clear_removes_session_recovery_and_disables_lifecycle_uploads() {
+        let path = temporary_path("session-consent");
+        let backend = configured(&path);
+        assert!(backend.start_session(
+            &session_event("end", "session", "context").to_string(),
+            1000
+        ));
+        assert!(backend.clear());
+        heartbeat(&backend, false, 2000, "unused");
+        assert!(!path.exists());
+        assert!(backend.lock().unwrap().active.is_none());
+        let restored = configured(&path);
+        assert!(restored.start_session(
+            &session_event("new-end", "new-session", "").to_string(),
+            3000
+        ));
+        assert_eq!(restored.pending_count(), 0);
+        assert!(restored.clear());
+    }
+
+    #[test]
+    fn session_recovery_commit_failure_retains_original_end_id_for_retry() {
+        let path = temporary_path("session-commit");
+        let backend = configured(&path);
+        assert!(backend.start_session(
+            &session_event("old-end", "old-session", "").to_string(),
+            1000
+        ));
+        let restored = configured(&path);
+        let saved = path.with_extension("saved");
+        fs::rename(&path, &saved).unwrap();
+        fs::create_dir(&path).unwrap(); // Force the final atomic rename to fail.
+        let new_event = session_event("new-end", "new-session", "").to_string();
+        assert!(!restored.start_session(&new_event, 2000));
+        assert_eq!(restored.pending_count(), 0);
+        fs::remove_dir(&path).unwrap();
+        fs::rename(&saved, &path).unwrap();
+        assert!(restored.start_session(&new_event, 2000));
+        let queue: Vec<Value> = serde_json::from_str(&restored.snapshot_json()).unwrap();
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0]["eventId"], "old-end");
+        assert!(restored.clear());
+    }
+
+    #[test]
+    fn ios_background_persistence_failure_retries_without_losing_the_end() {
+        let path = temporary_path("ios-background-retry");
+        let backend = EventBackend::new();
+        assert!(backend.configure(
+            path.to_str().unwrap(),
+            "https://gamealgo.invalid/v1/events/batch",
+            "ga_live_test",
+            100,
+            1000,
+            "ios"
+        ));
+        assert!(backend.start_session(
+            &session_event("ios-end", "ios-session", "ios-context").to_string(),
+            1000
+        ));
+        heartbeat(&backend, true, 1500, "unused");
+        assert_eq!(backend.pending_count(), 0); // foreground/ad heartbeat
+        let saved = path.with_extension("saved");
+        fs::rename(&path, &saved).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(!backend.lifecycle(false, 2000, "utc", "local", "unused"));
+        assert_eq!(backend.pending_count(), 0);
+        assert!(backend.lock().unwrap().foreground);
+        assert!(backend.lock().unwrap().session.as_ref().unwrap().open);
+        fs::remove_dir(&path).unwrap();
+        fs::rename(&saved, &path).unwrap();
+        heartbeat(&backend, false, 2100, "unused");
+        heartbeat(&backend, false, 2200, "unused"); // duplicate notification
+        let queue: Vec<Value> = serde_json::from_str(&backend.snapshot_json()).unwrap();
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0]["eventId"], "ios-end");
+        assert_eq!(queue[0]["payload"]["reason"], "background");
+        assert_eq!(queue[0]["payload"]["endTimeEstimated"], false);
+        assert_eq!(queue[0]["payload"]["sessionDurationMs"], 1100);
+        assert!(!backend.lock().unwrap().session.as_ref().unwrap().open);
+        assert!(backend.clear());
+    }
+
+    #[test]
+    fn legacy_array_queue_migrates_without_changing_event_ids() {
+        let path = temporary_path("legacy");
+        fs::write(
+            &path,
+            json!([event("legacy-event", "old", "context")]).to_string(),
+        )
+        .unwrap();
+        let backend = configured(&path);
+        assert!(backend.start_session(&session_event("end", "session", "").to_string(), 1000));
+        let (events, session) = load_state(&path).unwrap();
+        assert_eq!(events[0]["eventId"], "legacy-event");
+        assert!(session.unwrap().open);
+        assert!(backend.clear());
     }
 
     #[test]

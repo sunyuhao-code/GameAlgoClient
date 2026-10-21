@@ -225,6 +225,14 @@ class NativeEventBackendFixture:
 	var flush_calls := 0
 	var fail_with_timeout := false
 	var last_error := ""
+	var session_events: Array[Dictionary] = []
+	var session_write_fails := false
+
+	func event_backend_start_session(event_json: String, _started_at_ms: int) -> bool:
+		if session_write_fails:
+			return false
+		session_events.append(JSON.parse_string(event_json))
+		return true
 
 	func event_backend_configure(
 		_storage_path: String,
@@ -349,6 +357,7 @@ func _run() -> void:
 	await _test_config_request_envelope()
 	await _test_event_envelope_and_batching()
 	await _test_native_event_backend_migration_and_recovery()
+	await _test_native_mobile_session_registration()
 	await _test_native_queue_full_triggers_flush()
 	await _test_bound_event_admission_survives_restart()
 	await _test_event_admission_storage_failure()
@@ -595,6 +604,45 @@ func _test_native_event_backend_migration_and_recovery() -> void:
 		"timed-out native event restores with the same event ID"
 	)
 	after_timeout.free()
+
+
+func _test_native_mobile_session_registration() -> void:
+	for platform: String in ["android", "ios"]:
+		await _test_native_session_registration_for_platform(platform)
+
+
+func _test_native_session_registration_for_platform(platform: String) -> void:
+	var backend := NativeEventBackendFixture.new()
+	var client := _make_client({
+		"platform": platform, "event_backend": backend,
+		"session_id": "android-session", "transport": TransportFixture.new(),
+	})
+	_check(backend.session_events.size() == 1, "%s measurement registers a durable native session" % platform)
+	var first := backend.session_events[0]
+	_check(first["eventType"] == "session_end" and first["sessionId"] == "android-session",
+		"native session template preserves the event and session identity")
+	_check(not String(first["eventId"]).is_empty(), "native session template has a stable recovery event ID")
+	await client.new_session("android-next")
+	_check(backend.session_events.size() == 2 and backend.session_events[1]["sessionId"] == "android-next",
+		"explicit session changes replace the native session template")
+	backend.session_write_fails = true
+	_check(not await client.new_session("not-durable") \
+		and client.tracker.current_session_id() == "android-next",
+		"failed native session writes keep the original session active")
+	client.free()
+	var denied := NativeEventBackendFixture.new()
+	client = _make_client({
+		"platform": platform, "event_backend": denied, "measurement_allowed": false,
+		"transport": TransportFixture.new(),
+	})
+	_check(denied.session_events.is_empty(), "denied measurement creates no native session marker")
+	denied.session_write_fails = true
+	_check(not client.set_measurement_allowed(true) and not client.tracker.measurement_allowed(),
+		"failed native marker persistence does not enable measurement")
+	denied.session_write_fails = false
+	_check(client.set_measurement_allowed(true) and denied.session_events.size() == 1,
+		"measurement grant registers the current native session")
+	client.free()
 
 
 func _test_native_queue_full_triggers_flush() -> void:
