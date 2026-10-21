@@ -95,7 +95,7 @@ jobs:
             echo "Desktop-only JavaxScriptGameAlgoRuntime must not be packaged in the AAR" >&2
             exit 1
           fi
-          sha256sum "release/$asset" > "release/$asset.sha256"
+          (cd release && sha256sum "$asset" > "$asset.sha256")
 
       - uses: actions/upload-artifact@v4
         with:
@@ -107,6 +107,8 @@ jobs:
   web:
     needs: version
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.web-version.outputs.value }}
     env:
       TZ: Asia/Shanghai
     steps:
@@ -119,14 +121,16 @@ jobs:
 
       - run: npm ci
 
-      - name: Verify Web SDK version
+      - name: Resolve independent Web SDK version
+        id: web-version
         shell: bash
         run: |
           package_version="$(node -p "require('./web/package.json').version")"
-          if [[ "$package_version" != "${{ needs.version.outputs.value }}" ]]; then
-            echo "Web package version $package_version does not match tag ${{ needs.version.outputs.value }}" >&2
+          if [[ ! "$package_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid Web package version: $package_version" >&2
             exit 1
           fi
+          echo "value=$package_version" >> "$GITHUB_OUTPUT"
 
       - name: Run Web SDK contracts
         run: |
@@ -140,9 +144,9 @@ jobs:
           set -euo pipefail
           mkdir -p release
           package="$(npm pack ./web --pack-destination release --ignore-scripts --json | node -e 'let data=""; process.stdin.on("data", chunk => data += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(data)[0].filename))')"
-          expected="gamealgo-web-${{ needs.version.outputs.value }}.tgz"
+          expected="gamealgo-web-${{ steps.web-version.outputs.value }}.tgz"
           [[ "$package" == "$expected" ]] || { echo "unexpected Web package name: $package" >&2; exit 1; }
-          sha256sum "release/$package" > "release/$package.sha256"
+          (cd release && sha256sum "$package" > "$package.sha256")
 
       - uses: actions/upload-artifact@v4
         with:
@@ -155,7 +159,7 @@ jobs:
     needs: version
     # macOS builds every shipped target: the iOS slices need Xcode, and the
     # Android slices only need the NDK, which is available here too.
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       TZ: Asia/Shanghai
       GODOT_VERSION: "4.7.2"
@@ -215,6 +219,9 @@ jobs:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
         run: npm run build:godot-runtime -- ios android
 
+      - name: Test iOS native lifecycle and killed-session recovery
+        run: node scripts/test-godot-ios-session.mjs
+
       - name: Prepare release assets
         shell: bash
         run: |
@@ -242,6 +249,7 @@ jobs:
             ["gamealgo/gamealgo_client.gd", /const SDK_VERSION := "[^"]+"/, `const SDK_VERSION := "${version}"`],
             ["gamealgo/gamealgo_tracker.gd", /var _sdk_version := "[^"]+"/, `var _sdk_version := "${version}"`],
             ["gamealgo/gamealgo_tracker.gd", /options\.get\("sdk_version", "[^"]+"\)/, `options.get("sdk_version", "${version}")`],
+            ["gamealgo/plugin.cfg", /^version="[^"]+"/m, `version="${version}"`],
           ];
           for (const [relative, pattern, replacement] of replacements) {
             const filename = path.join(staging, relative);
@@ -251,6 +259,12 @@ jobs:
             }
             fs.writeFileSync(filename, source.replace(pattern, replacement));
           }
+          fs.writeFileSync(path.join(staging, "BUILD_INFO.json"), JSON.stringify({
+            preview: false, version, sourceCommit: process.env.GITHUB_SHA,
+            sourceTag: process.env.GITHUB_REF_NAME,
+            workflowRun: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+            builtAt: new Date().toISOString(),
+          }, null, 2) + "\n");
           NODE
 
           # The macOS runtime is a test-host artifact, never shipped.
@@ -283,7 +297,7 @@ jobs:
           mkdir -p release
           asset="gamealgo-godot-$version.zip"
           (cd "$(dirname "$staging")" && zip -qr "$OLDPWD/release/$asset" "$(basename "$staging")")
-          shasum -a 256 "release/$asset" > "release/$asset.sha256"
+          (cd release && shasum -a 256 "$asset" > "$asset.sha256")
 
       - uses: actions/upload-artifact@v4
         with:
@@ -309,10 +323,12 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ needs.version.outputs.value }}"
-          for asset in "gamealgo-android-$version.aar" "gamealgo-godot-$version.zip" "gamealgo-web-$version.tgz"; do
+          web_version="${{ needs.web.outputs.version }}"
+          for asset in "gamealgo-android-$version.aar" "gamealgo-godot-$version.zip" "gamealgo-web-$web_version.tgz"; do
             [[ -f "downloaded/$asset" ]] || { echo "missing release asset: $asset" >&2; exit 1; }
             [[ -f "downloaded/$asset.sha256" ]] || { echo "missing checksum: $asset.sha256" >&2; exit 1; }
           done
+          (cd downloaded && sha256sum -c ./*.sha256)
           ls -l downloaded
 
       - name: Publish GitHub Release
