@@ -1456,7 +1456,7 @@ func _default_platform() -> String:
 
 
 func _default_device() -> Dictionary:
-	return {
+	var device := {
 		"runtime": "godot",
 		"godotVersion": String(Engine.get_version_info().get("string", "")),
 		"osName": OS.get_name(),
@@ -1464,3 +1464,26 @@ func _default_device() -> Dictionary:
 		"model": OS.get_model_name(),
 		"locale": TranslationServer.get_locale(),
 	}
+	if OS.get_name() == "Android":
+		# Godot's OS.get_version() is API level + build, not the Android release.
+		# Never mix that fallback into the native SDK's osVersion dimension.
+		device.erase("osVersion")
+		if Engine.has_singleton("JavaClassWrapper"):
+			var wrapper := Engine.get_singleton("JavaClassWrapper")
+			var version_class: Variant = wrapper.call("wrap", "android.os.Build$VERSION")
+			if version_class is Object:
+				device.merge(_android_version_info(version_class))
+	return device
+
+
+func _android_version_info(version_class: Object) -> Dictionary:
+	var info := {}
+	if version_class == null:
+		return info
+	var release: Variant = version_class.get("RELEASE")
+	if release is String and not release.strip_edges().is_empty():
+		info["osVersion"] = release.strip_edges()
+	var sdk_int: Variant = version_class.get("SDK_INT")
+	if sdk_int is int and sdk_int > 0:
+		info["sdkInt"] = sdk_int
+	return info
