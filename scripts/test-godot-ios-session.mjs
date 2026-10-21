@@ -19,7 +19,9 @@ let device;
 let alreadyBooted;
 
 try {
-  const devices = JSON.parse((await run("xcrun", ["simctl", "list", "devices", "available", "-j"])).stdout).devices;
+  // A fresh CI VM may need more than 30s to initialize CoreSimulatorService,
+  // before any test app has launched. This is not a session callback deadline.
+  const devices = JSON.parse((await run("xcrun", ["simctl", "list", "devices", "available", "-j"], 180_000)).stdout).devices;
   const available = Object.entries(devices).filter(([runtime]) => runtime.includes(".iOS-"))
     .sort(([a], [b]) => b.localeCompare(a, undefined, { numeric: true }))
     .flatMap(([, entries]) => entries.filter((d) => d.isAvailable && d.name.startsWith("iPhone")));
@@ -103,6 +105,7 @@ async function run(command, args, timeout = 30_000) {
     return await exec(command, args, { cwd: root, encoding: "utf8", timeout, maxBuffer: 10 * 1024 * 1024 });
   } catch (error) {
     console.error(error.stdout ?? "", error.stderr ?? "");
+    if (error.killed) throw new Error(`${command} ${args.join(" ")} timed out after ${timeout / 1000}s`);
     throw error;
   }
 }
