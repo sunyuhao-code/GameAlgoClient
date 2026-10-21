@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   package:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 45
     env:
       GODOT_VERSION: "4.7.2"
