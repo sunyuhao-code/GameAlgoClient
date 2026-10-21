@@ -33,6 +33,12 @@ iOS 部署目标 13.0，Android 走 cargo-ndk，与 iOS / Android SDK 的下限�
 
 Android 源码构建还需要 JDK 17 和 Android SDK 35；构建脚本会运行生命周期单元测试、生成桥接 AAR，并与原生库一起安装到 addon 的 `runtime/android/`。
 
+### 系统版本上报
+
+`/v1/config` 的 `device` 自动携带系统和设备信息。Android 与原生 Android SDK 使用相同口径：`osVersion` 读取 `Build.VERSION.RELEASE`（例如 `"14"`），`sdkInt` 读取 `Build.VERSION.SDK_INT`（例如 `34`，JSON 数字）。不再把 Godot `OS.get_version()` 返回的 API 级别／构建号放入 `osVersion`；系统接口不可用或字段无效时省略相应字段。iOS 仍使用 `OS.get_version()`，不受此调整影响。
+
+接入方在 `configure` 的 `device` 选项中显式提供的同名字段仍优先于自动采集值。旧会话持久化的配置请求保留原始设备信息，不会在重试时改写。
+
 ## 最小接入
 
 ```gdscript

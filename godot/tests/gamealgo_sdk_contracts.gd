@@ -19,6 +19,13 @@ var _passed := 0
 var _failed := 0
 
 
+class AndroidVersionFixture:
+	extends RefCounted
+
+	var RELEASE: Variant = "14"
+	var SDK_INT: Variant = 34
+
+
 class MemoryStore:
 	extends RefCounted
 
@@ -354,7 +361,9 @@ func _run() -> void:
 	print("GameAlgo Godot SDK Protocol v1 contracts")
 	_test_platform_allowlist()
 	_test_base_url_and_key_validation()
+	_test_device_os_version()
 	await _test_config_request_envelope()
+	await _test_device_version_override()
 	await _test_event_envelope_and_batching()
 	await _test_native_event_backend_migration_and_recovery()
 	await _test_native_mobile_session_registration()
@@ -451,6 +460,55 @@ func _test_base_url_and_key_validation() -> void:
 	_check(not bad_key["ok"], "admin key rejected as client key")
 	var blank_key := _configure_result({"game_key": "ga_live_bad key"})
 	_check(not blank_key["ok"], "game key with whitespace rejected")
+
+
+func _test_device_os_version() -> void:
+	var client := Client.new()
+	var version := AndroidVersionFixture.new()
+	_check(client._android_version_info(version) == {"osVersion": "14", "sdkInt": 34},
+		"Android release and API level occupy separate device fields")
+	version.RELEASE = " 12.1 "
+	version.SDK_INT = 32
+	_check(client._android_version_info(version) == {"osVersion": "12.1", "sdkInt": 32},
+		"Android release is read directly without a hardcoded API mapping")
+	version.RELEASE = " "
+	_check(client._android_version_info(version) == {"sdkInt": 32},
+		"an empty release never falls back to the API/build version")
+	version.RELEASE = 14
+	version.SDK_INT = "34"
+	_check(client._android_version_info(version).is_empty(),
+		"invalid Android version field types are omitted")
+	version.RELEASE = "14"
+	for invalid_sdk: Variant in [0, -1, 34.5, null]:
+		version.SDK_INT = invalid_sdk
+		_check(client._android_version_info(version) == {"osVersion": "14"},
+			"invalid API level is omitted without dropping a valid release")
+	_check(client._android_version_info(null).is_empty(), "an unavailable Android version class is safe")
+	if OS.get_name() != "Android":
+		var device := client._default_device()
+		_check(device.get("osVersion") == OS.get_version(), "non-Android OS versions remain unchanged")
+		_check(not device.has("sdkInt"), "non-Android devices do not gain an Android API level")
+	client.free()
+
+
+func _test_device_version_override() -> void:
+	var transport := TransportFixture.new()
+	var client := _make_client({
+		"platform": "android", "transport": transport,
+		"device": {"osVersion": "14", "sdkInt": 34},
+	})
+	if client == null:
+		_check(false, "device version override fixture configured")
+		return
+	await client.refresh(true)
+	var bodies := transport.bodies_for("/v1/config")
+	_check(bodies.size() == 1, "device version override sends one config request")
+	if not bodies.is_empty():
+		var device: Dictionary = bodies[0]["device"]
+		_check(device.get("osVersion") == "14", "config preserves an explicit OS release override")
+		_check(device.get("sdkInt") == 34, "config carries the API level as a JSON number")
+		_check(device.get("runtime") == "godot", "version overrides retain other default device fields")
+	client.free()
 
 
 func _test_config_request_envelope() -> void:
