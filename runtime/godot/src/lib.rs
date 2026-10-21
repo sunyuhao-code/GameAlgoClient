@@ -16,6 +16,8 @@ use std::collections::HashMap;
 #[cfg(target_os = "android")]
 mod android_lifecycle;
 mod event_backend;
+#[cfg(target_os = "ios")]
+mod ios_lifecycle;
 
 use event_backend::EventBackend;
 
@@ -40,6 +42,8 @@ unsafe impl ExtensionLibrary for GameAlgoRuntimeExtension {
         if stage != InitStage::Scene {
             return;
         }
+        #[cfg(target_os = "ios")]
+        ios_lifecycle::unregister();
         let mut engine = Engine::singleton();
         if let Some(singleton) = engine.get_singleton(SINGLETON_NAME) {
             engine.unregister_singleton(SINGLETON_NAME);
@@ -172,6 +176,10 @@ impl GameAlgoRuntime {
         #[cfg(target_os = "android")]
         if configured {
             android_lifecycle::register(self.event_backend.clone());
+        }
+        #[cfg(target_os = "ios")]
+        if configured && !ios_lifecycle::register(self.event_backend.clone()) {
+            return false;
         }
         configured
     }

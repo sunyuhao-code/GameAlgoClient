@@ -328,10 +328,10 @@ impl EventBackend {
         self.record(result)
     }
 
-    /// Called directly from the Android UI thread, without entering Godot or
+    /// Called directly from the platform UI thread, without entering Godot or
     /// relying on SceneTree frames. Timestamps are supplied by the bridge so
     /// local UTC offsets remain correct while the game is paused under an ad.
-    #[cfg(any(target_os = "android", test))]
+    #[cfg(any(target_os = "android", target_os = "ios", test))]
     pub(crate) fn lifecycle(
         &self,
         foreground: bool,
@@ -1330,6 +1330,45 @@ mod tests {
         assert_eq!(queue.len(), 1);
         assert_eq!(queue[0]["eventId"], "old-end");
         assert!(restored.clear());
+    }
+
+    #[test]
+    fn ios_background_persistence_failure_retries_without_losing_the_end() {
+        let path = temporary_path("ios-background-retry");
+        let backend = EventBackend::new();
+        assert!(backend.configure(
+            path.to_str().unwrap(),
+            "https://gamealgo.invalid/v1/events/batch",
+            "ga_live_test",
+            100,
+            1000,
+            "ios"
+        ));
+        assert!(backend.start_session(
+            &session_event("ios-end", "ios-session", "ios-context").to_string(),
+            1000
+        ));
+        heartbeat(&backend, true, 1500, "unused");
+        assert_eq!(backend.pending_count(), 0); // foreground/ad heartbeat
+        let saved = path.with_extension("saved");
+        fs::rename(&path, &saved).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(!backend.lifecycle(false, 2000, "utc", "local", "unused"));
+        assert_eq!(backend.pending_count(), 0);
+        assert!(backend.lock().unwrap().foreground);
+        assert!(backend.lock().unwrap().session.as_ref().unwrap().open);
+        fs::remove_dir(&path).unwrap();
+        fs::rename(&saved, &path).unwrap();
+        heartbeat(&backend, false, 2100, "unused");
+        heartbeat(&backend, false, 2200, "unused"); // duplicate notification
+        let queue: Vec<Value> = serde_json::from_str(&backend.snapshot_json()).unwrap();
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0]["eventId"], "ios-end");
+        assert_eq!(queue[0]["payload"]["reason"], "background");
+        assert_eq!(queue[0]["payload"]["endTimeEstimated"], false);
+        assert_eq!(queue[0]["payload"]["sessionDurationMs"], 1100);
+        assert!(!backend.lock().unwrap().session.as_ref().unwrap().open);
+        assert!(backend.clear());
     }
 
     #[test]

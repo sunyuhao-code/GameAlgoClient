@@ -211,7 +211,7 @@ func new_session(session_id: String = "") -> bool:
 
 
 func _start_native_session() -> bool:
-	if not _native_events or _platform != "android" or not _measurement_allowed \
+	if not _native_events or _platform not in ["android", "ios"] or not _measurement_allowed \
 			or not _event_backend.has_method("event_backend_start_session"):
 		return true
 	var event := {

@@ -17,6 +17,13 @@ ureq = { version = "2.12.1", default-features = false, features = ["tls"] }
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { version = "0.21.1", default-features = false }
 
+[build-dependencies]
+cc = "1"
+
+[[example]]
+name = "ios_session_smoke"
+crate-type = ["staticlib"]
+
 [profile.release]
 codegen-units = 1
 lto = "fat"

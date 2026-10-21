@@ -6,6 +6,19 @@ on:
     branches: [master, main]
 
 jobs:
+  godot-ios-lifecycle:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim,x86_64-apple-ios
+      - run: node scripts/test-godot-ios-session.mjs
+
   godot-android-lifecycle:
     runs-on: ubuntu-latest
     steps:

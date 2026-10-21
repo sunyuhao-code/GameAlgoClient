@@ -1396,7 +1396,7 @@ func _valid_preload(value: Variant) -> bool:
 func _valid_event_backend(backend: Variant) -> bool:
 	if not backend is Object:
 		return false
-	if _platform == "android" and not backend.has_method("event_backend_start_session"):
+	if _platform in ["android", "ios"] and not backend.has_method("event_backend_start_session"):
 		return false
 	for method: String in [
 		"event_backend_configure",

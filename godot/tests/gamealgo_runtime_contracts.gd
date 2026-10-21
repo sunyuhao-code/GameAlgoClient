@@ -43,10 +43,15 @@ func _run() -> void:
 
 
 func _test_native_session_recovery(native: Object) -> void:
+	for platform: String in ["android", "ios"]:
+		_test_native_session_recovery_for_platform(native, platform)
+
+
+func _test_native_session_recovery_for_platform(native: Object, platform: String) -> void:
 	var path := ProjectSettings.globalize_path("user://native-session-contract-%d.json" % Time.get_ticks_usec())
 	var configure := func() -> bool:
 		return bool(native.call("event_backend_configure", path,
-			"https://gamealgo.invalid/v1/events/batch", "ga_live_fixture", 100, 1000, "android"))
+			"https://gamealgo.invalid/v1/events/batch", "ga_live_fixture", 100, 1000, platform))
 	_check(configure.call(), "native session backend configures")
 	var event := {
 		"eventId": "old-end", "contextId": "", "userId": "old-user",
