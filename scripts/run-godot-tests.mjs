@@ -4,12 +4,19 @@
 // The GDScript SDK cannot be exercised by the Node or Swift suites, so these
 // run under a real Godot build. Set GODOT_BIN to point at one; otherwise the
 // first `godot` on PATH is used.
+// --core keeps the deterministic contracts only; the stalled-TLS transport
+// integration remains part of the default local command, not the CI gate.
 
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const projectPath = fileURLToPath(new URL("../godot", import.meta.url));
+const args = process.argv.slice(2);
+if (args.some((arg) => arg !== "--core")) {
+  console.error("Usage: node scripts/run-godot-tests.mjs [--core]");
+  process.exit(1);
+}
 const suites = ["res://tests/parse_check.gd", "res://tests/gamealgo_sdk_contracts.gd"];
 
 // The runtime suite needs the GDExtension for this host. It is a build output,
@@ -84,19 +91,23 @@ for (const suite of suites) {
   }
 }
 
-console.log("\n== HTTP transport timeout integration ==");
-const timeoutTest = spawnSync(
-  "python3",
-  [fileURLToPath(new URL("./test-godot-http-timeout.py", import.meta.url))],
-  {
-    stdio: "inherit",
-    env: { ...process.env, GODOT_BIN: godot },
-    timeout: 60_000,
-  },
-);
-if (timeoutTest.status !== 0) {
-  console.error(`FAILED: HTTP transport timeout integration (exit ${timeoutTest.status})`);
-  failed += 1;
+if (!args.includes("--core")) {
+  console.log("\n== HTTP transport timeout integration ==");
+  const timeoutTest = spawnSync(
+    "python3",
+    [fileURLToPath(new URL("./test-godot-http-timeout.py", import.meta.url))],
+    {
+      stdio: "inherit",
+      env: { ...process.env, GODOT_BIN: godot },
+      timeout: 60_000,
+    },
+  );
+  if (timeoutTest.status !== 0) {
+    console.error(`FAILED: HTTP transport timeout integration (exit ${timeoutTest.status})`);
+    failed += 1;
+  }
+} else {
+  console.log("\nCore mode: run check:godot:http locally for stalled-TLS transport integration.");
 }
 
 if (failed > 0) {
