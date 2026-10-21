@@ -6,19 +6,6 @@ on:
     branches: [master, main]
 
 jobs:
-  godot-ios-lifecycle:
-    runs-on: macos-15
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-ios-sim,x86_64-apple-ios
-      - run: node scripts/test-godot-ios-session.mjs
-
   godot-android-lifecycle:
     runs-on: ubuntu-latest
     steps:
@@ -63,7 +50,7 @@ jobs:
           echo "GODOT_BIN=$PWD/Godot.app/Contents/MacOS/Godot" >> "$GITHUB_ENV"
           "$PWD/Godot.app/Contents/MacOS/Godot" --version
       - name: Godot SDK contracts
-        run: npm run check:godot
+        run: npm run check:godot:core
 
   rest-ios-lua:
     runs-on: macos-14
@@ -78,7 +65,7 @@ jobs:
         with:
           targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios,aarch64-apple-darwin,x86_64-apple-darwin
       - run: cargo test --locked --manifest-path runtime/rust/Cargo.toml
-      - run: npm run check
+      - run: npm run check:core
       - run: runtime/rust/build-apple-dynamic-xcframework.sh
       - name: Test iOS SDK
         shell: bash

@@ -263,9 +263,17 @@ SDK 用游戏提供的 storage 持久化匿名身份、配置快照、脚本缓�
 ```bash
 # 需要 Godot 4.7；或设置 GODOT_BIN 指向可执行文件
 npm run build:godot-runtime
-npm run check:godot
+npm run check:godot:core
 ```
 
 跑三个套件：`tests/parse_check.gd` 验证所有脚本能编译、依赖能解析；`tests/gamealgo_sdk_contracts.gd` 钉住 Protocol v1 的线上形状；`tests/gamealgo_runtime_contracts.gd` 用真实 GDExtension 跑 `protocol/fixtures/script-fixture.js`，断言的期望值和 `runtime/rust/src/lib.rs` 的单元测试逐条一致。没有当前主机的运行时二进制时，第三个套件会跳过并提示。
+
+CI 只跑上述核心契约和 Rust／Android 生命周期状态机单元测试，不启动移动端模拟器。以下集成测试保留在本地，且不作为发布阻塞条件：
+
+```bash
+npm run check:godot       # 核心套件 + HTTP 超时／取消／销毁／退出集成
+npm run check:godot:http  # 只跑本地 stalled-TLS transport 集成
+npm run check:godot:ios   # Xcode iPhone 模拟器：广告前台、退后台和杀进程恢复
+```
 
 跨实现的漂移守卫在 Node 侧，`npm run check` 就会跑（`rest-api/src/godot-sdk-drift.test.ts`），不需要装 Godot：它直接读 GDScript 源码，校验 `ALLOWED_PLATFORMS` 没有超出 `protocol/openapi.yaml` 的 platform enum。

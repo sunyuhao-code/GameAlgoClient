@@ -98,10 +98,25 @@ Godot SDK 是 GDScript，进不了 Node 和 Swift 的测试套件，所以它的
 
 ## 本地验证
 
+CI 只运行核心单元／契约测试、编译与产物完整性校验：
+
+```bash
+npm run check:core
+npm run check:godot:core  # 需要 Godot 和当前主机的原生运行时
+```
+
+Rust、Android JVM／生命周期状态机、Swift 和 Lua 的核心测试继续保留。CI 不启动 iOS／Android 模拟器、WKWebView 或浏览器 E2E；这些兼容性、生命周期和真实设备集成检查留在本地运行。Godot Release 直接构建已验证提交的移动端产物并检查文件、安装名与 SHA-256，不重复执行完整 Godot 测试套件。
+
+本地完整验证入口保持不变：
+
 ```bash
 npm install
 npm run check
+npm run check:godot
+npm run check:godot:ios  # macOS + Xcode，本地 iOS 生命周期／杀进程恢复
 ```
+
+Android 模拟器／真机的 instrumentation 命令见 `android/README.md`；Web 的浏览器、WebView 和双页面联机检查仍可通过 `check:web:e2e`、`check:web:webview`、`check:web:multiplayer` 单独运行。
 
 平台 SDK README 只描述与当前代码版本绑定的安装方式、公开 API 和运行时约束。业务流程与平台规则以 `gamealgo docs` 返回的在线文档为准。
 

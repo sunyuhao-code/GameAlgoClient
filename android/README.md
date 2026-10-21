@@ -151,10 +151,16 @@ cd android
 ./test-aar-integration.sh
 ```
 
-该命令会依次构建 release AAR、检查 AAR 类清单、通过 Demo 的 JVM 集成测试调用配置/实验/事件 API，并编译可安装的 Demo APK：
+该命令会依次构建 release AAR、检查 AAR 类清单与原生库、编译只依赖 AAR 的 Demo APK，并检查 APK 的 16KB 对齐：
 
 ```text
 demo/build/outputs/apk/debug/demo-debug.apk
 ```
 
-Android CI 对每次 `android/**` 改动执行同一条命令，再在 API 24 模拟器上安装 Demo 并运行 instrumentation test，最后上传 AAR 和 Demo APK artifact。
+Android CI 执行 SDK JVM 核心测试与上述构建／产物校验，上传 AAR 和 Demo APK，不启动模拟器。设备上的 API／原生运行时集成测试保留为本地命令：
+
+```bash
+# 先启动本地 API 24+ 模拟器或连接测试设备；在 android/ 下执行
+./gradlew --no-daemon :demo:connectedDebugAndroidTest \
+  -PgameAlgoAar="$PWD/build/outputs/aar/gamealgo-android-release.aar"
+```

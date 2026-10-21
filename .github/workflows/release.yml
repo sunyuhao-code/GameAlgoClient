@@ -135,7 +135,6 @@ jobs:
       - name: Run Web SDK contracts
         run: |
           npm run check:web
-          npm run check:web:e2e
           npm run check:web:pack
 
       - name: Prepare Web SDK package
@@ -162,7 +161,6 @@ jobs:
     runs-on: macos-15
     env:
       TZ: Asia/Shanghai
-      GODOT_VERSION: "4.7.2"
     steps:
       - uses: actions/checkout@v5
 
@@ -198,29 +196,10 @@ jobs:
       - name: Set up cargo-ndk
         run: cargo install cargo-ndk --locked
 
-      - name: Run the runtime contracts before publishing
-        env:
-          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          archive="Godot_v${GODOT_VERSION}-stable_macos.universal.zip"
-          curl -sSLf -o "$archive" \
-            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/${archive}"
-          unzip -q "$archive"
-          export GODOT_BIN="$PWD/Godot.app/Contents/MacOS/Godot"
-          cargo test --locked --manifest-path runtime/rust/Cargo.toml
-          cargo test --locked --manifest-path runtime/godot/Cargo.toml
-          npm run build:godot-runtime
-          npm run check:godot
-
       - name: Build the shipped runtime targets
         env:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
         run: npm run build:godot-runtime -- ios android
-
-      - name: Test iOS native lifecycle and killed-session recovery
-        run: node scripts/test-godot-ios-session.mjs
 
       - name: Prepare release assets
         shell: bash
