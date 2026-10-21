@@ -172,6 +172,8 @@ version = "1.0.0"
 dependencies = [
  "gamealgo-script-runtime",
  "godot",
+ "jni",
+ "serde",
  "serde_json",
  "ureq",
 ]

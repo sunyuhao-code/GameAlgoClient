@@ -11,6 +11,7 @@ const SCRIPTS := [
 	"res://addons/gamealgo/internal/http_transport.gd",
 	"res://addons/gamealgo/internal/async_json_decoder.gd",
 	"res://addons/gamealgo/internal/json_store.gd",
+	"res://addons/gamealgo/plugin.gd",
 ]
 
 

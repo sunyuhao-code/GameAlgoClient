@@ -6,6 +6,19 @@ on:
     branches: [master, main]
 
 jobs:
+  godot-android-lifecycle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - run: ./gradlew :godot-lifecycle:testReleaseUnitTest :godot-lifecycle:assembleRelease --no-daemon
+        working-directory: android
+
   godot:
     # macOS, because the runtime contracts need a host GDExtension build and
     # macOS is the only shipped desktop target.

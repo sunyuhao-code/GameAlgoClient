@@ -13,6 +13,8 @@ use godot::prelude::*;
 use serde_json::Value;
 use std::collections::HashMap;
 
+#[cfg(target_os = "android")]
+mod android_lifecycle;
 mod event_backend;
 
 use event_backend::EventBackend;
@@ -159,14 +161,25 @@ impl GameAlgoRuntime {
         queue_limit: i64,
         platform: GString,
     ) -> bool {
-        self.event_backend.configure(
+        let configured = self.event_backend.configure(
             &storage_path.to_string(),
             &endpoint.to_string(),
             &game_key.to_string(),
             max_batch,
             queue_limit,
             &platform.to_string(),
-        )
+        );
+        #[cfg(target_os = "android")]
+        if configured {
+            android_lifecycle::register(self.event_backend.clone());
+        }
+        configured
+    }
+
+    #[func]
+    fn event_backend_start_session(&self, event_json: GString, started_at_ms: i64) -> bool {
+        self.event_backend
+            .start_session(&event_json.to_string(), started_at_ms)
     }
 
     #[func]

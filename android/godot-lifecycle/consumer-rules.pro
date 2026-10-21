@@ -1,0 +1,2 @@
+-keep class com.gamealgo.godot.GameAlgoLifecycle { *; }
+-keep class com.gamealgo.godot.GameAlgoLifecycleProvider { *; }

@@ -169,6 +169,14 @@ jobs:
 
       - run: npm ci
 
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
       - name: Set up Rust targets
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -247,6 +255,8 @@ jobs:
 
           for required in \
             "$staging/gamealgo/gamealgo_client.gd" \
+            "$staging/gamealgo/plugin.cfg" \
+            "$staging/gamealgo/plugin.gd" \
             "$staging/gamealgo/runtime/gamealgo_runtime.gdextension" \
             "$staging/gamealgo/runtime/ios/gamealgo_godot_runtime.framework/gamealgo_godot_runtime" \
             "$staging/gamealgo/runtime/ios/gamealgo_godot_runtime.framework/Info.plist" \
@@ -255,6 +265,7 @@ jobs:
             "$staging/gamealgo/runtime/android/arm64-v8a/libgamealgo_godot_runtime.so" \
             "$staging/gamealgo/runtime/android/armeabi-v7a/libgamealgo_godot_runtime.so" \
             "$staging/gamealgo/runtime/android/x86_64/libgamealgo_godot_runtime.so" \
+            "$staging/gamealgo/runtime/android/gamealgo-lifecycle.aar" \
           ; do
             [[ -f "$required" ]] || { echo "missing release payload: $required" >&2; exit 1; }
           done

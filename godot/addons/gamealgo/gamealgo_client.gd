@@ -224,12 +224,31 @@ func configure(options: Dictionary) -> bool:
 	var config_request_saved := _remember_config_request()
 	last_error = "" if config_request_saved else "config_request_persistence_failed"
 	status = "configured"
+	if not _install_android_lifecycle():
+		status = "unconfigured"
+		last_error = "android_lifecycle_unavailable"
+		return false
 	set_process(true)
 	_log("userId: %s" % _identity["userId"])
 	_log("configured: platform=%s, appVersion=%s, integrationVersion=%d" % [
 		_platform, _app_version if not _app_version.is_empty() else "<none>", _integration_version
 	])
 	return true
+
+
+func _install_android_lifecycle() -> bool:
+	if OS.get_name() != "Android" or _event_backend == null:
+		return true
+	if not Engine.has_singleton("AndroidRuntime") or not Engine.has_singleton("JavaClassWrapper"):
+		return false
+	var wrapper := Engine.get_singleton("JavaClassWrapper")
+	var bridge: Variant = wrapper.call("wrap", "com.gamealgo.godot.GameAlgoLifecycle")
+	if bridge == null:
+		return false
+	var activity: Variant = Engine.get_singleton("AndroidRuntime").call("getActivity")
+	var installed: Variant = bridge.call("install", activity)
+	# JavaClassWrapper may expose JNI jboolean as the integer 0/1.
+	return bool(installed) if installed is bool or (installed is int and installed in [0, 1]) else false
 
 
 func start() -> bool:
@@ -439,7 +458,9 @@ func new_session(session_id: String = "") -> bool:
 	if status == "unconfigured":
 		last_error = "not_configured"
 		return false
-	tracker.new_session(session_id)
+	if not tracker.new_session(session_id):
+		last_error = "session_persistence_failed"
+		return false
 	_cached_request_fingerprint = ""
 	_cached_expiry_unix = 0.0
 	_remember_config_request()
@@ -1374,6 +1395,8 @@ func _valid_preload(value: Variant) -> bool:
 
 func _valid_event_backend(backend: Variant) -> bool:
 	if not backend is Object:
+		return false
+	if _platform == "android" and not backend.has_method("event_backend_start_session"):
 		return false
 	for method: String in [
 		"event_backend_configure",

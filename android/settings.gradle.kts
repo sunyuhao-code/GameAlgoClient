@@ -17,3 +17,4 @@ dependencyResolutionManagement {
 rootProject.name = "gamealgo-android"
 
 include(":demo")
+include(":godot-lifecycle")

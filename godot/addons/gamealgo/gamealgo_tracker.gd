@@ -107,7 +107,7 @@ func configure(client: Object, storage: Variant, options: Dictionary) -> bool:
 		if not configured is bool or not bool(configured):
 			return false
 	if _measurement_allowed:
-		return _restore_queue()
+		return _restore_queue() and _start_native_session()
 	return _clear_persisted() if _measurement_resolved else true
 
 
@@ -119,9 +119,12 @@ func set_measurement_allowed(allowed: bool) -> bool:
 		if allowed:
 			if not _restore_queue():
 				return false
+			_measurement_allowed = true
+			if not _start_native_session():
+				_measurement_allowed = false
+				return false
 			_consent_generation += 1
 			_measurement_resolved = true
-			_measurement_allowed = true
 			return true
 		_consent_generation += 1
 		_measurement_resolved = true
@@ -140,6 +143,9 @@ func set_measurement_allowed(allowed: bool) -> bool:
 		if not _clear_persisted():
 			return false
 		_measurement_allowed = true
+		if not _start_native_session():
+			_measurement_allowed = false
+			return false
 		return true
 	_measurement_allowed = false
 	_pending_milestone_keys.clear()
@@ -179,19 +185,57 @@ func identify(options: Dictionary) -> void:
 		_is_debug = bool(options["is_debug"])
 
 
-func new_session(session_id: String = "") -> void:
+func new_session(session_id: String = "") -> bool:
 	var previous_session_id := _session_id
-	_diagnostic_keys.clear()
-	_diagnostic_count = 0
+	var previous_context_id := _context_id
+	var previous_start := _session_start_unix
+	var previous_quota := _event_quota
 	_session_id = GameAlgoUtil.clean(session_id)
 	if _session_id.is_empty():
 		_session_id = GameAlgoUtil.uuid()
-	_ordinary_counts.erase("pending:" + previous_session_id)
 	_context_id = ""
 	_event_quota = {}
 	_session_start_unix = Time.get_unix_time_from_system()
+	if not _start_native_session():
+		_session_id = previous_session_id
+		_context_id = previous_context_id
+		_session_start_unix = previous_start
+		_event_quota = previous_quota
+		return false
+	_diagnostic_keys.clear()
+	_diagnostic_count = 0
+	_ordinary_counts.erase("pending:" + previous_session_id)
 	if _has_persisted_queue:
 		_persist_pending()
+	return true
+
+
+func _start_native_session() -> bool:
+	if not _native_events or _platform != "android" or not _measurement_allowed \
+			or not _event_backend.has_method("event_backend_start_session"):
+		return true
+	var event := {
+		"eventId": GameAlgoUtil.uuid(),
+		"contextId": _context_id,
+		"userId": _user_id,
+		"sessionId": _session_id,
+		"eventType": "session_end",
+		"isDebug": _is_debug,
+		"timestamp": GameAlgoUtil.utc_timestamp(_session_start_unix),
+		"createdLocalAt": GameAlgoUtil.local_timestamp(_session_start_unix),
+		"payload": {},
+	}
+	if not _account_user_id.is_empty():
+		event["accountUserId"] = _account_user_id
+	var started: Variant = _event_backend.call(
+		"event_backend_start_session", GameAlgoUtil.canonical_json(event),
+		int(_session_start_unix * 1000.0)
+	)
+	if not started is bool or not bool(started):
+		return false
+	if not _sync_native_queue(true):
+		_log("native session committed; queue mirror refresh will retry")
+	return true
 
 
 func current_session_id() -> String:

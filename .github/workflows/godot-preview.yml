@@ -1,0 +1,139 @@
+name: Godot Preview
+run-name: Godot session_end preview · ${{ github.ref_name }}
+
+"on":
+  push:
+    branches: ["preview/godot-*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: godot-preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    runs-on: macos-14
+    timeout-minutes: 45
+    env:
+      GODOT_VERSION: "4.7.2"
+      TZ: Asia/Shanghai
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r27c
+      - run: cargo install cargo-ndk --locked
+
+      - name: Test Godot SDK and native event backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="Godot_v${GODOT_VERSION}-stable_macos.universal.zip"
+          curl -sSLf -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/$archive"
+          unzip -q "$RUNNER_TEMP/$archive" -d "$RUNNER_TEMP/godot-preview-engine"
+          export GODOT_BIN="$RUNNER_TEMP/godot-preview-engine/Godot.app/Contents/MacOS/Godot"
+          cargo test --locked --manifest-path runtime/godot/Cargo.toml
+          npm run build:godot-runtime
+          npm run check:godot
+
+      - name: Build iOS and Android runtimes and lifecycle bridge
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: npm run build:godot-runtime -- ios android
+
+      - name: Package temporary SDK
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="1.0.17-session-end.${GITHUB_SHA:0:8}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          export PREVIEW_VERSION="$version"
+          export PREVIEW_STAGING="$RUNNER_TEMP/gamealgo-godot-$version"
+          mkdir -p "$PREVIEW_STAGING" preview-output
+          cp -R godot/addons/gamealgo "$PREVIEW_STAGING/gamealgo"
+          cp godot/README.md "$PREVIEW_STAGING/README.md"
+          node <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const root = process.env.PREVIEW_STAGING;
+          const version = process.env.PREVIEW_VERSION;
+          const replacements = [
+            ["gamealgo/gamealgo_client.gd", /const SDK_VERSION := "[^"]+"/, `const SDK_VERSION := "${version}"`],
+            ["gamealgo/gamealgo_tracker.gd", /var _sdk_version := "[^"]+"/, `var _sdk_version := "${version}"`],
+            ["gamealgo/gamealgo_tracker.gd", /options\.get\("sdk_version", "[^"]+"\)/, `options.get("sdk_version", "${version}")`],
+            ["gamealgo/plugin.cfg", /^version="[^"]+"/m, `version="${version}"`],
+          ];
+          for (const [relative, pattern, replacement] of replacements) {
+            const filename = path.join(root, relative);
+            const source = fs.readFileSync(filename, "utf8");
+            if (!pattern.test(source)) throw new Error(`version marker missing: ${relative}`);
+            fs.writeFileSync(filename, source.replace(pattern, replacement));
+          }
+          fs.rmSync(path.join(root, "gamealgo/runtime/macos"), { recursive: true, force: true });
+          for (const relative of [
+            "gamealgo/plugin.cfg", "gamealgo/plugin.gd",
+            "gamealgo/runtime/gamealgo_runtime.gdextension",
+            "gamealgo/runtime/ios/gamealgo_godot_runtime.framework/gamealgo_godot_runtime",
+            "gamealgo/runtime/ios/gamealgo_godot_runtime.framework/Info.plist",
+            "gamealgo/runtime/ios-simulator/gamealgo_godot_runtime.framework/gamealgo_godot_runtime",
+            "gamealgo/runtime/ios-simulator/gamealgo_godot_runtime.framework/Info.plist",
+            "gamealgo/runtime/android/arm64-v8a/libgamealgo_godot_runtime.so",
+            "gamealgo/runtime/android/armeabi-v7a/libgamealgo_godot_runtime.so",
+            "gamealgo/runtime/android/x86_64/libgamealgo_godot_runtime.so",
+            "gamealgo/runtime/android/gamealgo-lifecycle.aar",
+          ]) {
+            if (!fs.statSync(path.join(root, relative)).isFile()) throw new Error(`missing payload: ${relative}`);
+          }
+          fs.writeFileSync(path.join(root, "BUILD_INFO.json"), JSON.stringify({
+            preview: true, version, sourceCommit: process.env.GITHUB_SHA,
+            sourceBranch: process.env.GITHUB_REF_NAME,
+            workflowRun: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+            builtAt: new Date().toISOString(),
+          }, null, 2) + "\n");
+          NODE
+          for slice in ios ios-simulator; do
+            binary="$PREVIEW_STAGING/gamealgo/runtime/$slice/gamealgo_godot_runtime.framework/gamealgo_godot_runtime"
+            [[ "$(otool -D "$binary" | tail -n 1)" == "@rpath/gamealgo_godot_runtime.framework/gamealgo_godot_runtime" ]]
+          done
+          asset="gamealgo-godot-$version.zip"
+          (cd "$RUNNER_TEMP" && zip -qr "$GITHUB_WORKSPACE/preview-output/$asset" "$(basename "$PREVIEW_STAGING")")
+          (cd preview-output && shasum -a 256 "$asset" > "$asset.sha256")
+
+      - name: Upload temporary Godot SDK
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: gamealgo-godot-${{ steps.package.outputs.version }}
+          path: preview-output/
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Show download and integration notes
+        env:
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          PREVIEW_VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          echo "Godot preview: $PREVIEW_VERSION" >> "$GITHUB_STEP_SUMMARY"
+          echo "Download: $ARTIFACT_URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "Android: enable the GameAlgo editor plugin and Gradle Build before exporting." >> "$GITHUB_STEP_SUMMARY"
+          echo "Temporary test artifact, expires in 14 days. No Release or npm package is published." >> "$GITHUB_STEP_SUMMARY"

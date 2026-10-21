@@ -12,6 +12,8 @@ GDScript HTTPS transport 默认使用 `HTTPRequest.use_threads = false`。请求
 
 发布包按语义化版本 tag 触发，和 Android AAR 同一个 Release。
 
+Android 导出需要在 **Project Settings / Plugins** 启用 **GameAlgo**，并启用导出预设的 **Gradle Build / Use Gradle Build**。编辑器插件会打包 `runtime/android/gamealgo-lifecycle.aar`。该桥接库监听同一进程内所有 Activity（包括广告 Activity），直接调用原生事件后端；缺少桥接库时 `configure` 返回 `android_lifecycle_unavailable`。
+
 支持 `android` 和 `ios` 两个导出目标。
 
 iOS 的运行时是 **framework 而不是裸 dylib**：dyld 按二进制自带的 install name 解析嵌入的库，只有 framework bundle 能带上这个名字。设备和模拟器各一份（`runtime/ios/` 和 `runtime/ios-simulator/`），两份都要放进去，否则对应环境里运行时单例加载不出来，SDK 会以 `native_event_backend_unavailable` 拒绝配置。
@@ -28,6 +30,8 @@ npm run build:godot-runtime                  # 当前主机（macOS），仅测�
 ```
 
 iOS 部署目标 13.0，Android 走 cargo-ndk，与 iOS / Android SDK 的下限一致。macOS 构建只是本仓库跑运行时契约测试的宿主产物，不随游戏发布，也不进发布包。
+
+Android 源码构建还需要 JDK 17 和 Android SDK 35；构建脚本会运行生命周期单元测试、生成桥接 AAR，并与原生库一起安装到 addon 的 `runtime/android/`。
 
 ## 最小接入
 
@@ -89,6 +93,10 @@ var result: Dictionary = await client.flush()
 `flush(timeout_ms)` 是统一接口。Android/iOS 默认使用与 `SceneTree`、帧循环及 `HTTPRequest` 回调无关的原生 worker；超时是整个 drain 的总预算，队列超过一批时会在预算内连续发送。每批只有在服务端返回完整 ACK 后才原子删除；超时、断网、进程中断或本地提交失败都会保留原 `eventId`，下次启动继续重试。多个同时发生的 flush 会串行合并到当前任务。
 
 SDK 在应用暂停/关闭通知时自动以 2.5 秒预算补一次 flush，但这不能代替 paid callback 中的显式调用：Android force-stop 没有可靠回调，而且 `OnPause` 可能早于 MAX `onPaidEvent`。SDK 不理解 rewarded/interstitial 业务规则，因此由 App 在对应 paid callback 成功入队后触发。
+
+Android 还会在同一进程的所有 Activity 都停止、持续 100ms 后，原生生成并同步持久化 `session_end`，再以 2.5 秒预算启动上传。正常切换到全屏广告 Activity 保持前台，不会结束会话；从广告页按 Home 则会结束。配置变更引起的 Activity 重建不触发结束。监听与 Godot 帧循环无关，已有游戏层 `track_session_end()` 调用可以保留；每次真正退后台仍可产生新的结束事件，不按 `sessionId` 做全局去重。返回前台也不会自动创建新 session，仍由游戏调用 `new_session()`。
+
+测量获准后，原生队列同时保存未关闭会话及最后观察到的时间；前台每 10 秒更新一次，广告播放期间也继续更新。进程被直接杀死时，下次获准测量并配置 SDK 后为旧会话补 `reason=process_restart`、`recovered=true`、`endTimeEstimated=true` 的 `session_end`。补报保留旧 `sessionId/contextId`，时间和时长按最后一次观察估算，不把两次启动之间的间隔算入会话。后台正常生成的结束事件使用 `reason=background`。补报与新会话标记在同一个原子文件中提交，重试保留原事件 ID。测量未授权时不生成标记或事件，明确撤回时一并清除。
 
 前台会话切换调用 `await client.new_session()`。配置请求失败时，`start()` / `new_session()` / `refresh()` 返回实际失败；SDK 在后续 `_process` 中按 1、2、4、8、16、32、60 秒退避自动重试，之后间隔最多 60 秒，不阻塞游戏。未取得 context 的事件立即持久化，并跨后续会话与重启保留。恢复使用原会话保存的 `/v1/config` 请求原文（包括 `sessionId`、`createdLocalAt`、平台、版本和设备信息），只给该会话的未绑定事件补上服务端返回的真实 context。历史响应不会发布为当前会话的实验分组。冷启动缓存仍可提供实验分组与配置，但它的旧 context 不会绑定新会话；新事件等待自己会话的真实 context。已绑定的事件可以先上传，不被未绑定的旧事件阻塞。
 
