@@ -9,7 +9,7 @@ import { GameAlgoBrowserStorage, type GameAlgoBrowserStorageOptions } from "./br
 import { GameAlgoWebScriptRuntime } from "./script-runtime.ts";
 import { GameAlgoMatchmakingClient } from "./multiplayer.ts";
 
-export const GAMEALGO_WEB_SDK_VERSION = "1.0.16";
+export const GAMEALGO_WEB_SDK_VERSION = "1.0.17";
 const WEB_KEEPALIVE_BODY_LIMIT_BYTES = 60 * 1024;
 const WEB_EVENT_BATCH_BODY_BUDGET_BYTES = 48 * 1024;
 const DEFAULT_WEB_ATTRIBUTION_PARAMETERS = [
@@ -58,7 +58,10 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
   private readonly onPageHide: () => void;
   private readonly onPageShow: () => void;
   private readonly onOnline: () => void;
+  private readonly autoSessionLifecycle: boolean;
   private sessionEnded = false;
+  private adShowing = false;
+  private closed = false;
   readonly matchmaking: GameAlgoMatchmakingClient;
 
   constructor(options: GameAlgoWebClientOptions) {
@@ -110,21 +113,17 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
     });
     this.lifecycleTarget = typeof window === "undefined" ? undefined : window;
     this.documentTarget = typeof document === "undefined" ? undefined : document;
+    this.autoSessionLifecycle = options.autoSessionLifecycle !== false;
     this.onVisibilityChange = () => {
-      if (this.documentTarget?.visibilityState === "hidden") this.flushInBackground();
-    };
-    this.onPageHide = () => {
-      if (options.autoSessionLifecycle !== false && !this.sessionEnded) {
-        this.sessionEnded = this.tracker.trackSessionEnd({ reason: "pagehide" });
+      if (this.documentTarget?.visibilityState === "hidden") {
+        this.endSessionAndFlush("visibility_hidden");
+      } else if (this.documentTarget?.visibilityState === "visible") {
+        this.resumeSession();
       }
-      this.flushInBackground();
     };
+    this.onPageHide = () => this.endSessionAndFlush("pagehide");
     this.onPageShow = () => {
-      if (!this.sessionEnded) return;
-      this.sessionEnded = false;
-      this.tracker.newSession();
-      this.tracker.markSessionStarted();
-      void this.refresh({ forceRefresh: true }).catch(() => undefined);
+      if (!this.documentTarget || this.documentTarget.visibilityState === "visible") this.resumeSession();
     };
     this.onOnline = () => this.flushInBackground();
     if (options.autoLifecycle !== false) this.attachLifecycle();
@@ -142,7 +141,14 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
   }
 
   async flush(): Promise<void> {
+    await this.tracker.flushUrgent();
     await this.tracker.flush();
+  }
+
+  /** Call true BEFORE showing a native fullscreen ad, then false on close or
+   * show failure. Revenue/ad_view callbacks do not imply that the ad closed. */
+  setAdShowing(showing: boolean): void {
+    if (!this.closed) this.adShowing = showing;
   }
 
   /** Capture allow-listed campaign parameters without sending the full URL. */
@@ -157,6 +163,7 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
   }
 
   close(): void {
+    this.closed = true;
     this.documentTarget?.removeEventListener("visibilitychange", this.onVisibilityChange);
     this.lifecycleTarget?.removeEventListener("pagehide", this.onPageHide);
     this.lifecycleTarget?.removeEventListener("pageshow", this.onPageShow);
@@ -173,7 +180,23 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
   }
 
   private flushInBackground(): void {
+    void this.tracker.flushUrgent().catch(() => undefined);
     void this.tracker.flush().catch(() => undefined);
+  }
+
+  private endSessionAndFlush(reason: string): void {
+    if (this.autoSessionLifecycle && !this.sessionEnded && !this.adShowing) {
+      this.sessionEnded = this.tracker.trackSessionEnd({ reason });
+    }
+    this.flushInBackground();
+  }
+
+  private resumeSession(): void {
+    if (!this.sessionEnded) return;
+    this.sessionEnded = false;
+    this.tracker.newSession();
+    this.tracker.markSessionStarted();
+    void this.refresh({ forceRefresh: true }).catch(() => undefined);
   }
 }
 

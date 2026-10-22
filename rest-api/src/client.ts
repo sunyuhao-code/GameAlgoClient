@@ -713,6 +713,10 @@ export class GameAlgoEventTracker {
   private currentExperiments: Record<string, string> = {};
   private queue: GameEvent[] = [];
   private retryBatch: GameEvent[] = [];
+  private inflightBatch: GameEvent[] = [];
+  private readonly urgentEventIds = new Set<string>();
+  private readonly urgentFlushes = new Map<string, Promise<EventBatchResponse[]>>();
+  private restored = false;
   private flushTimer?: ReturnType<typeof setInterval>;
   private flushing = false;
   private sessionStartMs?: number;
@@ -767,7 +771,7 @@ export class GameAlgoEventTracker {
     this.restorePromise = Promise.all([
       this.restorePersistedQueue(),
       this.milestoneRestorePromise,
-    ]).then(() => undefined);
+    ]).then(() => { this.restored = true; });
   }
 
   identify(userId: string, sessionId?: string, userCreatedAt?: string, accountUserId?: string): void {
@@ -788,7 +792,7 @@ export class GameAlgoEventTracker {
     this.pendingMilestoneKeys.clear();
     this.contextId = undefined;
     this.sessionStartMs = this.now();
-    if (this.hasPersistedQueue) void this.persistPendingQueue();
+    if (this.hasPersistedQueue) void this.persistPendingQueue().catch(() => undefined);
   }
 
   currentSessionId(): string {
@@ -813,7 +817,8 @@ export class GameAlgoEventTracker {
     this.retryBatch = this.retryBatch.map(bind);
     this.queue = this.queue.map(bind);
     this.rememberBoundMilestones(resolved);
-    if (this.hasPersistedQueue) void this.persistPendingQueue();
+    if (this.hasPersistedQueue) void this.persistPendingQueue().catch(() => undefined);
+    if (this.platform === "web") void this.flushUrgent().catch(() => undefined);
   }
 
   setDebug(isDebug: boolean): void {
@@ -878,6 +883,11 @@ export class GameAlgoEventTracker {
       payload: normalizedPayload,
     });
     if (milestone?.key) this.rememberMilestone(milestone.key, milestone.durable);
+    if (this.platform === "web" && eventType === "ad_view") {
+      void this.flushUrgent().then(() => this.flush()).catch(() => undefined);
+    } else if (this.platform === "web" && eventType === "session_end") {
+      void this.flushUrgent().catch(() => undefined);
+    }
     return true;
   }
 
@@ -1132,7 +1142,10 @@ export class GameAlgoEventTracker {
     try {
       while (this.retryBatch.length > 0 || this.queue.length > 0) {
         const pending = [...this.retryBatch, ...this.queue];
-        const batch = eventBatchWithinBudget(pending, this.maxBatchSize, this.maxBatchBytes);
+        const held = pending.filter((event) => this.urgentEventIds.has(event.eventId!));
+        const available = pending.filter((event) => !this.urgentEventIds.has(event.eventId!));
+        if (available.length === 0) return responses;
+        const batch = eventBatchWithinBudget(available, this.maxBatchSize, this.maxBatchBytes);
         const resolvedContextId = clean(this.contextId);
         if (batch.some((event) => !clean(event.contextId)) && !resolvedContextId) {
           this.retryBatch = [];
@@ -1141,14 +1154,17 @@ export class GameAlgoEventTracker {
         }
         const uploadBatch = batch.map((event) => clean(event.contextId) ? event : { ...event, contextId: resolvedContextId! });
         this.retryBatch = [];
-        this.queue = pending.slice(batch.length);
+        this.queue = [...held, ...available.slice(batch.length)];
+        this.inflightBatch = uploadBatch;
 
         try {
           responses.push(await this.uploadEvents(uploadBatch));
+          this.inflightBatch = [];
           this.consecutiveFailures = 0;
           if (this.hasPersistedQueue) await this.persistPendingQueue();
         } catch (error) {
-          this.retryBatch = uploadBatch;
+          this.inflightBatch = [];
+          this.retryBatch = [...uploadBatch, ...this.retryBatch];
           this.consecutiveFailures += 1;
           if (this.consecutiveFailures >= 3) {
             this.hasPersistedQueue = true;
@@ -1171,6 +1187,63 @@ export class GameAlgoEventTracker {
     }
   }
 
+  /** H5 critical events start uploading without waiting for browser storage or
+   * an ordinary batch. Each event stays queued until the HTTP request succeeds.
+   * Separate lanes keep a pending ad request from blocking session_end. */
+  async flushUrgent(): Promise<EventBatchResponse[]> {
+    const lanes = ["session_end", "ad_view"].map((eventType) => {
+      const active = this.urgentFlushes.get(eventType);
+      if (active) return active;
+      if (!this.urgentCandidates(eventType).length) return Promise.resolve([]);
+      const operation = this.drainUrgent(eventType);
+      this.urgentFlushes.set(eventType, operation);
+      return operation;
+    });
+    return (await Promise.all(lanes)).flat();
+  }
+
+  private urgentCandidates(eventType: string): GameEvent[] {
+    return [...this.retryBatch, ...this.queue].filter((event) =>
+      event.eventType === eventType && !this.urgentEventIds.has(event.eventId!)
+      && (clean(event.contextId) || (event.sessionId === this.sessionId && clean(this.contextId)))
+    );
+  }
+
+  private async drainUrgent(eventType: string): Promise<EventBatchResponse[]> {
+    const responses: EventBatchResponse[] = [];
+    try {
+      if (!this.restored) await this.restorePromise;
+      while (true) {
+        const candidates = this.urgentCandidates(eventType);
+        if (candidates.length === 0) return responses;
+        const batch = eventBatchWithinBudget(candidates, this.maxBatchSize, this.maxBatchBytes);
+        const ids = new Set(batch.map((event) => event.eventId!));
+        for (const id of ids) this.urgentEventIds.add(id);
+        const uploadBatch = batch.map((event) => clean(event.contextId)
+          ? event : { ...event, contextId: this.contextId! });
+        try {
+          responses.push(await this.uploadEvents(uploadBatch));
+          this.retryBatch = this.retryBatch.filter((event) => !ids.has(event.eventId!));
+          this.queue = this.queue.filter((event) => !ids.has(event.eventId!));
+          // Serialize cleanup behind enqueue writes, but do not delay the next
+          // critical request on an IndexedDB transaction or a paused callback.
+          if (this.hasPersistedQueue) void this.persistPendingQueue().catch(() => undefined);
+        } catch (error) {
+          // Queue overflow or a session transition may have removed an
+          // unacknowledged row while the request was in flight.
+          const pendingIds = new Set([...this.retryBatch, ...this.queue, ...this.inflightBatch].map((event) => event.eventId));
+          this.retryBatch = [...uploadBatch.filter((event) => !pendingIds.has(event.eventId)), ...this.retryBatch];
+          if (this.hasPersistedQueue) void this.persistPendingQueue().catch(() => undefined);
+          throw error;
+        } finally {
+          for (const id of ids) this.urgentEventIds.delete(id);
+        }
+      }
+    } finally {
+      this.urgentFlushes.delete(eventType);
+    }
+  }
+
   close(): void {
     if (this.flushTimer) {
       clearInterval(this.flushTimer);
@@ -1185,11 +1258,7 @@ export class GameAlgoEventTracker {
     }
     if (this.persistOnEnqueue) {
       this.hasPersistedQueue = true;
-      const persist = async () => {
-        await this.restorePromise;
-        await this.persistPendingQueue();
-      };
-      this.queuePersistPromise = this.queuePersistPromise.then(persist, persist).catch(() => undefined);
+      void this.persistPendingQueue().catch(() => undefined);
     }
     this.startTimer();
     if (this.queue.length >= this.maxBatchSize) {
@@ -1252,19 +1321,30 @@ export class GameAlgoEventTracker {
     return this.milestonePersistPromise;
   }
 
-  private async persistPendingQueue(): Promise<void> {
-    if (!this.storage || !this.persistenceKey) return;
-    const pending = [...this.retryBatch, ...this.queue];
-    if (pending.length === 0) {
-      await this.clearPersistedQueue();
-      return;
-    }
-    await this.storage.setItem(this.persistenceKey, pending.map((event) => JSON.stringify(event)).join("\n"));
+  private persistPendingQueue(): Promise<void> {
+    if (!this.storage || !this.persistenceKey) return Promise.resolve();
+    const persist = async () => {
+      await this.restorePromise;
+      const pending = [...this.retryBatch, ...this.inflightBatch, ...this.queue];
+      if (pending.length === 0) {
+        await this.storage!.removeItem?.(this.persistenceKey!);
+        this.hasPersistedQueue = false;
+      } else {
+        await this.storage!.setItem(this.persistenceKey!, pending.map((event) => JSON.stringify(event)).join("\n"));
+        this.hasPersistedQueue = true;
+      }
+    };
+    const operation = this.queuePersistPromise.then(persist, persist);
+    this.queuePersistPromise = operation.catch(() => undefined);
+    return operation;
   }
 
   private async clearPersistedQueue(): Promise<void> {
-    if (this.storage && this.persistenceKey) await this.storage.removeItem?.(this.persistenceKey);
-    this.hasPersistedQueue = false;
+    if (!this.storage || !this.persistenceKey) {
+      this.hasPersistedQueue = false;
+      return;
+    }
+    await this.persistPendingQueue();
   }
 }
 

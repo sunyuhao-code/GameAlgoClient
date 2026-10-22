@@ -29,10 +29,53 @@ batch fills, when the page is hidden or left, and when the browser returns
 online. Event batches use `fetch(..., { keepalive: true })` and are capped at 20
 events to stay below browser keepalive limits.
 
-When the page is left, the SDK records one `session_end` and flushes it. If the
-page is restored from the back-forward cache, the SDK opens a new session,
-refreshes the context, and preloads the current config files again. Set
-`autoSessionLifecycle: false` only when the game already owns those boundaries.
+When the document becomes hidden, the SDK records one `session_end` and starts
+uploading it immediately; `pagehide` is a fallback, not the primary boundary.
+Repeated hidden/pagehide notifications do not end the same session again.
+When the page becomes visible again (including back-forward cache restoration),
+the SDK opens one new session, refreshes its context, and preloads current config
+files. Set `autoSessionLifecycle: false` only when the game owns those boundaries;
+`autoLifecycle: false` disables all automatic browser lifecycle listeners.
+
+`ad_view` starts an immediate upload after successful enqueue, whether it comes
+from `tracker.trackAd(...)` or `tracker.track("ad_view", ...)`. It does not wait
+for the 30-second timer or the 20-event threshold. H5 uses separate critical
+upload lanes for `ad_view` and `session_end`: neither waits for ordinary uploads
+or event-store writes, and a pending ad request cannot block a session end.
+Ordinary batches exclude critical events already being uploaded. Failed requests
+remain queued with their original event ID and occurrence time, and persisted
+queues include ordinary in-flight rows until acknowledgement. Successful enqueue
+does not mean server delivery; use `await gameAlgo.flush()` to await critical
+uploads and their queue persistence when the page can remain active.
+
+### Fullscreen ads inside an App WebView
+
+The SDK cannot infer whether a native fullscreen ad or the user caused the page
+to become hidden. Tell it the ad state from the H5 game; no host App change is
+required:
+
+```ts
+gameAlgo.setAdShowing(true); // BEFORE requesting a native fullscreen ad
+// Show the ad using the game's existing integration.
+
+// In the ad-close callback OR if showing the ad fails (including sync errors):
+gameAlgo.setAdShowing(false);
+```
+
+While the ad is showing, hidden/pagehide only flush pending events; they do not
+end or rotate the session. `ad_view` still uploads immediately. Do not clear the
+ad flag in a revenue callback: paid exposure does not mean the ad has closed.
+Clearing the flag alone also does not end a still-hidden page, since ad-close
+callbacks may precede visibility restoration. A later non-ad hide ends the
+session normally. Every close/show-failure path must clear the flag; until the
+game adopts these calls, the SDK cannot distinguish ad hides from user exits.
+
+This is best-effort delivery within the current visit, not a guarantee that
+JavaScript runs after native suspension or process death. In particular, leaving
+from an ad without another page callback cannot be detected reliably. Generated
+but unacknowledged events can retry from storage; no event is invented for an
+undetected exit. TapTap H5 container behavior must be checked on real devices;
+the SDK does not assume the non-H5 mini-game `tap.onHide` API is available.
 
 ## Remote strategies and DDA
 
