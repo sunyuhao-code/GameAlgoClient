@@ -510,6 +510,15 @@ impl EventBackend {
 }
 
 fn run_flush(shared: Arc<Mutex<Inner>>, job_id: u64, generation: u64) {
+    run_flush_with_post(shared, job_id, generation, post_batch);
+}
+
+fn run_flush_with_post(
+    shared: Arc<Mutex<Inner>>,
+    job_id: u64,
+    generation: u64,
+    mut post: impl FnMut(&Config, &[Value], Duration) -> Result<usize, String>,
+) {
     let mut accepted_total = 0usize;
     let mut accepted_ids: Vec<String> = Vec::new();
     loop {
@@ -603,28 +612,13 @@ fn run_flush(shared: Arc<Mutex<Inner>>, job_id: u64, generation: u64) {
             (config, batch, deadline)
         };
 
-        let response = post_batch(
+        let response = post(
             &config,
             &batch,
             deadline.saturating_duration_since(Instant::now()),
         );
         let accepted = match response {
-            Ok(accepted) if accepted == batch.len() => accepted,
-            Ok(_) => {
-                if let Ok(mut inner) = shared.lock() {
-                    inner.active_event_ids.clear();
-                    finish(
-                        &mut inner,
-                        job_id,
-                        accepted_total,
-                        accepted_ids,
-                        false,
-                        false,
-                        "accepted_count_mismatch",
-                    );
-                }
-                return;
-            }
+            Ok(accepted) => accepted,
             Err(error) => {
                 if let Ok(mut inner) = shared.lock() {
                     inner.active_event_ids.clear();
@@ -741,14 +735,55 @@ fn post_batch(config: &Config, batch: &[Value], timeout: Duration) -> Result<usi
     }
     let value: Value =
         serde_json::from_slice(&body).map_err(|_| "invalid_event_response".to_string())?;
+    let accepted = accepted_batch_count(&value, batch.len())?;
+    if accepted < batch.len() {
+        platform_support::log(&format!(
+            "[GameAlgoSDK] flush batch completed: sent={}, accepted={}, notAccepted={}",
+            batch.len(),
+            accepted,
+            batch.len() - accepted
+        ));
+        if let Some(rows) = value.get("rejected").and_then(Value::as_array) {
+            for row in rows
+                .iter()
+                .filter(|row| row.is_object())
+                .take(batch.len() - accepted)
+            {
+                platform_support::log(&format!("[GameAlgoSDK] flush event rejected: {row}"));
+            }
+        }
+    }
+    Ok(accepted)
+}
+
+fn accepted_batch_count(value: &Value, batch_size: usize) -> Result<usize, String> {
     if value.get("ok").and_then(Value::as_bool) != Some(true) {
         return Err("event_rejected".to_string());
     }
-    value
+    let accepted = value
         .get("accepted")
-        .and_then(Value::as_u64)
-        .map(|accepted| accepted as usize)
-        .ok_or_else(|| "invalid_event_response".to_string())
+        .and_then(Value::as_f64)
+        .filter(|count| {
+            count.is_finite()
+                && *count >= 0.0
+                && *count <= batch_size as f64
+                && count.fract() == 0.0
+        })
+        .map(|count| count as usize)
+        .ok_or_else(|| "invalid_event_response".to_string())?;
+    // Do not let incomplete or malformed optional rejection metadata turn an
+    // already processed batch into an endless whole-batch replay.
+    if accepted > 0 {
+        return Ok(accepted);
+    }
+    if value
+        .get("rejected")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| rows.len() == batch_size && rows.iter().all(Value::is_object))
+    {
+        return Ok(0);
+    }
+    Err("accepted_count_mismatch".to_string())
 }
 
 fn transport_timed_out(transport: &ureq::Transport) -> bool {
@@ -1194,6 +1229,190 @@ mod tests {
             "android"
         ));
         backend
+    }
+
+    fn test_flush(
+        backend: &EventBackend,
+        post: impl FnMut(&Config, &[Value], Duration) -> Result<usize, String>,
+    ) -> Value {
+        let (job_id, generation) = {
+            let mut inner = backend.lock().unwrap();
+            assert!(inner.active.is_none());
+            let id = inner.next_job_id;
+            inner.next_job_id += 1;
+            let generation = inner.generation;
+            inner.active = Some(ActiveJob {
+                id,
+                generation,
+                deadline: Instant::now() + Duration::from_secs(5),
+            });
+            (id, generation)
+        };
+        run_flush_with_post(Arc::clone(&backend.inner), job_id, generation, post);
+        serde_json::from_str(&backend.result_json(i64::try_from(job_id).unwrap())).unwrap()
+    }
+
+    #[test]
+    fn batch_completion_matches_shared_maker_and_gdscript_fixtures() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../protocol/fixtures/event-batch-ack.json"
+        ))
+        .unwrap();
+        let batch_size = fixture["batchSize"].as_u64().unwrap() as usize;
+        for case in fixture["cases"].as_array().unwrap() {
+            let result = accepted_batch_count(&case["response"], batch_size);
+            assert_eq!(
+                result.is_ok(),
+                case["terminal"].as_bool().unwrap(),
+                "{}: {result:?}",
+                case["name"]
+            );
+            if let Ok(accepted) = result {
+                assert_eq!(
+                    accepted,
+                    case["accepted"].as_u64().unwrap() as usize,
+                    "{}",
+                    case["name"]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn positive_partial_batch_is_removed_without_replaying_or_losing_new_events() {
+        let path = temporary_path("partial-batch");
+        let backend = configured(&path);
+        backend.lock().unwrap().config.as_mut().unwrap().max_batch = 2;
+        for id in ["first", "second"] {
+            assert!(backend.enqueue(&event(id, "session", "context").to_string()));
+        }
+        let mut sent = Vec::new();
+        let result = test_flush(&backend, |_, batch, _| {
+            sent.push(
+                batch
+                    .iter()
+                    .map(|e| e["eventId"].as_str().unwrap().to_owned())
+                    .collect::<Vec<_>>(),
+            );
+            if sent.len() == 1 {
+                // Enqueue while the first batch is in flight. Completing that
+                // batch must not discard this unrelated new event.
+                assert!(backend.enqueue(&event("third", "session", "context").to_string()));
+            }
+            accepted_batch_count(&json!({"ok": true, "accepted": 1}), batch.len())
+        });
+        assert_eq!(sent, vec![vec!["first", "second"], vec!["third"]]);
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["accepted"], 2); // not the three dequeued events
+        assert_eq!(result["remaining"], 0);
+        assert_eq!(
+            result["acked_event_ids"],
+            json!(["first", "second", "third"])
+        );
+        assert_eq!(configured(&path).pending_count(), 0);
+    }
+
+    #[test]
+    fn zero_with_complete_rejections_is_terminal_but_zero_without_them_retries() {
+        let path = temporary_path("zero-batch");
+        let backend = configured(&path);
+        let events = vec![
+            event("first", "session", "context"),
+            event("second", "session", "context"),
+        ];
+        assert!(backend.import_events(&serde_json::to_string(&events).unwrap()));
+        let result = test_flush(&backend, |_, batch, _| {
+            accepted_batch_count(&json!({"ok": true, "accepted": 0}), batch.len())
+        });
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["error"], "accepted_count_mismatch");
+        assert_eq!(result["remaining"], 2);
+        assert_eq!(load_state(&path).unwrap().0, events);
+        let result = test_flush(&backend, |_, batch, _| {
+            accepted_batch_count(
+                &json!({"ok": true, "accepted": 0,
+                "rejected": [{"index": 0}, {"index": 1}]}),
+                batch.len(),
+            )
+        });
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["accepted"], 0);
+        assert_eq!(result["remaining"], 0);
+        assert_eq!(configured(&path).pending_count(), 0);
+    }
+
+    #[test]
+    fn later_network_failure_preserves_only_the_unfinished_batch_across_restart() {
+        let path = temporary_path("partial-then-timeout");
+        let backend = configured(&path);
+        backend.lock().unwrap().config.as_mut().unwrap().max_batch = 2;
+        for id in ["first", "second", "third", "fourth"] {
+            assert!(backend.enqueue(&event(id, "session", "context").to_string()));
+        }
+        let mut calls = 0;
+        let result = test_flush(&backend, |_, batch, _| {
+            calls += 1;
+            if calls == 1 {
+                accepted_batch_count(&json!({"ok": true, "accepted": 1}), batch.len())
+            } else {
+                Err("timeout".to_string())
+            }
+        });
+        assert_eq!(calls, 2);
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["timed_out"], true);
+        assert_eq!(result["accepted"], 1);
+        assert_eq!(result["acked_event_ids"], json!(["first", "second"]));
+        assert_eq!(result["remaining"], 2);
+        let restored = configured(&path);
+        let result = test_flush(&restored, |_, batch, _| {
+            assert_eq!(
+                batch
+                    .iter()
+                    .map(|e| e["eventId"].as_str().unwrap())
+                    .collect::<Vec<_>>(),
+                vec!["third", "fourth"]
+            );
+            accepted_batch_count(&json!({"ok": true, "accepted": 1}), batch.len())
+        });
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["accepted"], 1);
+        assert_eq!(result["remaining"], 0);
+    }
+
+    #[test]
+    fn partial_batch_local_commit_failure_keeps_the_durable_queue_for_retry() {
+        let path = temporary_path("partial-commit");
+        let backend = configured(&path);
+        assert!(backend.enqueue(&event("first", "session", "context").to_string()));
+        assert!(backend.enqueue(&event("second", "session", "context").to_string()));
+        let saved = path.with_extension("saved");
+        fs::rename(&path, &saved).unwrap();
+        fs::create_dir(&path).unwrap();
+        let result = test_flush(&backend, |_, batch, _| {
+            accepted_batch_count(&json!({"ok": true, "accepted": 1}), batch.len())
+        });
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["accepted"], 1);
+        assert_eq!(result["remaining"], 2);
+        assert!(
+            result["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("server_acked_local_commit_failed:")
+        );
+        fs::remove_dir(&path).unwrap();
+        fs::rename(&saved, &path).unwrap();
+        assert_eq!(configured(&path).pending_count(), 2);
+        assert!(
+            test_flush(&backend, |_, batch, _| accepted_batch_count(
+                &json!({"ok": true, "accepted": 1}),
+                batch.len()
+            ))["ok"]
+                .as_bool()
+                .unwrap()
+        );
+        assert_eq!(configured(&path).pending_count(), 0);
     }
 
     fn session_event(id: &str, session: &str, context: &str) -> Value {

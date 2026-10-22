@@ -550,12 +550,12 @@ func upload_events(events: Array[Dictionary]) -> Dictionary:
 		_log("event upload failed: %d events, error=%s" % [events.size(), error])
 		request_failed.emit(error)
 		return {"ok": false, "accepted": 0, "error": error}
-	var value := response["value"] as Dictionary
-	if not value.get("ok", null) is bool or not _integer_value(value.get("accepted", null), 0, 100):
-		_log("event upload failed: %d events, error=invalid_event_response" % events.size())
-		request_failed.emit("invalid_event_response")
-		return {"ok": false, "accepted": 0, "error": "invalid_event_response"}
-	return {"ok": bool(value["ok"]), "accepted": int(value["accepted"])}
+	var result := GameAlgoUtil.event_batch_result(response["value"], events.size())
+	if not result["ok"]:
+		var error := String(result["error"])
+		_log("event upload failed: %d events, error=%s" % [events.size(), error])
+		request_failed.emit(error)
+	return result
 
 
 ## Starts the event upload before the first await. On Android and iOS the

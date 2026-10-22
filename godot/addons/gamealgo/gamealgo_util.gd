@@ -3,6 +3,35 @@ extends RefCounted
 const MAX_JSON_DEPTH := 32
 
 
+## A positive accepted count completes the entire batch, even without complete
+## rejection details. Zero requires an explicit rejected object for every row.
+static func event_batch_result(value: Variant, batch_size: int) -> Dictionary:
+	if not value is Dictionary:
+		return {"ok": false, "accepted": 0, "error": "invalid_event_response"}
+	if not value.get("ok", null) is bool or not value["ok"]:
+		return {"ok": false, "accepted": 0, "error": "event_rejected"}
+	var count: Variant = value.get("accepted", null)
+	if not (count is int or count is float) or not is_finite(float(count)) \
+			or float(count) < 0 or float(count) > batch_size or floor(float(count)) != float(count):
+		return {"ok": false, "accepted": 0, "error": "invalid_event_response"}
+	var accepted := int(count)
+	var rejected: Variant = value.get("rejected", [])
+	var rows: Array[Dictionary] = []
+	if accepted > 0:
+		if rejected is Array:
+			for row: Variant in rejected:
+				if row is Dictionary and rows.size() < batch_size - accepted:
+					rows.append(row.duplicate(true))
+		return {"ok": true, "accepted": accepted, "rejected": rows}
+	if not rejected is Array or rejected.size() != batch_size:
+		return {"ok": false, "accepted": 0, "error": "accepted_count_mismatch"}
+	for row: Variant in rejected:
+		if not row is Dictionary:
+			return {"ok": false, "accepted": 0, "error": "invalid_event_response"}
+		rows.append(row.duplicate(true))
+	return {"ok": true, "accepted": 0, "rejected": rows}
+
+
 static func clean(value: Variant) -> String:
 	return String(value).strip_edges() if value is String else ""
 

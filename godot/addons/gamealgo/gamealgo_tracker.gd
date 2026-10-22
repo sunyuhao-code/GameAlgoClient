@@ -785,8 +785,8 @@ func _flush_legacy() -> Dictionary:
 			return _flush_result(
 				false, accepted_total, false, "measurement_changed", acked_event_ids
 			)
-		if not response is Dictionary or not response.get("ok", null) is bool \
-				or not response["ok"] or int(response.get("accepted", -1)) != batch.size():
+		var result := GameAlgoUtil.event_batch_result(response, batch.size())
+		if not result["ok"]:
 			_retry_batch = _inflight_batch.duplicate(true)
 			_inflight_batch.clear()
 			_consecutive_failures += 1
@@ -797,16 +797,20 @@ func _flush_legacy() -> Dictionary:
 				_has_persisted_queue = true
 				_persist_pending()
 			_is_flushing = false
-			var error := String(response.get("error", "upload_failed")) \
-					if response is Dictionary else "upload_failed"
+			var error := String(response.get("error", result["error"])) \
+					if response is Dictionary else String(result["error"])
 			return _flush_result(false, accepted_total, false, error, acked_event_ids)
 		for event: Dictionary in _inflight_batch:
 			_event_sequence.erase(event["eventId"])
 			acked_event_ids.append(String(event["eventId"]))
-		accepted_total += batch.size()
+		accepted_total += int(result["accepted"])
 		_inflight_batch.clear()
 		_consecutive_failures = 0
-		_log("flush ok: accepted=%d, remaining=%d" % [batch.size(), _queue.size()])
+		_log("flush ok: accepted=%d, notAccepted=%d, remaining=%d" % [
+			int(result["accepted"]), batch.size() - int(result["accepted"]), _queue.size()
+		])
+		for row: Dictionary in result["rejected"]:
+			_log("flush event rejected: " + JSON.stringify(row))
 		if _has_persisted_queue and not _persist_pending():
 			_is_flushing = false
 			return _flush_result(

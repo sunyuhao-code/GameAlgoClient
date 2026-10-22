@@ -1,0 +1,26 @@
+{
+  "batchSize": 2,
+  "cases": [
+    {"name": "full acceptance", "response": {"ok": true, "accepted": 2}, "terminal": true, "accepted": 2},
+    {"name": "positive partial without rejects", "response": {"ok": true, "accepted": 1}, "terminal": true, "accepted": 1},
+    {"name": "positive partial with empty rejects", "response": {"ok": true, "accepted": 1, "rejected": []}, "terminal": true, "accepted": 1},
+    {"name": "positive partial with explicit reject", "response": {"ok": true, "accepted": 1, "rejected": [{"index": 1, "reason": "invalid event"}]}, "terminal": true, "accepted": 1},
+    {"name": "positive partial with null rejects", "response": {"ok": true, "accepted": 1, "rejected": null}, "terminal": true, "accepted": 1},
+    {"name": "positive partial with malformed rejects", "response": {"ok": true, "accepted": 1, "rejected": "invalid"}, "terminal": true, "accepted": 1},
+    {"name": "positive partial with malformed row", "response": {"ok": true, "accepted": 1, "rejected": ["invalid"]}, "terminal": true, "accepted": 1},
+    {"name": "positive partial with excessive rejects", "response": {"ok": true, "accepted": 1, "rejected": [{}, {}]}, "terminal": true, "accepted": 1},
+    {"name": "integral JSON float", "response": {"ok": true, "accepted": 1.0}, "terminal": true, "accepted": 1},
+    {"name": "all explicitly rejected", "response": {"ok": true, "accepted": 0, "rejected": [{"index": 0}, {"index": 1}]}, "terminal": true, "accepted": 0},
+    {"name": "zero without rejects", "response": {"ok": true, "accepted": 0}, "terminal": false},
+    {"name": "zero with incomplete rejects", "response": {"ok": true, "accepted": 0, "rejected": [{"index": 0}]}, "terminal": false},
+    {"name": "zero with excessive rejects", "response": {"ok": true, "accepted": 0, "rejected": [{}, {}, {}]}, "terminal": false},
+    {"name": "zero with malformed rejects", "response": {"ok": true, "accepted": 0, "rejected": "invalid"}, "terminal": false},
+    {"name": "zero with malformed row", "response": {"ok": true, "accepted": 0, "rejected": [{}, "invalid"]}, "terminal": false},
+    {"name": "negative count", "response": {"ok": true, "accepted": -1}, "terminal": false},
+    {"name": "excessive count", "response": {"ok": true, "accepted": 3}, "terminal": false},
+    {"name": "fractional count", "response": {"ok": true, "accepted": 0.5}, "terminal": false},
+    {"name": "missing count", "response": {"ok": true}, "terminal": false},
+    {"name": "null count", "response": {"ok": true, "accepted": null}, "terminal": false},
+    {"name": "explicit overall failure", "response": {"ok": false, "accepted": 1}, "terminal": false}
+  ]
+}

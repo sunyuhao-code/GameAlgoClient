@@ -272,7 +272,7 @@ do
     equal(harness.sdk.Snapshot().queuedEvents, 0, "manual retry succeeds")
 end
 
--- Partial 2xx acceptance is a retryable error rather than silent data loss.
+-- Zero acceptance without complete rejection details remains retryable.
 do
     local partial = true
     local harness = makeSdk(function(_, callback, batch)
@@ -290,6 +290,35 @@ do
     partial = false
     harness.sdk.Flush(nil)
     equal(harness.sdk.Snapshot().queuedEvents, 0, "partial batch can be retried")
+end
+
+-- Share the progress-first wire policy with both Godot implementations.
+do
+    local file = assert(io.open("protocol/fixtures/event-batch-ack.json", "r"))
+    local fixture = cjson.decode(file:read("*a"))
+    file:close()
+    for _, case in ipairs(fixture.cases) do
+        local harness = makeSdk(function(_, callback)
+            callback(nil, { status = 200, body = cjson.encode(case.response), headers = {} })
+        end)
+        for sequence = 1, fixture.batchSize do
+            assert(harness.sdk.TrackEvent("batch_completion", { sequence = sequence }))
+        end
+        local flushError, flushResult = "not invoked", nil
+        harness.sdk.Flush(function(error, result)
+            flushError, flushResult = error, result
+        end)
+        if case.terminal then
+            equal(flushError, nil, case.name .. ": terminal response completes")
+            equal(flushResult.accepted, case.accepted, case.name .. ": reports actual acceptance")
+            equal(harness.sdk.Snapshot().queuedEvents, 0, case.name .. ": entire batch leaves queue")
+            harness.sdk.Flush(nil)
+            equal(harness.requests(), 1, case.name .. ": no whole-batch replay")
+        else
+            assert(flushError ~= nil, case.name .. ": incomplete or invalid response must fail")
+            equal(harness.sdk.Snapshot().queuedEvents, fixture.batchSize, case.name .. ": retains batch")
+        end
+    end
 end
 
 -- A server response that accounts for every row as accepted or explicitly

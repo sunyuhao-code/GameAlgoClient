@@ -1570,8 +1570,22 @@ local function validateFlushResult(result, batchSize)
     if result.ok == false then return nil, tostring(result.error or "flush rejected") end
     local accepted = tonumber(result.accepted)
     if accepted == nil then return nil, "flush response missing accepted count" end
-    if accepted < 0 or accepted % 1 ~= 0 then
+    if accepted < 0 or accepted > batchSize or accepted % 1 ~= 0 then
         return nil, "invalid flush accepted count: " .. tostring(result.accepted)
+    end
+
+    -- A positive count proves the batch reached event processing. Prefer
+    -- progress over replaying the whole batch; rejection details are advisory.
+    if accepted > 0 then
+        local rows = {}
+        if type(result.rejected) == "table" then
+            for _, row in ipairs(result.rejected) do
+                if type(row) == "table" and #rows < batchSize - accepted then
+                    table.insert(rows, row)
+                end
+            end
+        end
+        return accepted, nil, rows
     end
 
     local rejected = result.rejected
@@ -1618,7 +1632,8 @@ local function finishActiveFlush(lifecycleGeneration, sequence, error, result)
     state_.pendingFlushRejected = state_.pendingFlushRejected + #rejected
     persistEventQueue()
     flushAutomaticStorage()
-    log("flush ok: accepted=" .. tostring(accepted) .. ", rejected=" .. tostring(#rejected))
+    log("flush ok: accepted=" .. tostring(accepted) .. ", rejected=" .. tostring(#rejected)
+        .. ", notAccepted=" .. tostring(#active.batch - accepted))
     for _, row in ipairs(rejected) do
         log("flush event rejected: index=" .. tostring(row.index)
             .. ", eventId=" .. tostring(row.eventId)

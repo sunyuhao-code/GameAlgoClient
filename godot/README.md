@@ -96,7 +96,11 @@ var result: Dictionary = await client.flush()
 
 事件入队时即固定 `eventId`、UTC `timestamp`、本地 `createdLocalAt` 和当前 `sessionId`，延迟上传或重试不会改写发生时间。所有事件（包括已绑定 context 的广告和会话事件）先确认原生队列落盘，再返回 `true`；这个返回值表示本地持久化接纳，不表示服务端收到。默认每批最多 100 条；队列达到 100 条或经过 30 秒时自动 flush。
 
-`flush(timeout_ms)` 是统一接口。Android/iOS 默认使用与 `SceneTree`、帧循环及 `HTTPRequest` 回调无关的原生 worker；超时是整个 drain 的总预算，队列超过一批时会在预算内连续发送。每批只有在服务端返回完整 ACK 后才原子删除；超时、断网、进程中断或本地提交失败都会保留原 `eventId`，下次启动继续重试。多个同时发生的 flush 会串行合并到当前任务。
+`flush(timeout_ms)` 是统一接口。Android/iOS 默认使用与 `SceneTree`、帧循环及 `HTTPRequest` 回调无关的原生 worker；超时是整个 drain 的总预算，队列超过一批时会在预算内连续发送。多个同时发生的 flush 会串行合并到当前任务。
+
+事件上传与 Maker 使用相同的不阻塞优先策略：有效成功响应中 `accepted > 0` 就原子移除整批，不要求 `accepted + rejected.length` 凑齐发送数；未接收或未说明结果的其余事件允许丢弃、不重试。`accepted` 保留服务端实际接收数，日志中的 `notAccepted` 表示该批其余事件。`rejected` 明细仅用于诊断，缺失或格式错误不会让已有接收的批次重试。`accepted = 0` 时，只有整批都有明确的拒绝记录才出队；否则保留。超时、断网、请求失败、无法解析或非法的接收数，以及本地落盘提交失败，仍保留原 `eventId` 供重试。
+
+`acked_event_ids` 表示服务端响应触发上述批次完成判定的事件 ID，包含明确拒绝或允许丢弃的事件，不等于逐条接收成功的 ID 列表；本地提交失败时仍可能保留在队列中，应结合 `ok`、`remaining` 和 `error` 判断。不能用它的长度代替 `accepted`。原生 worker 与 GDScript 后备发送路径遵守相同规则。
 
 SDK 在应用暂停/关闭通知时自动以 2.5 秒预算补一次 flush，但这不能代替 paid callback 中的显式调用：Android force-stop 没有可靠回调，而且 `OnPause` 可能早于 MAX `onPaidEvent`。SDK 不理解 rewarded/interstitial 业务规则，因此由 App 在对应 paid callback 成功入队后触发。
 

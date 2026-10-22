@@ -57,6 +57,7 @@ class TransportFixture:
 	var config_files: Array = []
 	var event_quota: Dictionary = {}
 	var accepted_override := -1
+	var event_response_override: Variant = null
 	var config_calls := 0
 	var attribution_ok := true
 	var events_ok := true
@@ -110,6 +111,8 @@ class TransportFixture:
 					"ok": false, "status": 503, "headers": {},
 					"body": PackedByteArray(), "error": "http_503",
 				}
+			if event_response_override != null:
+				return _json(event_response_override)
 			var parsed: Variant = JSON.parse_string(String(spec.get("body", "")))
 			var events: Array = parsed.get("events", []) if parsed is Dictionary else []
 			var accepted := accepted_override if accepted_override >= 0 else events.size()
@@ -365,6 +368,7 @@ func _run() -> void:
 	await _test_config_request_envelope()
 	await _test_device_version_override()
 	await _test_event_envelope_and_batching()
+	await _test_event_batch_completion_policy()
 	await _test_native_event_backend_migration_and_recovery()
 	await _test_native_mobile_session_registration()
 	await _test_native_queue_full_triggers_flush()
@@ -545,6 +549,58 @@ func _test_config_request_envelope() -> void:
 	var headers: Dictionary = transport.requests[0].get("headers", {})
 	_check(headers.get("X-GameAlgo-Key", "") == GAME_KEY, "every request carries X-GameAlgo-Key")
 	_check(headers.get("Content-Type", "") == "application/json", "config POST is JSON")
+	client.free()
+
+
+func _test_event_batch_completion_policy() -> void:
+	var path := ProjectSettings.globalize_path("res://../protocol/fixtures/event-batch-ack.json").simplify_path()
+	var fixture: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
+	if not fixture is Dictionary:
+		_check(false, "shared event batch completion fixtures are readable")
+		return
+	for case: Dictionary in fixture["cases"]:
+		var transport := TransportFixture.new()
+		transport.event_response_override = case["response"]
+		var storage := MemoryStore.new()
+		var client := _make_client({"transport": transport, "storage": storage, "logger": null})
+		if client == null:
+			_check(false, "batch completion client configures")
+			continue
+		await client.refresh(true)
+		for index: int in range(int(fixture["batchSize"])):
+			client.tracker.track_level_end({"level": index})
+		var before: Array = client.tracker.pending_events_for_testing()
+		var result: Dictionary = await client.flush()
+		var label := String(case["name"])
+		_check(result["ok"] == case["terminal"], label + ": terminal policy matches Maker and Rust")
+		_check(transport.bodies_for("/v1/events/batch").size() == 1, label + ": one request per attempt")
+		if case["terminal"]:
+			_check(result["accepted"] == case["accepted"], label + ": reports the actual accepted count")
+			_check(result["remaining"] == 0 and client.tracker.pending_count() == 0, label + ": entire batch leaves the queue")
+			_check(result["acked_event_ids"] == _event_ids(before), label + ": completion IDs cover the resolved batch, not just accepted rows")
+			await client.flush()
+			_check(transport.bodies_for("/v1/events/batch").size() == 1, label + ": completed batch is never replayed")
+		else:
+			_check(client.tracker.pending_events_for_testing() == before, label + ": failed batch keeps original IDs and contents")
+			transport.event_response_override = {"ok": true, "accepted": 1}
+			var retried: Dictionary = await client.flush()
+			_check(retried["ok"] and retried["accepted"] == 1 and retried["remaining"] == 0, label + ": later positive acknowledgement can drain the retry")
+		client.free()
+		var restored := _make_client({"transport": TransportFixture.new(), "storage": storage, "logger": null})
+		_check(restored.tracker.pending_count() == 0, label + ": removed batch stays removed after restart")
+		restored.free()
+	# Transport failure is not a successful positive acknowledgement.
+	var offline := TransportFixture.new()
+	var client := _make_client({"transport": offline, "logger": null})
+	await client.refresh(true)
+	client.tracker.track_level_end({"level": 1})
+	var before: Array = client.tracker.pending_events_for_testing()
+	offline.events_ok = false
+	var failed: Dictionary = await client.flush()
+	_check(not failed["ok"] and failed["error"] == "http_503", "transport errors still fail the batch")
+	_check(client.tracker.pending_events_for_testing() == before, "transport errors retain the original event")
+	offline.events_ok = true
+	_check((await client.flush())["ok"], "transport errors can recover on a later attempt")
 	client.free()
 
 
