@@ -86,6 +86,7 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
       storage,
       fetchImpl,
       scriptRuntime,
+      eventFlushIntervalMs: options.eventFlushIntervalMs ?? 5_000,
       eventMaxBatchSize: Math.min(options.eventMaxBatchSize ?? 20, 20),
       eventMaxBatchBytes: Math.min(
         options.eventMaxBatchBytes ?? WEB_EVENT_BATCH_BODY_BUDGET_BYTES,

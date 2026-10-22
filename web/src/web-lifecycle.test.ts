@@ -76,6 +76,36 @@ function harness(t: TestContext, options: Partial<GameAlgoWebClientOptions> = {}
   };
 }
 
+for (const [label, configured, interval] of [
+  ["default", undefined, 5_000],
+  ["custom", 1_250, 1_250],
+  ["disabled", 0, 0],
+] as const) {
+  test(`H5 ordinary event flush interval: ${label}`, async (t) => {
+    t.mock.timers.enable({ apis: ["setInterval"] });
+    const h = harness(t, { autoLifecycle: false, eventFlushIntervalMs: configured });
+    assert.equal(await h.client.waitForReady(), true);
+    assert.equal(h.client.tracker.trackLevelEnd({ level: 1 }), true);
+    assert.equal(h.requests.length, 0, "ordinary events stay buffered below the batch threshold");
+    if (interval === 0) {
+      t.mock.timers.tick(60_000);
+      await tick();
+      assert.equal(h.requests.length, 0, "explicit zero disables periodic uploads");
+      await h.client.flush();
+    } else {
+      t.mock.timers.tick(interval - 1);
+      await tick();
+      assert.equal(h.requests.length, 0, "no upload before the configured interval");
+      t.mock.timers.tick(1);
+      await tick();
+    }
+    assert.equal(h.requests.length, 1);
+    assert.equal(h.events()[0].eventType, "level_end");
+    assert.equal(h.requests[0].keepalive, true);
+    assert.equal(h.pending().length, 0);
+  });
+}
+
 test("H5 ad_view starts a keepalive request in the enqueue call, below batch and timer thresholds", async (t) => {
   const h = harness(t, { autoLifecycle: false });
   assert.equal(await h.client.waitForReady(), true);

@@ -24,10 +24,12 @@ const decision = await gameAlgo.executor("level_dda").execute({ level: 12 });
 
 The SDK uses IndexedDB for stable anonymous identity, config snapshots,
 milestone de-duplication, and its durable event queue. `localStorage` and then
-in-memory storage are used as fallbacks. Events flush periodically, when a
-batch fills, when the page is hidden or left, and when the browser returns
-online. Event batches use `fetch(..., { keepalive: true })` and are capped at 20
-events to stay below browser keepalive limits.
+in-memory storage are used as fallbacks. Ordinary events flush every 5 seconds
+by default, when a batch fills, when the page is hidden or left, and when the
+browser returns online. Override `eventFlushIntervalMs` to change the interval;
+`0` disables periodic flushing without disabling immediate critical uploads.
+Event batches use `fetch(..., { keepalive: true })` and are capped at 20 events
+to stay below browser keepalive limits.
 
 When the document becomes hidden, the SDK records one `session_end` and starts
 uploading it immediately; `pagehide` is a fallback, not the primary boundary.
@@ -39,7 +41,7 @@ files. Set `autoSessionLifecycle: false` only when the game owns those boundarie
 
 `ad_view` starts an immediate upload after successful enqueue, whether it comes
 from `tracker.trackAd(...)` or `tracker.track("ad_view", ...)`. It does not wait
-for the 30-second timer or the 20-event threshold. H5 uses separate critical
+for the 5-second timer or the 20-event threshold. H5 uses separate critical
 upload lanes for `ad_view` and `session_end`: neither waits for ordinary uploads
 or event-store writes, and a pending ad request cannot block a session end.
 Ordinary batches exclude critical events already being uploaded. Failed requests
@@ -255,7 +257,7 @@ backward compatibility. `match_timeout` ends the current matchmaking attempt
 and is not classified as retryable; the UI may let the player explicitly join
 again or choose another queue.
 
-Telemetry still uses the general 30-second batching interval. Explicitly call
+Telemetry still uses the general 5-second batching interval. Explicitly call
 `await gameAlgo.flush()` after a match result or another diagnostic boundary
 that needs to be visible immediately.
 
