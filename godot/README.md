@@ -106,6 +106,8 @@ SDK 在应用暂停/关闭通知时自动以 2.5 秒预算补一次 flush，但�
 
 Android 还会在同一进程的所有 Activity 都停止、持续 100ms 后，原生生成并同步持久化 `session_end`，再以 2.5 秒预算启动上传。正常切换到全屏广告 Activity 保持前台，不会结束会话；从广告页按 Home 则会结束。配置变更引起的 Activity 重建不触发结束。监听与 Godot 帧循环无关，已有游戏层 `track_session_end()` 调用可以保留；每次真正退后台仍可产生新的结束事件，不按 `sessionId` 做全局去重。返回前台也不会自动创建新 session，仍由游戏调用 `new_session()`。
 
+Android 同时监听应用级 `onTrimMemory(TRIM_MEMORY_UI_HIDDEN)` 和动态注册的 `SCREEN_OFF` 广播。UI 已不可见或设备进入非交互状态时立即走同一条原生持久化和 Flush 路径，无需等待所有 Activity stopped 或额外的 100ms。前台心跳随后台状态停止；重复后台信号和迟到的 stopped 不会重复切换同一次状态。Activity resumed 时检查设备交互状态并恢复前台；`SCREEN_ON` 只有在应用仍有 resumed Activity 且未收到 UI 隐藏通知时才恢复，停在锁屏界面或桌面不会仅因亮屏就恢复会话。其他内存压力通知不作为 UI 隐藏处理。这些监听无需游戏额外接入，也不会更换 `sessionId`。
+
 iOS 在原生层监听 `UIApplication` 的整体前后台通知，不依赖 Godot 暂停通知或帧循环。展示全屏广告、控制中心和权限弹窗引起的失焦不会结束会话；真正进入后台时立即同步持久化 `session_end`，再用 2.5 秒预算和有限后台执行任务尝试上传，失败事件留待下次发送。监听内置于 iOS framework，无需修改游戏的 AppDelegate，也不需要声明长期后台运行权限。多 Scene 时按整个 App 的状态处理，不因单个 Scene 退后台就结束会话。游戏已有的 `track_session_end()` 可以保留，返回前台仍不自动新建 session。
 
 Android 和 iOS 在测量获准后，原生队列同时保存未关闭会话及最后观察到的时间；前台每 10 秒更新一次，广告播放期间也继续更新。进程被直接杀死时，下次获准测量并配置 SDK 后为旧会话补 `reason=process_restart`、`recovered=true`、`endTimeEstimated=true` 的 `session_end`。补报保留旧 `sessionId/contextId`，时间和时长按最后一次观察估算，不把两次启动之间的间隔算入会话。后台正常生成的结束事件使用 `reason=background`。补报与新会话标记在同一个原子文件中提交，重试保留原事件 ID。测量未授权时不生成标记或事件，明确撤回时一并清除。

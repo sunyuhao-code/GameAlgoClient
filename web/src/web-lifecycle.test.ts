@@ -31,6 +31,29 @@ function browser(t: TestContext) {
   };
 }
 
+function tapHost(t: TestContext, offMethods = true) {
+  const original = Object.getOwnPropertyDescriptor(globalThis, "tap");
+  const hide = new Set<() => void>();
+  const show = new Set<() => void>();
+  Object.defineProperty(globalThis, "tap", { configurable: true, value: {
+    onHide: (callback: () => void) => { hide.add(callback); },
+    onShow: (callback: () => void) => { show.add(callback); },
+    ...(offMethods ? {
+      offHide: (callback: () => void) => { hide.delete(callback); },
+      offShow: (callback: () => void) => { show.delete(callback); },
+    } : {}),
+  } });
+  t.after(() => {
+    if (original) Object.defineProperty(globalThis, "tap", original);
+    else Reflect.deleteProperty(globalThis, "tap");
+  });
+  return {
+    hide: () => { for (const callback of hide) callback(); },
+    show: () => { for (const callback of show) callback(); },
+    listeners: () => ({ hide: hide.size, show: show.size }),
+  };
+}
+
 function harness(t: TestContext, options: Partial<GameAlgoWebClientOptions> = {}) {
   const values = new Map<string, string>();
   const requests: Array<{ events: GameEvent[]; keepalive: boolean }> = [];
@@ -247,15 +270,16 @@ test("H5 context readiness immediately sends an ad buffered in the current sessi
   assert.equal(await h.client.waitForReady(), true);
   h.client.tracker.newSession();
   h.client.tracker.trackAd("reward", "rewarded", 0.01, "CNY");
-  assert.equal(h.requests.length, 0, "no request with an empty context");
+  assert.equal(h.requests.length, 1, "rotation immediately sends the old bound session end");
+  assert.equal(h.events()[0].eventType, "session_end");
   await h.client.fetchConfig({ forceRefresh: true });
   await h.client.flush();
-  assert.equal(h.events().length, 1);
-  assert.equal(h.events()[0].contextId, "ctx-2");
-  assert.equal(h.events()[0].sessionId, h.client.tracker.currentSessionId());
+  assert.equal(h.events().length, 2);
+  assert.equal(h.events()[1].contextId, "ctx-2");
+  assert.equal(h.events()[1].sessionId, h.client.tracker.currentSessionId());
 });
 
-test("H5 hidden ends the session once, and visible/pageshow reopen it only once", async (t) => {
+test("H5 foreground restoration preserves the session and duration origin across repeated hides", async (t) => {
   const page = browser(t);
   let now = 10_000;
   const h = harness(t, { now: () => now });
@@ -275,43 +299,163 @@ test("H5 hidden ends the session once, and visible/pageshow reopen it only once"
   await h.client.flush();
   assert.equal(h.events().length, 1);
   page.show();
-  const newSession = h.client.tracker.currentSessionId();
-  assert.notEqual(newSession, oldSession);
+  assert.equal(h.client.tracker.currentSessionId(), oldSession);
   page.pageshow();
   await tick();
-  assert.equal(h.client.tracker.currentSessionId(), newSession);
+  assert.equal(h.client.tracker.currentSessionId(), oldSession);
   assert.equal(h.contexts.length, 2);
+  assert.ok(h.contexts.every(context => context.sessionId === oldSession), "context refresh must not create a session");
   now = 13_500;
   page.hide();
   await h.client.flush();
   assert.equal(h.events().length, 2);
-  assert.equal(h.events()[1].sessionId, newSession);
+  assert.equal(h.events()[1].sessionId, oldSession);
   assert.equal(h.events()[1].contextId, "ctx-2");
-  assert.equal(h.events()[1].payload?.sessionDurationMs, 1000);
+  assert.equal(h.events()[1].payload?.sessionDurationMs, 3500, "duration still starts at SDK initialization");
+  assert.notEqual(h.events()[1].eventId, end.eventId, "a later background generates a distinct end event");
 });
 
-test("H5 fullscreen ads suppress lifecycle boundaries, not revenue uploads", async (t) => {
+test("an explicit session switch after hidden is not rotated again by the stale pageshow state", async (t) => {
   const page = browser(t);
+  let now = 1000;
+  const h = harness(t, { now: () => now });
+  await h.client.waitForReady();
+  now = 3000;
+  page.hide();
+  await h.client.flush();
+  now = 10_000;
+  h.client.tracker.newSession("explicit-new");
+  page.show();
+  page.pageshow();
+  await tick();
+  assert.equal(h.client.tracker.currentSessionId(), "explicit-new");
+  const ends = h.events().filter(event => event.eventType === "session_end");
+  assert.equal(ends.length, 2, "a lifecycle snapshot does not replace the explicit session boundary");
+  assert.equal(ends[0].sessionId, ends[1].sessionId);
+  assert.equal(ends[0].payload?.sessionDurationMs, 2000);
+  assert.equal(ends[1].payload?.reason, "new_session");
+  assert.equal(ends[1].payload?.sessionDurationMs, 9000);
+  assert.equal(h.contexts.at(-1)?.sessionId, "explicit-new", "resume still obtains the explicit session's context");
+  h.client.tracker.trackLevelStart();
+  await h.client.flush();
+  assert.equal(h.events().at(-1)?.contextId, h.contexts.at(-1)?.contextId);
+});
+
+test("H5 fullscreen ad hides upload session snapshots and revenue without rotating the session", async (t) => {
+  const page = browser(t);
+  const tap = tapHost(t);
   const h = harness(t);
   assert.equal(await h.client.waitForReady(), true);
   const session = h.client.tracker.currentSessionId();
   h.client.setAdShowing(true);
+  tap.hide();
+  assert.equal(h.events().length, 1, "Tap hide starts uploading while the document is still visible");
+  assert.equal(h.events()[0].eventType, "session_end");
+  assert.equal(h.events()[0].payload?.reason, "taptap_hide");
   page.hide();
   page.pagehide();
   assert.equal(h.client.tracker.trackAd("reward", "rewarded", 0.01, "CNY"), true);
-  assert.equal(h.events().length, 1);
-  assert.equal(h.events()[0].eventType, "ad_view");
+  assert.equal(h.events().length, 2);
+  assert.equal(h.events()[1].eventType, "ad_view");
   page.hide();
   h.client.setAdShowing(false);
-  assert.equal(h.events().length, 1, "close callback before visibility restoration must not end the session");
+  assert.equal(h.events().length, 2, "the ad-close flag does not create another snapshot");
   page.show();
+  tap.show();
   page.pageshow();
   await h.client.flush();
   assert.equal(h.client.tracker.currentSessionId(), session);
-  assert.equal(h.contexts.length, 1);
+  assert.equal(h.contexts.length, 2);
   page.hide();
   await h.client.flush();
-  assert.equal(h.events().filter((event) => event.eventType === "session_end").length, 1);
+  const ends = h.events().filter(event => event.eventType === "session_end");
+  assert.equal(ends.length, 2);
+  assert.ok(ends.every(event => event.sessionId === session));
+});
+
+test("Tap lock-screen callback jitter while hidden preserves the session and pending end", async (t) => {
+  const page = browser(t);
+  const tap = tapHost(t);
+  let now = 1000;
+  const h = harness(t, { now: () => now });
+  await h.client.waitForReady();
+  const session = h.client.tracker.currentSessionId();
+  now = 2500;
+  tap.hide();
+  page.hide();
+  tap.show(); // Observed on iOS during lock, while document.visibilityState is hidden.
+  tap.hide();
+  await h.client.flush();
+  assert.equal(h.events().length, 1);
+  assert.equal(h.events()[0].payload?.sessionDurationMs, 1500);
+  assert.equal(h.contexts.length, 1, "a hidden onShow must not refresh the context");
+  now = 5000;
+  page.show();
+  tap.show();
+  await tick();
+  assert.equal(h.client.tracker.currentSessionId(), session);
+  assert.equal(h.contexts.length, 2);
+  assert.deepEqual(tap.listeners(), { hide: 1, show: 1 }, "page events must not duplicate host subscriptions");
+  now = 6000;
+  tap.hide();
+  await h.client.flush();
+  assert.equal(h.events().length, 2);
+  assert.equal(h.events()[1].payload?.sessionDurationMs, 5000);
+  assert.equal(h.events()[1].sessionId, session);
+  h.client.close();
+  assert.deepEqual(tap.listeners(), { hide: 0, show: 0 });
+});
+
+test("Tap can be injected after H5 initialization", async (t) => {
+  browser(t);
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const h = harness(t);
+  await h.client.waitForReady();
+  const tap = tapHost(t);
+  t.mock.timers.tick(500);
+  assert.deepEqual(tap.listeners(), { hide: 1, show: 1 });
+  tap.hide();
+  assert.equal(h.events()[0].payload?.reason, "taptap_hide");
+  await h.client.flush();
+});
+
+test("Tap lifecycle opt-outs and retained callbacks after close are respected", async (t) => {
+  browser(t);
+  const tap = tapHost(t, false);
+  const manual = harness(t, { autoSessionLifecycle: false });
+  await manual.client.waitForReady();
+  manual.client.tracker.trackLevelEnd();
+  tap.hide();
+  await manual.client.flush();
+  assert.deepEqual(manual.events().map(event => event.eventType), ["level_end"]);
+  manual.client.close();
+  const detached = harness(t, { autoLifecycle: false });
+  await detached.client.waitForReady();
+  assert.deepEqual(tap.listeners(), { hide: 1, show: 1 }, "opted-out clients do not subscribe to Tap");
+  tap.hide();
+  tap.show();
+  await tick();
+  assert.equal(detached.events().length, 0);
+  assert.equal(manual.events().length, 1, "callbacks retained by the host become inert after close");
+  assert.equal(manual.contexts.length, 1);
+});
+
+test("lifecycle snapshots bypass gameplay quotas and persist even when ordinary enqueue persistence is disabled", async (t) => {
+  browser(t);
+  const tap = tapHost(t);
+  const h = harness(t, { eventPersistOnEnqueue: false });
+  await h.client.waitForReady();
+  h.client.tracker.setEventQuota({ mode: "enforce", ordinaryEventLimit: 0, exemptEventTypes: [] });
+  h.control.onEvents = () => Response.json({ error: "offline" }, { status: 503 });
+  tap.hide();
+  assert.equal(h.events().length, 1);
+  await tick();
+  assert.deepEqual(h.pending(), h.events(), "the offline snapshot is durable with its original ID and time");
+  h.control.onEvents = accepted;
+  await h.client.flush();
+  assert.equal(h.events().length, 2);
+  assert.deepEqual(h.events()[1], h.events()[0]);
+  assert.equal(h.pending().length, 0);
 });
 
 test("H5 pagehide remains a fallback and explicit lifecycle opt-outs/close are respected", async (t) => {
@@ -346,11 +490,12 @@ test("H5 pagehide remains a fallback and explicit lifecycle opt-outs/close are r
 });
 
 test("H5 restart retries a generated but unacknowledged session_end with its original context", async (t) => {
-  const page = browser(t);
+  browser(t);
+  const tap = tapHost(t);
   const first = harness(t);
   assert.equal(await first.client.waitForReady(), true);
   first.control.onEvents = () => Response.json({ error: "offline" }, { status: 503 });
-  page.hide();
+  tap.hide();
   await tick();
   const original = first.events()[0];
   assert.equal(first.pending().length, 1);

@@ -54,10 +54,13 @@ public final class GameAlgoEventTracker implements AutoCloseable {
     private String accountUserId;
     private boolean isDebug;
     private long sessionStartMillis;
+    private boolean sessionHasEnd;
     private final List<GameAlgoEvent> queue = new ArrayList<>();
     private final List<GameAlgoEvent> retryBatch = new ArrayList<>();
+    private final List<GameAlgoEvent> inflightBatch = new ArrayList<>();
     private ScheduledExecutorService scheduler;
     private boolean flushing;
+    private Thread flushingThread;
     private int consecutiveFailures;
     private boolean hasPersistedQueue;
     private final Map<String, CustomCountBucket> customCounts = new LinkedHashMap<>();
@@ -84,6 +87,7 @@ public final class GameAlgoEventTracker implements AutoCloseable {
             GameAlgoCacheStorage storage,
             String persistenceKey) {
         this.client = client;
+        this.sessionStartMillis = System.currentTimeMillis();
         this.maxBatchSize = Math.max(1, Math.min(maxBatchSize, 100));
         this.queueLimit = Math.max(queueLimit, this.maxBatchSize);
         this.flushIntervalMillis = flushIntervalMillis;
@@ -110,8 +114,10 @@ public final class GameAlgoEventTracker implements AutoCloseable {
 
     public synchronized void identify(String userId, String sessionId, String userCreatedAt, String accountUserId) {
         identify(userId);
-        if (!isBlank(sessionId)) {
+        if (!isBlank(sessionId) && !sessionId.equals(this.sessionId)) {
             this.sessionId = sessionId;
+            sessionHasEnd = false;
+            sessionStartMillis = System.currentTimeMillis();
         }
         if (!isBlank(userCreatedAt)) {
             this.userCreatedAt = userCreatedAt;
@@ -122,17 +128,35 @@ public final class GameAlgoEventTracker implements AutoCloseable {
     }
 
     public synchronized void newSession() {
+        newSession(UUID.randomUUID().toString());
+    }
+
+    public synchronized void newSession(String nextSessionId) {
+        nextSessionId = isBlank(nextSessionId) ? UUID.randomUUID().toString() : nextSessionId.trim();
+        if (nextSessionId.equals(sessionId)) return;
         String previousSessionId = sessionId;
-        removeUnboundEvents(retryBatch, previousSessionId);
-        removeUnboundEvents(queue, previousSessionId);
-        sessionId = UUID.randomUUID().toString();
+        Date endedAt = new Date();
+        if (!isBlank(userId) && !sessionHasEnd) {
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("reason", "new_session");
+            payload.put("sessionDurationMs", Math.max(0L, endedAt.getTime() - sessionStartMillis));
+            enqueue(new GameAlgoEvent(isBlank(contextId) ? "" : contextId, userId, previousSessionId, "session_end")
+                    .eventId(UUID.randomUUID().toString()).payload(payload).isDebug(isDebug)
+                    .timestamp(GameAlgoClient.isoTimestamp(endedAt))
+                    .createdLocalAt(GameAlgoClient.localTimestamp(endedAt)).accountUserId(accountUserId));
+        }
+        sessionId = nextSessionId;
+        sessionHasEnd = false;
         ordinaryCounts.remove("pending:" + previousSessionId);
         diagnosticKeys.clear();
         diagnosticCount = 0;
         pendingMilestoneKeys.clear();
         contextId = null;
-        sessionStartMillis = System.currentTimeMillis();
-        if (hasPersistedQueue) persistPendingQueue();
+        eventQuota = null;
+        sessionStartMillis = endedAt.getTime();
+        hasPersistedQueue = true;
+        persistPendingQueue();
+        flushAsync();
     }
 
     public synchronized String currentSessionId() {
@@ -140,14 +164,28 @@ public final class GameAlgoEventTracker implements AutoCloseable {
     }
 
     public synchronized void setContextId(String contextId) {
-        this.contextId = isBlank(contextId) ? null : contextId;
-        if (this.contextId == null) return;
-        mergeCustomCountBucket("pending:" + sessionId, "context:" + this.contextId);
-        mergeOrdinaryCountBucket("pending:" + sessionId, "context:" + this.contextId);
-        bindCurrentSession(retryBatch, this.contextId);
-        bindCurrentSession(queue, this.contextId);
-        rememberBoundMilestones(this.contextId);
+        bindSessionContext(sessionId, contextId);
+    }
+
+    public synchronized void bindSessionContext(String sessionId, String contextId) {
+        if (isBlank(sessionId)) return;
+        String resolved = isBlank(contextId) ? null : contextId.trim();
+        if (this.sessionId.equals(sessionId)) this.contextId = resolved;
+        if (resolved == null) return;
+        mergeCustomCountBucket("pending:" + sessionId, "context:" + resolved);
+        mergeOrdinaryCountBucket("pending:" + sessionId, "context:" + resolved);
+        bindSession(retryBatch, sessionId, resolved);
+        bindSession(queue, sessionId, resolved);
+        rememberBoundMilestones(resolved);
         if (hasPersistedQueue) persistPendingQueue();
+        List<GameAlgoEvent> pending = new ArrayList<>(retryBatch);
+        pending.addAll(queue);
+        for (GameAlgoEvent event : pending) {
+            if (sessionId.equals(event.getSessionId()) && "session_end".equals(event.getEventType())) {
+                flushAsync();
+                break;
+            }
+        }
     }
 
     public synchronized void setDebug(boolean isDebug) {
@@ -440,7 +478,7 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         Map<String, Object> merged = copyPayload(payload);
         synchronized (this) {
             if (sessionStartMillis > 0L) {
-                merged.put("sessionDurationMs", System.currentTimeMillis() - sessionStartMillis);
+                merged.put("sessionDurationMs", Math.max(0L, System.currentTimeMillis() - sessionStartMillis));
             }
         }
         return track("session_end", merged);
@@ -501,10 +539,17 @@ public final class GameAlgoEventTracker implements AutoCloseable {
 
     public void flush() throws GameAlgoException {
         synchronized (this) {
-            if (flushing) {
-                return;
+            while (flushing) {
+                if (flushingThread == Thread.currentThread()) return;
+                try {
+                    wait();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
             }
             flushing = true;
+            flushingThread = Thread.currentThread();
         }
 
         try {
@@ -517,32 +562,33 @@ public final class GameAlgoEventTracker implements AutoCloseable {
                     List<GameAlgoEvent> pending = new ArrayList<>(retryBatch.size() + queue.size());
                     pending.addAll(retryBatch);
                     pending.addAll(queue);
-                    int end = Math.min(maxBatchSize, pending.size());
-                    batch = new ArrayList<>(pending.subList(0, end));
-                    if (hasMissingContextId(batch)) {
-                        retryBatch.clear();
-                        queue.clear();
-                        queue.addAll(pending);
-                        return;
+                    batch = new ArrayList<>();
+                    List<GameAlgoEvent> held = new ArrayList<>();
+                    for (GameAlgoEvent event : pending) {
+                        if (!isBlank(event.getContextId()) && batch.size() < maxBatchSize) batch.add(event);
+                        else held.add(event);
                     }
+                    if (batch.isEmpty()) return;
                     retryBatch.clear();
                     queue.clear();
-                    if (end < pending.size()) {
-                        queue.addAll(pending.subList(end, pending.size()));
-                    }
+                    queue.addAll(held);
+                    inflightBatch.clear();
+                    inflightBatch.addAll(batch);
                 }
 
                 try {
                     client.uploadEvents(batch);
                     synchronized (this) {
+                        inflightBatch.clear();
                         consecutiveFailures = 0;
+                        if (hasPersistedQueue) persistPendingQueue();
                     }
                 } catch (GameAlgoException error) {
                     synchronized (this) {
-                        retryBatch.clear();
-                        retryBatch.addAll(batch);
+                        inflightBatch.clear();
+                        retryBatch.addAll(0, batch);
                         consecutiveFailures += 1;
-                        if (consecutiveFailures >= 3) {
+                        if (hasPersistedQueue || consecutiveFailures >= 3) {
                             hasPersistedQueue = true;
                             persistPendingQueue();
                         }
@@ -553,6 +599,8 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         } finally {
             synchronized (this) {
                 flushing = false;
+                flushingThread = null;
+                notifyAll();
                 if (hasPersistedQueue && retryBatch.isEmpty() && queue.isEmpty()) {
                     clearPersistedQueue();
                 }
@@ -583,6 +631,7 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         boolean shouldFlush;
         synchronized (this) {
             queue.add(event);
+            if ("session_end".equals(event.getEventType()) && sessionId.equals(event.getSessionId())) sessionHasEnd = true;
             if (queue.size() > queueLimit) {
                 queue.subList(0, queue.size() - queueLimit).clear();
             }
@@ -594,26 +643,13 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         }
     }
 
-    private static boolean hasMissingContextId(List<GameAlgoEvent> events) {
-        for (GameAlgoEvent event : events) {
-            if (isBlank(event.getContextId())) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private synchronized void bindCurrentSession(List<GameAlgoEvent> events, String contextId) {
+    private synchronized void bindSession(List<GameAlgoEvent> events, String sessionId, String contextId) {
         for (int index = 0; index < events.size(); index += 1) {
             GameAlgoEvent event = events.get(index);
             if (isBlank(event.getContextId()) && sessionId.equals(event.getSessionId())) {
                 events.set(index, event.withContextId(contextId));
             }
         }
-    }
-
-    private static void removeUnboundEvents(List<GameAlgoEvent> events, String sessionId) {
-        events.removeIf(event -> isBlank(event.getContextId()) && sessionId.equals(event.getSessionId()));
     }
 
     private void restorePersistedQueue() {
@@ -624,7 +660,7 @@ public final class GameAlgoEventTracker implements AutoCloseable {
             for (String line : raw.split("\\r?\\n")) {
                 if (isBlank(line)) continue;
                 GameAlgoEvent event = GameAlgoEvent.fromJson(GameAlgoJson.asObject(GameAlgoJson.parse(line), "event"));
-                if (!isBlank(event.getContextId())) retryBatch.add(event);
+                retryBatch.add(event);
             }
             hasPersistedQueue = !retryBatch.isEmpty();
         } catch (GameAlgoException ignored) {
@@ -666,6 +702,7 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         if (storage == null || isBlank(persistenceKey)) return;
         List<GameAlgoEvent> pending = new ArrayList<>(retryBatch.size() + queue.size());
         pending.addAll(retryBatch);
+        pending.addAll(inflightBatch);
         pending.addAll(queue);
         if (pending.isEmpty()) {
             clearPersistedQueue();

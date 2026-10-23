@@ -9,9 +9,15 @@ import { GameAlgoBrowserStorage, type GameAlgoBrowserStorageOptions } from "./br
 import { GameAlgoWebScriptRuntime } from "./script-runtime.ts";
 import { GameAlgoMatchmakingClient } from "./multiplayer.ts";
 
-export const GAMEALGO_WEB_SDK_VERSION = "1.0.18";
+export const GAMEALGO_WEB_SDK_VERSION = "1.0.19";
 const WEB_KEEPALIVE_BODY_LIMIT_BYTES = 60 * 1024;
 const WEB_EVENT_BATCH_BODY_BUDGET_BYTES = 48 * 1024;
+type TapLifecycle = {
+  onHide?: (callback: () => void) => void;
+  onShow?: (callback: () => void) => void;
+  offHide?: (callback: () => void) => void;
+  offShow?: (callback: () => void) => void;
+};
 const DEFAULT_WEB_ATTRIBUTION_PARAMETERS = [
   "utm_source",
   "utm_medium",
@@ -57,10 +63,15 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
   private readonly onVisibilityChange: () => void;
   private readonly onPageHide: () => void;
   private readonly onPageShow: () => void;
+  private readonly onTapHide: () => void;
+  private readonly onLoad: () => void;
   private readonly onOnline: () => void;
   private readonly autoSessionLifecycle: boolean;
-  private sessionEnded = false;
-  private adShowing = false;
+  private endedSessionId?: string;
+  private tapLifecycle?: TapLifecycle;
+  private tapHideAttached = false;
+  private tapShowAttached = false;
+  private tapDiscoveryTimer?: ReturnType<typeof setInterval>;
   private closed = false;
   readonly matchmaking: GameAlgoMatchmakingClient;
 
@@ -116,6 +127,7 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
     this.documentTarget = typeof document === "undefined" ? undefined : document;
     this.autoSessionLifecycle = options.autoSessionLifecycle !== false;
     this.onVisibilityChange = () => {
+      this.attachTapLifecycle();
       if (this.documentTarget?.visibilityState === "hidden") {
         this.endSessionAndFlush("visibility_hidden");
       } else if (this.documentTarget?.visibilityState === "visible") {
@@ -124,8 +136,11 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
     };
     this.onPageHide = () => this.endSessionAndFlush("pagehide");
     this.onPageShow = () => {
+      this.attachTapLifecycle();
       if (!this.documentTarget || this.documentTarget.visibilityState === "visible") this.resumeSession();
     };
+    this.onTapHide = () => this.endSessionAndFlush("taptap_hide");
+    this.onLoad = () => { this.attachTapLifecycle(); };
     this.onOnline = () => this.flushInBackground();
     if (options.autoLifecycle !== false) this.attachLifecycle();
     if (options.autoUrlAttribution) {
@@ -146,11 +161,9 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
     await this.tracker.flush();
   }
 
-  /** Call true BEFORE showing a native fullscreen ad, then false on close or
-   * show failure. Revenue/ad_view callbacks do not imply that the ad closed. */
-  setAdShowing(showing: boolean): void {
-    if (!this.closed) this.adShowing = showing;
-  }
+  /** @deprecated Hides now report a session-end snapshot during ads as well.
+   * Retained for compatibility with games that already report their ad state. */
+  setAdShowing(_showing: boolean): void {}
 
   /** Capture allow-listed campaign parameters without sending the full URL. */
   async syncUrlAttribution(options: GameAlgoWebUrlAttributionOptions = {}): Promise<UserAttributionResponse> {
@@ -169,6 +182,12 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
     this.lifecycleTarget?.removeEventListener("pagehide", this.onPageHide);
     this.lifecycleTarget?.removeEventListener("pageshow", this.onPageShow);
     this.lifecycleTarget?.removeEventListener("online", this.onOnline);
+    this.lifecycleTarget?.removeEventListener("load", this.onLoad);
+    if (this.tapDiscoveryTimer) clearInterval(this.tapDiscoveryTimer);
+    // Some hosts provide onHide/onShow without the matching off methods.
+    // Closed guards also make retained callbacks inert in those hosts.
+    try { if (this.tapHideAttached) this.tapLifecycle?.offHide?.(this.onTapHide); } catch { /* Host API is optional. */ }
+    try { if (this.tapShowAttached) this.tapLifecycle?.offShow?.(this.onPageShow); } catch { /* Host API is optional. */ }
     this.webScriptRuntime.close();
     this.tracker.close();
   }
@@ -178,25 +197,64 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
     this.lifecycleTarget?.addEventListener("pagehide", this.onPageHide);
     this.lifecycleTarget?.addEventListener("pageshow", this.onPageShow);
     this.lifecycleTarget?.addEventListener("online", this.onOnline);
+    this.lifecycleTarget?.addEventListener("load", this.onLoad);
+    if (!this.attachTapLifecycle() && this.lifecycleTarget) {
+      // Tap can be injected after the game's script. Discovery is bounded and
+      // page/load events also retry attachment after this initial window.
+      let attempts = 0;
+      this.tapDiscoveryTimer = setInterval(() => {
+        if (this.attachTapLifecycle() || ++attempts >= 20) {
+          clearInterval(this.tapDiscoveryTimer);
+          this.tapDiscoveryTimer = undefined;
+        }
+      }, 500);
+      this.tapDiscoveryTimer.unref?.();
+    }
+  }
+
+  private attachTapLifecycle(): boolean {
+    if (this.closed) return false;
+    const tap = this.tapLifecycle ?? (globalThis as { tap?: TapLifecycle }).tap;
+    if (!tap) return false;
+    if (!this.tapHideAttached && typeof tap.onHide === "function") {
+      this.tapLifecycle = tap;
+      this.tapHideAttached = true;
+      try {
+        tap.onHide(this.onTapHide);
+      } catch { this.tapHideAttached = false; /* DOM listeners remain available. */ }
+    }
+    if (!this.tapShowAttached && typeof tap.onShow === "function") {
+      this.tapLifecycle = tap;
+      this.tapShowAttached = true;
+      try {
+        tap.onShow(this.onPageShow);
+      } catch { this.tapShowAttached = false; /* DOM listeners remain available. */ }
+    }
+    return this.tapHideAttached && this.tapShowAttached;
   }
 
   private flushInBackground(): void {
+    if (this.closed) return;
     void this.tracker.flushUrgent().catch(() => undefined);
     void this.tracker.flush().catch(() => undefined);
   }
 
   private endSessionAndFlush(reason: string): void {
-    if (this.autoSessionLifecycle && !this.sessionEnded && !this.adShowing) {
-      this.sessionEnded = this.tracker.trackSessionEnd({ reason });
+    if (this.closed) return;
+    const session = this.tracker.currentSessionId();
+    if (this.autoSessionLifecycle && this.endedSessionId !== session) {
+      if (this.tracker.trackSessionEndSnapshot({ reason })) this.endedSessionId = session;
     }
     this.flushInBackground();
   }
 
   private resumeSession(): void {
-    if (!this.sessionEnded) return;
-    this.sessionEnded = false;
-    this.tracker.newSession();
-    this.tracker.markSessionStarted();
+    if (this.closed) return;
+    const hadEnd = this.endedSessionId !== undefined;
+    this.endedSessionId = undefined;
+    if (!hadEnd) return;
+    // Returning to the page keeps the same session and duration origin.
+    // Only initialization or an explicit newSession call changes ownership.
     void this.refresh({ forceRefresh: true }).catch(() => undefined);
   }
 }

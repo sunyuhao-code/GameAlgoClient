@@ -182,7 +182,7 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(events?[0]["eventType"] as? String, "level_end")
     }
 
-    func testTrackerKeepsBoundEventsAcrossSessionsAndDropsUnboundOldEvents() async throws {
+    func testTrackerKeepsOldSessionOwnershipUntilItsContextArrives() async throws {
         let uploader = QueueEventUploader(failures: 0)
         let tracker = GameAlgoEventTracker(uploader: uploader, flushInterval: 0)
         await tracker.identify(
@@ -205,13 +205,95 @@ final class GameAlgoSDKTests: XCTestCase {
         await tracker.flush()
 
         let uploaded = await uploader.uploadedEvents()
-        XCTAssertEqual(uploaded.count, 2)
+        XCTAssertEqual(uploaded.count, 3)
         XCTAssertEqual(uploaded[0].eventType, "bound_session_2")
         XCTAssertEqual(uploaded[0].contextId, "ctx-2")
         XCTAssertEqual(uploaded[0].sessionId, "session-2")
-        XCTAssertEqual(uploaded[1].eventType, "new_unbound")
-        XCTAssertEqual(uploaded[1].contextId, "ctx-3")
-        XCTAssertEqual(uploaded[1].sessionId, "session-3")
+        XCTAssertEqual(uploaded[1].eventType, "session_end")
+        XCTAssertEqual(uploaded[1].contextId, "ctx-2")
+        XCTAssertEqual(uploaded[1].sessionId, "session-2")
+        XCTAssertEqual(uploaded[2].eventType, "new_unbound")
+        XCTAssertEqual(uploaded[2].contextId, "ctx-3")
+        XCTAssertEqual(uploaded[2].sessionId, "session-3")
+        await tracker.bindSessionContext("session-1", contextId: "ctx-1")
+        await tracker.flush()
+        let all = await uploader.uploadedEvents()
+        XCTAssertEqual(all.count, 5)
+        XCTAssertEqual(all[3].eventType, "old_unbound")
+        XCTAssertEqual(all[4].eventType, "session_end")
+        XCTAssertTrue(all.suffix(2).allSatisfy { $0.contextId == "ctx-1" && $0.sessionId == "session-1" })
+    }
+
+    func testNewSessionAutomaticallyClosesAndFlushesOldSessionAndSameIdIsNoop() async throws {
+        let clock = TestClock(date: Date(timeIntervalSince1970: 1))
+        let uploader = QueueEventUploader(failures: 0)
+        let tracker = GameAlgoEventTracker(uploader: uploader, flushInterval: 0, now: { clock.now() })
+        await tracker.identify(userId: "old-user", sessionId: "old", accountUserId: "old-account", isDebug: true)
+        await tracker.setContextId("old-context")
+        clock.advance(1)
+        await tracker.newSession("old")
+        let before = await uploader.uploadedEvents()
+        XCTAssertTrue(before.isEmpty)
+        clock.advance(2.5)
+        await tracker.newSession("new")
+        let current = await tracker.currentSessionId()
+        XCTAssertEqual(current, "new")
+        await tracker.flush()
+        let uploaded = await uploader.uploadedEvents()
+        XCTAssertEqual(uploaded.count, 1)
+        XCTAssertEqual(uploaded[0].eventType, "session_end")
+        XCTAssertEqual(uploaded[0].sessionId, "old")
+        XCTAssertEqual(uploaded[0].contextId, "old-context")
+        XCTAssertEqual(uploaded[0].userId, "old-user")
+        XCTAssertEqual(uploaded[0].accountUserId, "old-account")
+        XCTAssertEqual(uploaded[0].isDebug, true)
+        XCTAssertEqual(uploaded[0].payload["reason"], .string("new_session"))
+        XCTAssertEqual(uploaded[0].payload["sessionDurationMs"], .number(3500))
+        XCTAssertEqual(uploaded[0].timestamp, "1970-01-01T00:00:04.500Z")
+    }
+
+    func testNewSessionDoesNotExtendAnAlreadyEndedSession() async throws {
+        let clock = TestClock(date: Date(timeIntervalSince1970: 1))
+        let uploader = QueueEventUploader(failures: 0)
+        let tracker = GameAlgoEventTracker(uploader: uploader, flushInterval: 0, now: { clock.now() })
+        await tracker.identify(userId: "u", sessionId: "old")
+        await tracker.setContextId("old-context")
+        clock.advance(2)
+        let accepted = await tracker.trackSessionEnd(payload: .object(["reason": .string("manual")]))
+        XCTAssertTrue(accepted)
+        clock.advance(3600)
+        await tracker.newSession("new")
+        await tracker.flush()
+        let uploaded = await uploader.uploadedEvents()
+        XCTAssertEqual(uploaded.count, 1)
+        XCTAssertEqual(uploaded[0].payload["reason"], .string("manual"))
+        XCTAssertEqual(uploaded[0].payload["sessionDurationMs"], .number(2000))
+    }
+
+    func testNewSessionPersistsTheEndBeforeFirstFailureAndRetriesTheSameEvent() async throws {
+        let storage = MemoryCacheStorage()
+        let uploader = QueueEventUploader(failures: 100)
+        let tracker = GameAlgoEventTracker(uploader: uploader, flushInterval: 0,
+                                          storage: storage, persistenceKey: "rotation-events")
+        await tracker.identify(userId: "u", sessionId: "old")
+        await tracker.setContextId("old-context")
+        await tracker.newSession("new")
+        await tracker.flush()
+        let raw = try XCTUnwrap(storage.value(cacheKey: "rotation-events"))
+        let end = try JSONDecoder().decode(GameAlgoEvent.self, from: Data(raw.utf8))
+        XCTAssertEqual(end.sessionId, "old")
+        XCTAssertEqual(end.contextId, "old-context")
+        let current = await tracker.currentSessionId()
+        XCTAssertEqual(current, "new")
+        let restoredUploader = QueueEventUploader(failures: 0)
+        let restored = GameAlgoEventTracker(uploader: restoredUploader, flushInterval: 0,
+                                           storage: storage, persistenceKey: "rotation-events")
+        await restored.flush()
+        let events = await restoredUploader.uploadedEvents()
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events[0].eventId, end.eventId)
+        XCTAssertEqual(events[0].timestamp, end.timestamp)
+        XCTAssertNil(storage.value(cacheKey: "rotation-events"))
     }
 
     func testFetchConfigSendsProtocolHeadersAndCachesByTTL() async throws {

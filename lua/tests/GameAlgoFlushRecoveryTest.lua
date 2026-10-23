@@ -47,6 +47,9 @@ local function makeSdk(eventHandler, options)
 
     function transport.Request(request, callback)
         if request.url:match("/v1/config$") then
+            if options.configHandler then
+                return options.configHandler(cjson.decode(request.body), callback)
+            end
             callback(nil, {
                 status = 200,
                 body = cjson.encode({
@@ -93,7 +96,9 @@ local function makeSdk(eventHandler, options)
         nowMs = function() return currentTime end,
         logger = function(message) table.insert(logs, message) end,
     })
-    sdk.FetchConfig(function(error) assert(error == nil, tostring(error)) end)
+    if not options.skipConfig then
+        sdk.FetchConfig(function(error) assert(error == nil, tostring(error)) end)
+    end
 
     return {
         sdk = sdk,
@@ -112,6 +117,117 @@ local function success(callback, batchSize)
         body = cjson.encode({ ok = true, accepted = batchSize }),
         headers = {},
     })
+end
+
+-- Explicit session boundaries belong to the SDK, independently of lifecycle
+-- callbacks. A same-ID call is a no-op and a manual end is never extended.
+do
+    local sent = {}
+    local harness = makeSdk(function(_, callback, batch)
+        for _, event in ipairs(batch) do table.insert(sent, event) end
+        success(callback, #batch)
+    end)
+    local previous = harness.sdk.Snapshot()
+    harness.setTime(1000)
+    equal(harness.sdk.NewSession(previous.sessionId), previous.sessionId, "same session remains active")
+    equal(harness.requests(), 0, "same session ID does not flush")
+    harness.setTime(3500)
+    equal(harness.sdk.NewSession("rotation-next"), "rotation-next", "rotation does not await upload")
+    equal(#sent, 1, "rotation immediately flushes its old end")
+    equal(sent[1].eventType, "session_end")
+    equal(sent[1].sessionId, previous.sessionId)
+    equal(sent[1].contextId, previous.contextId)
+    equal(sent[1].payload.reason, "new_session")
+    equal(sent[1].payload.sessionDurationMs, 3500, "same-ID call must not reset the start time")
+    harness.setTime(4500)
+    assert(harness.sdk.TrackSessionEnd({ reason = "manual" }))
+    harness.setTime(100000)
+    harness.sdk.NewSession("rotation-third")
+    equal(#sent, 2, "already-ended session is not ended again")
+    equal(sent[2].payload.reason, "manual")
+    equal(sent[2].payload.sessionDurationMs, 1000, "manual duration excludes the subsequent gap")
+end
+
+do
+    local failed = true
+    local attempted = {}
+    local harness = makeSdk(function(_, callback, batch)
+        for _, event in ipairs(batch) do table.insert(attempted, event) end
+        if failed then callback("offline", nil) else success(callback, #batch) end
+    end)
+    local old = harness.sdk.Snapshot().sessionId
+    harness.sdk.NewSession("offline-next")
+    equal(harness.sdk.Snapshot().sessionId, "offline-next", "network errors do not undo rotation")
+    equal(harness.sdk.Snapshot().queuedEvents, 1, "unacknowledged old end stays queued")
+    local snapshot = cjson.decode(files["gamealgo_sdk_storage_v1.json"])
+    local persisted = nil
+    for _, value in pairs(snapshot.data) do
+        if type(value) == "string" and value:find('"eventType":"session_end"', 1, true) then persisted = cjson.decode(value) end
+    end
+    assert(persisted, "rotation must persist its end before any transport success")
+    equal(persisted.sessionId, old)
+    equal(persisted.eventId, attempted[1].eventId)
+    failed = false
+    harness.sdk.Flush(nil)
+    equal(attempted[#attempted].eventId, persisted.eventId, "retry retains its event ID")
+    equal(harness.sdk.Snapshot().queuedEvents, 0)
+end
+
+-- Config requests queued by overlapping rotations retain their original
+-- session IDs. Late historical configs only bind their own events/callbacks.
+do
+    local configs, events, completions = {}, {}, {}
+    local harness = makeSdk(function(_, callback, batch)
+        for _, event in ipairs(batch) do table.insert(events, event) end
+        success(callback, #batch)
+    end, { skipConfig = true, configHandler = function(body, callback)
+        table.insert(configs, { body = body, callback = callback })
+    end })
+    local first = harness.sdk.Snapshot().sessionId
+    harness.sdk.FetchConfig(function(error, config)
+        assert(error == nil)
+        table.insert(completions, config.configVersion)
+    end)
+    harness.sdk.NewSession("overlap-middle", function(error, config)
+        assert(error == nil)
+        table.insert(completions, config.configVersion)
+    end)
+    harness.sdk.NewSession("overlap-last", function(error, config)
+        assert(error == nil)
+        table.insert(completions, config.configVersion)
+    end)
+    equal(#events, 0, "unbound old ends must not upload under a new context")
+    local sessions = { first, "overlap-middle", "overlap-last" }
+    for index, session in ipairs(sessions) do
+        equal(configs[index].body.sessionId, session, "each queued config keeps original request ownership")
+        configs[index].callback(nil, { status = 200, body = cjson.encode({
+            contextId = "context-" .. session, gameId = "overlap", configVersion = session,
+            experiments = {}, configFiles = {},
+        }) })
+        equal(completions[index], session, "new-session callback waits for its own config")
+        if index < 3 then equal(harness.sdk.Snapshot().contextId, nil, "old config cannot publish into the current session") end
+    end
+    equal(#events, 2)
+    for index, event in ipairs(events) do
+        equal(event.sessionId, sessions[index])
+        equal(event.contextId, "context-" .. sessions[index])
+        equal(event.eventType, "session_end")
+    end
+    equal(harness.sdk.Snapshot().contextId, "context-overlap-last")
+end
+
+do
+    local pending = nil
+    local harness = makeSdk(function(_, callback)
+        pending = callback
+    end, { maxBatchSize = 1, maxQueueSize = 1 })
+    local previous = harness.sdk.Snapshot().sessionId
+    assert(harness.sdk.TrackLevelStart({}))
+    local nextId, error = harness.sdk.NewSession("queue-full-next")
+    equal(nextId, nil, "rotation fails truthfully when its end cannot enter a fully in-flight queue")
+    assert(tostring(error):find("queue is full", 1, true))
+    equal(harness.sdk.Snapshot().sessionId, previous, "failed end admission preserves the old session")
+    success(pending, 1)
 end
 
 -- Milestones derive elapsed time from registration and deduplicate locally
@@ -189,6 +305,180 @@ do
     equal(harness.sdk.Snapshot().queuedEvents, 0, "timer drains the queue")
     Node = nil
     SubscribeToEvent = nil
+end
+
+-- Maker lifecycle callbacks report snapshots, including fullscreen-ad pauses.
+-- They must persist before transport and leave the session open for rotation.
+do
+    local receivers = {}
+    local subscriptions = 0
+    Node = function()
+        local handlers = {}
+        table.insert(receivers, handlers)
+        return {
+            CreateScriptObject = function()
+                return {
+                    SubscribeToEvent = function(_, eventName, callback)
+                        subscriptions = subscriptions + 1
+                        handlers[eventName] = callback
+                    end,
+                }
+            end,
+        }
+    end
+
+    local function persistedEvents(sessionId)
+        local snapshot = cjson.decode(assert(files["gamealgo_sdk_storage_v1.json"]))
+        local result = {}
+        for key, value in pairs(snapshot.data) do
+            if key:match(":events:jsonl$") and type(value) == "string" then
+                for line in value:gmatch("[^\r\n]+") do
+                    local event = cjson.decode(line)
+                    if event.sessionId == sessionId then table.insert(result, event) end
+                end
+            end
+        end
+        return result
+    end
+
+    local sent = {}
+    local function acceptPersisted(_, callback, batch)
+        for _, event in ipairs(batch) do
+            local found = false
+            for _, saved in ipairs(persistedEvents(event.sessionId)) do
+                if saved.eventId == event.eventId then found = true end
+            end
+            assert(found, "lifecycle event must be persisted before starting HTTP")
+            table.insert(sent, event)
+        end
+        success(callback, #batch)
+    end
+    local harness = makeSdk(acceptPersisted)
+    local handlers = receivers[#receivers]
+    local previous = harness.sdk.Snapshot()
+    harness.setTime(3000)
+    handlers.AppWillEnterBackground()
+    equal(harness.requests(), 1, "background flushes without waiting for Update or five-second timer")
+    equal(sent[1].eventType, "session_end")
+    equal(sent[1].payload.reason, "app_background")
+    equal(sent[1].payload.lifecycleEvent, "AppWillEnterBackground")
+    equal(sent[1].payload.sessionDurationMs, 3000)
+    equal(sent[1].sessionId, previous.sessionId)
+    equal(sent[1].contextId, previous.contextId)
+    equal(harness.sdk.Snapshot().sessionId, previous.sessionId, "background does not rotate session")
+    harness.setTime(8000)
+    handlers.AppWillEnterBackground()
+    equal(#sent, 2, "another background can report the same session again")
+    equal(sent[2].payload.sessionDurationMs, 8000, "repeated snapshot retains original session start")
+    assert(sent[1].eventId ~= sent[2].eventId, "separate backgrounds are distinct events")
+    harness.setTime(12000)
+    harness.sdk.NewSession("after-lifecycle-snapshots")
+    equal(#sent, 3, "an ad/background snapshot must not suppress explicit rotation's end")
+    equal(sent[3].sessionId, previous.sessionId)
+    equal(sent[3].payload.reason, "new_session")
+    equal(sent[3].payload.sessionDurationMs, 12000)
+    harness.setTime(14000)
+    handlers.ExitRequested()
+    harness.setTime(15000)
+    handlers.AppTerminating()
+    equal(sent[4].payload.reason, "exit_requested")
+    equal(sent[5].payload.reason, "app_terminating")
+    equal(sent[5].sessionId, "after-lifecycle-snapshots")
+    equal(sent[5].payload.sessionDurationMs, 3000)
+
+    local oldSubscriptions = subscriptions
+    local reinitTime = 20000
+    harness.sdk.Init({
+        gameKey = "ga_live_lifecycle_reinit", sessionId = "lifecycle-reinit",
+        nowMs = function() return reinitTime end, preloadConfigFiles = false,
+        logger = function() end,
+        transport = { Request = function(request, callback)
+            if request.url:match("/v1/config$") then
+                callback(nil, { status = 200, body = cjson.encode({ contextId = "ctx-reinit",
+                    experiments = {}, configFiles = {} }), headers = {} })
+            else acceptPersisted(request, callback, cjson.decode(request.body).events) end
+        end },
+    })
+    equal(subscriptions, oldSubscriptions, "reinitialization reuses the independent event receiver")
+    reinitTime = 22000
+    handlers.AppWillEnterBackground()
+    equal(#sent, 6, "reinitialization must not duplicate lifecycle listeners")
+    equal(sent[6].sessionId, "lifecycle-reinit", "existing handler uses current SDK state")
+    equal(sent[6].payload.sessionDurationMs, 2000)
+
+    local quotaSent = {}
+    local quota = makeSdk(function(_, callback, batch)
+        for _, event in ipairs(batch) do table.insert(quotaSent, event) end
+        success(callback, #batch)
+    end, { configHandler = function(_, callback)
+        callback(nil, { status = 200, body = cjson.encode({ contextId = "ctx-lifecycle-quota",
+            experiments = {}, configFiles = {}, eventQuota = {
+                mode = "enforce", ordinaryEventLimit = 0, policyVersion = 1,
+            } }), headers = {} })
+    end })
+    receivers[#receivers].AppWillEnterBackground()
+    equal(#quotaSent, 1, "lifecycle end bypasses exhausted ordinary-event quota")
+    equal(quotaSent[1].eventType, "session_end")
+
+    local firstCallback, attemptedEnd = nil, nil
+    local busy = makeSdk(function(_, callback, batch, requestCount)
+        if requestCount == 1 then firstCallback = callback
+        elseif requestCount == 2 then
+            attemptedEnd = batch[1]
+            callback("offline", nil)
+        else
+            equal(batch[1].eventId, attemptedEnd.eventId, "retry preserves background event identity")
+            success(callback, #batch)
+        end
+    end)
+    local busySession = busy.sdk.Snapshot().sessionId
+    assert(busy.sdk.TrackEvent("busy", {}))
+    busy.sdk.Flush(nil)
+    busy.setTime(1700)
+    receivers[#receivers].AppWillEnterBackground()
+    equal(busy.requests(), 1, "background coalesces with active HTTP request")
+    local saved = persistedEvents(busySession)
+    equal(#saved, 2, "active batch and new background end are both durable")
+    equal(saved[2].eventType, "session_end")
+    equal(saved[2].payload.sessionDurationMs, 1700)
+    success(firstCallback, 1)
+    equal(busy.requests(), 2, "background end flushes when the earlier request completes")
+    equal(busy.sdk.Snapshot().queuedEvents, 1, "failed background upload remains queued")
+    equal(persistedEvents(busySession)[1].eventId, attemptedEnd.eventId)
+    busy.sdk.Flush(nil)
+    equal(busy.sdk.Snapshot().queuedEvents, 0)
+
+    local cloudRead = nil
+    clientCloud = {
+        Get = function(_, _, callbacks) cloudRead = callbacks end,
+        Set = function(_, _, _, callbacks) callbacks.ok() end,
+    }
+    local delayedSent = {}
+    local delayed = makeSdk(function(_, callback, batch)
+        for _, event in ipairs(batch) do table.insert(delayedSent, event) end
+        success(callback, #batch)
+    end, { skipConfig = true })
+    assert(cloudRead, "first storage read must still be pending")
+    local delayedSession = delayed.sdk.Snapshot().sessionId
+    delayed.setTime(2500)
+    receivers[#receivers].AppWillEnterBackground()
+    equal(delayed.sdk.Snapshot().pendingEvents, 1, "early background waits for storage identity")
+    delayed.setTime(9000)
+    cloudRead.ok({})
+    equal(delayed.sdk.Snapshot().pendingEvents, 0)
+    local delayedSaved = persistedEvents(delayedSession)
+    equal(#delayedSaved, 1, "storage readiness persists pending end even without a config context")
+    equal(delayedSaved[1].payload.sessionDurationMs, 2500, "initialization delay cannot inflate duration")
+    delayed.sdk.FetchConfig(function(error) assert(error == nil, tostring(error)) end)
+    equal(#delayedSent, 1, "config binding triggers the pending background flush")
+    equal(delayedSent[1].eventId, delayedSaved[1].eventId)
+    delayed.setTime(11000)
+    delayed.sdk.NewSession("delayed-lifecycle-next")
+    equal(#delayedSent, 2, "pending background snapshot must also preserve rotation's final end")
+    equal(delayedSent[2].payload.reason, "new_session")
+    equal(delayedSent[2].payload.sessionDurationMs, 11000)
+    clientCloud = nil
+    Node = nil
 end
 
 -- A missing callback times out, rolls back the inflight batch, ignores the late

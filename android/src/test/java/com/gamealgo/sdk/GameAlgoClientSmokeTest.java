@@ -9,6 +9,7 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 public final class GameAlgoClientSmokeTest {
     public static void main(String[] args) throws Exception {
@@ -30,7 +31,8 @@ public final class GameAlgoClientSmokeTest {
         testSetAttributionNormalizesAdjustNoConsentAsUnknown();
         testContextIdentifierSettersAppendIndependentMappingRecords();
         testTrackerBuffersEventsUntilContextIsReady();
-        testTrackerKeepsBoundEventsAcrossSessionsAndDropsUnboundOldEvents();
+        testTrackerKeepsOldSessionOwnershipUntilContextArrives();
+        testNewSessionClosesFlushesAndPersistsTheOldSession();
         testTrackerPersistsAfterThreeFailuresAndRestoresAfterRestart();
         testMilestoneAddsRegistrationElapsedTimeAndDeduplicatesPerDataVersion();
         testTrackerQueuesAndFlushesEvents();
@@ -613,9 +615,8 @@ public final class GameAlgoClientSmokeTest {
         client.tracker().close();
     }
 
-    private static void testTrackerKeepsBoundEventsAcrossSessionsAndDropsUnboundOldEvents() throws Exception {
-        FakeHttpClient httpClient = new FakeHttpClient();
-        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":2}"));
+    private static void testTrackerKeepsOldSessionOwnershipUntilContextArrives() throws Exception {
+        SessionEventHttpClient httpClient = new SessionEventHttpClient();
         GameAlgoClient client = new GameAlgoClient(
                 "ga_live_test_key_0123456789abcdef",
                 "https://gamealgo.test",
@@ -645,18 +646,68 @@ public final class GameAlgoClientSmokeTest {
         tracker.setContextId("ctx-3");
         tracker.flush();
 
-        Map<String, Object> body = requestBody(httpClient.requests.get(0));
-        List<Object> events = GameAlgoJson.asArray(body.get("events"), "events");
-        check(events.size() == 2, "flush should contain the bound old event and current session event only");
+        List<Object> events = httpClient.uploaded;
+        check(events.size() == 3, "bound old gameplay, its automatic end and current gameplay should upload");
         Map<String, Object> first = GameAlgoJson.asObject(events.get(0), "events[0]");
         Map<String, Object> second = GameAlgoJson.asObject(events.get(1), "events[1]");
         check("bound_session_2".equals(first.get("eventType")), "unbound event from session 1 should be dropped");
         check("ctx-2".equals(first.get("contextId")) && session2.equals(first.get("sessionId")),
                 "bound event should preserve its original context and session");
-        check("new_unbound".equals(second.get("eventType")), "current session event should remain queued");
-        check("ctx-3".equals(second.get("contextId")) && session3.equals(second.get("sessionId")),
+        check("session_end".equals(second.get("eventType")), "session 2 should be automatically ended");
+        check("ctx-2".equals(second.get("contextId")) && session2.equals(second.get("sessionId")),
+                "automatic end should keep its old ownership");
+        Map<String, Object> third = GameAlgoJson.asObject(events.get(2), "events[2]");
+        check("new_unbound".equals(third.get("eventType")), "current session event should remain queued");
+        check("ctx-3".equals(third.get("contextId")) && session3.equals(third.get("sessionId")),
                 "current session event should bind only to the current context");
+        tracker.bindSessionContext("session-1", "ctx-1");
+        tracker.flush();
+        check(events.size() == 5, "unbound old gameplay and its end should remain available for original-context recovery");
+        for (Object value : events.subList(3, 5)) {
+            Map<String, Object> event = GameAlgoJson.asObject(value, "old event");
+            check("session-1".equals(event.get("sessionId")) && "ctx-1".equals(event.get("contextId")),
+                    "late context must bind only its original session");
+        }
         tracker.close();
+    }
+
+    private static void testNewSessionClosesFlushesAndPersistsTheOldSession() throws Exception {
+        SessionEventHttpClient http = new SessionEventHttpClient();
+        http.offline = true;
+        GameAlgoClient client = new GameAlgoClient(
+                "ga_live_test_key_0123456789abcdef", "https://gamealgo.test", "1.2.3", "4.5.6", "android",
+                http, new FakeScriptRuntime(), null, null, GameAlgoLogger.console(), false);
+        MemoryCacheStorage storage = new MemoryCacheStorage();
+        GameAlgoEventTracker tracker = new GameAlgoEventTracker(client, 100, 1000, 0, storage, "rotation-events");
+        tracker.identify("old-user", "old", null, "old-account");
+        tracker.setDebug(true);
+        tracker.setContextId("old-context");
+        tracker.newSession("old");
+        check(http.attempted.isEmpty(), "same session ID must not create an end or flush");
+        tracker.newSession("new");
+        check("new".equals(tracker.currentSessionId()), "network failure must not prevent the local switch");
+        try { tracker.flush(); } catch (GameAlgoException expected) { /* offline */ }
+        String persisted = storage.getItem("rotation-events");
+        Map<String, Object> end = GameAlgoJson.asObject(GameAlgoJson.parse(persisted), "session_end");
+        check("session_end".equals(end.get("eventType")), "rotation should persist its end before the third failure");
+        check("old".equals(end.get("sessionId")) && "old-context".equals(end.get("contextId")), "old ownership retained");
+        check("old-user".equals(end.get("userId")) && "old-account".equals(end.get("accountUserId")), "old identities retained");
+        Map<String, Object> payload = GameAlgoJson.asObject(end.get("payload"), "payload");
+        check("new_session".equals(payload.get("reason")), "automatic end reason is explicit");
+        check(((Number) payload.get("sessionDurationMs")).longValue() >= 0, "duration must be nonnegative");
+        http.offline = false;
+        tracker.flush();
+        check(http.uploaded.size() == 1, "recovery should upload one old end");
+        check(end.get("eventId").equals(GameAlgoJson.asObject(http.uploaded.get(0), "end").get("eventId")), "retry retains event ID");
+        tracker.setContextId("new-context");
+        tracker.trackSessionEnd();
+        tracker.flush();
+        tracker.newSession("third");
+        tracker.flush();
+        check(http.uploaded.size() == 2, "already-ended old session must not gain another end on rotation");
+        check(storage.getItem("rotation-events") == null, "ACKed ends must be removed from storage");
+        tracker.close();
+        client.tracker().close();
     }
 
     private static void testTrackerPersistsAfterThreeFailuresAndRestoresAfterRestart() throws Exception {
@@ -1119,6 +1170,24 @@ public final class GameAlgoClientSmokeTest {
         }
     }
 
+    private static final class SessionEventHttpClient implements GameAlgoHttpClient {
+        final List<Object> attempted = new CopyOnWriteArrayList<>();
+        final List<Object> uploaded = new CopyOnWriteArrayList<>();
+        volatile boolean offline;
+
+        public GameAlgoHttpResponse send(GameAlgoHttpRequest request) throws java.io.IOException {
+            try {
+                List<Object> events = GameAlgoJson.asArray(requestBody(request).get("events"), "events");
+                attempted.addAll(events);
+                if (offline) throw new java.io.IOException("offline");
+                uploaded.addAll(events);
+                return jsonResponse("{\"ok\":true,\"accepted\":" + events.size() + "}");
+            } catch (GameAlgoException error) {
+                throw new java.io.IOException(error);
+            }
+        }
+    }
+
     private static final class FakeHttpClient implements GameAlgoHttpClient {
         private final List<GameAlgoHttpResponse> responses = new ArrayList<>();
         private final List<Exception> errors = new ArrayList<>();
@@ -1163,17 +1232,17 @@ public final class GameAlgoClientSmokeTest {
         private final Map<String, String> values = new LinkedHashMap<>();
 
         @Override
-        public String getItem(String key) {
+        public synchronized String getItem(String key) {
             return values.get(key);
         }
 
         @Override
-        public void setItem(String key, String value) {
+        public synchronized void setItem(String key, String value) {
             values.put(key, value);
         }
 
         @Override
-        public void removeItem(String key) {
+        public synchronized void removeItem(String key) {
             values.remove(key);
         }
     }

@@ -953,7 +953,7 @@ test("tracker limits custom event cardinality and total volume per context", asy
   totalClient.tracker.close();
 });
 
-test("new session drops only unbound events from the previous session", async () => {
+test("new session preserves unbound old events without rebinding them to the new context", async () => {
   let uploadedEvents: Array<Record<string, unknown>> = [];
   const client = createClient({
     baseUrl: "https://gamealgo.test",
@@ -963,7 +963,7 @@ test("new session drops only unbound events from the previous session", async ()
     fetchImpl: async (input, init) => {
       const request = new Request(input, init);
       const body = await request.json() as { events: Array<Record<string, unknown>> };
-      uploadedEvents = body.events;
+      uploadedEvents.push(...body.events);
       return jsonResponse({ ok: true, accepted: body.events.length });
     },
   });
@@ -981,6 +981,10 @@ test("new session drops only unbound events from the previous session", async ()
 
   assert.deepEqual(uploadedEvents.map((event) => event.eventType), ["_unbound", "_bound", "_new_session"]);
   assert.deepEqual(uploadedEvents.map((event) => event.contextId), ["ctx-1", "ctx-1", "ctx-2"]);
+  client.tracker.bindSessionContext("s1", "ctx-1");
+  await client.tracker.flush();
+  assert.deepEqual(uploadedEvents.slice(3).map(event => event.eventType), ["_drop_me", "session_end"]);
+  assert.ok(uploadedEvents.slice(3).every(event => event.sessionId === "s1" && event.contextId === "ctx-1"));
   client.tracker.close();
 });
 

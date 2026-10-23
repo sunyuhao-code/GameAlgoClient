@@ -59,9 +59,12 @@ public actor GameAlgoEventTracker {
     private var isDebug: Bool
     private var queue: [GameAlgoEvent] = []
     private var retryBatch: [GameAlgoEvent] = []
+    private var inflightBatch: [GameAlgoEvent] = []
     private var flushTask: Task<Void, Never>?
     private var isFlushing = false
+    private var flushWaiters: [CheckedContinuation<Void, Never>] = []
     private var sessionStartDate: Date?
+    private var sessionHasEnd = false
     private var currentAssignments: [GameAlgoExperimentAssignment] = []
     private var consecutiveFailures = 0
     private var hasPersistedQueue = false
@@ -94,6 +97,7 @@ public actor GameAlgoEventTracker {
         self.flushInterval = flushInterval
         self.isDebug = isDebug
         self.now = now
+        self.sessionStartDate = now()
         self.logger = logger
         self.storage = storage
         self.persistenceKey = persistenceKey
@@ -153,8 +157,10 @@ public actor GameAlgoEventTracker {
         isDebug: Bool? = nil
     ) {
         self.userId = userId
-        if let sessionId {
+        if let sessionId, sessionId != self.sessionId {
             self.sessionId = sessionId
+            sessionHasEnd = false
+            sessionStartDate = now()
         }
         if let platform {
             self.platform = platform
@@ -180,17 +186,32 @@ public actor GameAlgoEventTracker {
     }
 
     public func newSession(_ sessionId: String = UUID().uuidString) {
+        let nextSession = clean(sessionId) ?? UUID().uuidString
+        guard nextSession != self.sessionId else { return }
         let previousSessionId = self.sessionId
-        retryBatch.removeAll { clean($0.contextId) == nil && $0.sessionId == previousSessionId }
-        queue.removeAll { clean($0.contextId) == nil && $0.sessionId == previousSessionId }
-        self.sessionId = sessionId
+        let endedAt = now()
+        if let userId = clean(userId), !sessionHasEnd {
+            enqueue(GameAlgoEvent(
+                eventId: UUID().uuidString, contextId: contextId ?? "", userId: userId,
+                sessionId: previousSessionId, eventType: "session_end", isDebug: isDebug,
+                timestamp: GameAlgoEventBatchUploader.isoTimestamp(endedAt),
+                createdLocalAt: GameAlgoEventBatchUploader.localTimestamp(endedAt), accountUserId: accountUserId,
+                payload: ["reason": .string("new_session"), "sessionDurationMs": .number(
+                    max(0, endedAt.timeIntervalSince(sessionStartDate ?? endedAt) * 1000).rounded(.down))]
+            ))
+        }
+        self.sessionId = nextSession
+        sessionHasEnd = false
         ordinaryCounts.removeValue(forKey: "pending:\(previousSessionId)")
         diagnosticKeys.removeAll()
         diagnosticCount = 0
         pendingMilestoneKeys.removeAll()
         contextId = nil
-        sessionStartDate = now()
-        if hasPersistedQueue { persistPendingQueue() }
+        eventQuota = nil
+        sessionStartDate = endedAt
+        hasPersistedQueue = true
+        persistPendingQueue()
+        Task { await self.flush() }
     }
 
     public func currentSessionId() -> String {
@@ -198,15 +219,28 @@ public actor GameAlgoEventTracker {
     }
 
     public func setContextId(_ contextId: String) {
+        bindSessionContext(sessionId, contextId: contextId)
+    }
+
+    public func bindSessionContext(_ sessionId: String, contextId: String) {
         let resolved = clean(contextId)
-        self.contextId = resolved
+        if sessionId == self.sessionId { self.contextId = resolved }
         guard let resolved else { return }
         mergeCustomCountBucket(from: "pending:\(sessionId)", to: "context:\(resolved)")
         mergeOrdinaryCountBucket(from: "pending:\(sessionId)", to: "context:\(resolved)")
-        retryBatch = retryBatch.map { bindContext($0, contextId: resolved) }
-        queue = queue.map { bindContext($0, contextId: resolved) }
+        let bind: (GameAlgoEvent) -> GameAlgoEvent = { event in
+            guard self.clean(event.contextId) == nil, event.sessionId == sessionId else { return event }
+            var updated = event
+            updated.contextId = resolved
+            return updated
+        }
+        retryBatch = retryBatch.map(bind)
+        queue = queue.map(bind)
         rememberBoundMilestones(contextId: resolved)
         if hasPersistedQueue { persistPendingQueue() }
+        if (retryBatch + queue).contains(where: { $0.sessionId == sessionId && $0.eventType == "session_end" }) {
+            Task { await self.flush() }
+        }
     }
 
     public func setDebug(_ isDebug: Bool) {
@@ -240,8 +274,8 @@ public actor GameAlgoEventTracker {
         guard let resolvedUserId = clean(userId ?? self.userId) else {
             return false
         }
-        let resolvedContextId = clean(contextId ?? self.contextId) ?? ""
         let resolvedSessionId = clean(sessionId) ?? self.sessionId
+        let resolvedContextId = clean(contextId ?? (resolvedSessionId == self.sessionId ? self.contextId : nil)) ?? ""
 
         let eventDate = now()
         var normalizedPayload = normalizePayload(payload)
@@ -507,7 +541,7 @@ public actor GameAlgoEventTracker {
     public func trackSessionEnd(payload: JSONValue = .object([:])) async -> Bool {
         var merged = payload.objectValue ?? [:]
         if let sessionStartDate {
-            let durationMs = Int(now().timeIntervalSince(sessionStartDate) * 1000)
+            let durationMs = max(0, Int(now().timeIntervalSince(sessionStartDate) * 1000))
             merged["sessionDurationMs"] = .number(Double(durationMs))
         }
         let didTrack = track("session_end", payload: .object(merged))
@@ -581,41 +615,38 @@ public actor GameAlgoEventTracker {
 
     public func flush() async {
         guard !isFlushing else {
+            await withCheckedContinuation { flushWaiters.append($0) }
             return
         }
         isFlushing = true
-        defer { isFlushing = false }
+        defer {
+            isFlushing = false
+            let waiters = flushWaiters
+            flushWaiters = []
+            for waiter in waiters { waiter.resume() }
+        }
 
         while !retryBatch.isEmpty || !queue.isEmpty {
             let pending = retryBatch + queue
-            let batch = Array(pending.prefix(maxBatchSize))
-            let resolvedContextId = clean(contextId)
-            if batch.contains(where: { clean($0.contextId) == nil }) && resolvedContextId == nil {
-                retryBatch = []
-                queue = pending
-                return
-            }
-            let uploadBatch = batch.map { event in
-                if clean(event.contextId) != nil {
-                    return event
-                }
-                var updated = event
-                updated.contextId = resolvedContextId!
-                return updated
-            }
-            queue = Array(pending.dropFirst(maxBatchSize))
+            let uploadBatch = Array(pending.filter { clean($0.contextId) != nil }.prefix(maxBatchSize))
+            guard !uploadBatch.isEmpty else { return }
+            let ids = Set(uploadBatch.compactMap(\.eventId))
+            queue = pending.filter { !ids.contains($0.eventId ?? "") }
             retryBatch = []
+            inflightBatch = uploadBatch
 
             log("flushing \(uploadBatch.count) events")
             do {
                 _ = try await uploader.uploadEvents(uploadBatch)
+                inflightBatch = []
                 consecutiveFailures = 0
                 if hasPersistedQueue { persistPendingQueue() }
                 log("flush success: \(uploadBatch.count) events")
             } catch {
-                retryBatch = uploadBatch
+                inflightBatch = []
+                retryBatch = uploadBatch + retryBatch
                 consecutiveFailures += 1
-                if consecutiveFailures >= 3 {
+                if hasPersistedQueue || consecutiveFailures >= 3 {
                     hasPersistedQueue = true
                     persistPendingQueue()
                 }
@@ -628,6 +659,7 @@ public actor GameAlgoEventTracker {
 
     private func enqueue(_ event: GameAlgoEvent) {
         queue.append(event)
+        if event.eventType == "session_end", event.sessionId == sessionId { sessionHasEnd = true }
         log("enqueued \(event.eventType), queue size: \(queue.count)")
         if queue.count > queueLimit {
             queue.removeFirst(queue.count - queueLimit)
@@ -639,16 +671,9 @@ public actor GameAlgoEventTracker {
         }
     }
 
-    private func bindContext(_ event: GameAlgoEvent, contextId: String) -> GameAlgoEvent {
-        guard clean(event.contextId) == nil, event.sessionId == sessionId else { return event }
-        var updated = event
-        updated.contextId = contextId
-        return updated
-    }
-
     private func persistPendingQueue() {
         guard let storage, let persistenceKey else { return }
-        let pending = retryBatch + queue
+        let pending = retryBatch + inflightBatch + queue
         guard !pending.isEmpty else {
             clearPersistedQueue()
             return

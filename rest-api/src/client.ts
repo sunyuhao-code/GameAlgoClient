@@ -301,13 +301,14 @@ export class GameAlgoRestClient {
           isDebug,
         }),
       });
+      this.tracker.bindSessionContext(sessionId, config.contextId);
+      if (sessionId !== this.tracker.currentSessionId()) return config;
       this.cachedConfig = {
         value: config,
         cacheKey,
         expiresAt: this.now() + Math.max(Number(config.ttlSeconds) || 0, 0) * 1000,
       };
       this.tracker.setEventQuota(config.eventQuota);
-      this.tracker.setContextId(config.contextId);
       this.tracker.setAssignments(config.experiments);
       this.snapshot = {
         ...this.snapshot,
@@ -718,8 +719,9 @@ export class GameAlgoEventTracker {
   private readonly urgentFlushes = new Map<string, Promise<EventBatchResponse[]>>();
   private restored = false;
   private flushTimer?: ReturnType<typeof setInterval>;
-  private flushing = false;
+  private activeFlush?: Promise<EventBatchResponse[]>;
   private sessionStartMs?: number;
+  private sessionHasEnd = false;
   private consecutiveFailures = 0;
   private hasPersistedQueue = false;
   private readonly customCounts = new Map<string, { total: number; byType: Map<string, number> }>();
@@ -764,6 +766,7 @@ export class GameAlgoEventTracker {
     this.queueLimit = Math.max(options.queueLimit, this.maxBatchSize);
     this.persistOnEnqueue = options.persistOnEnqueue ?? false;
     this.now = options.now;
+    this.sessionStartMs = this.now();
     this.storage = options.storage;
     this.persistenceKey = clean(options.persistenceKey);
     this.milestonePersistenceKey = this.persistenceKey ? `${this.persistenceKey}:milestones` : undefined;
@@ -776,23 +779,45 @@ export class GameAlgoEventTracker {
 
   identify(userId: string, sessionId?: string, userCreatedAt?: string, accountUserId?: string): void {
     if (clean(userId)) this.userId = userId;
-    if (clean(sessionId)) this.sessionId = sessionId!;
+    if (clean(sessionId) && sessionId !== this.sessionId) {
+      this.sessionId = sessionId!;
+      this.sessionHasEnd = false;
+      this.sessionStartMs = this.now();
+    }
     if (clean(userCreatedAt)) this.userCreatedAt = userCreatedAt;
     if (clean(accountUserId)) this.accountUserId = accountUserId;
   }
 
   newSession(sessionId = randomId()): void {
+    sessionId = clean(sessionId) ?? randomId();
+    if (sessionId === this.sessionId) return;
     const previousSessionId = this.sessionId;
-    this.retryBatch = this.retryBatch.filter((event) => clean(event.contextId) || event.sessionId !== previousSessionId);
-    this.queue = this.queue.filter((event) => clean(event.contextId) || event.sessionId !== previousSessionId);
+    const endedAt = this.now();
+    const userId = clean(this.userId);
+    if (userId && !this.sessionHasEnd) {
+      // SDK-owned boundaries bypass gameplay quotas, just like Godot's native
+      // session marker. The envelope is captured before switching ownership.
+      this.enqueue({
+        eventId: randomId(), contextId: this.contextId ?? "", userId,
+        sessionId: previousSessionId, eventType: "session_end", isDebug: this.isDebug,
+        timestamp: new Date(endedAt).toISOString(), createdLocalAt: localTimestamp(endedAt),
+        accountUserId: this.accountUserId,
+        payload: { reason: "new_session", sessionDurationMs: Math.max(0, endedAt - (this.sessionStartMs ?? endedAt)) },
+      });
+    }
     this.sessionId = sessionId;
+    this.sessionHasEnd = false;
     this.ordinaryCounts.delete(`pending:${previousSessionId}`);
     this.diagnosticKeys.clear();
     this.diagnosticCount = 0;
     this.pendingMilestoneKeys.clear();
     this.contextId = undefined;
-    this.sessionStartMs = this.now();
-    if (this.hasPersistedQueue) void this.persistPendingQueue().catch(() => undefined);
+    this.eventQuota = undefined;
+    this.sessionStartMs = endedAt;
+    this.hasPersistedQueue = true;
+    void this.persistPendingQueue().catch(() => undefined);
+    if (this.platform === "web") void this.flushUrgent().catch(() => undefined);
+    void this.flush().catch(() => undefined);
   }
 
   currentSessionId(): string {
@@ -804,13 +829,17 @@ export class GameAlgoEventTracker {
   }
 
   setContextId(contextId: string): void {
+    this.bindSessionContext(this.sessionId, contextId);
+  }
+
+  bindSessionContext(sessionId: string, contextId: string): void {
     const resolved = clean(contextId);
-    this.contextId = resolved;
+    if (sessionId === this.sessionId) this.contextId = resolved;
     if (!resolved) return;
-    this.mergeCustomCountBucket(`pending:${this.sessionId}`, `context:${resolved}`);
-    this.mergeOrdinaryCountBucket(`pending:${this.sessionId}`, `context:${resolved}`);
+    this.mergeCustomCountBucket(`pending:${sessionId}`, `context:${resolved}`);
+    this.mergeOrdinaryCountBucket(`pending:${sessionId}`, `context:${resolved}`);
     const bind = (event: GameEvent) => (
-      !clean(event.contextId) && event.sessionId === this.sessionId
+      !clean(event.contextId) && event.sessionId === sessionId
         ? { ...event, contextId: resolved }
         : event
     );
@@ -819,6 +848,9 @@ export class GameAlgoEventTracker {
     this.rememberBoundMilestones(resolved);
     if (this.hasPersistedQueue) void this.persistPendingQueue().catch(() => undefined);
     if (this.platform === "web") void this.flushUrgent().catch(() => undefined);
+    if ([...this.retryBatch, ...this.queue].some((event) => event.sessionId === sessionId && event.eventType === "session_end")) {
+      void this.flush().catch(() => undefined);
+    }
   }
 
   setDebug(isDebug: boolean): void {
@@ -856,8 +888,8 @@ export class GameAlgoEventTracker {
   track(eventType: string, payload: JsonValue = {}, options: TrackEventOptions = {}): boolean {
     const userId = clean(options.userId ?? this.userId);
     if (!userId) return false;
-    const contextId = clean(options.contextId ?? this.contextId);
     const resolvedSessionId = clean(options.sessionId) ?? this.sessionId;
+    const contextId = clean(options.contextId ?? (resolvedSessionId === this.sessionId ? this.contextId : undefined));
 
     const eventTimeMs = options.timestamp ? Date.parse(options.timestamp) : this.now();
     const resolvedIsDebug = options.isDebug ?? this.isDebug;
@@ -1083,9 +1115,28 @@ export class GameAlgoEventTracker {
   trackSessionEnd(payload: JsonValue = {}): boolean {
     const merged = objectPayload(payload);
     if (this.sessionStartMs !== undefined) {
-      merged.sessionDurationMs = this.now() - this.sessionStartMs;
+      merged.sessionDurationMs = Math.max(0, this.now() - this.sessionStartMs);
     }
     return this.track("session_end", merged);
+  }
+
+  /** SDK lifecycle snapshot: retain the live session and bypass gameplay quotas. */
+  trackSessionEndSnapshot(payload: JsonValue = {}): boolean {
+    const userId = clean(this.userId);
+    if (!userId) return false;
+    const occurredAt = this.now();
+    const merged = objectPayload(payload);
+    merged.sessionDurationMs = Math.max(0, occurredAt - (this.sessionStartMs ?? occurredAt));
+    this.hasPersistedQueue = true;
+    this.enqueue({
+      eventId: randomId(), contextId: this.contextId ?? "", userId,
+      sessionId: this.sessionId, eventType: "session_end", isDebug: this.isDebug,
+      timestamp: new Date(occurredAt).toISOString(), createdLocalAt: localTimestamp(occurredAt),
+      accountUserId: this.accountUserId, payload: normalizePayload(merged),
+    }, true);
+    if (!this.persistOnEnqueue) void this.persistPendingQueue().catch(() => undefined);
+    if (this.platform === "web") void this.flushUrgent().catch(() => undefined);
+    return true;
   }
 
   trackLevelStart(payload: JsonValue = {}): boolean {
@@ -1131,60 +1182,58 @@ export class GameAlgoEventTracker {
     return this.track("purchase", merged);
   }
 
-  async flush(): Promise<EventBatchResponse[]> {
+  flush(): Promise<EventBatchResponse[]> {
+    if (this.activeFlush) return this.activeFlush;
+    const operation = this.drain();
+    this.activeFlush = operation;
+    void operation.finally(() => {
+      if (this.activeFlush === operation) this.activeFlush = undefined;
+    }).catch(() => undefined);
+    return operation;
+  }
+
+  private async drain(): Promise<EventBatchResponse[]> {
     await this.restorePromise;
     await this.milestonePersistPromise;
     await this.queuePersistPromise;
-    if (this.flushing) return [];
-    this.flushing = true;
 
     const responses: EventBatchResponse[] = [];
-    try {
-      while (this.retryBatch.length > 0 || this.queue.length > 0) {
-        const pending = [...this.retryBatch, ...this.queue];
-        const held = pending.filter((event) => this.urgentEventIds.has(event.eventId!));
-        const available = pending.filter((event) => !this.urgentEventIds.has(event.eventId!));
-        if (available.length === 0) return responses;
-        const batch = eventBatchWithinBudget(available, this.maxBatchSize, this.maxBatchBytes);
-        const resolvedContextId = clean(this.contextId);
-        if (batch.some((event) => !clean(event.contextId)) && !resolvedContextId) {
-          this.retryBatch = [];
-          this.queue = pending;
-          return responses;
-        }
-        const uploadBatch = batch.map((event) => clean(event.contextId) ? event : { ...event, contextId: resolvedContextId! });
-        this.retryBatch = [];
-        this.queue = [...held, ...available.slice(batch.length)];
-        this.inflightBatch = uploadBatch;
+    while (this.retryBatch.length > 0 || this.queue.length > 0) {
+      const pending = [...this.retryBatch, ...this.queue];
+      const available = pending.filter((event) => !this.urgentEventIds.has(event.eventId!) && clean(event.contextId));
+      const availableIds = new Set(available.map((event) => event.eventId));
+      const held = pending.filter((event) => !availableIds.has(event.eventId));
+      if (available.length === 0) return responses;
+      const uploadBatch = eventBatchWithinBudget(available, this.maxBatchSize, this.maxBatchBytes);
+      this.retryBatch = [];
+      this.queue = [...held, ...available.slice(uploadBatch.length)];
+      this.inflightBatch = uploadBatch;
 
-        try {
-          responses.push(await this.uploadEvents(uploadBatch));
-          this.inflightBatch = [];
-          this.consecutiveFailures = 0;
-          if (this.hasPersistedQueue) await this.persistPendingQueue();
-        } catch (error) {
-          this.inflightBatch = [];
-          this.retryBatch = [...uploadBatch, ...this.retryBatch];
-          this.consecutiveFailures += 1;
-          if (this.consecutiveFailures >= 3) {
-            this.hasPersistedQueue = true;
-            try {
-              await this.persistPendingQueue();
-            } catch {
-              // Preserve the transport error; persistence is a recovery aid.
-            }
+      try {
+        responses.push(await this.uploadEvents(uploadBatch));
+        this.inflightBatch = [];
+        this.consecutiveFailures = 0;
+        if (this.hasPersistedQueue) await this.persistPendingQueue();
+      } catch (error) {
+        this.inflightBatch = [];
+        this.retryBatch = [...uploadBatch, ...this.retryBatch];
+        this.consecutiveFailures += 1;
+        if (this.hasPersistedQueue || this.consecutiveFailures >= 3) {
+          this.hasPersistedQueue = true;
+          try {
+            await this.persistPendingQueue();
+          } catch {
+            // Preserve the transport error; persistence is a recovery aid.
           }
-          throw error;
         }
+        throw error;
       }
-      await this.queuePersistPromise;
-      if (this.hasPersistedQueue && this.retryBatch.length === 0 && this.queue.length === 0) {
-        await this.clearPersistedQueue();
-      }
-      return responses;
-    } finally {
-      this.flushing = false;
     }
+    await this.queuePersistPromise;
+    if (this.hasPersistedQueue && this.retryBatch.length === 0 && this.queue.length === 0) {
+      await this.clearPersistedQueue();
+    }
+    return responses;
   }
 
   /** H5 critical events start uploading without waiting for browser storage or
@@ -1251,8 +1300,9 @@ export class GameAlgoEventTracker {
     }
   }
 
-  private enqueue(event: GameEvent): void {
+  private enqueue(event: GameEvent, sessionEndSnapshot = false): void {
     this.queue.push(event);
+    if (!sessionEndSnapshot && event.eventType === "session_end" && event.sessionId === this.sessionId) this.sessionHasEnd = true;
     if (this.queue.length > this.queueLimit) {
       this.queue.splice(0, this.queue.length - this.queueLimit);
     }

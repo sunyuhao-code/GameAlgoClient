@@ -31,12 +31,16 @@ browser returns online. Override `eventFlushIntervalMs` to change the interval;
 Event batches use `fetch(..., { keepalive: true })` and are capped at 20 events
 to stay below browser keepalive limits.
 
-When the document becomes hidden, the SDK records one `session_end` and starts
-uploading it immediately; `pagehide` is a fallback, not the primary boundary.
-Repeated hidden/pagehide notifications do not end the same session again.
+When TapTap sends `tap.onHide`, or the document becomes hidden, the SDK records
+a `session_end` snapshot and starts uploading it immediately. `pagehide` is a
+fallback. Repeated hide notifications during the same hidden period are coalesced.
 When the page becomes visible again (including back-forward cache restoration),
-the SDK opens one new session, refreshes its context, and preloads current config
-files. Set `autoSessionLifecycle: false` only when the game owns those boundaries;
+the SDK retains the current session ID and duration origin, refreshes its context,
+and preloads current config files. A later hide can report another `session_end`
+for that same session, with duration measured from the original start. Only SDK
+initialization or an explicit `tracker.newSession()` creates a new session. TapTap
+`onShow` received while the document is still hidden does not resume the page.
+Set `autoSessionLifecycle: false` only when the game owns those boundaries;
 `autoLifecycle: false` disables all automatic browser lifecycle listeners.
 
 `ad_view` starts an immediate upload after successful enqueue, whether it comes
@@ -50,34 +54,40 @@ queues include ordinary in-flight rows until acknowledgement. Successful enqueue
 does not mean server delivery; use `await gameAlgo.flush()` to await critical
 uploads and their queue persistence when the page can remain active.
 
+### Explicit session changes
+
+Explicit `gameAlgo.tracker.newSession()` closes an unfinished old session with
+`reason=new_session`, preserving its user/session/context and ending its duration
+at the switch. It schedules persistence and immediately starts critical upload,
+without waiting for the network before switching. A session already ended by the
+game is not ended again; passing the current session ID is a no-op. Lifecycle
+snapshots leave the session open, so an explicit switch after an ad/background
+reports its duration through the switch. Unbound old events
+remain queued for their own context and cannot inherit the new session's context.
+This explicit boundary also applies when automatic lifecycle handling is disabled.
+
 ### Fullscreen ads inside an App WebView
 
-The SDK cannot infer whether a native fullscreen ad or the user caused the page
-to become hidden. Tell it the ad state from the H5 game; no host App change is
-required:
+Fullscreen ads can hide the WebView, and going Home from the ad may produce no
+second hide notification. The SDK therefore records and flushes a `session_end`
+snapshot on the first hide, including during ads. These snapshots bypass gameplay
+event quotas and request durable queue persistence. They keep the same session ID
+and original duration start. `ad_view` still uploads immediately.
 
-```ts
-gameAlgo.setAdShowing(true); // BEFORE requesting a native fullscreen ad
-// Show the ad using the game's existing integration.
+Games no longer need to call `setAdShowing`. That method remains as a deprecated
+compatibility no-op, so existing integrations also report ad-related hides.
 
-// In the ad-close callback OR if showing the ad fails (including sync errors):
-gameAlgo.setAdShowing(false);
-```
-
-While the ad is showing, hidden/pagehide only flush pending events; they do not
-end or rotate the session. `ad_view` still uploads immediately. Do not clear the
-ad flag in a revenue callback: paid exposure does not mean the ad has closed.
-Clearing the flag alone also does not end a still-hidden page, since ad-close
-callbacks may precede visibility restoration. A later non-ad hide ends the
-session normally. Every close/show-failure path must clear the flag; until the
-game adopts these calls, the SDK cannot distinguish ad hides from user exits.
+The SDK detects `tap.onHide/onShow` at runtime and subscribes without replacing
+game callbacks. It checks for late host injection during the first 10 seconds and
+on page/load events; ordinary browsers keep using DOM lifecycle listeners.
+`close()` unregisters host listeners when the matching `offHide/offShow` methods
+exist, and retained callbacks become inert if the host lacks those methods.
 
 This is best-effort delivery within the current visit, not a guarantee that
-JavaScript runs after native suspension or process death. In particular, leaving
-from an ad without another page callback cannot be detected reliably. Generated
-but unacknowledged events can retry from storage; no event is invented for an
-undetected exit. TapTap H5 container behavior must be checked on real devices;
-the SDK does not assume the non-H5 mini-game `tap.onHide` API is available.
+JavaScript runs after native suspension or process death, or that an asynchronous
+storage write finishes before termination. Generated and durably stored events
+retry with their original ID, time and context on the next initialization. The
+SDK does not invent an end event for an exit that supplied no callback.
 
 ## Remote strategies and DDA
 

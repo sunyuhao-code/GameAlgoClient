@@ -406,6 +406,8 @@ public actor GameAlgoSDK {
                     body: try encode(requestBody)
                 )
             )
+            await tracker.bindSessionContext(resolvedSessionId, contextId: response.contextId)
+            guard resolvedSessionId == (await tracker.currentSessionId()) else { return response }
             cachedConfig = CachedConfig(
                 key: cacheKey,
                 value: response,
@@ -413,7 +415,6 @@ public actor GameAlgoSDK {
             )
             snapshotStore.updateConfig(response, updatedAt: now(), userId: identity.userId)
             await tracker.setEventQuota(response.eventQuota)
-            await tracker.setContextId(response.contextId)
             await tracker.setAssignments(response.experiments)
             persistSnapshot()
             log("config fetched: version=\(response.configVersion), experiments=\(response.experiments.count), configFiles=\(response.configFiles.count), ttl=\(response.ttlSeconds)s")

@@ -62,6 +62,7 @@ local state_ = {
     prefetchedMakerUserId = nil,
     sessionId = nil,
     sessionStartMs = nil,
+    sessionHasEnd = false,
     contextId = nil,
     config = nil,
     configFiles = {},
@@ -87,6 +88,7 @@ local state_ = {
     internalUpdateSubscribed = false,
     internalUpdateNode = nil,
     internalUpdateObject = nil,
+    lifecycleFlushPending = false,
     preloadConfigFiles = true,
     storage = nil,
     storageReady = false,
@@ -94,6 +96,8 @@ local state_ = {
     fetchConfigRequested = false,
     pendingFetchConfigCallbacks = {},
     configFetchCallbacks = {},
+    configFetchBodies = {},
+    configFetchBody = nil,
     configFetchInFlight = false,
     configFetchAttempt = 0,
     configFetchRetryHandle = nil,
@@ -839,7 +843,7 @@ local function restoreEventQueue()
     local restored = 0
     for line in encoded:gmatch("[^\r\n]+") do
         local ok, event = pcall(cjson.decode, line)
-        if ok and type(event) == "table" and event.eventId and event.contextId and event.contextId ~= "" then
+        if ok and type(event) == "table" and event.eventId and event.sessionId then
             table.insert(state_.queue, event)
             restored = restored + 1
         end
@@ -884,7 +888,7 @@ local function rememberBoundMilestones(contextId)
     if changed then persistReachedMilestones() end
 end
 
-local function enqueueTrack(eventType, payload, timestamp, createdLocalAt)
+local function enqueueTrack(eventType, payload, timestamp, createdLocalAt, sessionEndSnapshot)
     if outstandingEventCount() >= state_.maxQueueSize then
         state_.queuePersistenceActive = true
         persistEventQueue()
@@ -904,6 +908,7 @@ local function enqueueTrack(eventType, payload, timestamp, createdLocalAt)
         createdLocalAt = createdLocalAt or localIsoNow(),
         payload = payloadCopy,
     })
+    if eventType == "session_end" and not sessionEndSnapshot then state_.sessionHasEnd = true end
     scheduleEventQueuePersistence()
     return true, nil
 end
@@ -916,6 +921,43 @@ local function flushAutomaticStorage()
         end)
     end)
     if not ok then log("automatic storage flush failed: " .. tostring(flushError)) end
+end
+
+local function handleLifecycleSessionEnd(eventName, reason)
+    if not state_.sessionId or not state_.sessionStartMs then return end
+    local occurredAt = clockMs()
+    local payload = {
+        reason = reason,
+        lifecycleEvent = eventName,
+        sessionDurationMs = math.max(0, occurredAt - state_.sessionStartMs),
+    }
+    if not state_.storageReady then
+        if #state_.pendingTracks >= state_.maxQueueSize then
+            log("lifecycle session_end not queued: pending event queue is full")
+            return
+        end
+        table.insert(state_.pendingTracks, {
+            eventType = "session_end",
+            payload = payload,
+            timestamp = isoNow(),
+            createdLocalAt = localIsoNow(),
+            occurredAtMs = occurredAt,
+            sessionId = state_.sessionId,
+            sessionEndSnapshot = true,
+        })
+        state_.lifecycleFlushPending = true
+        return
+    end
+
+    -- Backgrounding includes fullscreen ads in Maker. This is an end snapshot,
+    -- not a session rotation or an explicit terminal end. Later backgrounds and
+    -- NewSession must still be able to report a newer duration for this session.
+    local tracked, error = enqueueTrack("session_end", payload, nil, nil, true)
+    if not tracked then log("lifecycle session_end not queued: " .. tostring(error)) end
+    state_.queuePersistenceActive = true
+    persistEventQueue()
+    flushAutomaticStorage()
+    GameAlgo.Flush(nil)
 end
 
 local function ensureAutomaticUpdateDriver()
@@ -942,6 +984,23 @@ local function ensureAutomaticUpdateDriver()
         state_.internalUpdateNode = eventNode
         state_.internalUpdateObject = eventObject
         state_.internalUpdateSubscribed = true
+        for eventName, reason in pairs({
+            AppWillEnterBackground = "app_background",
+            AppTerminating = "app_terminating",
+            ExitRequested = "exit_requested",
+        }) do
+            -- Each optional lifecycle subscription is isolated so a custom
+            -- runtime that only supports Update keeps its automatic timer.
+            local lifecycleOk, lifecycleError = pcall(function()
+                eventObject:SubscribeToEvent(eventName, function()
+                    local ok, error = pcall(handleLifecycleSessionEnd, eventName, reason)
+                    if not ok then log("automatic session_end failed: " .. tostring(error)) end
+                end)
+            end)
+            if not lifecycleOk then
+                log("lifecycle listener unavailable: " .. eventName .. " " .. tostring(lifecycleError))
+            end
+        end
         log("automatic update driver ready")
         return true
     end
@@ -973,7 +1032,8 @@ local function completeInitialization(options)
         )
         local tracked, trackError = false, "duplicate milestone"
         if not duplicate then
-            tracked, trackError = enqueueTrack(pending.eventType, prepared, pending.timestamp, pending.createdLocalAt)
+            tracked, trackError = enqueueTrack(pending.eventType, prepared, pending.timestamp,
+                pending.createdLocalAt, pending.sessionEndSnapshot)
             if tracked then rememberMilestone(key, durable) end
         end
         if not tracked then log("pending event dropped: " .. tostring(trackError)) end
@@ -987,6 +1047,14 @@ local function completeInitialization(options)
         .. ", accountUserId=" .. tostring(state_.accountUserId or "-")
         .. ", sessionId=" .. state_.sessionId)
     flushAutomaticStorage()
+
+    if state_.lifecycleFlushPending then
+        state_.lifecycleFlushPending = false
+        state_.queuePersistenceActive = true
+        persistEventQueue()
+        flushAutomaticStorage()
+        GameAlgo.Flush(nil)
+    end
 
     if state_.fetchConfigRequested then
         local callbacks = state_.pendingFetchConfigCallbacks
@@ -1044,7 +1112,8 @@ function GameAlgo.Init(options)
     state_.clock = type(options.nowMs) == "function" and options.nowMs or nowMs
     state_.preloadConfigFiles = options.preloadConfigFiles ~= false
     state_.sessionId = options.sessionId or randomId("ga_session")
-    state_.sessionStartMs = nowMs()
+    state_.sessionStartMs = clockMs()
+    state_.sessionHasEnd = false
     state_.userId = nil
     state_.userCreatedAt = nil
     state_.userCreatedLocalAt = nil
@@ -1058,6 +1127,7 @@ function GameAlgo.Init(options)
     state_.ddaControllers = {}
     state_.queue = {}
     state_.pendingTracks = {}
+    state_.lifecycleFlushPending = false
     state_.customEventCounts = {}
     state_.ordinaryEventCounts = {}
     state_.eventQuota = nil
@@ -1084,6 +1154,8 @@ function GameAlgo.Init(options)
     state_.fetchConfigRequested = options.autoFetch ~= false
     state_.pendingFetchConfigCallbacks = {}
     state_.configFetchCallbacks = {}
+    state_.configFetchBodies = {}
+    state_.configFetchBody = nil
     state_.configFetchInFlight = false
     state_.configFetchAttempt = 0
     state_.configFetchRetryHandle = nil
@@ -1115,17 +1187,22 @@ function GameAlgo.Init(options)
     return GameAlgo
 end
 
+local beginNextConfigFetch
 local function finishConfigFetch(error, config)
+    local sessionId = state_.configFetchBody and state_.configFetchBody.sessionId
     state_.configFetchInFlight = false
+    state_.configFetchBody = nil
     state_.configFetchAttempt = 0
     state_.configFetchRetryHandle = nil
     state_.configFetchRequestHandle = nil
     state_.configFetchTimeoutHandle = nil
     local callbacks = state_.configFetchCallbacks
     state_.configFetchCallbacks = {}
-    for _, callback in ipairs(callbacks) do
-        safeCallback(callback, error, config)
+    for _, entry in ipairs(callbacks) do
+        if entry.sessionId == sessionId then safeCallback(entry.callback, error, config)
+        else table.insert(state_.configFetchCallbacks, entry) end
     end
+    beginNextConfigFetch()
 end
 
 local function isRetryableConfigFailure(response)
@@ -1159,6 +1236,7 @@ performConfigFetchAttempt = function()
     state_.configFetchAttempt = state_.configFetchAttempt + 1
     local attempt = state_.configFetchAttempt
     local generation = state_.lifecycleGeneration
+    local requestBody = state_.configFetchBody
     local settled = false
 
     local function scheduleRetry(error)
@@ -1198,22 +1276,24 @@ performConfigFetchAttempt = function()
             finishConfigFetch(error, nil)
             return
         end
-        state_.config = config
-        state_.eventQuota = normalizeEventQuota(config)
-        state_.contextId = config and config.contextId or nil
-        if state_.contextId and state_.contextId ~= "" then
-            mergeCustomEventCountBucket("pending:" .. tostring(state_.sessionId), "context:" .. state_.contextId)
-            mergeOrdinaryEventCountBucket("pending:" .. tostring(state_.sessionId), "context:" .. state_.contextId)
+        local contextId = config.contextId
+        local current = requestBody.sessionId == state_.sessionId
+        if current then
+            state_.config = config
+            state_.eventQuota = normalizeEventQuota(config)
+            state_.contextId = contextId
         end
-        bindQueuedEvents(state_.contextId, state_.sessionId)
-        rememberBoundMilestones(state_.contextId)
+        mergeCustomEventCountBucket("pending:" .. tostring(requestBody.sessionId), "context:" .. contextId)
+        mergeOrdinaryEventCountBucket("pending:" .. tostring(requestBody.sessionId), "context:" .. contextId)
+        bindQueuedEvents(contextId, requestBody.sessionId)
+        rememberBoundMilestones(contextId)
         if state_.initWatchdogHandle and state_.scheduler and type(state_.scheduler.Cancel) == "function" then
             state_.scheduler:Cancel(state_.initWatchdogHandle)
             state_.initWatchdogHandle = nil
         end
         log("config fetched: version=" .. tostring(config and config.configVersion or "unknown"))
         finishConfigFetch(nil, config)
-        if state_.preloadConfigFiles and config then
+        if current and requestBody.sessionId == state_.sessionId and state_.preloadConfigFiles and config then
             for _, file in ipairs(config.configFiles or {}) do
                 if file.name then GameAlgo.FetchConfigFile(file.name, nil) end
             end
@@ -1233,7 +1313,7 @@ performConfigFetchAttempt = function()
     end
 
     local requestTimeoutHandle = nil
-    local requestHandle = httpRequest("POST", "/v1/config", configRequestBody(), function(error, config, response)
+    local requestHandle = httpRequest("POST", "/v1/config", requestBody, function(error, config, response)
         if settled then return end
         settled = true
         if requestTimeoutHandle and state_.scheduler and type(state_.scheduler.Cancel) == "function" then
@@ -1263,6 +1343,14 @@ performConfigFetchAttempt = function()
     end
 end
 
+beginNextConfigFetch = function()
+    if state_.configFetchInFlight or #state_.configFetchBodies == 0 then return end
+    state_.configFetchBody = table.remove(state_.configFetchBodies, 1)
+    state_.configFetchInFlight = true
+    state_.configFetchAttempt = 0
+    performConfigFetchAttempt()
+end
+
 function GameAlgo.FetchConfig(callback)
     if not state_.storageReady then
         state_.fetchConfigRequested = true
@@ -1270,11 +1358,15 @@ function GameAlgo.FetchConfig(callback)
         return
     end
     ensureIdentity()
-    if type(callback) == "function" then table.insert(state_.configFetchCallbacks, callback) end
-    if state_.configFetchInFlight then return end
-    state_.configFetchInFlight = true
-    state_.configFetchAttempt = 0
-    performConfigFetchAttempt()
+    if type(callback) == "function" then
+        table.insert(state_.configFetchCallbacks, { sessionId = state_.sessionId, callback = callback })
+    end
+    if state_.configFetchBody and state_.configFetchBody.sessionId == state_.sessionId then return end
+    for _, body in ipairs(state_.configFetchBodies) do
+        if body.sessionId == state_.sessionId then return end
+    end
+    table.insert(state_.configFetchBodies, configRequestBody())
+    beginNextConfigFetch()
 end
 
 
@@ -1390,6 +1482,7 @@ function GameAlgo.Track(eventType, payload)
             occurredAtMs = clockMs(),
             sessionId = state_.sessionId,
         })
+        if eventType == "session_end" then state_.sessionHasEnd = true end
         return true
     end
     ensureIdentity()
@@ -1503,7 +1596,7 @@ function GameAlgo.TrackSessionEnd(payload)
     local merged, payloadError = preparePayload(payload)
     if payloadError then return false, payloadError end
     if merged.sessionDurationMs == nil and state_.sessionStartMs then
-        merged.sessionDurationMs = nowMs() - state_.sessionStartMs
+        merged.sessionDurationMs = math.max(0, clockMs() - state_.sessionStartMs)
     end
     return GameAlgo.Track("session_end", merged)
 end
@@ -1757,22 +1850,40 @@ end
 
 function GameAlgo.NewSession(sessionId, callback)
     local previousSessionId = state_.sessionId
-    local nextSessionId = sessionId or randomId("ga_session")
-    local retained = {}
-    for _, event in ipairs(state_.queue) do
-        if event.contextId and event.contextId ~= "" then table.insert(retained, event) end
+    local nextSessionId = nonEmptyString(sessionId) or randomId("ga_session")
+    if nextSessionId == previousSessionId then
+        safeCallback(callback, nil, state_.config)
+        return nextSessionId
     end
-    state_.queue = retained
+    if not state_.storageReady then
+        safeCallback(callback, "storage not ready", nil)
+        return nil, "storage not ready"
+    end
+    local endedAt = clockMs()
+    if not state_.sessionHasEnd then
+        local accepted, error = enqueueTrack("session_end", {
+            reason = "new_session",
+            sessionDurationMs = math.max(0, endedAt - (state_.sessionStartMs or endedAt)),
+        })
+        if not accepted then
+            safeCallback(callback, error, nil)
+            return nil, error
+        end
+    end
     state_.ordinaryEventCounts["pending:" .. tostring(previousSessionId)] = nil
     state_.sessionId = nextSessionId
+    state_.sessionHasEnd = false
     state_.eventGuardDiagnosticKeys = {}
     state_.eventGuardDiagnosticCount = 0
-    state_.sessionStartMs = nowMs()
+    state_.sessionStartMs = endedAt
     state_.contextId = nil
     state_.config = nil
     state_.eventQuota = nil
     state_.pendingMilestoneKeys = {}
-    if state_.queuePersistenceActive then persistEventQueue() end
+    state_.queuePersistenceActive = true
+    persistEventQueue()
+    flushAutomaticStorage()
+    GameAlgo.Flush(nil)
     GameAlgo.FetchConfig(callback)
     return nextSessionId
 end

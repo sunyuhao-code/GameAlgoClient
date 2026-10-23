@@ -101,7 +101,11 @@ SDK 会在每个请求里发送 `X-GameAlgo-Key`，按 `ttlSeconds` 缓存 `/v1/
 
 SDK 会在 `/v1/config` 请求里自动带上 UTC `userCreatedAt`、本地 `userCreatedLocalAt`、context 本地时间 `createdLocalAt` 和基础 `device` context。两个本地时间都包含 UTC offset；接入方不需要手工维护。接入方可以在完整 `GameAlgoClient` 构造函数或 `fetchConfig` 里通过 `GameAlgoFetchConfigRequest` 传入 `device` 或 `deviceId`，用于追加 App 自定义字段或覆盖默认值。
 
-`tracker()` 会把事件排入内存队列，每批最多上传 100 条，每 30 秒 flush 一次，并保留失败批次等待下次重试。配置 `GameAlgoCacheStorage` 后，连续 3 次上传失败会把完整未发送队列按 JSON Lines 写入当前 Game Key 和匿名用户隔离的本地存储；下次启动自动恢复，服务端 ACK 后删除持久化副本。未配置 storage 时只能提供进程内 best-effort 队列。正常运行不会每条事件落盘，强制终止前的未失败内存事件仍可能丢失。事件入队时即固定 `sessionId` 和已有的 `contextId`；同一 session 刷新 context 不会重绑旧事件，切换 session 只会丢弃上一 session 尚未绑定 context 的事件。`fetchConfig`、`fetchConfigFile` 和 `uploadEvents` 在这个 core 包里是阻塞方法；Android App 应该在自己的后台 executor 或 coroutine 层调用这些底层方法。
+`tracker()` 会把事件排入内存队列，每批最多上传 100 条，每 30 秒 flush 一次，并保留失败批次等待下次重试。配置 `GameAlgoCacheStorage` 后，连续 3 次上传失败会把完整未发送队列按 JSON Lines 写入当前 Game Key 和匿名用户隔离的本地存储；下次启动自动恢复，服务端 ACK 后删除持久化副本。未配置 storage 时只能提供进程内 best-effort 队列。正常运行不会每条事件落盘，强制终止前的未失败内存事件仍可能丢失。事件入队时即固定 `sessionId` 和已有的 `contextId`；同一 session 刷新 context 不会重绑旧事件。`fetchConfig`、`fetchConfigFile` 和 `uploadEvents` 在这个 core 包里是阻塞方法；Android App 应该在自己的后台 executor 或 coroutine 层调用这些底层方法。
+
+`tracker().newSession()` 自动为尚未结束的旧会话生成 `reason=new_session` 的 `session_end`，保留旧用户、session 和 context，时长截止本次切换；尝试持久化完整未发送队列（含在途事件）后立即调度 `flushAsync()`，不等待网络成功才切换。无需先手动调用 `trackSessionEnd()`。旧会话已入队过结束事件时不再补报，也不延长原时长；`newSession(currentSessionId)` 为无操作。存储不可用时仍保留内存队列，持久化能力仍取决于配置的 storage。
+
+切换不再丢弃未绑定的旧事件；它们等待原会话的真实 context，不能使用新会话的 context，也不会阻塞已绑定事件上传。迟到的配置响应只为原会话补 context，不会覆盖新会话快照；自定义配置接入可通过 `bindSessionContext(sessionId, contextId)` 补绑定。此变更只处理显式会话切换，不新增生命周期监听。
 
 自定义事件有固定本地配额：单 `context × eventType` 1,000 条、单 context 合计 5,000 条、单 context 最多 100 种。达到阈值后 `track` 返回 `false`、事件不入队，并异步采样报告 SDK 诊断；标准语义事件不占用这组配额。不要重试或改名绕过拒绝。
 

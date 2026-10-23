@@ -336,6 +336,8 @@ public final class GameAlgoClient {
                             GameAlgoJson.stringify(body).getBytes(StandardCharsets.UTF_8)
                     )
             );
+            tracker.bindSessionContext(sessionId, response.getContextId());
+            if (!sessionId.equals(tracker.currentSessionId())) return response;
             cachedConfig = new CachedConfig(
                     cacheKey,
                     response,
@@ -343,7 +345,6 @@ public final class GameAlgoClient {
             );
             snapshotStore.updateConfig(response, System.currentTimeMillis(), resolvedRequest.getUserId());
             tracker.setEventQuota(response.getEventQuota());
-            tracker.setContextId(response.getContextId());
             tracker.setAssignments(response.getExperiments());
             persistSnapshot();
             log("config fetched: version=" + response.getConfigVersion()

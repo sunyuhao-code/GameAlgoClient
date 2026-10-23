@@ -114,7 +114,11 @@ let decision = dda.decide(context: .object([
 
 行为窗口按 strategy 存在本地，不会自动上传。脚本未准备好或返回非法动作时会安全返回 `.keep`。
 
-`tracker` 会把事件排入内存队列，每批最多上传 100 条，每 30 秒 flush 一次，并在 App 进入后台或退出时主动 flush；失败批次会保留到下次重试。连续 3 次上传失败后，SDK 会把完整未发送队列按 JSON Lines 写入当前 Game Key 和匿名用户隔离的本地存储；下次启动自动恢复，服务端 ACK 后删除持久化副本。正常运行不会每条事件落盘，强制终止前的未失败内存事件仍是 best-effort。事件入队时即固定 `sessionId` 和已有的 `contextId`；同一 session 刷新 context 不会重绑旧事件，切换 session 只会丢弃上一 session 尚未绑定 context 的事件。关键事件后可以调用 `await sdk.tracker.flush()` 手动 flush；`trackSessionEnd` 入队 `session_end` 后也会立即触发一次 flush。
+`tracker` 会把事件排入内存队列，每批最多上传 100 条，每 30 秒 flush 一次，并在 App 进入后台或退出时主动 flush；失败批次会保留到下次重试。连续 3 次上传失败后，SDK 会把完整未发送队列按 JSON Lines 写入当前 Game Key 和匿名用户隔离的本地存储；下次启动自动恢复，服务端 ACK 后删除持久化副本。正常运行不会每条事件落盘，强制终止前的未失败内存事件仍是 best-effort。事件入队时即固定 `sessionId` 和已有的 `contextId`；同一 session 刷新 context 不会重绑旧事件。关键事件后可以调用 `await sdk.tracker.flush()` 手动 flush；`trackSessionEnd` 入队 `session_end` 后也会立即触发一次 flush。
+
+`await sdk.tracker.newSession()` 自动为尚未结束的旧会话生成 `reason=new_session` 的结束事件，保留旧用户、session 和 context，时长截止切换；尝试持久化完整未发送队列（含在途事件）后立即启动异步 flush，不等待网络成功才切换。无需先手动结束旧会话。已入队过结束事件的旧会话不再补报或延长时长；相同 session ID 为无操作。存储不可用时队列仍保留在内存，落盘依赖所配置的 storage。
+
+未绑定的旧事件继续保留，只能绑定其原会话的真实 context，不阻塞已绑定事件。迟到的配置响应不会覆盖新会话快照；自定义配置接入可用 `bindSessionContext(_:contextId:)` 为指定会话补绑定。此变更不新增后台／退出时自动生成结束事件的逻辑，原有通知仍只触发 flush。
 
 自定义事件有固定本地配额：单 `context × eventType` 1,000 条、单 context 合计 5,000 条、单 context 最多 100 种。达到阈值后 `track` 返回 `false`、事件不入队，并异步采样报告 SDK 诊断；标准语义事件不占用这组配额。不要重试或改名绕过拒绝。
 
