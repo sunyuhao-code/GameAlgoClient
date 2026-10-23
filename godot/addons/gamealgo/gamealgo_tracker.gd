@@ -186,11 +186,14 @@ func identify(options: Dictionary) -> void:
 
 
 func new_session(session_id: String = "") -> bool:
+	var next_session_id := GameAlgoUtil.clean(session_id)
+	if next_session_id == _session_id:
+		return true
 	var previous_session_id := _session_id
 	var previous_context_id := _context_id
 	var previous_start := _session_start_unix
 	var previous_quota := _event_quota
-	_session_id = GameAlgoUtil.clean(session_id)
+	_session_id = next_session_id
 	if _session_id.is_empty():
 		_session_id = GameAlgoUtil.uuid()
 	_context_id = ""
@@ -207,6 +210,11 @@ func new_session(session_id: String = "") -> bool:
 	_ordinary_counts.erase("pending:" + previous_session_id)
 	if _has_persisted_queue:
 		_persist_pending()
+	if _native_events and _measurement_allowed:
+		# The native transaction has already committed the old end and the new
+		# marker. Start upload before the client's config refresh, without waiting
+		# for network success (the native worker does not depend on Godot frames).
+		flush()
 	return true
 
 

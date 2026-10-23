@@ -458,6 +458,8 @@ func new_session(session_id: String = "") -> bool:
 	if status == "unconfigured":
 		last_error = "not_configured"
 		return false
+	if GameAlgoUtil.clean(session_id) == tracker.current_session_id():
+		return true
 	if not tracker.new_session(session_id):
 		last_error = "session_persistence_failed"
 		return false

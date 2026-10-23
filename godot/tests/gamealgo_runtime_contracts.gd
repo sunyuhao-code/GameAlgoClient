@@ -75,6 +75,22 @@ func _test_native_session_recovery_for_platform(native: Object, platform: String
 	_check(events[0]["payload"]["reason"] == "process_restart" \
 		and events[0]["payload"]["endTimeEstimated"] == true,
 		"native recovery labels its estimated end time")
+	# In-process rotation must close the current session too, not only recover
+	# a marker from a previous process. Keep its original unbound context.
+	event["sessionId"] = "third-session"
+	event["eventId"] = "third-end"
+	event["timestamp"] = "2026-10-23T04:00:00.000Z"
+	event["createdLocalAt"] = "2026-10-23T12:00:00.000+08:00"
+	_check(native.call("event_backend_start_session", JSON.stringify(event), 150_000),
+		"Godot binding atomically closes a live session when starting another")
+	events = JSON.parse_string(String(native.call("event_backend_snapshot_json")))
+	_check(events.size() == 2 and events[1]["eventId"] == "new-end" \
+		and events[1]["sessionId"] == "new-session" and events[1]["contextId"] == "" \
+		and events[1]["timestamp"] == event["timestamp"] \
+		and events[1]["payload"]["reason"] == "new_session" \
+		and events[1]["payload"]["sessionDurationMs"] == 50_000 \
+		and events[1]["payload"]["endTimeEstimated"] == false,
+		"live rotation preserves old ownership and records the exact switch duration")
 	_check(native.call("event_backend_clear") and not FileAccess.file_exists(path),
 		"native clear deletes the recovered event and session marker")
 

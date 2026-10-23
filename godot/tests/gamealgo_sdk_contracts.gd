@@ -727,22 +727,60 @@ func _test_native_mobile_session_registration() -> void:
 
 func _test_native_session_registration_for_platform(platform: String) -> void:
 	var backend := NativeEventBackendFixture.new()
+	var transport := RecoveryTransport.new()
 	var client := _make_client({
 		"platform": platform, "event_backend": backend,
-		"session_id": "android-session", "transport": TransportFixture.new(),
+		"session_id": "android-session", "transport": transport,
+		"json_decoder": ImmediateDecoder.new(),
 	})
 	_check(backend.session_events.size() == 1, "%s measurement registers a durable native session" % platform)
 	var first := backend.session_events[0]
 	_check(first["eventType"] == "session_end" and first["sessionId"] == "android-session",
 		"native session template preserves the event and session identity")
 	_check(not String(first["eventId"]).is_empty(), "native session template has a stable recovery event ID")
-	await client.new_session("android-next")
+	await client.start()
+	var previous_context: String = client.tracker.current_context_id()
+	var previous_start: float = client.tracker._session_start_unix
+	var config_calls := transport.config_calls
+	var flush_calls := backend.flush_calls
+	_check(await client.new_session("android-session") \
+		and client.tracker.current_context_id() == previous_context \
+		and client.tracker._session_start_unix == previous_start \
+		and backend.session_events.size() == 1 \
+		and backend.flush_calls == flush_calls and transport.config_calls == config_calls,
+		"the current session ID is a no-op without resetting context, duration or config")
+	transport.hold_config = true
+	client.new_session("android-next")
 	_check(backend.session_events.size() == 2 and backend.session_events[1]["sessionId"] == "android-next",
 		"explicit session changes replace the native session template")
+	_check(backend.flush_calls > flush_calls and client.tracker.current_session_id() == "android-next" \
+		and transport.config_calls == config_calls + 1,
+		"rotation starts native flush without waiting for the new config response")
+	transport.hold_config = false
+	transport.released.emit()
+	_check(client.tracker.current_context_id() == "context-android-next",
+		"new context binds normally after the rotation flush has started")
+	backend.fail_with_timeout = true
+	transport.config_ok = false
+	flush_calls = backend.flush_calls
+	_check(not await client.new_session("offline-next") \
+		and backend.flush_calls > flush_calls \
+		and client.tracker.current_session_id() == "offline-next",
+		"upload and config failures do not roll back a durably committed session switch")
 	backend.session_write_fails = true
+	client.tracker.set_context_id("before-failed-rotation")
+	client.tracker.set_event_quota({"mode": "enforce", "ordinaryEventLimit": 12})
+	previous_context = client.tracker.current_context_id()
+	previous_start = client.tracker._session_start_unix
+	var previous_quota: Dictionary = client.tracker._event_quota.duplicate(true)
+	flush_calls = backend.flush_calls
 	_check(not await client.new_session("not-durable") \
-		and client.tracker.current_session_id() == "android-next",
-		"failed native session writes keep the original session active")
+		and client.tracker.current_session_id() == "offline-next" \
+		and client.tracker.current_context_id() == previous_context \
+		and client.tracker._session_start_unix == previous_start \
+		and client.tracker._event_quota == previous_quota \
+		and backend.flush_calls == flush_calls,
+		"failed native session writes preserve session, context, duration and quota without flushing")
 	client.free()
 	var denied := NativeEventBackendFixture.new()
 	client = _make_client({
@@ -750,6 +788,9 @@ func _test_native_session_registration_for_platform(platform: String) -> void:
 		"transport": TransportFixture.new(),
 	})
 	_check(denied.session_events.is_empty(), "denied measurement creates no native session marker")
+	client.tracker.new_session("denied-next")
+	_check(denied.session_events.is_empty() and denied.flush_calls == 0,
+		"session rotation without measurement consent generates no marker or flush")
 	denied.session_write_fails = true
 	_check(not client.set_measurement_allowed(true) and not client.tracker.measurement_allowed(),
 		"failed native marker persistence does not enable measurement")

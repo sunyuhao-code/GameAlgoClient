@@ -56,6 +56,11 @@ struct Session {
     started_at_ms: u64,
     last_seen_ms: u64,
     open: bool,
+    // `open` is rearmed on foreground for another background/kill report.
+    // Remember a committed end separately so an explicit rotation after resume
+    // does not extend the old session across the time spent in the background.
+    #[serde(default)]
+    has_end: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -178,6 +183,7 @@ impl EventBackend {
                 if let Some(session) = session.as_mut() {
                     if event.get("sessionId") == session.event.get("sessionId") {
                         session.open = false;
+                        session.has_end = true;
                     }
                 }
             }
@@ -283,9 +289,8 @@ impl EventBackend {
         self.record(result)
     }
 
-    /// Starts collection only after measurement consent. Recovery and the new
-    /// session marker commit in the same file as the queue, including when the
-    /// old end was uploaded before the process died.
+    /// Starts collection only after measurement consent. Closing/recovering the
+    /// previous session and replacing its marker is one durable transaction.
     pub(crate) fn start_session(&self, event_json: &str, started_at_ms: i64) -> bool {
         let result = (|| {
             let event: Value = serde_json::from_str(event_json)
@@ -299,13 +304,38 @@ impl EventBackend {
                 .config
                 .clone()
                 .ok_or_else(|| "native_event_backend_unconfigured".to_string())?;
+            if inner.session_tracking
+                && inner
+                    .session
+                    .as_ref()
+                    .is_some_and(|previous| previous.event["sessionId"] == event["sessionId"])
+            {
+                return Ok(());
+            }
             let mut candidate = inner.queue.clone();
-            let mut recovered_session = None;
-            if !inner.session_tracking {
-                if let Some(previous) = inner.session.as_ref().filter(|session| session.open) {
-                    let recovered = session_end(previous, "process_restart", true);
-                    push_session_end(&inner, &config, &mut candidate, recovered)?;
-                    recovered_session = previous.event["sessionId"].as_str().map(str::to_owned);
+            let mut closed_session = None;
+            if let Some(previous) = inner.session.as_ref() {
+                let reason = if !inner.session_tracking && previous.open {
+                    Some("process_restart")
+                } else if inner.session_tracking && !previous.has_end {
+                    Some("new_session")
+                } else {
+                    None
+                };
+                if let Some(reason) = reason {
+                    let mut ended = previous.clone();
+                    if reason == "new_session" {
+                        ended.last_seen_ms = started_at_ms as u64;
+                        ended.event["timestamp"] = event["timestamp"].clone();
+                        ended.event["createdLocalAt"] = event["createdLocalAt"].clone();
+                    }
+                    push_session_end(
+                        &inner,
+                        &config,
+                        &mut candidate,
+                        session_end(&ended, reason, reason == "process_restart"),
+                    )?;
+                    closed_session = Some((previous.event["sessionId"].clone(), reason));
                 }
             }
             let session = Session {
@@ -313,14 +343,17 @@ impl EventBackend {
                 started_at_ms: started_at_ms as u64,
                 last_seen_ms: started_at_ms as u64,
                 open: inner.foreground,
+                has_end: false,
             };
             persist_state(&config.path, &candidate, Some(&session))?;
             inner.queue = candidate;
             inner.session = Some(session);
             inner.session_tracking = true;
-            if let Some(session_id) = recovered_session {
+            if let Some((session_id, reason)) = closed_session {
                 platform_support::log(&format!(
-                    "[GameAlgoSDK] session_end persisted: sessionId={session_id}, reason=process_restart, estimated=true"
+                    "[GameAlgoSDK] session_end persisted: sessionId={}, reason={reason}, estimated={}",
+                    session_id.as_str().unwrap_or_default(),
+                    reason == "process_restart"
                 ));
             }
             Ok(())
@@ -373,6 +406,7 @@ impl EventBackend {
                 let event = session_end(&session, "background", false);
                 push_session_end(&inner, &config, &mut candidate, event)?;
                 session.open = false;
+                session.has_end = true;
             }
             persist_state(&config.path, &candidate, Some(&session))?;
             inner.queue = candidate;
@@ -1235,21 +1269,25 @@ mod tests {
         backend: &EventBackend,
         post: impl FnMut(&Config, &[Value], Duration) -> Result<usize, String>,
     ) -> Value {
-        let (job_id, generation) = {
-            let mut inner = backend.lock().unwrap();
-            assert!(inner.active.is_none());
-            let id = inner.next_job_id;
-            inner.next_job_id += 1;
-            let generation = inner.generation;
-            inner.active = Some(ActiveJob {
-                id,
-                generation,
-                deadline: Instant::now() + Duration::from_secs(5),
-            });
-            (id, generation)
-        };
+        let (job_id, generation) = reserve_test_flush(backend);
         run_flush_with_post(Arc::clone(&backend.inner), job_id, generation, post);
         serde_json::from_str(&backend.result_json(i64::try_from(job_id).unwrap())).unwrap()
+    }
+
+    // Reserve a worker without making HTTP requests. Lifecycle-triggered flush
+    // calls coalesce into this job; the test can then supply its own transport.
+    fn reserve_test_flush(backend: &EventBackend) -> (u64, u64) {
+        let mut inner = backend.lock().unwrap();
+        assert!(inner.active.is_none());
+        let id = inner.next_job_id;
+        inner.next_job_id += 1;
+        let generation = inner.generation;
+        inner.active = Some(ActiveJob {
+            id,
+            generation,
+            deadline: Instant::now() + Duration::from_secs(5),
+        });
+        (id, generation)
     }
 
     #[test]
@@ -1433,6 +1471,277 @@ mod tests {
             "{}",
             backend.last_error()
         );
+    }
+
+    #[test]
+    fn live_rotation_closes_the_old_session_and_commits_the_new_marker_atomically() {
+        for platform in ["android", "ios"] {
+            let path = temporary_path(&format!("rotate-{platform}"));
+            let backend = EventBackend::new();
+            assert!(backend.configure(
+                path.to_str().unwrap(),
+                "https://gamealgo.invalid/v1/events/batch",
+                "ga_live_test",
+                100,
+                1000,
+                platform,
+            ));
+            let mut old = session_event("old-end", "old-session", "");
+            old["userId"] = json!("old-user");
+            old["accountUserId"] = json!("old-account");
+            old["isDebug"] = json!(true);
+            assert!(backend.start_session(&old.to_string(), 1000));
+            assert!(backend.bind_context("old-session", "old-context"));
+            assert!(backend.enqueue(&event("gameplay", "old-session", "old-context").to_string()));
+            // A Godot pause/resume need not be a true process-background edge.
+            heartbeat(&backend, true, 1500, "unused");
+            assert_eq!(backend.pending_count(), 1);
+            let mut next = session_event("new-end", "new-session", "");
+            next["timestamp"] = json!("2026-10-23T01:02:03.000Z");
+            next["createdLocalAt"] = json!("2026-10-23T09:02:03.000+08:00");
+            assert!(backend.start_session(&next.to_string(), 4000));
+            let (queue, session) = load_state(&path).unwrap();
+            assert_eq!(queue.len(), 2);
+            assert_eq!(queue[0]["eventId"], "gameplay");
+            assert_eq!(queue[1]["eventId"], "old-end");
+            assert_eq!(queue[1]["sessionId"], "old-session");
+            assert_eq!(queue[1]["contextId"], "old-context");
+            assert_eq!(queue[1]["userId"], "old-user");
+            assert_eq!(queue[1]["accountUserId"], "old-account");
+            assert_eq!(queue[1]["isDebug"], true);
+            assert_eq!(queue[1]["timestamp"], next["timestamp"]);
+            assert_eq!(queue[1]["createdLocalAt"], next["createdLocalAt"]);
+            assert_eq!(queue[1]["payload"]["reason"], "new_session");
+            assert_eq!(queue[1]["payload"]["sessionDurationMs"], 3000);
+            assert_eq!(queue[1]["payload"]["recovered"], false);
+            assert_eq!(queue[1]["payload"]["endTimeEstimated"], false);
+            let session = session.unwrap();
+            assert_eq!(session.event, next);
+            assert_eq!(session.started_at_ms, 4000);
+            assert!(session.open && !session.has_end);
+
+            // Killing the process after the switch must not erase either end.
+            let restored = configured(&path);
+            assert!(restored.start_session(
+                &session_event("third-end", "third-session", "").to_string(),
+                9000,
+            ));
+            let queue: Vec<Value> = serde_json::from_str(&restored.snapshot_json()).unwrap();
+            assert_eq!(
+                queue.iter().filter(|e| e["eventId"] == "old-end").count(),
+                1
+            );
+            assert_eq!(
+                queue.iter().filter(|e| e["eventId"] == "new-end").count(),
+                1
+            );
+            assert!(restored.clear());
+        }
+    }
+
+    #[test]
+    fn rotation_preserves_unbound_context_and_network_failure_does_not_undo_the_switch() {
+        let path = temporary_path("rotate-offline");
+        let backend = configured(&path);
+        assert!(backend.start_session(&session_event("old-end", "old", "").to_string(), 1000));
+        assert!(backend.start_session(&session_event("new-end", "new", "").to_string(), 2000));
+        let blocked = test_flush(&backend, |_, _, _| panic!("unbound end must not be posted"));
+        assert_eq!(blocked["error"], "context_not_ready");
+        assert!(backend.bind_context("new", "new-context"));
+        let queue: Vec<Value> = serde_json::from_str(&backend.snapshot_json()).unwrap();
+        assert_eq!(queue[0]["contextId"], "");
+        assert!(backend.bind_context("old", "old-context"));
+        let failed = test_flush(&backend, |_, batch, _| {
+            assert_eq!(batch[0]["sessionId"], "old");
+            assert_eq!(batch[0]["contextId"], "old-context");
+            Err("timeout".to_string())
+        });
+        assert_eq!(failed["ok"], false);
+        assert_eq!(failed["remaining"], 1);
+        let (queue, session) = load_state(&path).unwrap();
+        assert_eq!(queue[0]["eventId"], "old-end");
+        assert_eq!(session.unwrap().event["sessionId"], "new");
+        let result = test_flush(&backend, |_, batch, _| {
+            assert_eq!(batch[0]["eventId"], "old-end");
+            Ok(batch.len())
+        });
+        assert_eq!(result["remaining"], 0);
+        assert!(backend.clear());
+    }
+
+    #[test]
+    fn rotation_after_background_ack_and_resume_does_not_extend_the_old_duration() {
+        let path = temporary_path("rotate-after-ack");
+        let backend = configured(&path);
+        assert!(backend.start_session(
+            &session_event("old-end", "old", "context").to_string(),
+            1000
+        ));
+        let (job_id, generation) = reserve_test_flush(&backend);
+        heartbeat(&backend, false, 2000, "unused");
+        run_flush_with_post(
+            Arc::clone(&backend.inner),
+            job_id,
+            generation,
+            |_, batch, _| {
+                assert_eq!(batch[0]["payload"]["sessionDurationMs"], 1000);
+                Ok(batch.len())
+            },
+        );
+        assert_eq!(backend.pending_count(), 0);
+        heartbeat(&backend, true, 3_600_000, "rearmed-end");
+        assert!(backend.lock().unwrap().session.as_ref().unwrap().open);
+        assert!(backend.start_session(&session_event("new-end", "new", "").to_string(), 3_601_000));
+        let (queue, session) = load_state(&path).unwrap();
+        assert!(queue.is_empty()); // no duplicate old end including the hour away
+        assert_eq!(session.unwrap().event["sessionId"], "new");
+        assert!(backend.clear());
+    }
+
+    #[test]
+    fn rotation_after_a_manual_end_keeps_its_original_timestamp_and_duration() {
+        let path = temporary_path("rotate-after-manual-end");
+        let backend = configured(&path);
+        assert!(backend.start_session(
+            &session_event("native-end", "old", "context").to_string(),
+            1000
+        ));
+        let mut manual = session_event("manual-end", "old", "context");
+        manual["payload"] = json!({"sessionDurationMs": 500});
+        assert!(backend.enqueue(&manual.to_string()));
+        assert!(backend.start_session(&session_event("new-end", "new", "").to_string(), 9000));
+        assert_eq!(load_state(&path).unwrap().0, vec![manual]);
+        assert!(backend.clear());
+    }
+
+    #[test]
+    fn live_rotation_commit_failure_preserves_the_old_session_for_a_single_retry() {
+        let path = temporary_path("rotate-commit-failure");
+        let backend = configured(&path);
+        assert!(backend.start_session(
+            &session_event("old-end", "old", "context").to_string(),
+            1000
+        ));
+        assert!(backend.enqueue(&event("gameplay", "old", "context").to_string()));
+        let durable_before = fs::read(&path).unwrap();
+        let saved = path.with_extension("saved");
+        fs::rename(&path, &saved).unwrap();
+        fs::create_dir(&path).unwrap();
+        let next = session_event("new-end", "new", "").to_string();
+        assert!(!backend.start_session(&next, 2000));
+        assert_eq!(backend.pending_count(), 1);
+        {
+            let inner = backend.lock().unwrap();
+            let previous = inner.session.as_ref().unwrap();
+            assert_eq!(previous.event["sessionId"], "old");
+            assert!(previous.open && !previous.has_end);
+            assert!(inner.active.is_none());
+        }
+        fs::remove_dir(&path).unwrap();
+        fs::rename(&saved, &path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), durable_before);
+        assert!(backend.start_session(&next, 3000));
+        let (queue, session) = load_state(&path).unwrap();
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue[1]["eventId"], "old-end");
+        assert_eq!(queue[1]["payload"]["sessionDurationMs"], 2000);
+        assert_eq!(session.unwrap().event["sessionId"], "new");
+        assert!(backend.clear());
+    }
+
+    #[test]
+    fn rotation_during_upload_does_not_lose_the_old_end_when_the_batch_is_acked() {
+        let path = temporary_path("rotate-inflight");
+        let backend = configured(&path);
+        assert!(backend.start_session(
+            &session_event("old-end", "old", "context").to_string(),
+            1000
+        ));
+        assert!(backend.enqueue(&event("gameplay", "old", "context").to_string()));
+        let mut sent = Vec::new();
+        let result = test_flush(&backend, |_, batch, _| {
+            sent.push(batch[0]["eventId"].clone());
+            if sent.len() == 1 {
+                assert!(
+                    backend.start_session(&session_event("new-end", "new", "").to_string(), 2000)
+                );
+            }
+            Ok(batch.len())
+        });
+        assert_eq!(sent, vec![json!("gameplay"), json!("old-end")]);
+        assert_eq!(result["remaining"], 0);
+        assert_eq!(
+            load_state(&path).unwrap().1.unwrap().event["sessionId"],
+            "new"
+        );
+        assert!(backend.clear());
+    }
+
+    #[test]
+    fn rotation_with_a_fully_inflight_queue_fails_without_overwriting_the_old_marker() {
+        let path = temporary_path("rotate-full");
+        let backend = configured(&path);
+        backend.lock().unwrap().config.as_mut().unwrap().queue_limit = 1;
+        assert!(backend.start_session(
+            &session_event("old-end", "old", "context").to_string(),
+            1000
+        ));
+        assert!(backend.enqueue(&event("gameplay", "old", "context").to_string()));
+        let result = test_flush(&backend, |_, _, _| {
+            let before = fs::read(&path).unwrap();
+            assert!(!backend.start_session(&session_event("new-end", "new", "").to_string(), 2000));
+            assert_eq!(backend.last_error(), "native_event_queue_full");
+            assert_eq!(fs::read(&path).unwrap(), before);
+            assert_eq!(
+                backend.lock().unwrap().session.as_ref().unwrap().event["sessionId"],
+                "old"
+            );
+            Err("timeout".to_string())
+        });
+        assert_eq!(result["remaining"], 1);
+        assert!(backend.clear());
+    }
+
+    #[test]
+    fn restarting_the_same_live_session_is_a_noop() {
+        let path = temporary_path("rotate-same-id");
+        let backend = configured(&path);
+        assert!(backend.start_session(
+            &session_event("old-end", "same", "context").to_string(),
+            1000
+        ));
+        let before = fs::read(&path).unwrap();
+        assert!(backend.start_session(&session_event("new-end", "same", "").to_string(), 9000));
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(backend.pending_count(), 0);
+        assert!(backend.clear());
+    }
+
+    #[test]
+    fn pre_rotation_session_storage_remains_readable_for_recovery() {
+        for open in [true, false] {
+            let path = temporary_path("old-session-format");
+            fs::write(
+                &path,
+                json!({
+                    "version": 2, "events": [], "session": {
+                        "event": session_event("old-end", "old", "context"),
+                        "started_at_ms": 1000, "last_seen_ms": 2500, "open": open,
+                    },
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let backend = configured(&path);
+            assert!(backend.start_session(&session_event("new-end", "new", "").to_string(), 9000));
+            assert_eq!(backend.pending_count(), i64::from(open));
+            if open {
+                let (queue, _) = load_state(&path).unwrap();
+                assert_eq!(queue[0]["payload"]["sessionDurationMs"], 1500);
+                assert_eq!(queue[0]["payload"]["reason"], "process_restart");
+            }
+            assert!(backend.clear());
+        }
     }
 
     #[test]
