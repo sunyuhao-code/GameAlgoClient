@@ -10,6 +10,7 @@ const gameAlgo = GameAlgoWebClient.init({
   baseUrl: "https://game-algo-sdk.dictapis.cn",
   gameKey: "ga_live_xxx",
   appVersion: "1.0.0",
+  isDebug: false, // Production telemetry; use true only in intentional test builds.
   experimentIntegrationVersion: 0,
 });
 
@@ -21,6 +22,69 @@ gameAlgo.tracker.trackMilestone("new_user", "进入第一关");
 
 const decision = await gameAlgo.executor("level_dda").execute({ level: 12 });
 ```
+
+### Wire ad reporting explicitly
+
+Games with ads must report `ad_view`; the Web SDK does not automatically observe
+the game's advertising API. For the TapTap / Dirichlet ad chain, report once in
+the existing ad `onClose` callback, just like Maker. Keep reporting independent
+of `success`, `isEnded`, reward granting, error codes, or whether the callback
+contains a track ID. Preserve the original `trackId`, use `revenue=0` and
+`currency=CNY`, and let the platform reconcile the actual revenue.
+
+These are game-side adapter functions, not Web SDK methods:
+
+```ts
+function extractAdTrackId(result: Record<string, unknown>): string | undefined {
+  for (const value of [result, result.extra, result.msg, result.message]) {
+    let data = value;
+    if (typeof data === "string") {
+      try { data = JSON.parse(data); } catch { continue; }
+    }
+    if (!data || typeof data !== "object" || Array.isArray(data)) continue;
+    const fields = data as Record<string, unknown>;
+    for (const id of [fields.trackId, fields.track_id]) {
+      if (typeof id === "string" && id.trim()) return id;
+    }
+  }
+  return undefined;
+}
+
+function createAdCloseReporter(placement: string) {
+  let reported = false;
+  return function onClose(result: Record<string, unknown> = {}) {
+    if (reported) return;
+    reported = true;
+    const trackId = extractAdTrackId(result);
+    const queued = gameAlgo.tracker.trackAd(
+      placement, "reward", 0, "CNY", trackId ? { trackId } : {},
+    );
+    if (!trackId) console.warn("Ad onClose is missing trackId; fix the callback adapter");
+    if (!queued) console.warn("ad_view was not queued; check SDK identity and initialization");
+  };
+}
+
+const reportAdClose = createAdCloseReporter("复活激励视频");
+// At the start of this request's existing onClose(result), call reportAdClose(result).
+// Run the game's existing reward-completion check separately afterward.
+```
+
+Create a new reporter for each ad request; a duplicate callback for that request
+must not create a second event, and the next playback must still report. A missing
+`trackId` still produces `ad_view` and a diagnostic; fix the callback adapter and
+never invent an ID. Do not also report at request, load, show, or reward boundaries.
+Pre-display load failures, no fill, and rejected requests that do not enter
+`onClose` do not count as exposures. Other ad SDKs use their documented effective
+impression / revenue callback and actual amount and currency.
+
+Before completing integration, play an ad and verify that the server accepted a
+new `ad_view` with the expected fields and original callback track ID. Cover early
+close and duplicate close notifications as well. `trackAd` returning `true` only
+confirms enqueueing. Use `gamealgo events count --event-type ad_view --json` for
+the current UTC day's live ingress count; it includes debug and repeated requests,
+and disabled/unavailable counts do not prove delivery or absence. Before publishing
+a production game build, inspect that build's runtime logs and request flags to
+confirm non-debug telemetry (`isDebug=false`), separately from console verbosity.
 
 The SDK uses IndexedDB for stable anonymous identity, config snapshots,
 milestone de-duplication, and its durable event queue. `localStorage` and then
