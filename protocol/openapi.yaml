@@ -610,10 +610,16 @@ components:
           enum: [ios, android, maker, web]
         identifierType:
           type: string
-          enum: [adjust_adid, firebase_app_instance_id, gaid, idfa, idfv]
+          enum: [adjust_adid, firebase_app_instance_id, gaid, idfa, idfv, oaid, caid]
         identifierValue:
           type: [string, "null"]
-          description: Null clears the latest mapping for this identifier type.
+          description: >-
+            Null clears the latest mapping. OAID is a scalar string. CAID is a
+            JSON-encoded non-empty array of objects with caid and version string
+            fields, unique versions and no surrounding whitespace in either field.
+            SDKs serialize the structured CAID input; null or an empty list clears
+            the mapping. CAID strings are limited to 512 UTF-8 bytes and values
+            are not additionally hashed or rewritten.
         observedAt:
           type: string
           format: date-time

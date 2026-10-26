@@ -729,6 +729,20 @@ func set_idfv(value: Variant, observed_at: String = "") -> Dictionary:
 	return await _set_context_identifier("idfv", value, observed_at)
 
 
+func set_oaid(value: Variant, observed_at: String = "") -> Dictionary:
+	return await _set_context_identifier("oaid", value, observed_at)
+
+
+## Accepts [{"caid": "...", "version": "..."}, ...]; the SDK serializes the list.
+## null or [] clears the existing CAID mapping.
+func set_caid(values: Variant, observed_at: String = "") -> Dictionary:
+	var serialized := GameAlgoUtil.serialize_caid(values)
+	if not serialized["ok"]:
+		last_error = "invalid_caid"
+		return {"ok": false, "accepted": 0, "error": last_error}
+	return await _set_context_identifier("caid", serialized["value"], observed_at)
+
+
 ## Reports one SDK diagnostic without failing the caller. The tracker uses this
 ## for quota refusals; it never blocks gameplay and never retries.
 func report_sdk_diagnostic(diagnostic: Dictionary) -> void:

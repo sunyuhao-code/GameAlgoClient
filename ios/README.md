@@ -114,11 +114,15 @@ let decision = dda.decide(context: .object([
 
 行为窗口按 strategy 存在本地，不会自动上传。脚本未准备好或返回非法动作时会安全返回 `.keep`。
 
-`tracker` 会把事件排入内存队列，每批最多上传 100 条，每 30 秒 flush 一次，并在 App 进入后台或退出时主动 flush；失败批次会保留到下次重试。连续 3 次上传失败后，SDK 会把完整未发送队列按 JSON Lines 写入当前 Game Key 和匿名用户隔离的本地存储；下次启动自动恢复，服务端 ACK 后删除持久化副本。正常运行不会每条事件落盘，强制终止前的未失败内存事件仍是 best-effort。事件入队时即固定 `sessionId` 和已有的 `contextId`；同一 session 刷新 context 不会重绑旧事件。关键事件后可以调用 `await sdk.tracker.flush()` 手动 flush；`trackSessionEnd` 入队 `session_end` 后也会立即触发一次 flush。
+`tracker` 每批最多上传 100 条，普通事件每 30 秒 flush 一次。在 iOS UIKit 环境中，事件入队即同步持久化，完整记录包含在途事件、未关闭会话和待恢复的原配置请求；成功 ACK 后才移除对应事件。默认 `GameAlgoFileCacheStorage` 使用 Application Support 内的原子文件并同步提交，旧 UserDefaults 缓存保持读取回退，旧 JSON Lines 事件队列在启用生命周期记录时迁移。自定义 `GameAlgoCacheStorage` 继续受支持；显式传 `nil` 时只能保留进程内队列，其他实现的持久化保证取决于自身行为。事件在产生时固定 `sessionId/contextId`，刷新配置不重绑旧事件。关键事件后仍可调用 `await sdk.tracker.flush()`；`trackSessionEnd` 入队后会立即触发 flush。
+
+初始化后自动监听 App 整体的 `didEnterBackground`、`willEnterForeground`、`willTerminate` 通知，无需修改 AppDelegate 或 SceneDelegate。后台通知先同步生成并保存 `reason=background` 的 `session_end`，随后通过有限后台任务尝试上传，主动预算为 2.5 秒，系统可更早收回执行时间。保存不等待 Swift actor 获得执行机会；失败事件保留供之后恢复。全屏广告、控制中心和权限弹窗引起的普通失焦不结束会话；真正进入后台才结束。恢复前台沿用原 `sessionId`，后续再次退后台可再次上报。
+
+前台每 10 秒保存最后观察时间，广告显示期间也更新。进程被直接杀死且没有后台通知时，下次初始化为未关闭旧会话补 `reason=process_restart`、`recovered=true`、`endTimeEstimated=true` 的结束事件；时间和时长取上次最后观察值，不包含重启间隔，并保留旧用户、session、context 和预留 eventId。恢复事件与新会话标记一起提交，重试不更换恢复事件 ID。未取得 context 的旧事件通过已保存的原配置请求补取，只绑定原 session，不发布为新会话配置。存储不可用时保持内存状态供后续重试。
 
 `await sdk.tracker.newSession()` 自动为尚未结束的旧会话生成 `reason=new_session` 的结束事件，保留旧用户、session 和 context，时长截止切换；尝试持久化完整未发送队列（含在途事件）后立即启动异步 flush，不等待网络成功才切换。无需先手动结束旧会话。已入队过结束事件的旧会话不再补报或延长时长；相同 session ID 为无操作。存储不可用时队列仍保留在内存，落盘依赖所配置的 storage。
 
-未绑定的旧事件继续保留，只能绑定其原会话的真实 context，不阻塞已绑定事件。迟到的配置响应不会覆盖新会话快照；自定义配置接入可用 `bindSessionContext(_:contextId:)` 为指定会话补绑定。此变更不新增后台／退出时自动生成结束事件的逻辑，原有通知仍只触发 flush。
+未绑定的旧事件继续保留，只能绑定其原会话的真实 context，不阻塞已绑定事件。迟到的配置响应不会覆盖新会话快照；自定义配置接入可用 `bindSessionContext(_:contextId:)` 为指定会话补绑定。
 
 自定义事件有固定本地配额：单 `context × eventType` 1,000 条、单 context 合计 5,000 条、单 context 最多 100 种。达到阈值后 `track` 返回 `false`、事件不入队，并异步采样报告 SDK 诊断；标准语义事件不占用这组配额。不要重试或改名绕过拒绝。
 
@@ -138,9 +142,15 @@ Adjust ADID、Firebase App Instance ID 等异步标识不要塞进普通事件�
 try await sdk.setAdjustAdid(adjustAdid)
 try await sdk.setFirebaseAppInstanceId(appInstanceId)
 try await sdk.setIdfa(idfa) // 由 App 在 ATT 授权完成后读取并设置
+try await sdk.setCaid([
+    GameAlgoCaid(caid: currentCaid, version: currentVersion),
+    GameAlgoCaid(caid: previousCaid, version: previousVersion),
+])
 ```
 
 SDK 初始化完成后会自动读取并上报 IDFV，不会主动请求 ATT 权限或读取 IDFA。App 应在自己的 ATT 流程完成后调用 `setIdfa`。SDK 会自动关联当前 `contextId` 和 GameAlgo `userId`；每次 setter 调用都会追加一条带时间的设备映射记录，不需要额外传 `gamealgoDeviceId`。用户撤回授权或上游返回不可用时传 `nil`，服务端会记录清除操作。只在取得用户授权且符合应用隐私政策时采集这些标识。
+
+CAID 由 App 获取，GameAlgo 不引入 CAID 采集 SDK。传入 `GameAlgoCaid` 列表即可，SDK 会将完整列表编码为 JSON 字符串上报，保留版本和值，不额外哈希 CAID。`caid`、`version` 必须非空且没有首尾空白，版本不能重复，编码后最多 512 UTF-8 字节；无效输入会在本地抛出异常。传 `nil` 或 `[]` 清除 CAID。所有标识 setter 都要求当前会话的 context 已就绪，切换 session 后尚未取得新 context 时抛出异常；上报失败由 App 重试，不进入事件队列。
 
 SDK 会在 `/v1/config` 请求里自动带上 UTC `userCreatedAt`、本地 `userCreatedLocalAt`、context 本地时间 `createdLocalAt` 和基础 `device` context。两个本地时间都包含 UTC offset；接入方不需要手工维护。接入方可以在 `GameAlgoSDK(...)` 或 `fetchConfig` 中传入 `device` / `deviceId`，用于追加 App 自定义字段或覆盖默认值。
 

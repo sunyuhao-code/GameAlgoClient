@@ -299,14 +299,42 @@ static func attribution_status(
 	return raw_status if not raw_status.is_empty() else "attributed"
 
 
-## A zeroed GAID or IDFA means the user opted out; it is reported as a cleared
+## A zeroed GAID, IDFA or OAID is reported as a cleared
 ## mapping rather than a real identifier.
 static func normalize_context_identifier(identifier_type: String, value: Variant) -> Variant:
 	var cleaned := clean(value)
 	if cleaned.is_empty():
 		return null
-	if identifier_type == "gaid" or identifier_type == "idfa":
+	if identifier_type in ["gaid", "idfa", "oaid"]:
 		var zeroed := RegEx.create_from_string("^0{8}-0{4}-0{4}-0{4}-0{12}$")
 		if zeroed != null and zeroed.search(cleaned.to_lower()) != null:
 			return null
+	if identifier_type == "oaid" and cleaned == "00000000000000000000000000000000":
+		return null
 	return cleaned
+
+
+static func serialize_caid(values: Variant) -> Dictionary:
+	if values == null:
+		return {"ok": true, "value": null}
+	if not values is Array:
+		return {"ok": false}
+	if values.is_empty():
+		return {"ok": true, "value": null}
+	var entries: Array = []
+	var versions: Dictionary = {}
+	for item: Variant in values:
+		if not item is Dictionary or item.size() != 2 \
+				or not item.get("caid") is String or not item.get("version") is String:
+			return {"ok": false}
+		var caid := String(item["caid"])
+		var version := String(item["version"])
+		if caid.is_empty() or version.is_empty() or caid != caid.strip_edges() \
+				or version != version.strip_edges() or versions.has(version):
+			return {"ok": false}
+		versions[version] = true
+		entries.append({"caid": caid, "version": version})
+	var encoded := canonical_json(entries)
+	if encoded.to_utf8_buffer().size() > 512:
+		return {"ok": false}
+	return {"ok": true, "value": encoded}

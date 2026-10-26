@@ -181,13 +181,20 @@ await client.set_firebase_app_instance_id(app_instance_id)
 await client.set_google_advertising_id(gaid)
 await client.set_idfa(idfa)
 await client.set_idfv(idfv)
+await client.set_oaid(oaid) # Android，由游戏获取
+await client.set_caid([
+    {"caid": current_caid, "version": current_version},
+    {"caid": previous_caid, "version": previous_version},
+]) # iOS，由游戏获取
 ```
 
 **iOS 上 IDFV 会自动上报一次**，和 iOS SDK 行为一致：启动取得当前会话配置后（离线启动则等后台恢复），SDK 取 `OS.get_unique_id()`（在 iOS 上就是 `identifierForVendor`）上报一次，失败只记日志、不影响启动。IDFV 不需要 ATT 授权，所以不受 `measurement_allowed` 约束——那个开关管的是事件，`set_attribution` 由独立的 `attribution_allowed` 控制，其他标识 setter 不受这两个开关约束，iOS SDK 的 IDFV 也是无条件上报。
 
 Android 和桌面没有 IDFV，不会触发。其余标识仍需游戏在拿到值后手动调用。标识 setter 的失败重试仍由接入方负责，不进入上述归因重试队列。
 
-这些调用需要当前会话自己的 context 已就绪，会自动关联匹配的 `sessionId`、`contextId` 和 GameAlgo `userId`。新会话配置还未返回时，标识 setter 返回 `context_not_ready`，接入方可稍后重试；归因则保留原会话，待它自己的 context 恢复后发送，不会借用缓存或其他会话的 context。用户撤回授权或标识不可用时传 `null`，服务端会记录清除操作；全零的 GAID / IDFA 会被自动识别为清除。只在取得用户授权且符合应用隐私政策时采集这些标识。
+GameAlgo 不引入 OAID / CAID 采集依赖。`set_caid()` 接收结构化列表，由 SDK 转成 JSON 字符串上报，保留各版本和值，不额外哈希 CAID。每项只允许 `caid`、`version` 两个非空字符串字段，不能有首尾空白或重复版本，编码后最多 512 UTF-8 字节；无效输入返回 `invalid_caid`。传 `null` 或 `[]` 清除 CAID。
+
+这些调用需要当前会话自己的 context 已就绪，会自动关联匹配的 `sessionId`、`contextId` 和 GameAlgo `userId`。新会话配置还未返回时，标识 setter 返回 `context_not_ready`，接入方可稍后重试；归因则保留原会话，待它自己的 context 恢复后发送，不会借用缓存或其他会话的 context。用户撤回授权或标识不可用时传 `null`，服务端会记录清除操作；全零的 GAID / IDFA / OAID 会被自动识别为清除。只在取得用户授权且符合应用隐私政策时采集这些标识。
 
 ## 日志与可观测性
 

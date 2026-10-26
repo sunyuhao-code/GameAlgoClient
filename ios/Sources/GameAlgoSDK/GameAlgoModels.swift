@@ -233,6 +233,16 @@ public struct GameAlgoUserAttributionResponse: Sendable, Equatable, Codable {
     }
 }
 
+public struct GameAlgoCaid: Sendable, Equatable, Codable {
+    public var caid: String
+    public var version: String
+
+    public init(caid: String, version: String) {
+        self.caid = caid
+        self.version = version
+    }
+}
+
 public struct GameAlgoContextIdentifierResponse: Sendable, Equatable, Codable {
     public let ok: Bool
     public let accepted: Int

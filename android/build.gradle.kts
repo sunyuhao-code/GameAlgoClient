@@ -26,6 +26,7 @@ android {
     }
 
     sourceSets {
+        getByName("main").java.srcDir("src/android/java")
         getByName("main").jniLibs.srcDir(layout.buildDirectory.dir("generated/jniLibs"))
     }
 

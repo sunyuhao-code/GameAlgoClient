@@ -4,7 +4,7 @@ import UIKit
 #endif
 
 public actor GameAlgoSDK {
-    public static let defaultSDKVersion = "1.0.0"
+    public static let defaultSDKVersion = "1.0.22"
 
     private let gameKey: String
     private let baseURL: URL
@@ -49,7 +49,7 @@ public actor GameAlgoSDK {
         platform: GameAlgoPlatform = .ios,
         httpClient: any GameAlgoHTTPClient = URLSessionGameAlgoHTTPClient(),
         scriptRuntime: any GameAlgoScriptRuntime = RustGameAlgoScriptRuntime(),
-        cacheStorage: (any GameAlgoCacheStorage)? = GameAlgoUserDefaultsCacheStorage(),
+        cacheStorage: (any GameAlgoCacheStorage)? = GameAlgoFileCacheStorage(),
         ddaStorage: (any GameAlgoDDAStorage)? = GameAlgoUserDefaultsDDAStorage(),
         userIdentityStore: GameAlgoUserIdentityStore = GameAlgoUserIdentityStore(),
         cacheKey: String? = nil,
@@ -109,7 +109,7 @@ public actor GameAlgoSDK {
         platform: GameAlgoPlatform = .ios,
         httpClient: any GameAlgoHTTPClient = URLSessionGameAlgoHTTPClient(),
         scriptRuntime: any GameAlgoScriptRuntime = RustGameAlgoScriptRuntime(),
-        cacheStorage: (any GameAlgoCacheStorage)? = GameAlgoUserDefaultsCacheStorage(),
+        cacheStorage: (any GameAlgoCacheStorage)? = GameAlgoFileCacheStorage(),
         ddaStorage: (any GameAlgoDDAStorage)? = GameAlgoUserDefaultsDDAStorage(),
         userIdentityStore: GameAlgoUserIdentityStore = GameAlgoUserIdentityStore(),
         cacheKey: String? = nil,
@@ -202,6 +202,13 @@ public actor GameAlgoSDK {
         }
     }
 
+    private func recoverLifecycleContext(_ body: Data) async throws -> String {
+        let config: GameAlgoConfigResponse = try await requestJSON(GameAlgoHTTPRequest(
+            url: try endpoint("/v1/config"), method: .post,
+            headers: ["content-type": "application/json"], body: body))
+        return config.contextId
+    }
+
     public nonisolated var userIdentity: GameAlgoUserIdentity {
         userIdentityStore.identity(now: now())
     }
@@ -260,6 +267,11 @@ public actor GameAlgoSDK {
                 accountUserId: accountUserId
             )
             await self.tracker.markSessionStarted()
+            await self.tracker.setLifecycleContextRecovery { [weak sdk = self] body in
+                guard let sdk else { throw GameAlgoError.networkFailed("SDK closed") }
+                return try await sdk.recoverLifecycleContext(body)
+            }
+            await self.tracker.installLifecycleObservation()
             await self.loadCachedSnapshot()
             do {
                 try await self.refresh(
@@ -398,12 +410,14 @@ public actor GameAlgoSDK {
                 isDebug: resolvedIsDebug
             )
 
+            let encodedRequest = try encode(requestBody)
+            await tracker.retainLifecycleConfig(sessionId: resolvedSessionId, body: encodedRequest)
             let response: GameAlgoConfigResponse = try await requestJSON(
                 GameAlgoHTTPRequest(
                     url: try endpoint("/v1/config"),
                     method: .post,
                     headers: ["content-type": "application/json"],
-                    body: try encode(requestBody)
+                    body: encodedRequest
                 )
             )
             await tracker.bindSessionContext(resolvedSessionId, contextId: response.contextId)
@@ -570,22 +584,41 @@ public actor GameAlgoSDK {
         try await setContextIdentifier(type: "idfv", value: value, observedAt: observedAt)
     }
 
+    public func setCaid(_ values: [GameAlgoCaid]?, observedAt: String? = nil) async throws -> GameAlgoContextIdentifierResponse {
+        guard let values, !values.isEmpty else {
+            return try await setContextIdentifier(type: "caid", value: nil, observedAt: observedAt)
+        }
+        var versions = Set<String>()
+        for item in values {
+            guard !item.caid.isEmpty, !item.version.isEmpty,
+                  item.caid == item.caid.trimmingCharacters(in: .whitespacesAndNewlines),
+                  item.version == item.version.trimmingCharacters(in: .whitespacesAndNewlines),
+                  versions.insert(item.version).inserted else {
+                throw GameAlgoError.encodingFailed("CAID entries require non-empty caid and unique version strings without surrounding whitespace")
+            }
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let data = try encoder.encode(values)
+        guard data.count <= 512 else { throw GameAlgoError.encodingFailed("CAID list exceeds 512 UTF-8 bytes") }
+        return try await setContextIdentifier(type: "caid", value: String(decoding: data, as: UTF8.self), observedAt: observedAt)
+    }
+
     private func setContextIdentifier(type: String, value: String?, observedAt: String?) async throws -> GameAlgoContextIdentifierResponse {
         if snapshotStore.snapshot().config == nil, let readyTask = readyTaskStore.get() {
             try await readyTask.value
         }
-        guard let contextId = Self.clean(snapshotStore.snapshot().config?.contextId) else {
+        guard let identity = await tracker.contextIdentifierIdentity() else {
             throw GameAlgoError.encodingFailed("config context is not ready")
         }
 
         let normalizedValue = normalizeContextIdentifier(type: type, value: value)
         let identifierHash = stableContextIdentifierHash(type: type, value: normalizedValue)
 
-        let identity = userIdentityStore.identity(now: now())
         let requestBody = ContextIdentifierRequest(
             userId: identity.userId,
-            sessionId: await tracker.currentSessionId(),
-            contextId: contextId,
+            sessionId: identity.sessionId,
+            contextId: identity.contextId,
             platform: defaultPlatform,
             identifierType: type,
             identifierValue: normalizedValue,
@@ -1004,7 +1037,7 @@ private func stableContextIdentifierHash(type: String, value: String?) -> String
         }
     }
     let encoder = JSONEncoder()
-    encoder.outputFormatting = [.sortedKeys]
+    encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
     let data = (try? encoder.encode(ContextIdentifierHashPayload(identifierType: type, identifierValue: value))) ?? Data()
     return GameAlgoSHA256.hash(String(data: data, encoding: .utf8) ?? "")
 }

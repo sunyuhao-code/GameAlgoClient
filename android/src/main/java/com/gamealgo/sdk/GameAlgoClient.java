@@ -21,7 +21,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
 
 public final class GameAlgoClient {
-    public static final String DEFAULT_SDK_VERSION = "1.0.0";
+    public static final String DEFAULT_SDK_VERSION = "1.0.22";
     private static final String USER_ID_KEY = "gamealgo_user_id";
     private static final String USER_CREATED_AT_KEY = "gamealgo_user_created_at";
     private static final String USER_CREATED_LOCAL_AT_KEY = "gamealgo_user_created_local_at";
@@ -148,6 +148,7 @@ public final class GameAlgoClient {
                 : initialRequest.getExperimentIntegrationVersion();
         this.httpClient = httpClient == null ? new UrlConnectionGameAlgoHttpClient() : httpClient;
         this.scriptRuntime = scriptRuntime == null ? new RustGameAlgoScriptRuntime() : scriptRuntime;
+        cacheStorage = cacheStorage == null ? GameAlgoPlatformServices.defaultStorage() : cacheStorage;
         this.cacheStorage = cacheStorage;
         String explicitUserId = initialRequest == null ? null : initialRequest.getUserId();
         String userScope = resolveInitialUserScope(cacheStorage, explicitUserId);
@@ -168,6 +169,7 @@ public final class GameAlgoClient {
                 "gamealgo:v1:event-queue:" + namespace
         );
         this.readyFuture = autoStart ? initializeAsync(initialRequest == null ? new GameAlgoFetchConfigRequest(null) : initialRequest) : CompletableFuture.completedFuture(null);
+        GameAlgoPlatformServices.attach(tracker);
     }
 
     public CompletableFuture<Void> ready() {
@@ -328,6 +330,7 @@ public final class GameAlgoClient {
             body.put("timezone", timezone);
             body.put("device", device);
             body.put("isDebug", isDebug);
+            tracker.retainLifecycleConfig(sessionId, GameAlgoJson.stringify(body));
 
             GameAlgoConfigResponse response = parseConfigResponse(
                     requestJson(
@@ -572,6 +575,14 @@ public final class GameAlgoClient {
         return setContextIdentifierAfterReady("gaid", value, observedAt);
     }
 
+    public GameAlgoContextIdentifierResponse setOaid(String value) throws GameAlgoException {
+        return setContextIdentifierAfterReady("oaid", value, null);
+    }
+
+    public GameAlgoContextIdentifierResponse setOaid(String value, String observedAt) throws GameAlgoException {
+        return setContextIdentifierAfterReady("oaid", value, observedAt);
+    }
+
     private GameAlgoContextIdentifierResponse setContextIdentifierAfterReady(String type, String value, String observedAt) throws GameAlgoException {
         try {
             readyFuture.get();
@@ -588,8 +599,8 @@ public final class GameAlgoClient {
     }
 
     private synchronized GameAlgoContextIdentifierResponse setContextIdentifier(String type, String value, String observedAt) throws GameAlgoException {
-        GameAlgoConfigResponse config = snapshotStore.snapshot().getConfig();
-        if (config == null || isBlank(config.getContextId())) {
+        String[] identity = tracker.contextIdentifierIdentity();
+        if (identity == null) {
             throw new GameAlgoException("config context is not ready");
         }
 
@@ -599,9 +610,9 @@ public final class GameAlgoClient {
         hashPayload.put("identifierValue", normalizedValue);
         String identifierHash = sha256(GameAlgoJson.stringify(stableJsonValue(hashPayload)));
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("userId", userIdentity().getUserId());
-        body.put("sessionId", tracker.currentSessionId());
-        body.put("contextId", config.getContextId());
+        body.put("userId", identity[0]);
+        body.put("sessionId", identity[1]);
+        body.put("contextId", identity[2]);
         body.put("platform", defaultPlatform);
         body.put("identifierType", type);
         body.put("identifierValue", normalizedValue);
@@ -622,6 +633,8 @@ public final class GameAlgoClient {
         if ("gaid".equals(type) && "00000000-0000-0000-0000-000000000000".equalsIgnoreCase(normalized)) {
             return null;
         }
+        if ("oaid".equals(type) && ("00000000-0000-0000-0000-000000000000".equals(normalized)
+                || "00000000000000000000000000000000".equals(normalized))) return null;
         return normalized;
     }
 
@@ -707,6 +720,16 @@ public final class GameAlgoClient {
         }
         tracker.setAssignments(config.getExperiments());
         logAssignments(config.getExperiments(), "experiment");
+    }
+
+    void recoverLifecycleContexts(Map<String, String> requests) {
+        for (Map.Entry<String, String> request : requests.entrySet()) {
+            try {
+                GameAlgoConfigResponse config = parseConfigResponse(requestJson(endpoint("/v1/config", null),
+                        GameAlgoHttpMethod.POST, request.getValue().getBytes(StandardCharsets.UTF_8)));
+                tracker.bindSessionContext(request.getKey(), config.getContextId());
+            } catch (GameAlgoException error) { log("session context recovery failed: " + error.getMessage()); }
+        }
     }
 
     private synchronized GameAlgoFetchConfigRequest requestWithResolvedUser(GameAlgoFetchConfigRequest request) throws GameAlgoException {

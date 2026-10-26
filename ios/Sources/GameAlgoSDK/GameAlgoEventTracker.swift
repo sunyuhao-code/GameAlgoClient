@@ -68,6 +68,12 @@ public actor GameAlgoEventTracker {
     private var currentAssignments: [GameAlgoExperimentAssignment] = []
     private var consecutiveFailures = 0
     private var hasPersistedQueue = false
+    nonisolated let lifecycleJournal: GameAlgoLifecycleJournal
+    private var lifecycleEnabled = false
+    private var lifecycleContextRecovery: (@Sendable (Data) async throws -> String)?
+    #if canImport(UIKit)
+    private var lifecycleObserver: GameAlgoLifecycleObserver?
+    #endif
     private var customCounts: [String: CustomCountBucket] = [:]
     private var ordinaryCounts: [String: Int] = [:]
     private var eventQuota: GameAlgoEventQuotaConfig?
@@ -102,6 +108,7 @@ public actor GameAlgoEventTracker {
         self.storage = storage
         self.persistenceKey = persistenceKey
         self.milestonePersistenceKey = persistenceKey.map { "\($0):milestones" }
+        self.lifecycleJournal = GameAlgoLifecycleJournal(storage: storage, key: persistenceKey.map { "\($0):lifecycle" }, queueLimit: max(queueLimit, maxBatchSize))
         self.userId = initialIdentity?.userId
         self.userCreatedAt = initialIdentity?.userCreatedAt
         self.platform = initialPlatform
@@ -125,24 +132,13 @@ public actor GameAlgoEventTracker {
             self.reachedMilestoneKeys.formUnion(restored)
         }
 
-        #if canImport(UIKit)
-        let tracker = self
-        NotificationCenter.default.addObserver(
-            forName: UIApplication.didEnterBackgroundNotification,
-            object: nil,
-            queue: nil
-        ) { _ in Task { await tracker.flush() } }
-
-        NotificationCenter.default.addObserver(
-            forName: UIApplication.willTerminateNotification,
-            object: nil,
-            queue: nil
-        ) { _ in Task { await tracker.flush() } }
-        #endif
     }
 
     deinit {
         flushTask?.cancel()
+        #if canImport(UIKit)
+        if let observer = lifecycleObserver { Task { @MainActor in observer.stop() } }
+        #endif
     }
 
     public func identify(
@@ -159,6 +155,8 @@ public actor GameAlgoEventTracker {
         self.userId = userId
         if let sessionId, sessionId != self.sessionId {
             self.sessionId = sessionId
+            contextId = nil
+            eventQuota = nil
             sessionHasEnd = false
             sessionStartDate = now()
         }
@@ -183,9 +181,11 @@ public actor GameAlgoEventTracker {
         if let isDebug {
             self.isDebug = isDebug
         }
+        syncLifecycleSession()
     }
 
     public func newSession(_ sessionId: String = UUID().uuidString) {
+        importLifecycleEvents()
         let nextSession = clean(sessionId) ?? UUID().uuidString
         guard nextSession != self.sessionId else { return }
         let previousSessionId = self.sessionId
@@ -211,11 +211,17 @@ public actor GameAlgoEventTracker {
         sessionStartDate = endedAt
         hasPersistedQueue = true
         persistPendingQueue()
+        syncLifecycleSession()
         Task { await self.flush() }
     }
 
     public func currentSessionId() -> String {
         sessionId
+    }
+
+    func contextIdentifierIdentity() -> (userId: String, sessionId: String, contextId: String)? {
+        guard let userId = clean(userId), let contextId = clean(contextId) else { return nil }
+        return (userId, sessionId, contextId)
     }
 
     public func setContextId(_ contextId: String) {
@@ -236,15 +242,19 @@ public actor GameAlgoEventTracker {
         }
         retryBatch = retryBatch.map(bind)
         queue = queue.map(bind)
+        if lifecycleEnabled { lifecycleJournal.bind(sessionId: sessionId, contextId: contextId) }
+        syncLifecycleSession()
+        importLifecycleEvents()
         rememberBoundMilestones(contextId: resolved)
         if hasPersistedQueue { persistPendingQueue() }
-        if (retryBatch + queue).contains(where: { $0.sessionId == sessionId && $0.eventType == "session_end" }) {
+        if (retryBatch + queue).contains(where: { $0.eventType == "session_end" && ($0.sessionId == sessionId || lifecycleEnabled) }) {
             Task { await self.flush() }
         }
     }
 
     public func setDebug(_ isDebug: Bool) {
         self.isDebug = isDebug
+        syncLifecycleSession()
     }
 
     public func setTimezone(_ timezone: String?) {
@@ -261,6 +271,60 @@ public actor GameAlgoEventTracker {
 
     public func markSessionStarted() {
         sessionStartDate = now()
+        syncLifecycleSession()
+    }
+
+    func enableLifecycle(foreground: Bool) {
+        guard !lifecycleEnabled else { return }
+        lifecycleEnabled = true
+        syncLifecycleSession(initialForeground: foreground)
+        importLifecycleEvents()
+    }
+
+    func setLifecycleContextRecovery(_ recovery: @escaping @Sendable (Data) async throws -> String) {
+        lifecycleContextRecovery = recovery
+    }
+
+    func retainLifecycleConfig(sessionId: String, body: Data) {
+        if lifecycleEnabled { lifecycleJournal.retainConfig(sessionId: sessionId, body: body) }
+    }
+
+    func installLifecycleObservation() async {
+        #if canImport(UIKit)
+        guard lifecycleObserver == nil else { return }
+        let foreground = await MainActor.run { UIApplication.shared.applicationState != .background }
+        enableLifecycle(foreground: foreground)
+        lifecycleObserver = await GameAlgoLifecycleObserver(journal: lifecycleJournal, tracker: self, now: now)
+        if !queue.isEmpty || !retryBatch.isEmpty { Task { await self.flush() } }
+        #endif
+    }
+
+    private func syncLifecycleSession(initialForeground: Bool? = nil) {
+        guard lifecycleEnabled, let userId = clean(userId) else { return }
+        let start = sessionStartDate ?? now()
+        let template = GameAlgoEvent(eventId: UUID().uuidString, contextId: contextId ?? "", userId: userId,
+            sessionId: sessionId, eventType: "session_end", isDebug: isDebug,
+            timestamp: GameAlgoEventBatchUploader.isoTimestamp(start),
+            createdLocalAt: GameAlgoEventBatchUploader.localTimestamp(start), accountUserId: accountUserId, payload: [:])
+        lifecycleJournal.activate(template, startedAt: start, hasEnd: sessionHasEnd, foreground: initialForeground,
+                                  pending: retryBatch + inflightBatch + queue)
+        if lifecycleJournal.isDurable(), let persistenceKey { try? storage?.removeValue(cacheKey: persistenceKey) }
+    }
+
+    private func importLifecycleEvents() {
+        guard lifecycleEnabled else { return }
+        var known = Set((retryBatch + inflightBatch + queue).compactMap(\.eventId))
+        for event in lifecycleJournal.pending() where known.insert(event.eventId ?? "").inserted { queue.append(event) }
+        sessionHasEnd = sessionHasEnd || lifecycleJournal.hasEnd(sessionId: sessionId)
+        if !queue.isEmpty { startFlushTimerIfNeeded() }
+    }
+
+    // Foundation-only entry point also permits deterministic core lifecycle tests.
+    func observeLifecycle(foreground: Bool, at date: Date) {
+        guard lifecycleEnabled else { return }
+        syncLifecycleSession()
+        lifecycleJournal.observe(foreground: foreground, at: date)
+        importLifecycleEvents()
     }
 
     @discardableResult
@@ -616,9 +680,11 @@ public actor GameAlgoEventTracker {
     public func flush() async {
         guard !isFlushing else {
             await withCheckedContinuation { flushWaiters.append($0) }
+            if lifecycleEnabled { await flush() }
             return
         }
         isFlushing = true
+        importLifecycleEvents()
         defer {
             isFlushing = false
             let waiters = flushWaiters
@@ -626,7 +692,16 @@ public actor GameAlgoEventTracker {
             for waiter in waiters { waiter.resume() }
         }
 
-        while !retryBatch.isEmpty || !queue.isEmpty {
+        if lifecycleEnabled, !(retryBatch + queue).contains(where: { !$0.contextId.isEmpty }), let recovery = lifecycleContextRecovery {
+            for (session, body) in lifecycleJournal.unboundConfigs() {
+                do { bindSessionContext(session, contextId: try await recovery(body)) }
+                catch { log("session context recovery failed: \(error)") }
+            }
+        }
+
+        while true {
+            importLifecycleEvents()
+            if retryBatch.isEmpty && queue.isEmpty { break }
             let pending = retryBatch + queue
             let uploadBatch = Array(pending.filter { clean($0.contextId) != nil }.prefix(maxBatchSize))
             guard !uploadBatch.isEmpty else { return }
@@ -638,6 +713,7 @@ public actor GameAlgoEventTracker {
             log("flushing \(uploadBatch.count) events")
             do {
                 _ = try await uploader.uploadEvents(uploadBatch)
+                if lifecycleEnabled { lifecycleJournal.acknowledge(uploadBatch) }
                 inflightBatch = []
                 consecutiveFailures = 0
                 if hasPersistedQueue { persistPendingQueue() }
@@ -660,6 +736,7 @@ public actor GameAlgoEventTracker {
     private func enqueue(_ event: GameAlgoEvent) {
         queue.append(event)
         if event.eventType == "session_end", event.sessionId == sessionId { sessionHasEnd = true }
+        if lifecycleEnabled { lifecycleJournal.record(event) }
         log("enqueued \(event.eventType), queue size: \(queue.count)")
         if queue.count > queueLimit {
             queue.removeFirst(queue.count - queueLimit)
@@ -672,6 +749,10 @@ public actor GameAlgoEventTracker {
     }
 
     private func persistPendingQueue() {
+        if lifecycleEnabled {
+            lifecycleJournal.mergePending(retryBatch + inflightBatch + queue)
+            return
+        }
         guard let storage, let persistenceKey else { return }
         let pending = retryBatch + inflightBatch + queue
         guard !pending.isEmpty else {
@@ -687,6 +768,7 @@ public actor GameAlgoEventTracker {
     }
 
     private func clearPersistedQueue() {
+        if lifecycleEnabled { return } // ACKs keep the current session marker.
         if let storage, let persistenceKey { try? storage.removeValue(cacheKey: persistenceKey) }
         hasPersistedQueue = false
     }
@@ -697,11 +779,11 @@ public actor GameAlgoEventTracker {
         }
 
         let interval = UInt64(flushInterval * 1_000_000_000)
-        let tracker = self
-        flushTask = Task {
+        flushTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: interval)
-                await tracker.flush()
+                guard !Task.isCancelled, let self else { return }
+                await self.flush()
             }
         }
     }

@@ -411,6 +411,7 @@ func _run() -> void:
 	await _test_attribution_pause_inflight()
 	await _test_attribution_revoke_inflight()
 	await _test_context_identifiers()
+	await _test_oaid_caid_identifiers()
 	await _test_malformed_identifier_responses()
 	await _test_observability()
 	await _test_automatic_idfv()
@@ -1962,6 +1963,32 @@ func _test_malformed_identifier_responses() -> void:
 	transport.identifier_response = {"ok": true, "accepted": 0}
 	var duplicate: Dictionary = await client.set_adjust_adid("adid-1")
 	_check(duplicate.get("ok") == true and duplicate.get("accepted") == 0, "valid identifier duplicate acknowledgement succeeds")
+	client.free()
+
+
+func _test_oaid_caid_identifiers() -> void:
+	var transport := TransportFixture.new()
+	var client := _make_client({"transport": transport})
+	await client.refresh(true)
+	await client.set_oaid("oaid-device", "2026-10-26T00:00:00.000Z")
+	await client.set_oaid("00000000000000000000000000000000")
+	var caids := [{"caid": "CAID/Current", "version": "20260002"}, {"caid": "caid-previous", "version": "20260001"}]
+	await client.set_caid(caids)
+	await client.set_caid(null)
+	await client.set_caid([])
+	var bodies := transport.bodies_for("/v1/context-identifiers")
+	_check(bodies.size() == 5, "OAID and CAID use the existing mapping endpoint")
+	if bodies.size() == 5:
+		_check(bodies[0]["identifierType"] == "oaid" and bodies[0]["identifierValue"] == "oaid-device", "OAID remains a scalar identifier")
+		_check(bodies[0]["identifierHash"] == "sha256:fc3d2407e71b11411eaf40d5af3718fdd28280dc6b399de879311d0688fa0d6c", "OAID hash matches the server")
+		_check(bodies[1]["identifierValue"] == null, "zero OAID clears mapping")
+		_check(bodies[2]["identifierValue"] is String and JSON.parse_string(bodies[2]["identifierValue"]) == caids, "SDK serializes the complete CAID versions without modifying values")
+		_check(bodies[2]["identifierHash"] == "sha256:ab73a93a173fae112de0e0c8efcb61f81e9328a0f55b0627811c9e206c12232b", "CAID serialized-string hash matches the server")
+		_check(bodies[3]["identifierValue"] == null and bodies[4]["identifierValue"] == null, "null and empty CAID lists clear mapping")
+	for bad: Variant in ["already-stringified", [{"caid": "x"}], [{"caid": "", "version": "v"}], [{"caid": "a", "version": "v"}, {"caid": "b", "version": "v"}], [{"caid": "x".repeat(600), "version": "v"}]]:
+		var result: Dictionary = await client.set_caid(bad)
+		_check(result.get("error") == "invalid_caid" and client.last_error == "invalid_caid", "invalid CAID input returns a local error")
+	_check(transport.bodies_for("/v1/context-identifiers").size() == 5, "invalid CAID input never reaches HTTP")
 	client.free()
 
 

@@ -17,6 +17,7 @@ public final class GameAlgoClientSmokeTest {
     }
 
     private static void runAll() throws Exception {
+        GameAlgoLifecycleTest.runAll();
         testSharedProtocolFixtureDecodesAndUsesImmutableScriptVersion();
         testFetchConfigSendsHeadersAndCaches();
         testFetchConfigFile();
@@ -533,12 +534,16 @@ public final class GameAlgoClientSmokeTest {
         String adjustHash = sha256("{\"identifierType\":\"adjust_adid\",\"identifierValue\":\"adjust-1\"}");
         String firebaseHash = sha256("{\"identifierType\":\"firebase_app_instance_id\",\"identifierValue\":\"firebase-1\"}");
         String gaidHash = sha256("{\"identifierType\":\"gaid\",\"identifierValue\":null}");
+        String oaidHash = "sha256:fc3d2407e71b11411eaf40d5af3718fdd28280dc6b399de879311d0688fa0d6c";
+        String clearOaidHash = sha256("{\"identifierType\":\"oaid\",\"identifierValue\":null}");
         FakeHttpClient httpClient = new FakeHttpClient();
         httpClient.enqueue(jsonResponse(configJson("v1")));
         httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":1,\"identifierHash\":\"" + adjustHash + "\"}"));
         httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":1,\"identifierHash\":\"" + adjustHash + "\"}"));
         httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":1,\"identifierHash\":\"" + firebaseHash + "\"}"));
         httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":1,\"identifierHash\":\"" + gaidHash + "\"}"));
+        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":1,\"identifierHash\":\"" + oaidHash + "\"}"));
+        for (int index = 0; index < 3; index++) httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":1,\"identifierHash\":\"" + clearOaidHash + "\"}"));
         MemoryCacheStorage cache = new MemoryCacheStorage();
         GameAlgoClient client = new GameAlgoClient(
                 "ga_live_test_key_0123456789abcdef",
@@ -559,22 +564,36 @@ public final class GameAlgoClientSmokeTest {
         GameAlgoContextIdentifierResponse duplicate = client.setAdjustAdid("adjust-1");
         client.setFirebaseAppInstanceId("firebase-1");
         client.setGoogleAdvertisingId("00000000-0000-0000-0000-000000000000");
+        client.setOaid("oaid-device", "2026-10-26T00:00:00.000Z");
+        client.setOaid(null);
+        client.setOaid("00000000000000000000000000000000");
+        client.setOaid("00000000-0000-0000-0000-000000000000");
 
         check(first.getAccepted() == 1, "first context identifier should upload");
         check(duplicate.getAccepted() == 1, "repeated context identifier should append another mapping record");
-        check(httpClient.requests.size() == 5, "config plus four identifier requests should be sent");
+        check(httpClient.requests.size() == 9, "config plus eight identifier requests should be sent");
         List<String> types = new ArrayList<>();
         for (int index = 1; index < httpClient.requests.size(); index++) {
             GameAlgoHttpRequest request = httpClient.requests.get(index);
             check("https://gamealgo.test/algo_sdk/v1/context-identifiers".equals(request.getUrl().toString()), "context identifier URL should match Protocol v1");
             types.add((String) requestBody(request).get("identifierType"));
         }
-        check(types.equals(Arrays.asList("adjust_adid", "adjust_adid", "firebase_app_instance_id", "gaid")), "identifier records should upload independently");
+        check(types.equals(Arrays.asList("adjust_adid", "adjust_adid", "firebase_app_instance_id", "gaid", "oaid", "oaid", "oaid", "oaid")), "identifier records should upload independently");
         Map<String, Object> adjustBody = requestBody(httpClient.requests.get(1));
         Map<String, Object> gaidBody = requestBody(httpClient.requests.get(4));
         check("ctx-1".equals(adjustBody.get("contextId")), "context identifier should include current contextId");
         check("u1".equals(adjustBody.get("userId")), "context identifier should include GameAlgo userId");
         check(gaidBody.containsKey("identifierValue") && gaidBody.get("identifierValue") == null, "zero GAID should become a deletion");
+        Map<String, Object> oaidBody = requestBody(httpClient.requests.get(5));
+        check(oaidBody.get("identifierValue").equals("oaid-device") && oaidBody.get("identifierHash").equals(oaidHash), "OAID is reported verbatim with a protocol-compatible hash");
+        check(oaidBody.get("observedAt").equals("2026-10-26T00:00:00.000Z"), "preserve observedAt");
+        for (int index = 6; index < 9; index++) check(requestBody(httpClient.requests.get(index)).get("identifierValue") == null, "unavailable OAIDs clear the mapping");
+        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":1}"));
+        client.tracker().newSession("identifier-next");
+        client.tracker().flush();
+        try { client.setOaid("next-oaid"); throw new AssertionError("an old context must not be used for the new session"); }
+        catch (GameAlgoException expected) { check(expected.getMessage().contains("context is not ready"), "name the missing context"); }
+        client.tracker().close();
     }
 
     private static void testTrackerBuffersEventsUntilContextIsReady() throws Exception {

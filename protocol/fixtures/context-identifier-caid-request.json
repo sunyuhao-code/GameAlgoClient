@@ -1,0 +1,10 @@
+{
+  "userId": "u1",
+  "sessionId": "caid-session",
+  "contextId": "ctx-1",
+  "platform": "ios",
+  "identifierType": "caid",
+  "identifierValue": "[{\"caid\":\"CAID/Current\",\"version\":\"20260002\"},{\"caid\":\"caid-previous\",\"version\":\"20260001\"}]",
+  "observedAt": "2026-10-26T00:00:00.000Z",
+  "identifierHash": "sha256:ab73a93a173fae112de0e0c8efcb61f81e9328a0f55b0627811c9e206c12232b"
+}

@@ -16,7 +16,7 @@ public final class GameAlgoFileCacheStorage implements GameAlgoCacheStorage {
     }
 
     @Override
-    public String getItem(String key) throws GameAlgoException {
+    public synchronized String getItem(String key) throws GameAlgoException {
         File file = fileForKey(key);
         if (!file.exists()) {
             return null;
@@ -35,18 +35,17 @@ public final class GameAlgoFileCacheStorage implements GameAlgoCacheStorage {
     }
 
     @Override
-    public void setItem(String key, String value) throws GameAlgoException {
+    public synchronized void setItem(String key, String value) throws GameAlgoException {
         if (!directory.exists() && !directory.mkdirs()) {
             throw new GameAlgoException("Failed to create cache directory");
         }
         File target = fileForKey(key);
-        File temporary = new File(directory, target.getName() + ".tmp");
+        File temporary = new File(directory, target.getName() + ".tmp." + java.util.UUID.randomUUID());
         try (FileOutputStream output = new FileOutputStream(temporary)) {
             output.write(value.getBytes(StandardCharsets.UTF_8));
             output.getFD().sync();
-            if (target.exists() && !target.delete()) {
-                throw new IOException("Failed to replace existing cache file");
-            }
+            // Android's same-filesystem rename replaces the destination atomically.
+            // Never delete the last committed file before its replacement exists.
             if (!temporary.renameTo(target)) {
                 throw new IOException("Failed to commit cache file");
             }
@@ -59,7 +58,7 @@ public final class GameAlgoFileCacheStorage implements GameAlgoCacheStorage {
     }
 
     @Override
-    public void removeItem(String key) throws GameAlgoException {
+    public synchronized void removeItem(String key) throws GameAlgoException {
         File file = fileForKey(key);
         if (file.exists() && !file.delete()) {
             throw new GameAlgoException("Failed to delete cache");

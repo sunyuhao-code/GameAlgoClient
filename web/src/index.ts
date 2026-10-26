@@ -9,7 +9,7 @@ import { GameAlgoBrowserStorage, type GameAlgoBrowserStorageOptions } from "./br
 import { GameAlgoWebScriptRuntime } from "./script-runtime.ts";
 import { GameAlgoMatchmakingClient } from "./multiplayer.ts";
 
-export const GAMEALGO_WEB_SDK_VERSION = "1.0.20";
+export const GAMEALGO_WEB_SDK_VERSION = "1.0.21";
 const WEB_KEEPALIVE_BODY_LIMIT_BYTES = 60 * 1024;
 const WEB_EVENT_BATCH_BODY_BUDGET_BYTES = 48 * 1024;
 type TapLifecycle = {

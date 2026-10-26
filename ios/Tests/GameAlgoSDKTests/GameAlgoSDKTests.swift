@@ -776,6 +776,70 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(bodies[5]["identifierValue"] as? String, "idfv-1")
     }
 
+    func testCaidSerializesVersionsAndRejectsInvalidInputOrStaleContext() async throws {
+        let httpClient = MockHTTPClient()
+        try await httpClient.enqueueJSON(configResponse(version: "v1"))
+        let caidHash = "sha256:ab73a93a173fae112de0e0c8efcb61f81e9328a0f55b0627811c9e206c12232b"
+        let clearHash = GameAlgoSHA256.hash("{\"identifierType\":\"caid\",\"identifierValue\":null}")
+        try await httpClient.enqueueJSON(["ok": true, "accepted": 1, "identifierHash": caidHash])
+        for _ in 0..<2 {
+            try await httpClient.enqueueJSON(["ok": true, "accepted": 1, "identifierHash": clearHash])
+        }
+        let sdk = GameAlgoSDK(
+            gameKey: gameKey, baseURL: URL(string: "https://gamealgo.test")!,
+            httpClient: httpClient, cacheStorage: nil, userId: "u1",
+            _autoStart: false, eventFlushInterval: 0
+        )
+        _ = try await sdk.fetchConfig(userId: "u1")
+        let values = [
+            GameAlgoCaid(caid: "CAID/Current", version: "20260002"),
+            GameAlgoCaid(caid: "caid-previous", version: "20260001"),
+        ]
+        _ = try await sdk.setCaid(values, observedAt: "2026-10-26T00:00:00.000Z")
+        _ = try await sdk.setCaid(nil)
+        _ = try await sdk.setCaid([])
+
+        let requests = await httpClient.requests
+        let bodies = try requests.dropFirst().map(requestBody)
+        XCTAssertEqual(bodies.count, 3)
+        XCTAssertTrue(requests.dropFirst().allSatisfy { $0.url.path == "/v1/context-identifiers" })
+        let encodedValues = try XCTUnwrap(bodies[0]["identifierValue"] as? String)
+        XCTAssertEqual(try JSONDecoder().decode([GameAlgoCaid].self, from: Data(encodedValues.utf8)), values)
+        XCTAssertEqual(bodies[0]["identifierType"] as? String, "caid")
+        XCTAssertEqual(bodies[0]["identifierHash"] as? String, caidHash)
+        XCTAssertEqual(bodies[0]["observedAt"] as? String, "2026-10-26T00:00:00.000Z")
+        XCTAssertEqual(bodies[0]["contextId"] as? String, "ctx-1")
+        XCTAssertTrue(bodies[1]["identifierValue"] is NSNull)
+        XCTAssertTrue(bodies[2]["identifierValue"] is NSNull)
+
+        let invalid: [[GameAlgoCaid]] = [
+            [.init(caid: "", version: "v")], [.init(caid: "a", version: "")],
+            [.init(caid: " a", version: "v")],
+            [.init(caid: "a", version: "v"), .init(caid: "b", version: "v")],
+            [.init(caid: String(repeating: "汉", count: 200), version: "v")],
+        ]
+        for input in invalid {
+            do {
+                _ = try await sdk.setCaid(input)
+                XCTFail("Invalid CAID must be refused locally")
+            } catch GameAlgoError.encodingFailed { }
+        }
+        let afterInvalid = await httpClient.requests
+        XCTAssertEqual(afterInvalid.count, requests.count)
+
+        try await httpClient.enqueueJSON(["ok": true, "accepted": 1])
+        await sdk.tracker.newSession("identifier-next")
+        await sdk.tracker.flush()
+        do {
+            _ = try await sdk.setCaid(values)
+            XCTFail("The previous session's context must not be reused")
+        } catch GameAlgoError.encodingFailed(let message) {
+            XCTAssertEqual(message, "config context is not ready")
+        }
+        let finalRequests = await httpClient.requests
+        XCTAssertEqual(finalRequests.filter { $0.url.path == "/v1/context-identifiers" }.count, 3)
+    }
+
     func testInitializationReportsIdentifierForVendorWithoutBlockingReadiness() async throws {
         let idfvHash = GameAlgoSHA256.hash("{\"identifierType\":\"idfv\",\"identifierValue\":\"vendor-1\"}")
         let httpClient = MockHTTPClient()
