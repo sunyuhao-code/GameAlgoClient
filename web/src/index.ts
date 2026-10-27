@@ -9,7 +9,7 @@ import { GameAlgoBrowserStorage, type GameAlgoBrowserStorageOptions } from "./br
 import { GameAlgoWebScriptRuntime } from "./script-runtime.ts";
 import { GameAlgoMatchmakingClient } from "./multiplayer.ts";
 
-export const GAMEALGO_WEB_SDK_VERSION = "1.0.21";
+export const GAMEALGO_WEB_SDK_VERSION = "1.0.22";
 const WEB_KEEPALIVE_BODY_LIMIT_BYTES = 60 * 1024;
 const WEB_EVENT_BATCH_BODY_BUDGET_BYTES = 48 * 1024;
 type TapLifecycle = {
@@ -60,6 +60,7 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
   private readonly lifecycleTarget?: Pick<Window, "addEventListener" | "removeEventListener">;
   private readonly documentTarget?: Pick<Document, "addEventListener" | "removeEventListener" | "visibilityState">;
   private readonly webScriptRuntime: GameAlgoWebScriptRuntime;
+  private readonly deviceOverrides: Record<string, JsonValue>;
   private readonly onVisibilityChange: () => void;
   private readonly onPageHide: () => void;
   private readonly onPageShow: () => void;
@@ -105,14 +106,11 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
       ),
       eventPersistOnEnqueue: options.eventPersistOnEnqueue ?? true,
       logger: options.logger ?? false,
-      device: {
-        runtime: "h5",
-        ...browserDeviceContext(),
-        ...(options.device ?? {}),
-      },
+      device: { ...(options.device ?? {}) },
     });
 
     this.webScriptRuntime = scriptRuntime;
+    this.deviceOverrides = { ...(options.device ?? {}) };
     this.matchmaking = new GameAlgoMatchmakingClient({
       apiBaseUrl: options.baseUrl,
       gameKey: options.gameKey,
@@ -154,6 +152,18 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
 
   static init(options: GameAlgoWebClientOptions): GameAlgoWebClient {
     return new GameAlgoWebClient(options);
+  }
+
+  protected override defaultDeviceContext(): Record<string, JsonValue> {
+    const context = super.defaultDeviceContext();
+    // Node/browser shims do not identify the OS of an H5 host.
+    delete context.os;
+    return {
+      ...context,
+      runtime: "h5",
+      ...browserDeviceContext(),
+      ...this.deviceOverrides,
+    };
   }
 
   async flush(): Promise<void> {
@@ -264,14 +274,72 @@ export function initGameAlgoWeb(options: GameAlgoWebClientOptions): GameAlgoWebC
 }
 
 function browserDeviceContext(): Record<string, JsonValue> {
-  if (typeof window === "undefined") return {};
+  const context: Record<string, JsonValue> = {};
+  const os = browserOperatingSystem();
+  if (os) context.os = os;
+  Object.assign(context, tapDeviceContext());
+  if (typeof window === "undefined") return context;
   return {
+    ...context,
     viewportWidth: Math.max(0, Math.round(window.innerWidth || 0)),
     viewportHeight: Math.max(0, Math.round(window.innerHeight || 0)),
     devicePixelRatio: Number.isFinite(window.devicePixelRatio) ? window.devicePixelRatio : 1,
     touchPoints: typeof navigator === "undefined" ? 0 : navigator.maxTouchPoints || 0,
     standalone: typeof matchMedia === "function" ? matchMedia("(display-mode: standalone)").matches : false,
   };
+}
+
+function normalizeOperatingSystem(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const name = value.trim().toLowerCase().replace(/[\s_-]+/g, "");
+  const names: Record<string, string> = {
+    ios: "ios", ipados: "ios", iphoneos: "ios", android: "android",
+    mac: "macos", macos: "macos", macosx: "macos", darwin: "macos",
+    windows: "windows", windowsnt: "windows", win32: "windows", win64: "windows",
+    linux: "linux", harmonyos: "harmonyos", openharmony: "harmonyos", ohos: "harmonyos",
+  };
+  return Object.prototype.hasOwnProperty.call(names, name) ? names[name] : undefined;
+}
+
+function browserOperatingSystem(): string | undefined {
+  if (typeof navigator === "undefined") return undefined;
+  const ua = navigator.userAgent || "";
+  const platform = navigator.platform || "";
+  if (/HarmonyOS|OpenHarmony/i.test(ua)) return "harmonyos";
+  if (/Android/i.test(ua)) return "android";
+  if (/iPhone|iPad|iPod/i.test(ua) || (/Mac/i.test(platform) && navigator.maxTouchPoints > 1)) return "ios";
+  if (/Windows/i.test(ua)) return "windows";
+  if (/Macintosh|Mac OS X/i.test(ua)) return "macos";
+  if (/Linux/i.test(ua) || /^Linux/i.test(platform)) return "linux";
+  return normalizeOperatingSystem(platform);
+}
+
+function tapDeviceContext(): Record<string, JsonValue> {
+  try {
+    const tap = (globalThis as { tap?: { getDeviceInfo?: () => unknown } }).tap;
+    if (typeof tap?.getDeviceInfo !== "function") return {};
+    const value = tap.getDeviceInfo();
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    const info = value as Record<string, unknown>;
+    if (typeof info.then === "function") {
+      void Promise.resolve(value).catch(() => undefined);
+      return {};
+    }
+    const system = typeof info.system === "string" ? info.system.trim() : "";
+    const systemName = system.match(/^(iOS|iPadOS|iPhone OS|Android|Windows(?: NT)?|macOS|Mac OS X|HarmonyOS|OpenHarmony|Linux)\b/i)?.[1];
+    const os = normalizeOperatingSystem(info.platform) ?? normalizeOperatingSystem(systemName);
+    if (!os) return {};
+    const context: Record<string, JsonValue> = { os };
+    // TapTap iOS returns "26.5"; some hosts include the OS name. UA versions
+    // may be frozen for compatibility and are deliberately not used here.
+    const version = systemName ? system.slice(systemName.length).trim() : system;
+    if ((!systemName || normalizeOperatingSystem(systemName) === os) && /^\d+(?:[._]\d+){0,5}$/.test(version)) {
+      context.osVersion = version.replace(/_/g, ".");
+    }
+    return context;
+  } catch {
+    return {};
+  }
 }
 
 function webUrlAttribution(options: GameAlgoWebUrlAttributionOptions): Record<string, JsonValue> {

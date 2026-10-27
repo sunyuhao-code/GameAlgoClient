@@ -1210,6 +1210,30 @@ local function isRetryableConfigFailure(response)
     return status == 0 or status == 408 or status == 425 or status == 429 or status >= 500
 end
 
+local function deviceContext()
+    local device = {}
+    local osNames = {
+        ios = "ios", ipados = "ios", iphoneos = "ios", android = "android",
+        mac = "macos", macos = "macos", macosx = "macos", darwin = "macos",
+        windows = "windows", windowsnt = "windows", win32 = "windows", win64 = "windows",
+        linux = "linux", harmonyos = "harmonyos", openharmony = "harmonyos", ohos = "harmonyos",
+    }
+    for _, name in ipairs({"GetNativePlatform", "GetPlatform"}) do
+        local fn = _G[name]
+        if type(fn) == "function" then
+            local ok, value = pcall(fn)
+            if ok and type(value) == "string" then
+                local key = value:lower():gsub("[%s_-]+", "")
+                if osNames[key] then device.os = osNames[key]; break end
+            end
+        end
+    end
+    -- GetOSVersion can report a macOS/Darwin description on an iPhone.
+    -- Only use a version explicitly supplied by the game.
+    for key, value in pairs(state_.device) do device[key] = value end
+    return device
+end
+
 local function configRequestBody()
     return {
         userId = state_.userId,
@@ -1224,7 +1248,7 @@ local function configRequestBody()
         appVersion = state_.appVersion,
         experimentIntegrationVersion = state_.experimentIntegrationVersion,
         timezone = state_.timezone,
-        device = state_.device,
+        device = deviceContext(),
         isDebug = state_.isDebug,
     }
 end

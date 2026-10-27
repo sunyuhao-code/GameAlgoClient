@@ -233,6 +233,10 @@ export class GameAlgoRestClient {
     await setCallbackParam("gamealgo_user_created_at", identity.userCreatedAt);
   }
 
+  protected defaultDeviceContext(): Record<string, JsonValue> {
+    return defaultDeviceContext();
+  }
+
   async fetchConfig(options: FetchConfigOptions = {}): Promise<ConfigResponse> {
     const identity = await this.userIdentity(options.userId);
     const userCreatedAt = clean(options.userCreatedAt) ?? identity.userCreatedAt;
@@ -252,7 +256,7 @@ export class GameAlgoRestClient {
     const sessionId = clean(options.sessionId) ?? this.tracker.currentSessionId();
     const isDebug = options.isDebug ?? this.isDebug;
     const device = {
-      ...defaultDeviceContext(),
+      ...this.defaultDeviceContext(),
       ...(options.device ?? {}),
       ...(options.deviceId ? { deviceId: options.deviceId } : {}),
     };

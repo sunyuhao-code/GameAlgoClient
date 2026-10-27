@@ -32,6 +32,8 @@ GameAlgo.Init({
 
 Lua SDK 会自动上报 `platform=maker`，接入代码不需要也不能选择运行平台。
 
+每次拉配置时，SDK 优先调用 `GetNativePlatform()`，失败或无法识别时再尝试 `GetPlatform()`，在 `device.os` 中填入 `ios`、`android`、`windows`、`macos`、`linux` 或 `harmonyos`。无法识别时省略此字段。Maker 的 `GetOSVersion()` 在 iPhone 上也可能返回 macOS/Darwin 描述，因此 SDK 不自动采集版本；游戏可以在 `device.osVersion` 中显式传入可信版本。`device` 的显式字段优先于自动检测，SDK 不修改传入的表。
+
 Maker / Lua SDK 不提供匹配、Lobby、房间连接或实时状态同步；需要这些能力的 H5 游戏请使用 [`@gamealgo/web`](../web/README.md)。
 
 `ga_live_xxx` 只是示例占位。实际接入必须使用真实 `ga_live_*`；如果当前没有真实 key，AI Agent 应使用 `ga_admin_*` 通过 GameAlgo CLI 创建或读取。`ga_admin_*` 只能给 CLI 使用，不能放入客户端。

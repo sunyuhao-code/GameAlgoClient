@@ -603,6 +603,55 @@ cloudCallbacks.ok({
 assert(timeoutStorage:GetItem("late_cloud_value") == nil)
 assert(timeoutReadyCount == 1)
 
+-- The iPhone probe reports iOS correctly but GetOSVersion returns a Darwin
+-- description. Only recognized platform names should be collected by default.
+local previousNativePlatform, previousPlatform, previousOSVersion = GetNativePlatform, GetPlatform, GetOSVersion
+local previousCloud = clientCloud
+clientCloud = nil
+local osVersionCalls = 0
+GetOSVersion = function() osVersionCalls = osVersionCalls + 1; return "macOS/Mac OS X Unknown (Darwin kernel 25.5.0)" end
+local deviceCases = {
+    { native = "iOS", platform = "Android", expected = "ios" },
+    { native = "macOS", expected = "macos" },
+    { native = "Windows", expected = "windows" },
+    { native = "Linux", expected = "linux" },
+    { native = "HarmonyOS", expected = "harmonyos" },
+    { native = "Web", platform = "iOS", expected = "ios" },
+    { throws = true, platform = "Android", expected = "android" },
+    { native = "unknown", platform = "Web" },
+    { native = "iOS", expected = "manual", device = { os = "manual", osVersion = "26.5", custom = "kept" } },
+}
+for index, case in ipairs(deviceCases) do
+    GetNativePlatform = function() if case.throws then error("native API unavailable") end; return case.native end
+    GetPlatform = function() return case.platform end
+    local deviceOptions = case.device or { custom = "kept" }
+    local request
+    local deviceTransport = { Request = function(options, callback)
+        assert(options.url:match("/v1/config$"), options.url)
+        request = cjson.decode(options.body)
+        callback(nil, {status = 200, body = configFixture, headers = {}})
+    end }
+    GameAlgo.Init({
+        gameKey = "ga_live_fixture_key", userId = "device-user-" .. index,
+        sessionId = "device-session-" .. index, device = deviceOptions,
+        transport = deviceTransport, autoFetch = false, preloadConfigFiles = false,
+    })
+    GameAlgo.FetchConfig(function(error) assert(error == nil, tostring(error)) end)
+    assert(request and request.platform == "maker")
+    assert(request.device.os == case.expected, "unexpected OS in device case " .. index)
+    assert(request.device.custom == "kept")
+    assert(request.device.osVersion == deviceOptions.osVersion)
+    assert(deviceOptions.os == (case.device and "manual" or nil), "caller device table was mutated")
+    if index == 1 then
+        GetNativePlatform = function() return "Android" end
+        GameAlgo.FetchConfig(function(error) assert(error == nil, tostring(error)) end)
+        assert(request.device.os == "android", "refresh must read the current native platform")
+    end
+end
+assert(osVersionCalls == 0, "the unreliable Maker version API must not be called")
+GetNativePlatform, GetPlatform, GetOSVersion = previousNativePlatform, previousPlatform, previousOSVersion
+clientCloud = previousCloud
+
 local schedulerNowMs = 1000
 local schedulerUpdateHandler = nil
 local schedulerUnsubscribed = false

@@ -3,6 +3,15 @@
 Browser and ordinary WebView SDK for H5 games. The SDK always reports
 `platform=web`; application code cannot override it.
 
+Configuration requests include the operating system in `device.os` (`ios`,
+`android`, `windows`, `macos`, `linux`, or `harmonyos`). In TapTap, the SDK reads
+`tap.getDeviceInfo()` for the host platform and `device.osVersion`, including
+numeric versions such as `26.5` or prefixed values such as `iOS 26.5`. When the
+API is unavailable or fails, browser information provides the OS type. Browser
+UA versions can be frozen, so they are not used as OS versions. The SDK does
+not invoke the older permission-sensitive system-info APIs. Information is
+refreshed for each config request, and explicit `device` fields take precedence.
+
 ```ts
 import { GameAlgoWebClient } from "@gamealgo/web";
 

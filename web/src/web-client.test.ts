@@ -65,6 +65,104 @@ test("H5 client always reports the web platform and flushes events", async () =>
   client.close();
 });
 
+test("H5 config uses current TapTap system information and preserves explicit device overrides", async (t) => {
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const originalTap = Object.getOwnPropertyDescriptor(globalThis, "tap");
+  t.after(() => {
+    if (originalNavigator) Object.defineProperty(globalThis, "navigator", originalNavigator);
+    else Reflect.deleteProperty(globalThis, "navigator");
+    if (originalTap) Object.defineProperty(globalThis, "tap", originalTap);
+    else Reflect.deleteProperty(globalThis, "tap");
+  });
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: {
+    userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X)",
+    platform: "iPhone", maxTouchPoints: 5,
+  } });
+  let info: unknown = { platform: "ios", system: "26.5" };
+  let fail = false;
+  let legacyCalls = 0;
+  const tap = {
+    getDeviceInfo() { if (fail) throw new Error("bridge unavailable"); return info; },
+    getSystemInfoSync() { legacyCalls++; throw new Error("permission API must not be called"); },
+  };
+  Object.defineProperty(globalThis, "tap", { configurable: true, value: tap });
+  const requests: Record<string, unknown>[] = [];
+  const client = new GameAlgoWebClient({
+    baseUrl: "https://gamealgo.example.com", gameKey: "ga_live_test", userId: "platform-user",
+    autoLifecycle: false, preloadConfigFiles: false, device: { custom: "preserved" },
+    fetchImpl: async (_input, init) => {
+      requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return Response.json({ contextId: "ctx-system", configVersion: "1", ttlSeconds: 60, experiments: [], configFiles: [] });
+    },
+  });
+  t.after(() => client.close());
+  assert.equal(await client.waitForReady(), true);
+  let device = requests.at(-1)!.device as Record<string, unknown>;
+  assert.equal(requests.at(-1)!.platform, "web");
+  assert.equal(device.os, "ios");
+  assert.equal(device.osVersion, "26.5", "the host version takes precedence over the compatibility UA");
+
+  info = { platform: "android", system: "Android 15" };
+  await client.fetchConfig({ forceRefresh: true });
+  device = requests.at(-1)!.device as Record<string, unknown>;
+  assert.deepEqual({ os: device.os, version: device.osVersion, runtime: device.runtime, custom: device.custom },
+    { os: "android", version: "15", runtime: "h5", custom: "preserved" });
+  await client.fetchConfig({ forceRefresh: true, device: { os: "windows", osVersion: "11" } });
+  device = requests.at(-1)!.device as Record<string, unknown>;
+  assert.equal(device.os, "windows");
+  assert.equal(device.osVersion, "11");
+
+  for (const unavailable of ["missing", "throws", "invalid", "rejects"] as const) {
+    Object.defineProperty(globalThis, "tap", { configurable: true, value: unavailable === "missing" ? undefined : tap });
+    fail = unavailable === "throws";
+    info = unavailable === "rejects" ? Promise.reject(new Error("async bridge failed")) : { platform: "unknown", system: "26.5" };
+    await client.fetchConfig({ forceRefresh: true });
+    device = requests.at(-1)!.device as Record<string, unknown>;
+    assert.equal(device.os, "ios", unavailable);
+    assert.equal(device.osVersion, undefined, "a frozen UA must not manufacture an OS version");
+  }
+  info = { platform: "ios", system: "iOS 26.5" };
+  await client.fetchConfig({ forceRefresh: true });
+  device = requests.at(-1)!.device as Record<string, unknown>;
+  assert.equal(device.osVersion, "26.5", "host information can recover on a later config request");
+  assert.equal(legacyCalls, 0);
+});
+
+test("H5 browser fallback distinguishes mobile systems and desktop iPad mode without inventing versions", async (t) => {
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  t.after(() => {
+    if (originalNavigator) Object.defineProperty(globalThis, "navigator", originalNavigator);
+    else Reflect.deleteProperty(globalThis, "navigator");
+  });
+  const cases = [
+    { userAgent: "Mozilla/5.0 (Linux; Android 15)", platform: "Linux armv8l", maxTouchPoints: 5, os: "android" },
+    { userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", platform: "Win32", maxTouchPoints: 0, os: "windows" },
+    { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", platform: "MacIntel", maxTouchPoints: 0, os: "macos" },
+    { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", platform: "MacIntel", maxTouchPoints: 5, os: "ios" },
+    { userAgent: "Mozilla/5.0 (X11; Linux x86_64)", platform: "Linux x86_64", maxTouchPoints: 0, os: "linux" },
+    { userAgent: "Mozilla/5.0 (HarmonyOS NEXT)", platform: "unknown", maxTouchPoints: 5, os: "harmonyos" },
+    { userAgent: "unknown", platform: "unknown", maxTouchPoints: 0, os: undefined },
+  ];
+  let device: Record<string, unknown> = {};
+  const client = new GameAlgoWebClient({
+    baseUrl: "https://gamealgo.example.com", gameKey: "ga_live_test", userId: "browser-system-user",
+    autoLifecycle: false, preloadConfigFiles: false,
+    fetchImpl: async (_input, init) => {
+      device = JSON.parse(String(init?.body)).device;
+      return Response.json({ contextId: "ctx-browser-system", configVersion: "1", ttlSeconds: 60, experiments: [], configFiles: [] });
+    },
+  });
+  t.after(() => client.close());
+  assert.equal(await client.waitForReady(), true);
+  for (const value of cases) {
+    Object.defineProperty(globalThis, "navigator", { configurable: true, value });
+    await client.fetchConfig({ forceRefresh: true });
+    assert.equal(device.os, value.os, value.userAgent);
+    assert.equal(device.osVersion, undefined);
+    assert.equal(device.runtime, "h5");
+  }
+});
+
 test("browser storage falls back without IndexedDB", async () => {
   const values = new Map<string, string>();
   const localStorage = {
