@@ -237,6 +237,9 @@ export class GameAlgoRestClient {
     return defaultDeviceContext();
   }
 
+  /** Platform hook for a fresh server context, with the identity that created it. */
+  protected onConfigReady(_config: ConfigResponse, _identity: { userId: string; sessionId: string; isDebug: boolean }): void {}
+
   async fetchConfig(options: FetchConfigOptions = {}): Promise<ConfigResponse> {
     const identity = await this.userIdentity(options.userId);
     const userCreatedAt = clean(options.userCreatedAt) ?? identity.userCreatedAt;
@@ -321,6 +324,7 @@ export class GameAlgoRestClient {
         userId: identity.userId,
       };
       await this.persistSnapshot();
+      this.onConfigReady(config, { userId: identity.userId, sessionId, isDebug });
       this.log(`config fetched: version=${config.configVersion}, experiments=${config.experiments.length}, configFiles=${config.configFiles.length}, ttl=${config.ttlSeconds}s`);
       this.logAssignments(config.experiments, "config ready");
       return config;

@@ -58,6 +58,24 @@ Lua SDK 自动管理持久化，不允许传入 `storage`：
 
 SDK 从 `GameAlgo.Init` 开始设置一个固定 10 秒的初始化看门狗。10 秒内拿到有效 `contextId` 就取消检查；届时仍未成功，则只通过独立的 `/v1/diagnostics/init` 接口上报一条 `initialization_timeout`，本次 Init 不重复上报，也不补发恢复事件。该接口不依赖 `contextId`，不会生成虚假 Context 或计入 DAU。显式配置 `autoFetch=false` 时不会启动看门狗。
 
+### TapDB 身份关联
+
+本次 `GameAlgo.Init` 首次取得有效的 `/v1/config` 响应后，SDK 自动通过 Maker 宿主的 `sdk:LogEvent(name, properties)` 尝试上报一次 `gamealgo_context_link`，用于 DW 关联 GameAlgo Context 与 TapDB 身份。游戏无需另行调用。
+
+| 自定义属性 | 含义 |
+| --- | --- |
+| `gamealgo_context_id` | 本次成功配置响应的 `contextId` |
+| `gamealgo_device_id` | 对应配置请求的 `userId`，默认是 GameAlgo 生成并持久化的匿名设备标识；显式传入 `userId` 时使用该值 |
+| `gamealgo_is_debug` | 对应配置请求的 `isDebug`，用于区分调试数据 |
+
+属性均为扁平值。TapDB 落库时可按 `dataname=gamealgo_context_link` 定位事件，从 `_preset.gamealgo_context_id`、`_preset.gamealgo_device_id` 读取关联键，并结合 TapDB 的 `deviceid`、`userid` 等字段处理。`gamealgo_device_id` 不等同于 TapDB `deviceid`、OAID 或 CAID。
+
+显式 `autoFetch=false` 时，在首次手动 `FetchConfig` 成功后上报；配置请求失败或缺少有效 `contextId` 时不上报，恢复成功后再尝试。一次 Init 内的配置刷新、`NewSession` 和重复响应不会重复上报，重新 Init 后可再上报一次。
+
+该事件直接走宿主 TapDB 通道，不进入 GameAlgo 事件队列、不占用普通事件额度。宿主缺少接口、抛错或返回 `false` 都不影响配置读取和游戏初始化；不在 SDK 内重试该事件，不传额外回调参数。宿主受理不代表最终落库成功，后续仍以 TapDB 数据为准。
+
+如果首次配置成功时宿主接口尚未就绪，SDK 保留该次 Context 和身份，在更新循环中每 500ms 检查接口，持续最多 10 秒，不阻塞初始化。后续成功的配置响应也会再次检查接口，但不会覆盖待发的首次身份。只有真正调用宿主前才设置“已尝试”；调用被拒绝或抛错后不再重试。重新 Init 会清除旧的待发关联。
+
 Lua SDK 会同时记录 UTC 时间和带 UTC offset 的客户端本地时间：通过内部自动存储持久化 `userCreatedAt` / `userCreatedLocalAt`，context 上报 `createdLocalAt`，事件上报 `timestamp` / `createdLocalAt`。这些字段由 SDK 自动维护；事件进入队列时即固定发生时间，延迟上传或重试不会改写。
 
 ## 实验

@@ -32,6 +32,43 @@ gameAlgo.tracker.trackMilestone("new_user", "进入第一关");
 const decision = await gameAlgo.executor("level_dda").execute({ level: 12 });
 ```
 
+### TapDB identity linking in TapTap
+
+On the first successful server config response with a valid `contextId`, each
+H5 client instance makes one best-effort `gamealgo_context_link` report through
+the host's `tap.logEvent({ name, properties, success, fail, complete })`. Games
+do not need to call this themselves. The event and flat properties match Maker:
+
+| Property | Value |
+| --- | --- |
+| `gamealgo_context_id` | The successful config response's `contextId` |
+| `gamealgo_device_id` | That config request's `userId`: the persistent GameAlgo anonymous identity, or an explicitly supplied `userId` |
+| `gamealgo_is_debug` | That config request's `isDebug` flag |
+
+Use this event to join GameAlgo contexts to identities enriched by TapDB in DW.
+`gamealgo_device_id` is not the TapDB device ID, account ID, OAID, or CAID. The
+SDK does not read those identifiers from the sandbox or send game keys to TapDB.
+The game needs TapDB enabled and a formally published build for the tested
+TapTap ingestion path; a preview/test build or an accepted native callback alone
+does not prove that data reached TapDB storage.
+
+Config refreshes, returning to the foreground and explicit session changes do
+not repeat the event. A new client instance may send once again. Failed requests,
+invalid contexts and a persisted offline snapshot do not trigger it; a later
+successful server response can. Closing a client suppresses late responses.
+Missing host APIs, native errors and callback failures do not block initialization
+or ordinary event uploads. The SDK does not retry this event, wait for callbacks,
+or treat the normal `undefined` return value as confirmation of delivery.
+If the bridge is not ready at the first successful config response, the SDK
+retains that response's context and identity, checking for the bridge every
+500 ms for up to 10 seconds without blocking initialization. Later successful
+config responses also check for availability without replacing the pending
+first identity. The one-call guard is set only immediately before the native
+call; native rejection or failure is not retried. Closing the client cancels
+discovery and discards its pending link. This event bypasses the GameAlgo event
+queue and ordinary-event quota. Failures use the optional SDK logger; success
+does not produce an extra log.
+
 ### Wire ad reporting explicitly
 
 Games with ads must report `ad_view`; the Web SDK does not automatically observe

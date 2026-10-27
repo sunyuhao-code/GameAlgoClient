@@ -1,5 +1,6 @@
 import { GameAlgoRestClient } from "../../rest-api/src/client.ts";
 import type {
+  ConfigResponse,
   GameAlgoRestClientOptions,
   GameAlgoStorage,
   JsonValue,
@@ -9,9 +10,17 @@ import { GameAlgoBrowserStorage, type GameAlgoBrowserStorageOptions } from "./br
 import { GameAlgoWebScriptRuntime } from "./script-runtime.ts";
 import { GameAlgoMatchmakingClient } from "./multiplayer.ts";
 
-export const GAMEALGO_WEB_SDK_VERSION = "1.0.23";
+export const GAMEALGO_WEB_SDK_VERSION = "1.0.24";
 const WEB_KEEPALIVE_BODY_LIMIT_BYTES = 60 * 1024;
 const WEB_EVENT_BATCH_BODY_BUDGET_BYTES = 48 * 1024;
+const TAPDB_CONTEXT_LINK_EVENT = "gamealgo_context_link";
+type TapDbEventOptions = {
+  name: string;
+  properties: Record<string, string | boolean>;
+  success: (result: unknown) => void;
+  fail: (result: unknown) => void;
+  complete: (result: unknown) => void;
+};
 type TapLifecycle = {
   onHide?: (callback: () => void) => void;
   onShow?: (callback: () => void) => void;
@@ -74,6 +83,10 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
   private tapShowAttached = false;
   private tapDiscoveryTimer?: ReturnType<typeof setInterval>;
   private closed = false;
+  private tapDbContextLinkAttempted = false;
+  private tapDbContextLinkProperties?: TapDbEventOptions["properties"];
+  private tapDbContextLinkTimer?: ReturnType<typeof setInterval>;
+  private readonly tapDbLogger?: (message: string) => void;
   readonly matchmaking: GameAlgoMatchmakingClient;
 
   constructor(options: GameAlgoWebClientOptions) {
@@ -110,6 +123,7 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
     });
 
     this.webScriptRuntime = scriptRuntime;
+    this.tapDbLogger = typeof options.logger === "function" ? options.logger : undefined;
     this.deviceOverrides = { ...(options.device ?? {}) };
     this.matchmaking = new GameAlgoMatchmakingClient({
       apiBaseUrl: options.baseUrl,
@@ -166,6 +180,77 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
     };
   }
 
+  protected override onConfigReady(config: ConfigResponse, identity: { userId: string; sessionId: string; isDebug: boolean }): void {
+    if (this.closed || this.tapDbContextLinkAttempted || identity.sessionId !== this.tracker.currentSessionId()
+      || typeof config.contextId !== "string" || !config.contextId.trim() || !identity.userId.trim()) return;
+    this.tapDbContextLinkProperties ??= {
+      gamealgo_context_id: config.contextId,
+      gamealgo_device_id: identity.userId,
+      gamealgo_is_debug: identity.isDebug,
+    };
+    this.reportTapDbContextLink();
+    if (!this.closed && !this.tapDbContextLinkAttempted && !this.tapDbContextLinkTimer) {
+      let checks = 0;
+      this.tapDbContextLinkTimer = setInterval(() => {
+        this.reportTapDbContextLink();
+        if (this.closed || this.tapDbContextLinkAttempted || ++checks >= 20) this.stopTapDbContextLinkDiscovery();
+      }, 500);
+      this.tapDbContextLinkTimer.unref?.();
+    }
+  }
+
+  private stopTapDbContextLinkDiscovery(): void {
+    if (this.tapDbContextLinkTimer) clearInterval(this.tapDbContextLinkTimer);
+    this.tapDbContextLinkTimer = undefined;
+  }
+
+  private reportTapDbContextLink(): void {
+    const properties = this.tapDbContextLinkProperties;
+    if (this.closed || this.tapDbContextLinkAttempted || !properties) return;
+    let tap: { logEvent?: (options: TapDbEventOptions) => unknown } | undefined;
+    let logEvent: ((options: TapDbEventOptions) => unknown) | undefined;
+    try {
+      tap = (globalThis as { tap?: typeof tap }).tap;
+      logEvent = tap?.logEvent;
+    } catch { return; /* The bridge may not be ready yet. */ }
+    if (typeof logEvent !== "function") return;
+    // One best-effort host call per client initialization, including rejected calls.
+    // Set the guard before entering the bridge: callbacks may run synchronously.
+    this.tapDbContextLinkAttempted = true;
+    this.tapDbContextLinkProperties = undefined;
+    this.stopTapDbContextLinkDiscovery();
+    let settled = false;
+    const finish = (accepted: boolean) => {
+      if (settled || this.closed) return;
+      settled = true;
+      if (!accepted) {
+        try { this.tapDbLogger?.("[GameAlgoSDK] TapDB context link failed"); } catch { /* Logging must not break initialization. */ }
+      }
+    };
+    const onResult = (result: unknown) => {
+      try { finish(!!result && typeof result === "object" && "errno" in result && result.errno === 0); }
+      catch { finish(false); }
+    };
+    try {
+      // H5 uses one options object. Maker's LogEvent(name, properties) signature
+      // is not supported here and can silently drop the event in the H5 bridge.
+      const result = logEvent.call(tap, {
+        name: TAPDB_CONTEXT_LINK_EVENT,
+        properties,
+        success: onResult,
+        fail: () => finish(false),
+        complete: onResult,
+      });
+      // The tested native bridge returns undefined; only its callbacks confirm
+      // acceptance. Tolerate promise-based hosts without waiting for delivery.
+      void Promise.resolve(result).then((value) => {
+        if (value === false) finish(false);
+      }, () => finish(false));
+    } catch {
+      finish(false);
+    }
+  }
+
   async flush(): Promise<void> {
     await this.tracker.flushUrgent();
     await this.tracker.flush();
@@ -188,6 +273,8 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
 
   close(): void {
     this.closed = true;
+    this.stopTapDbContextLinkDiscovery();
+    this.tapDbContextLinkProperties = undefined;
     this.documentTarget?.removeEventListener("visibilitychange", this.onVisibilityChange);
     this.lifecycleTarget?.removeEventListener("pagehide", this.onPageHide);
     this.lifecycleTarget?.removeEventListener("pageshow", this.onPageShow);

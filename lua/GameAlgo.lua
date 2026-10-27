@@ -40,6 +40,9 @@ local CONFIG_FETCH_RETRY_BASE_MS = 1000
 local CONFIG_FETCH_RETRY_MAX_MS = 30000
 local CONFIG_FETCH_TIMEOUT_MS = 12000
 local INIT_WATCHDOG_MS = 10000
+local TAPDB_CONTEXT_LINK_EVENT = "gamealgo_context_link"
+local TAPDB_CONTEXT_LINK_DISCOVERY_INTERVAL_MS = 500
+local TAPDB_CONTEXT_LINK_DISCOVERY_WINDOW_MS = 10000
 local STANDARD_EVENT_TYPES = {
     session_end = true, level_start = true, level_end = true,
     ad_view = true, purchase = true, milestone = true,
@@ -105,6 +108,10 @@ local state_ = {
     configFetchTimeoutHandle = nil,
     initWatchdogHandle = nil,
     initDiagnosticReported = false,
+    tapDbContextLinkAttempted = false,
+    tapDbContextLinkProperties = nil,
+    tapDbContextLinkNextCheckAtMs = 0,
+    tapDbContextLinkDiscoveryUntilMs = 0,
     customEventCounts = {},
     ordinaryEventCounts = {},
     eventQuota = nil,
@@ -449,6 +456,44 @@ local function reportInitTimeout()
     }, function(error)
         if error then log("init timeout diagnostic upload failed: " .. tostring(error)) end
     end)
+end
+
+local function tryTapDbContextLink()
+    local properties = state_.tapDbContextLinkProperties
+    if state_.tapDbContextLinkAttempted or properties == nil then return end
+    state_.tapDbContextLinkNextCheckAtMs = clockMs() + TAPDB_CONTEXT_LINK_DISCOVERY_INTERVAL_MS
+    local found, host, logEvent = pcall(function()
+        -- Maker can expose sdk through the environment metatable.
+        local value = sdk
+        if value == nil then return nil end
+        return value, value.LogEvent
+    end)
+    if not found or type(logEvent) ~= "function" then return end
+    -- One best-effort native call per Init, even if the host rejects it.
+    -- Set the guard before calling out so refreshes cannot duplicate the link.
+    state_.tapDbContextLinkAttempted = true
+    state_.tapDbContextLinkProperties = nil
+    -- Keep the tested two-argument signature: older hosts reject callbacks.
+    local ok, accepted = pcall(logEvent, host, TAPDB_CONTEXT_LINK_EVENT, properties)
+    if not ok then
+        log("TapDB context link failed: " .. tostring(accepted))
+    elseif accepted == false then
+        log("TapDB context link rejected")
+    end
+end
+
+local function reportTapDbContextLink(contextId, requestBody)
+    if state_.tapDbContextLinkAttempted then return end
+    if state_.tapDbContextLinkProperties == nil then
+        -- Preserve the first config request identity while the host is loading.
+        state_.tapDbContextLinkProperties = {
+            gamealgo_context_id = contextId,
+            gamealgo_device_id = requestBody.userId,
+            gamealgo_is_debug = requestBody.isDebug == true,
+        }
+    end
+    state_.tapDbContextLinkDiscoveryUntilMs = clockMs() + TAPDB_CONTEXT_LINK_DISCOVERY_WINDOW_MS
+    tryTapDbContextLink()
 end
 
 local function mergeCustomEventCountBucket(from, to)
@@ -1163,6 +1208,10 @@ function GameAlgo.Init(options)
     state_.configFetchTimeoutHandle = nil
     state_.initWatchdogHandle = nil
     state_.initDiagnosticReported = false
+    state_.tapDbContextLinkAttempted = false
+    state_.tapDbContextLinkProperties = nil
+    state_.tapDbContextLinkNextCheckAtMs = 0
+    state_.tapDbContextLinkDiscoveryUntilMs = 0
     -- Read the stable Maker account id before any asynchronous clientCloud:Get.
     -- It remains available for diagnostics even when cloud-backed storage stalls.
     state_.prefetchedMakerUserId = options.accountUserId or resolveMakerUserId()
@@ -1315,6 +1364,7 @@ performConfigFetchAttempt = function()
             state_.scheduler:Cancel(state_.initWatchdogHandle)
             state_.initWatchdogHandle = nil
         end
+        reportTapDbContextLink(contextId, requestBody)
         log("config fetched: version=" .. tostring(config and config.configVersion or "unknown"))
         finishConfigFetch(nil, config)
         if current and requestBody.sessionId == state_.sessionId and state_.preloadConfigFiles and config then
@@ -1828,6 +1878,11 @@ function GameAlgo.Update()
     end
     if not state_.storageReady then return end
     local currentTime = clockMs()
+    if state_.tapDbContextLinkProperties ~= nil
+        and currentTime >= state_.tapDbContextLinkNextCheckAtMs
+        and currentTime <= state_.tapDbContextLinkDiscoveryUntilMs then
+        tryTapDbContextLink()
+    end
     if state_.queuePersistenceDirty
         and currentTime - state_.lastQueuePersistAtMs >= QUEUE_PERSIST_INTERVAL_MS then
         persistEventQueue()
