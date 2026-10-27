@@ -41,23 +41,13 @@ of `success`, `isEnded`, reward granting, error codes, or whether the callback
 contains a track ID. Preserve the original `trackId`, use `revenue=0` and
 `currency=CNY`, and let the platform reconcile the actual revenue.
 
-These are game-side adapter functions, not Web SDK methods:
+Since `@gamealgo/web@1.0.23`, the SDK exports `extractAdTrackId(result)` to read `trackId` / `track_id` from
+the callback itself or from an object / JSON string in `extra`, `msg`, or
+`message`. It preserves the original non-empty string and returns `undefined`
+when no ID is available. The reporter below is a game-side adapter:
 
 ```ts
-function extractAdTrackId(result: Record<string, unknown>): string | undefined {
-  for (const value of [result, result.extra, result.msg, result.message]) {
-    let data = value;
-    if (typeof data === "string") {
-      try { data = JSON.parse(data); } catch { continue; }
-    }
-    if (!data || typeof data !== "object" || Array.isArray(data)) continue;
-    const fields = data as Record<string, unknown>;
-    for (const id of [fields.trackId, fields.track_id]) {
-      if (typeof id === "string" && id.trim()) return id;
-    }
-  }
-  return undefined;
-}
+import { extractAdTrackId } from "@gamealgo/web";
 
 function createAdCloseReporter(placement: string) {
   let reported = false;

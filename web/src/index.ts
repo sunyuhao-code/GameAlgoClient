@@ -9,7 +9,7 @@ import { GameAlgoBrowserStorage, type GameAlgoBrowserStorageOptions } from "./br
 import { GameAlgoWebScriptRuntime } from "./script-runtime.ts";
 import { GameAlgoMatchmakingClient } from "./multiplayer.ts";
 
-export const GAMEALGO_WEB_SDK_VERSION = "1.0.22";
+export const GAMEALGO_WEB_SDK_VERSION = "1.0.23";
 const WEB_KEEPALIVE_BODY_LIMIT_BYTES = 60 * 1024;
 const WEB_EVENT_BATCH_BODY_BUDGET_BYTES = 48 * 1024;
 type TapLifecycle = {
@@ -271,6 +271,24 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
 
 export function initGameAlgoWeb(options: GameAlgoWebClientOptions): GameAlgoWebClient {
   return GameAlgoWebClient.init(options);
+}
+
+/** Extract an original TapTap ad track ID from an onClose callback result. */
+export function extractAdTrackId(result: unknown): string | undefined {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return undefined;
+  const callback = result as Record<string, unknown>;
+  for (const value of [callback, callback.extra, callback.msg, callback.message]) {
+    let data = value;
+    if (typeof data === "string") {
+      try { data = JSON.parse(data); } catch { continue; }
+    }
+    if (!data || typeof data !== "object" || Array.isArray(data)) continue;
+    const fields = data as Record<string, unknown>;
+    for (const id of [fields.trackId, fields.track_id]) {
+      if (typeof id === "string" && id.trim()) return id;
+    }
+  }
+  return undefined;
 }
 
 function browserDeviceContext(): Record<string, JsonValue> {
