@@ -11,6 +11,17 @@ TapTap Maker 客户端支持直接访问 GameAlgo HTTPS API。接入时把以下
 
 `client_main.lua` 是可直接参考的初始化示例。
 
+### 运行时游戏身份（仅采集观察）
+
+SDK 每次创建 Context 请求时读取宿主 `GetAppArgv("miniapp_id")`，
+仅将有效的 `tapmc...` 小游戏 ID 写入 `device.runtimeMiniappId`，
+与 H5 SDK 使用相同字段。不采集项目 ID、数字 App ID 或来源字段。
+只保存宿主实际返回的标识，不从业务配置或名称推断，业务 `device` 不能覆盖此字段。
+没有宿主接口、接口抛错或 ID 无效时省略字段，不会阻塞初始化或事件上报。
+
+这些信息沿用现有 Context `device_json` 落库，不重复放进每条业务事件，
+不新增埋点，也不启用绑定校验或过滤；后续先确认正式环境的返回值与覆盖率。
+
 SDK 会先同步读取 Maker `lobby:GetMyUserId()` 并暂存为 `accountUserId`，再开始 `clientCloud:Get`，因此云读取卡住时仍然能标识受影响账号。首次启动没有本地快照时，SDK 会等待云端恢复身份；若云读取在 5 秒内没有任何回调，SDK 会自动降级到本地/内存存储继续初始化，不会阻塞本次会话。`/v1/config` 遇到网络错误、限流或服务端暂时不可用时，会进行最多 3 次、间隔 1 秒和 2 秒的受控重试；鉴权等不可重试的 4xx 错误会直接返回。
 
 ## 客户端配置

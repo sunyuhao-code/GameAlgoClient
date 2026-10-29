@@ -1259,6 +1259,25 @@ local function isRetryableConfigFailure(response)
     return status == 0 or status == 408 or status == 425 or status == 429 or status >= 500
 end
 
+local RUNTIME_IDENTITY_FIELDS = {
+    runtimeMiniappId = true, runtimeProjectId = true,
+    runtimeAppId = true, runtimeIdentitySource = true,
+}
+
+local function runtimeMiniappId(value)
+    if type(value) ~= "string" then return nil end
+    value = value:match("^%s*(.-)%s*$")
+    if #value > 128 or not value:match("^tapmc[a-z0-9]+$") then return nil end
+    return value
+end
+
+local function runtimeIdentity()
+    local ok, value = pcall(function()
+        if type(GetAppArgv) == "function" then return GetAppArgv("miniapp_id") end
+    end)
+    return { runtimeMiniappId = ok and runtimeMiniappId(value) or nil }
+end
+
 local function deviceContext()
     local device = {}
     local osNames = {
@@ -1279,7 +1298,10 @@ local function deviceContext()
     end
     -- GetOSVersion can report a macOS/Darwin description on an iPhone.
     -- Only use a version explicitly supplied by the game.
-    for key, value in pairs(state_.device) do device[key] = value end
+    for key, value in pairs(state_.device) do
+        if not RUNTIME_IDENTITY_FIELDS[key] then device[key] = value end
+    end
+    for key, value in pairs(runtimeIdentity()) do device[key] = value end
     return device
 end
 

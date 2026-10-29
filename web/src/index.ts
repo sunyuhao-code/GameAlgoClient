@@ -1,6 +1,7 @@
 import { GameAlgoRestClient } from "../../rest-api/src/client.ts";
 import type {
   ConfigResponse,
+  FetchConfigOptions,
   GameAlgoRestClientOptions,
   GameAlgoStorage,
   JsonValue,
@@ -10,10 +11,11 @@ import { GameAlgoBrowserStorage, type GameAlgoBrowserStorageOptions } from "./br
 import { GameAlgoWebScriptRuntime } from "./script-runtime.ts";
 import { GameAlgoMatchmakingClient } from "./multiplayer.ts";
 
-export const GAMEALGO_WEB_SDK_VERSION = "2.0.0";
+export const GAMEALGO_WEB_SDK_VERSION = "2.0.1";
 const WEB_KEEPALIVE_BODY_LIMIT_BYTES = 60 * 1024;
 const WEB_EVENT_BATCH_BODY_BUDGET_BYTES = 48 * 1024;
 const TAPDB_CONTEXT_LINK_EVENT = "gamealgo_context_link";
+const RUNTIME_IDENTITY_FIELDS = ["runtimeMiniappId", "runtimeProjectId", "runtimeAppId", "runtimeIdentitySource"] as const;
 type TapDbEventOptions = {
   name: string;
   properties: Record<string, string | boolean>;
@@ -119,12 +121,12 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
       ),
       eventPersistOnEnqueue: options.eventPersistOnEnqueue ?? true,
       logger: options.logger ?? false,
-      device: { ...(options.device ?? {}) },
+      device: withoutRuntimeIdentity(options.device),
     });
 
     this.webScriptRuntime = scriptRuntime;
     this.tapDbLogger = typeof options.logger === "function" ? options.logger : undefined;
-    this.deviceOverrides = { ...(options.device ?? {}) };
+    this.deviceOverrides = withoutRuntimeIdentity(options.device);
     this.matchmaking = new GameAlgoMatchmakingClient({
       apiBaseUrl: options.baseUrl,
       gameKey: options.gameKey,
@@ -168,6 +170,10 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
     return new GameAlgoWebClient(options);
   }
 
+  override fetchConfig(options: FetchConfigOptions = {}): Promise<ConfigResponse> {
+    return super.fetchConfig({ ...options, device: withoutRuntimeIdentity(options.device) });
+  }
+
   protected override defaultDeviceContext(): Record<string, JsonValue> {
     const context = super.defaultDeviceContext();
     // Node/browser shims do not identify the OS of an H5 host.
@@ -177,6 +183,7 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
       runtime: "h5",
       ...browserDeviceContext(),
       ...this.deviceOverrides,
+      ...tapRuntimeIdentity(),
     };
   }
 
@@ -417,6 +424,38 @@ function browserOperatingSystem(): string | undefined {
   if (/Macintosh|Mac OS X/i.test(ua)) return "macos";
   if (/Linux/i.test(ua) || /^Linux/i.test(platform)) return "linux";
   return normalizeOperatingSystem(platform);
+}
+
+function withoutRuntimeIdentity(device?: Record<string, JsonValue>): Record<string, JsonValue> {
+  const result = { ...device };
+  for (const key of RUNTIME_IDENTITY_FIELDS) delete result[key];
+  return result;
+}
+
+function runtimeMiniappId(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.trim();
+  return text.length <= 128 && /^tapmc[a-z0-9]+$/.test(text) ? text : undefined;
+}
+
+function tapRuntimeIdentity(): Record<string, JsonValue> {
+  try {
+    const tap = (globalThis as { tap?: { getAccountInfoSync?: () => unknown } }).tap;
+    if (typeof tap?.getAccountInfoSync !== "function") return {};
+    const value = tap.getAccountInfoSync();
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    if (typeof (value as { then?: unknown }).then === "function") {
+      void Promise.resolve(value).catch(() => undefined);
+      return {};
+    }
+    const miniProgram = (value as { miniProgram?: unknown }).miniProgram;
+    if (!miniProgram || typeof miniProgram !== "object" || Array.isArray(miniProgram)) return {};
+    const miniappId = runtimeMiniappId((miniProgram as { appId?: unknown }).appId);
+    // Do not use host.appId (the TapTap container), plugin IDs, URLs or game options.
+    return miniappId ? { runtimeMiniappId: miniappId } : {};
+  } catch {
+    return {};
+  }
 }
 
 function tapDeviceContext(): Record<string, JsonValue> {

@@ -12,6 +12,23 @@ UA versions can be frozen, so they are not used as OS versions. The SDK does
 not invoke the older permission-sensitive system-info APIs. Information is
 refreshed for each config request, and explicit `device` fields take precedence.
 
+### Runtime game identity (observation only)
+
+On each config request the SDK probes `tap.getAccountInfoSync()` when the host
+provides it. A valid Tap miniapp ID (`tapmc...`) from `miniProgram.appId` is sent
+in `device.runtimeMiniappId`, the same field used by the Maker SDK. Project IDs,
+numeric App IDs and identity-source fields are not collected. If the API is
+missing, unsupported, throws, or returns invalid data, the field is omitted.
+Tap H5 support must be checked on real devices; the SDK does not assume every
+WebView supports the Tap minigame API.
+
+The miniapp ID is collected by the SDK, never taken from game options,
+plugin/container IDs, URLs, or copied configuration. No name or ID is guessed.
+It is stored with the Context's `device` data, not repeated in event payloads.
+Later config requests can discover a late-injected bridge. Missing identity
+does not delay initialization, retry collection, or suppress events. This phase
+only records observations; it adds no server-side binding check or filtering.
+
 ```ts
 import { GameAlgoWebClient } from "@gamealgo/web";
 
