@@ -1162,22 +1162,23 @@ export class GameAlgoEventTracker {
     return this.track("milestone", merged);
   }
 
-  trackAd(placement: string, adType: string, revenue: number, currency: string, payload?: JsonValue): boolean;
-  trackAd(placement: string, adType: string, revenue: number, currency: string, network?: string, payload?: JsonValue): boolean;
-  trackAd(
-    placement: string,
-    adType: string,
+  /** Track a registered placement; static fields are resolved by the server. */
+  trackAdPlacement(adPlacementId: string, revenue: number, payload?: JsonValue): boolean;
+  trackAdPlacement(adPlacementId: string, revenue: number, network?: string, payload?: JsonValue): boolean;
+  trackAdPlacement(
+    adPlacementId: string,
     revenue: number,
-    currency: string,
     networkOrPayload?: string | JsonValue,
     payload: JsonValue = {},
   ): boolean {
+    if (typeof adPlacementId !== "string" || adPlacementId.length !== 36 || !/^gap_[a-f0-9]{32}$/.test(adPlacementId) || !Number.isFinite(revenue)) return false;
     const network = typeof networkOrPayload === "string" ? networkOrPayload : undefined;
     const merged = objectPayload(typeof networkOrPayload === "string" ? payload : (networkOrPayload ?? payload));
-    merged.placement = placement;
-    merged.adType = adType;
+    delete merged.placement;
+    delete merged.adType;
+    delete merged.currency;
+    merged.adPlacementId = adPlacementId;
     merged.revenue = revenue;
-    merged.currency = currency;
     if (network) merged.network = network;
     return this.track("ad_view", merged);
   }

@@ -132,7 +132,7 @@ for (const [label, configured, interval] of [
 test("H5 ad_view starts a keepalive request in the enqueue call, below batch and timer thresholds", async (t) => {
   const h = harness(t, { autoLifecycle: false });
   assert.equal(await h.client.waitForReady(), true);
-  assert.equal(h.client.tracker.trackAd("reward", "rewarded", 0.01, "CNY"), true);
+  assert.equal(h.client.tracker.trackAdPlacement("gap_0123456789abcdef0123456789abcdef", 0.01), true);
   assert.equal(h.requests.length, 1, "request starts before any timer, await or storage callback");
   assert.equal(h.requests[0].keepalive, true);
   assert.equal(h.events()[0].eventType, "ad_view");
@@ -142,6 +142,20 @@ test("H5 ad_view starts a keepalive request in the enqueue call, below batch and
   assert.equal(new Set(h.events().map((event) => event.eventId)).size, 2);
   await h.client.flush();
   assert.equal(h.events().length, 2, "ordinary flush does not replay acknowledged urgent rows");
+});
+
+test("H5 registered ad starts the existing urgent keepalive lane and does not replay after acknowledgement", async (t) => {
+  const h = harness(t, { autoLifecycle: false });
+  assert.equal(await h.client.waitForReady(), true);
+  const id = "gap_0123456789abcdef0123456789abcdef";
+  assert.equal(h.client.tracker.trackAdPlacement(id, 0, { trackId: "callback-track" }), true);
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.requests[0].keepalive, true);
+  assert.equal(h.events()[0].eventType, "ad_view");
+  assert.deepEqual(h.events()[0].payload, { adPlacementId: id, revenue: 0, trackId: "callback-track" });
+  await h.client.flush();
+  await h.client.flush();
+  assert.equal(h.events().length, 1);
 });
 
 test("H5 urgent upload does not wait for a blocked event-store transaction", async (t) => {
@@ -161,7 +175,7 @@ test("H5 urgent upload does not wait for a blocked event-store transaction", asy
   assert.equal(await h.client.waitForReady(), true);
   blocked = true;
   h.control.onEvents = () => response.promise;
-  h.client.tracker.trackAd("reward", "rewarded", 0.01, "CNY");
+  h.client.tracker.trackAdPlacement("gap_0123456789abcdef0123456789abcdef", 0.01);
   assert.equal(h.requests.length, 1);
   await tick();
   response.resolve(accepted(h.events()));
@@ -179,7 +193,7 @@ test("H5 ad enqueue also drains ordinary events buffered before the ad", async (
   assert.equal(await h.client.waitForReady(), true);
   h.client.tracker.trackLevelEnd({ level: 1 });
   assert.equal(h.requests.length, 0);
-  h.client.tracker.trackAd("reward", "rewarded", 0.01, "CNY");
+  h.client.tracker.trackAdPlacement("gap_0123456789abcdef0123456789abcdef", 0.01);
   assert.equal(h.events()[0].eventType, "ad_view", "ad starts first without waiting for storage");
   await tick();
   assert.deepEqual(h.events().map((event) => event.eventType), ["ad_view", "level_end"]);
@@ -201,7 +215,7 @@ test("explicit H5 flush waits for urgent acknowledgement and its durable cleanup
   const h = harness(t, { storage, autoLifecycle: false });
   assert.equal(await h.client.waitForReady(), true);
   h.control.onEvents = () => response.promise;
-  h.client.tracker.trackAd("reward", "rewarded", 0.01, "CNY");
+  h.client.tracker.trackAdPlacement("gap_0123456789abcdef0123456789abcdef", 0.01);
   let finished = false;
   const flushing = h.client.flush().then(() => { finished = true; });
   await tick();
@@ -231,7 +245,7 @@ test("H5 ad and session_end bypass ordinary in-flight uploads without losing dur
   const flushing = h.client.flush();
   await tick();
   assert.equal(h.requests.length, 1);
-  h.client.tracker.trackAd("reward", "rewarded", 0.01, "CNY");
+  h.client.tracker.trackAdPlacement("gap_0123456789abcdef0123456789abcdef", 0.01);
   assert.equal(h.requests.length, 2, "ad does not wait for the ordinary request");
   await tick();
   assert.deepEqual(h.pending().map((event) => event.eventType).sort(), ["ad_view", "level_end"],
@@ -254,7 +268,7 @@ test("H5 failed immediate ad upload retries the same event ID and timestamp", as
   const h = harness(t, { autoLifecycle: false });
   assert.equal(await h.client.waitForReady(), true);
   h.control.onEvents = () => Response.json({ error: "offline" }, { status: 503 });
-  h.client.tracker.trackAd("reward", "rewarded", 0.01, "CNY");
+  h.client.tracker.trackAdPlacement("gap_0123456789abcdef0123456789abcdef", 0.01);
   await tick();
   assert.equal(h.pending().length, 1);
   const original = h.events()[0];
@@ -269,7 +283,7 @@ test("H5 context readiness immediately sends an ad buffered in the current sessi
   const h = harness(t, { autoLifecycle: false });
   assert.equal(await h.client.waitForReady(), true);
   h.client.tracker.newSession();
-  h.client.tracker.trackAd("reward", "rewarded", 0.01, "CNY");
+  h.client.tracker.trackAdPlacement("gap_0123456789abcdef0123456789abcdef", 0.01);
   assert.equal(h.requests.length, 1, "rotation immediately sends the old bound session end");
   assert.equal(h.events()[0].eventType, "session_end");
   await h.client.fetchConfig({ forceRefresh: true });
@@ -354,7 +368,7 @@ test("H5 fullscreen ad hides upload session snapshots and revenue without rotati
   assert.equal(h.events()[0].payload?.reason, "taptap_hide");
   page.hide();
   page.pagehide();
-  assert.equal(h.client.tracker.trackAd("reward", "rewarded", 0.01, "CNY"), true);
+  assert.equal(h.client.tracker.trackAdPlacement("gap_0123456789abcdef0123456789abcdef", 0.01), true);
   assert.equal(h.events().length, 2);
   assert.equal(h.events()[1].eventType, "ad_view");
   page.hide();

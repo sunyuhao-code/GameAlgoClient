@@ -32,7 +32,7 @@ var _user_id := ""
 var _session_id := ""
 var _context_id := ""
 var _platform := "rest"
-var _sdk_version := "1.0.5"
+var _sdk_version := "2.0.0"
 var _app_version := ""
 var _timezone := "UTC"
 var _user_created_at := ""
@@ -85,7 +85,7 @@ func configure(client: Object, storage: Variant, options: Dictionary) -> bool:
 	if _session_id.is_empty():
 		_session_id = GameAlgoUtil.uuid()
 	_platform = String(options.get("platform", "rest"))
-	_sdk_version = String(options.get("sdk_version", "1.0.5"))
+	_sdk_version = String(options.get("sdk_version", "2.0.0"))
 	_app_version = String(options.get("app_version", ""))
 	_timezone = String(options.get("timezone", GameAlgoUtil.timezone_name()))
 	_user_created_at = String(options.get("user_created_at", ""))
@@ -680,21 +680,23 @@ func track_milestone(
 	return track("milestone", merged)
 
 
-func track_ad(
-	placement: String,
-	ad_type: String,
+func track_ad_placement(
+	ad_placement_id: String,
 	revenue: float,
-	currency: String,
 	network: String = "",
 	payload: Variant = {}
 ) -> bool:
-	if not is_finite(revenue):
+	if ad_placement_id.length() != 36 or not ad_placement_id.begins_with("gap_") or not is_finite(revenue):
 		return false
+	for character: String in ad_placement_id.substr(4):
+		if not "0123456789abcdef".contains(character):
+			return false
 	var merged: Dictionary = payload.duplicate(true) if payload is Dictionary else {}
-	merged["placement"] = placement
-	merged["adType"] = ad_type
+	merged.erase("placement")
+	merged.erase("adType")
+	merged.erase("currency")
+	merged["adPlacementId"] = ad_placement_id
 	merged["revenue"] = revenue
-	merged["currency"] = currency
 	if not network.is_empty():
 		merged["network"] = network
 	return track("ad_view", merged)

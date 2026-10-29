@@ -1640,17 +1640,25 @@ function GameAlgo.ExtractAdTrackId(result)
     return nil
 end
 
-function GameAlgo.TrackAd(placement, adType, revenue, currency, network, payload)
+function GameAlgo.TrackAdPlacement(adPlacementId, revenue, network, payload)
+    if type(adPlacementId) ~= "string" or #adPlacementId ~= 36
+        or not adPlacementId:match("^gap_[a-f0-9]+$") then
+        return false, "adPlacementId must be gap_ followed by 32 lowercase hex characters"
+    end
+    if type(revenue) ~= "number" or revenue ~= revenue or revenue == math.huge or revenue == -math.huge then
+        return false, "revenue must be a finite number"
+    end
     if type(network) == "table" and payload == nil then
         payload = network
         network = nil
     end
     local merged, payloadError = preparePayload(payload)
     if payloadError then return false, payloadError end
-    merged.placement = placement
-    merged.adType = adType
+    merged.placement = nil
+    merged.adType = nil
+    merged.currency = nil
+    merged.adPlacementId = adPlacementId
     merged.revenue = revenue
-    merged.currency = currency
     if network and network ~= "" then merged.network = network end
     local tracked = GameAlgo.Track("ad_view", merged)
     if tracked then GameAlgo.Flush(nil) end

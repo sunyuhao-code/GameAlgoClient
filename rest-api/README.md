@@ -263,10 +263,14 @@ milestone
 client.tracker.trackMilestone("new_user", "进入第一关");
 ```
 
-广告变现使用 `trackAd`。它会上报 `ad_view`。`ad_view` 只表示广告 SDK 确认实际产生收入的有效曝光；用户看了一部分广告后跳过，但广告 SDK 已确认本次曝光有效并产生收入，也应该上报。广告加载失败、未填充、播放失败，或广告 SDK 没有确认产生收入的展示，不要上报到 `ad_view`。必填字段为 `placement`、`adType`、`revenue` 和 `currency`；`network` 可选。国内游戏、TapTap Maker / TapTap 小游戏接入时，`currency` 统一使用 `CNY`，不要默认使用 `USD`：
+广告变现使用 `trackAdPlacement`，只传已注册的 adPlacementId、revenue 和可选 network/payload，服务端补齐名称、类型和币种。新版不再提供旧 trackAd。`ad_view` 只表示有效曝光；用户看了一部分后跳过但广告 SDK 已确认曝光有效，也应该上报。广告加载失败、未填充或展示前失败不报 ad_view。币种在注册定义中指定，必须与回调金额一致；Maker / TapTap 的 trackId 回补链路注册 CNY。
 
 ```ts
-client.tracker.trackAd("rewarded_level_end", "reward", 0.018, "CNY", "admob");
+client.tracker.trackAdPlacement(adPlacementIds.rewarded_level_end, 0.018, "admob");
+
+// Registered placement: static fields are supplied by the Server.
+client.tracker.trackAdPlacement(adPlacementIds.revive, 0, { trackId: "callback-track-id" });
+client.tracker.trackAdPlacement(adPlacementIds.revive, 0.018, "admob", { level: 3 });
 ```
 
 内购或付费订单使用 `trackPurchase`。有条件时它会上报带 `productId`、`revenue` 和 `currency` 的 `purchase`。国内游戏同样使用 `CNY`：

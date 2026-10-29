@@ -368,6 +368,7 @@ func _run() -> void:
 	await _test_config_request_envelope()
 	await _test_device_version_override()
 	await _test_event_envelope_and_batching()
+	await _test_registered_ad_placement()
 	await _test_event_batch_completion_policy()
 	await _test_native_event_backend_migration_and_recovery()
 	await _test_native_mobile_session_registration()
@@ -553,6 +554,31 @@ func _test_config_request_envelope() -> void:
 	client.free()
 
 
+func _test_registered_ad_placement() -> void:
+	var path := ProjectSettings.globalize_path("res://../protocol/fixtures/ad-placement-event.json").simplify_path()
+	var fixture: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(path))
+	var transport := TransportFixture.new()
+	var client := _make_client({"transport": transport})
+	await client.refresh(true)
+	var id := String(fixture["adPlacementId"])
+	_check(not client.tracker.has_method("track_ad"), "new SDK exposes only registered placement tracking")
+	for invalid: String in fixture["invalidIds"]:
+		_check(not client.tracker.track_ad_placement(invalid, 0), "invalid placement ID is refused")
+	_check(not client.tracker.track_ad_placement(id, NAN), "NaN revenue is refused")
+	_check(not client.tracker.track_ad_placement(id, INF), "infinite revenue is refused")
+	_check(client.tracker.track_ad_placement(id, fixture["revenue"], fixture["network"], fixture["payload"]), "registered placement is admitted")
+	_check(client.tracker.track_ad_placement(id, 0), "zero revenue is admitted")
+	await client.flush()
+	var bodies := transport.bodies_for("/v1/events/batch")
+	_check(bodies.size() == 1, "registered ads use existing batch upload")
+	var events: Array = bodies[0]["events"]
+	_check(events.size() == 2, "invalid calls do not enter the queue")
+	_check(events[0]["eventType"] == "ad_view", "registered ads are standard ad_view")
+	_check(events[0]["payload"] == fixture["expectedPayload"], "registered ad matches shared wire fixture")
+	_check(fixture["payload"]["placement"] == "legacy-name", "registered ads do not mutate caller payload")
+	client.free()
+
+
 func _test_event_batch_completion_policy() -> void:
 	var path := ProjectSettings.globalize_path("res://../protocol/fixtures/event-batch-ack.json").simplify_path()
 	var fixture: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
@@ -659,7 +685,7 @@ func _test_native_event_backend_migration_and_recovery() -> void:
 	})
 	legacy.tracker.set_context_id("native-context")
 	_check(
-		legacy.tracker.track_ad("rewarded", "reward", 0.1, "CNY"),
+		legacy.tracker.track_ad_placement("gap_0123456789abcdef0123456789abcdef", 0.1),
 		"legacy event is durable before native migration"
 	)
 	var legacy_event: Dictionary = legacy.tracker.pending_events_for_testing()[0]
@@ -697,7 +723,7 @@ func _test_native_event_backend_migration_and_recovery() -> void:
 	_check(after_ack.tracker.pending_count() == 0, "ACKed native event is not restored")
 	after_ack.tracker.set_context_id("timeout-context")
 	_check(
-		after_ack.tracker.track_ad("interstitial", "interstitial", 0.2, "CNY"),
+		after_ack.tracker.track_ad_placement("gap_0123456789abcdef0123456789abcdef", 0.2),
 		"paid callback event enters native storage"
 	)
 	var timeout_id := String(after_ack.tracker.pending_events_for_testing()[0]["eventId"])
@@ -820,7 +846,7 @@ func _test_bound_event_admission_survives_restart() -> void:
 	var storage := MemoryStore.new()
 	var client := _bounded_client(storage, RecoveryTransport.new(), "durable-bound", 10)
 	await client.start()
-	_check(client.tracker.track_ad("banner", "banner", 0.1, "USD"), "bound revenue is accepted durably")
+	_check(client.tracker.track_ad_placement("gap_0123456789abcdef0123456789abcdef", 0.1), "bound revenue is accepted durably")
 	_check(await client.tracker.track_session_end({}, false), "bound session end is accepted durably before flush")
 	var events: Array = client.tracker.pending_events_for_testing()
 	_check(storage.values.get("events_" + client._namespace, []) == events, "bound events reach durable storage before track returns")
@@ -839,7 +865,7 @@ func _test_event_admission_storage_failure() -> void:
 		var client := _bounded_client(storage, transport, "atomic-admission", 3, 3)
 		await client.start()
 		for index: int in range(3):
-			client.tracker.track_ad("banner", "banner", 0.1, "USD", "", {"index": index})
+			client.tracker.track_ad_placement("gap_0123456789abcdef0123456789abcdef", 0.1, "", {"index": index})
 		var before: Array = client.tracker.pending_events_for_testing()
 		var event_key: String = "events_" + client._namespace
 		var durable_before: Array = storage.values.get(event_key, []).duplicate(true)
@@ -870,7 +896,7 @@ func _test_cached_snapshot_does_not_own_new_session() -> void:
 	var client := _bounded_client(storage, transport, "cache-new", 10)
 	_check(await client.start(), "cached assignments remain available during offline startup")
 	_check(client.executor("cached_probe").variant("missing") == "cached", "cache preserves experiment assignment usability")
-	_check(client.tracker.track_ad("banner", "banner", 0.1, "USD"), "cached offline event is accepted")
+	_check(client.tracker.track_ad_placement("gap_0123456789abcdef0123456789abcdef", 0.1), "cached offline event is accepted")
 	var before: Dictionary = client.tracker.pending_events_for_testing()[0]
 	_check(before["contextId"] == "" and before["sessionId"] == "cache-new", "cached context never binds events from the new session")
 	await client.tracker.flush()
@@ -962,7 +988,7 @@ func _test_queue_limit_across_restarts() -> void:
 		var client := _bounded_client(storage, transport, "bounded-%d" % iteration, 5)
 		await client.start()
 		for event_index: int in range(4):
-			_check(client.tracker.track_ad("banner", "banner", 0.1, "USD"), "offline queue accepts newest event within bounded storage policy")
+			_check(client.tracker.track_ad_placement("gap_0123456789abcdef0123456789abcdef", 0.1), "offline queue accepts newest event within bounded storage policy")
 			var pending: Array = client.tracker.pending_events_for_testing()
 			accepted_ids.append(pending.back()["eventId"])
 			_check(pending.size() <= 5, "total pending count stays bounded across repeated restarts")
@@ -982,7 +1008,7 @@ func _test_queue_limit_restores_oversized_storage() -> void:
 	var original := _bounded_client(storage, offline, "oversized", 10)
 	await original.start()
 	for index: int in range(9):
-		original.tracker.track_ad("banner", "banner", 0.1, "USD")
+		original.tracker.track_ad_placement("gap_0123456789abcdef0123456789abcdef", 0.1)
 	var ids := _event_ids(original.tracker.pending_events_for_testing()).slice(4)
 	original.free()
 	var restored := _bounded_client(storage, RecoveryTransport.new(), "limited", 5)
@@ -998,11 +1024,11 @@ func _test_queue_limit_preserves_inflight() -> void:
 	await client.start()
 	transport.hold_events = true
 	for index: int in range(3):
-		client.tracker.track_ad("banner", "banner", 0.1, "USD")
+		client.tracker.track_ad_placement("gap_0123456789abcdef0123456789abcdef", 0.1)
 	var inflight_ids := _event_ids(transport.held_event_batches[0])
 	var newest: Array = []
 	for index: int in range(4):
-		_check(client.tracker.track_ad("banner", "banner", 0.2, "USD"), "new event replaces oldest evictable event behind an in-flight batch")
+		_check(client.tracker.track_ad_placement("gap_0123456789abcdef0123456789abcdef", 0.2), "new event replaces oldest evictable event behind an in-flight batch")
 		newest.append(client.tracker.pending_events_for_testing().back()["eventId"])
 		_check(client.tracker.pending_count() <= 5, "in-flight events count toward the total limit")
 	_check(_event_ids(client.tracker.pending_events_for_testing()) == inflight_ids + newest.slice(2), "overflow never evicts outstanding event identities")
@@ -1017,8 +1043,8 @@ func _test_queue_limit_preserves_inflight() -> void:
 	await full.start()
 	full_transport.hold_events = true
 	for index: int in range(3):
-		full.tracker.track_ad("banner", "banner", 0.1, "USD")
-	_check(not full.tracker.track_ad("banner", "banner", 0.2, "USD"), "when all capacity is in-flight a new event is truthfully refused")
+		full.tracker.track_ad_placement("gap_0123456789abcdef0123456789abcdef", 0.1)
+	_check(not full.tracker.track_ad_placement("gap_0123456789abcdef0123456789abcdef", 0.2), "when all capacity is in-flight a new event is truthfully refused")
 	_check(full.tracker.pending_count() == 3, "a fully in-flight queue remains bounded")
 	full_transport.hold_events = false
 	full_transport.released.emit()
@@ -1032,13 +1058,13 @@ func _test_queue_limit_mixed_sessions() -> void:
 	var client := _bounded_client(MemoryStore.new(), transport, "mixed-old", 5, 2)
 	await client.start()
 	for index: int in range(2):
-		client.tracker.track_ad("banner", "banner", 0.1, "USD")
+		client.tracker.track_ad_placement("gap_0123456789abcdef0123456789abcdef", 0.1)
 	var old_ids := _event_ids(client.tracker.pending_events_for_testing())
 	transport.config_ok = true
 	await client.new_session("mixed-current")
 	var newer_ids: Array = []
 	for index: int in range(4):
-		client.tracker.track_ad("banner", "banner", 0.2, "USD")
+		client.tracker.track_ad_placement("gap_0123456789abcdef0123456789abcdef", 0.2)
 		newer_ids.append(client.tracker.pending_events_for_testing().back()["eventId"])
 	_check(_event_ids(client.tracker.pending_events_for_testing()) == [old_ids[1]] + newer_ids, "overflow uses original acceptance order after bound-event retry bypasses older unbound events")
 	client.free()
@@ -1048,7 +1074,7 @@ func _test_queue_restore_trim_storage_retry() -> void:
 	var storage := FailingStore.new()
 	var original := _bounded_client(storage, RecoveryTransport.new(), "trim-original", 10)
 	for index: int in range(9):
-		original.tracker.track_ad("banner", "banner", 0.1, "USD")
+		original.tracker.track_ad_placement("gap_0123456789abcdef0123456789abcdef", 0.1)
 	var ids := _event_ids(original.tracker.pending_events_for_testing()).slice(4)
 	original.free()
 	var client := _make_client({
@@ -1072,7 +1098,7 @@ func _test_config_envelope_recovers_first_save_failure() -> void:
 	offline.config_ok = false
 	var client := _recovery_client(storage, offline, "save-original")
 	await client.start()
-	client.tracker.track_ad("banner", "banner", 0.1, "USD")
+	client.tracker.track_ad_placement("gap_0123456789abcdef0123456789abcdef", 0.1)
 	var expected: Dictionary = client._pending_configs["save-original"].duplicate(true)
 	client._process(61.0)
 	_check(storage.values.has("config_requests_" + client._namespace), "failed first envelope save is retried before config recovery")
@@ -1098,7 +1124,7 @@ func _test_config_envelope_lifecycle_retries_save() -> void:
 	client.request_failed.connect(func(code: String) -> void: failures.append(code))
 	await client.start()
 	var expected: Dictionary = client._pending_configs["lifecycle-original"].duplicate(true)
-	client.tracker.track_ad("banner", "banner", 0.1, "USD")
+	client.tracker.track_ad_placement("gap_0123456789abcdef0123456789abcdef", 0.1)
 	_check(failures.has("config_request_persistence_failed"), "config-envelope persistence failure is observable")
 	storage.failures_remaining = 0
 	client._notification(Node.NOTIFICATION_APPLICATION_PAUSED)
@@ -1297,7 +1323,7 @@ func _test_downloaded_context_event_quota() -> void:
 	_check(not client.tracker.track_event("overflow"), "ordinary event above the context quota is refused")
 	_check(not client.tracker.track_event("overflow"), "later ordinary events stay refused")
 	_check(client.tracker.track_purchase("sku", 1.0, "USD"), "purchase is exempt from the context quota")
-	_check(client.tracker.track_ad("home", "rewarded", 1.0, "USD"), "ad_view is exempt from the context quota")
+	_check(client.tracker.track_ad_placement("gap_0123456789abcdef0123456789abcdef", 1.0), "ad_view is exempt from the context quota")
 	var diagnostics: Array[Dictionary] = []
 	for request: Dictionary in transport.requests:
 		if String(request.get("url", "")).ends_with("/v1/diagnostics/sdk"):
@@ -1639,9 +1665,9 @@ func _recovery_client(storage: MemoryStore, transport: RecoveryTransport, sessio
 func _test_bound_events_bypass_unbound() -> void:
 	var transport := RecoveryTransport.new()
 	var client := _recovery_client(MemoryStore.new(), transport, "old")
-	client.tracker.track_ad("banner", "banner", 0.1, "USD")
+	client.tracker.track_ad_placement("gap_0123456789abcdef0123456789abcdef", 0.1)
 	await client.new_session("new")
-	client.tracker.track_ad("banner", "banner", 0.2, "USD")
+	client.tracker.track_ad_placement("gap_0123456789abcdef0123456789abcdef", 0.2)
 	await client.tracker.flush()
 	var batches := transport.bodies_for("/v1/events/batch")
 	_check(batches.size() == 1 and batches[0]["events"].size() == 1 \
@@ -1659,7 +1685,7 @@ func _test_config_recovery_with_unresolved_measurement() -> void:
 	offline.config_ok = false
 	var original := _recovery_client(storage, offline, "authorized")
 	await original.start()
-	original.tracker.track_ad("banner", "banner", 0.1, "USD")
+	original.tracker.track_ad_placement("gap_0123456789abcdef0123456789abcdef", 0.1)
 	original.free()
 	var transport := RecoveryTransport.new()
 	var client := _make_client({
@@ -1685,7 +1711,7 @@ func _test_config_binding_storage_failure() -> void:
 	transport.config_ok = false
 	var client := _recovery_client(storage, transport, "persist-old")
 	await client.start()
-	client.tracker.track_ad("banner", "banner", 0.1, "USD")
+	client.tracker.track_ad_placement("gap_0123456789abcdef0123456789abcdef", 0.1)
 	storage.refuse_saves = true
 	transport.events_ok = false
 	transport.config_ok = true
@@ -1726,7 +1752,7 @@ func _test_config_recovers_without_foreground() -> void:
 	await client.start()
 	transport.config_ok = false
 	_check(not await client.new_session("second"), "offline foreground reports the real config failure")
-	client.tracker.track_ad("rewarded", "reward", 0.25, "USD")
+	client.tracker.track_ad_placement("gap_0123456789abcdef0123456789abcdef", 0.25)
 	await client.tracker.track_session_end({}, false)
 	var original: Array = client.tracker.pending_events_for_testing()
 	client._process(0.1)
@@ -1753,11 +1779,11 @@ func _test_unbound_sessions_survive_restart() -> void:
 	transport.config_ok = false
 	var client := _recovery_client(storage, transport, "old")
 	await client.start()
-	client.tracker.track_ad("banner", "banner", 0.1, "USD")
+	client.tracker.track_ad_placement("gap_0123456789abcdef0123456789abcdef", 0.1)
 	await client.tracker.track_session_end({}, false)
 	var first: Array = client.tracker.pending_events_for_testing()
 	await client.new_session("middle")
-	client.tracker.track_ad("banner", "banner", 0.2, "USD")
+	client.tracker.track_ad_placement("gap_0123456789abcdef0123456789abcdef", 0.2)
 	_check(client.tracker.pending_count() == 3, "second foreground retains prior unbound events")
 	var old_requests := transport.bodies_for("/v1/config")
 	client.free()
@@ -1787,10 +1813,10 @@ func _test_overlapping_config_sessions() -> void:
 	transport.hold_config = true
 	var client := _recovery_client(MemoryStore.new(), transport, "old")
 	client.start()
-	client.tracker.track_ad("banner", "banner", 0.1, "USD")
+	client.tracker.track_ad_placement("gap_0123456789abcdef0123456789abcdef", 0.1)
 	client.new_session("new")
 	_check(client.tracker.current_session_id() == "new", "foreground switches session while old config is in flight")
-	client.tracker.track_ad("banner", "banner", 0.2, "USD")
+	client.tracker.track_ad_placement("gap_0123456789abcdef0123456789abcdef", 0.2)
 	transport.hold_config = false
 	transport.released.emit()
 	client._process(61.0)
