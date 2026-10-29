@@ -31,7 +31,7 @@ async function run(): Promise<void> {
     await dda.completeStep("level-7");
     const ddaDecision = await dda.decide({ level: 8 });
     client.tracker.trackMilestone("new_user", "进入 H5");
-    client.tracker.trackAd("level_end", "reward", 0.01, "CNY", "web-test");
+    client.tracker.trackAdPlacement("gap_0123456789abcdef0123456789abcdef", 0.01, "web-test");
     await client.flush();
     window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
     await delay(100);

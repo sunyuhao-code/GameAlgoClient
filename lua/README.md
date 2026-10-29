@@ -160,7 +160,7 @@ local enabled = GameAlgo.ConfigValue("ads.rewarded.enabled", true, "gameplay.jso
 
 事件会先进入队列。如果配置还没准备好，`Flush` 会等待拿到 `contextId` 后再上传。普通事件默认每 5 秒批量 Flush；队列达到一个 batch 时也会立即发送。SDK 在 `Init` 内部创建独立的 Maker `LuaScriptObject` Update 接收器，用它驱动定时 Flush、15 秒请求 watchdog 和失败后的退避重试；接入方不需要自己开发定时器，也不需要修改游戏 Update 或周期调用 `GameAlgo.Update()` / `GameAlgo.Flush()`。`Flush()` 仍可用于广告关闭、会话结束、进入后台等希望立即提交的边界。自定义运行时如果不提供 Maker 事件系统，后续的 Track/Flush 仍会检查批量阈值和超时并尝试自愈，也可在测试中手动调用 `GameAlgo.Update()`。
 
-`GameAlgo.TrackAd` 在广告事件入队后会立即 Flush。发送前，SDK 会把 inflight batch 和剩余队列按 JSON Lines 写入内部自动存储；下次启动自动恢复，按下述批次完成策略确认后才删除持久化副本。请求超过 15 秒没有终态回调时，watchdog 会释放请求、把 inflight batch 放回队首，并按退避间隔重试。迟到或重复回调由 request token 忽略；成功后 SDK 会连续发送，直到所有已有 context 的事件全部排空。事件入队时即固定 `sessionId` 和已有的 `contextId`；同一 session 刷新 context 不会重绑旧事件。
+`GameAlgo.TrackAdPlacement` 在广告事件入队后会立即 Flush。发送前，SDK 会把 inflight batch 和剩余队列按 JSON Lines 写入内部自动存储；下次启动自动恢复，按下述批次完成策略确认后才删除持久化副本。请求超过 15 秒没有终态回调时，watchdog 会释放请求、把 inflight batch 放回队首，并按退避间隔重试。迟到或重复回调由 request token 忽略；成功后 SDK 会连续发送，直到所有已有 context 的事件全部排空。事件入队时即固定 `sessionId` 和已有的 `contextId`；同一 session 刷新 context 不会重绑旧事件。
 
 SDK 自动监听 Maker 的 `AppWillEnterBackground`、`AppTerminating`、`ExitRequested`，收到通知时生成标准 `session_end`，立即保存完整队列并触发 Flush。对应 `reason` 为 `app_background`、`app_terminating`、`exit_requested`，payload 同时记录 `lifecycleEvent`。该结束事件不占用普通事件额度，仍受队列容量上限约束。Maker 打开全屏广告也会触发后台通知，SDK 同样上报；同一会话后续再次退后台、退出或终止可以重复上报。不会自动切换 `sessionId`，每条时长都从当前会话起点计算到该次通知。
 
@@ -197,7 +197,7 @@ GameAlgo.TrackLevelEnd({
 
 GameAlgo.TrackMilestone("new_user", "进入第一关")
 
-GameAlgo.TrackAd("rewarded_level_end", "reward", 0.018, "CNY", "admob")
+GameAlgo.TrackAdPlacement(AD_PLACEMENTS.rewarded_level_end, 0.018, "admob")
 
 GameAlgo.TrackSessionEnd()
 GameAlgo.Flush()
@@ -208,15 +208,26 @@ GameAlgo.Flush()
 
 Lua SDK 为存量版本保留嵌套 JSON 的传输兼容，但新接入和新增字段一律使用上面的扁平 payload。需要描述多个属性时，把它们拆成稳定、含义明确的顶层字段，不要把业务对象或数组直接塞入事件。
 
-`GameAlgo.TrackAd` 上报的是 `ad_view`，只用于广告 SDK 确认实际产生收入的有效曝光。用户看了一部分广告后跳过，但广告 SDK 已确认本次曝光有效并产生收入，也应该调用 `TrackAd`；广告加载失败、未填充、播放失败，或广告 SDK 没有确认产生收入的展示，不要调用 `TrackAd`。
+已通过 CLI 注册广告位时，优先用 `GameAlgo.TrackAdPlacement(adPlacementId, revenue, network?, payload?)`，不再传名称、广告类型和币种，由服务端补齐。第三个参数可直接传 payload；调用仍发送标准 `ad_view`，入队后立即触发 Flush。ID 必须是注册返回的 `gap_` 加 32 位小写十六进制字符，revenue 必须有限；非法输入返回 false，不入队。SDK 不查询广告位目录。
 
-TapTap Maker 的 `ShowRewardVideoAd` 关闭回调必须和“是否获得奖励”分开处理：**只要进入 `onClose` 回调，就调用一次 `GameAlgo.TrackAd`，不能放在 `if result.success then` 里面。** `result.success` 只表示用户是否完整看完广告、游戏是否应该发放奖励；用户提前关闭时通常仍然已经形成有效曝光和收入，也必须上报。加载失败、无填充或播放失败发生在展示前，不属于 `onClose` 有效曝光，只记录诊断事件。
+```lua
+GameAlgo.TrackAdPlacement(AD_PLACEMENTS.revive, 0, {
+    trackId = GameAlgo.ExtractAdTrackId(result),
+    round = round,
+})
+```
+
+新版只提供 `GameAlgo.TrackAdPlacement`，已移除旧 `TrackAd`。已有游戏升级前先注册广告位并迁移调用；服务端仍兼容已经发布的旧 SDK。每次有效曝光只上报一次。
+
+`GameAlgo.TrackAdPlacement` 上报的是 `ad_view`，只用于广告 SDK 确认实际产生收入的有效曝光。用户看了一部分广告后跳过，但广告 SDK 已确认本次曝光有效并产生收入，也应该调用 `TrackAdPlacement`；广告加载失败、未填充、播放失败，或广告 SDK 没有确认产生收入的展示，不要调用 `TrackAdPlacement`。
+
+TapTap Maker 的 `ShowRewardVideoAd` 关闭回调必须和“是否获得奖励”分开处理：**只要进入 `onClose` 回调，就调用一次 `GameAlgo.TrackAdPlacement`，不能放在 `if result.success then` 里面。** `result.success` 只表示用户是否完整看完广告、游戏是否应该发放奖励；用户提前关闭时通常仍然已经形成有效曝光和收入，也必须上报。加载失败、无填充或播放失败发生在展示前，不属于 `onClose` 有效曝光，只记录诊断事件。
 
 TapTap Maker / TapTap 小游戏接入时，广告和付费事件的 `currency` 统一使用 `CNY`。不要默认使用 `USD`。
 
 TapTap Maker 的广告回调 `result.extra` 中通常会包含内部广告 `trackId`。这是 GameAlgo 把 Maker 游戏埋点和内部广告收入数据串起来的关键字段。Maker 游戏上报 `ad_view` 时必须尽量把 `trackId` 放进 payload；广告收入可以先填 `0`，后续平台通过 `trackId` 回补真实收入。
 
-Lua SDK 提供 `GameAlgo.ExtractAdTrackId(result)`，用于从 `result.trackId`、`result.track_id`、`result.extra` JSON、`result.msg` JSON 中解析 `trackId`。开发者仍然需要自己传入广告位、广告类型和业务字段：
+Lua SDK 提供 `GameAlgo.ExtractAdTrackId(result)`，用于从 `result.trackId`、`result.track_id`、`result.extra` JSON、`result.msg` JSON 中解析 `trackId`。广告位 ID 来自 CLI 注册结果，业务字段和 trackId 仍来自当前回调：
 
 ```lua
 sdk:ShowRewardVideoAd(function(result)
@@ -224,7 +235,7 @@ sdk:ShowRewardVideoAd(function(result)
     local trackId = GameAlgo.ExtractAdTrackId(result)
 
     -- 这是广告关闭回调：无论 result.success 是否为 true，都上报本次曝光。
-    GameAlgo.TrackAd("classic_revive", "reward", 0, "CNY", "taptap", {
+    GameAlgo.TrackAdPlacement(AD_PLACEMENTS.classic_revive, 0, "taptap", {
         round = round,
         wave = wave,
         score = score,

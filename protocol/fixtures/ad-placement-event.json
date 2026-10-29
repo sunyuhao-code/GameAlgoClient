@@ -1,0 +1,23 @@
+{
+  "adPlacementId": "gap_0123456789abcdef0123456789abcdef",
+  "revenue": 0.125,
+  "network": "max",
+  "payload": {
+    "adPlacementId": "must-be-overwritten",
+    "revenue": 999,
+    "placement": "legacy-name",
+    "adType": "banner",
+    "currency": "USD",
+    "network": "payload-network",
+    "trackId": "track-123",
+    "level": 7
+  },
+  "expectedPayload": {
+    "adPlacementId": "gap_0123456789abcdef0123456789abcdef",
+    "revenue": 0.125,
+    "network": "max",
+    "trackId": "track-123",
+    "level": 7
+  },
+  "invalidIds": ["", "revive", "gap_0123456789abcdef0123456789abcde", "gap_0123456789abcdef0123456789abcdeg", "gap_0123456789ABCDEF0123456789ABCDEF", "gap_0123456789abcdef0123456789abcdef\n"]
+}

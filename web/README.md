@@ -86,24 +86,33 @@ when no ID is available. The reporter below is a game-side adapter:
 ```ts
 import { extractAdTrackId } from "@gamealgo/web";
 
-function createAdCloseReporter(placement: string) {
+// adPlacementId comes from the project's CLI registration mapping.
+function createAdCloseReporter(adPlacementId: string) {
   let reported = false;
   return function onClose(result: Record<string, unknown> = {}) {
     if (reported) return;
     reported = true;
     const trackId = extractAdTrackId(result);
-    const queued = gameAlgo.tracker.trackAd(
-      placement, "reward", 0, "CNY", trackId ? { trackId } : {},
+    const queued = gameAlgo.tracker.trackAdPlacement(
+      adPlacementId, 0, trackId ? { trackId } : {},
     );
     if (!trackId) console.warn("Ad onClose is missing trackId; fix the callback adapter");
     if (!queued) console.warn("ad_view was not queued; check SDK identity and initialization");
   };
 }
 
-const reportAdClose = createAdCloseReporter("复活激励视频");
+const reportAdClose = createAdCloseReporter(adPlacementIds.revive);
 // At the start of this request's existing onClose(result), call reportAdClose(result).
 // Run the game's existing reward-completion check separately afterward.
 ```
+
+`trackAdPlacement(adPlacementId, revenue, network?, payload?)` sends only the
+registered ID and dynamic data; the third argument can be the payload directly.
+Register first through the CLI and use its returned `gap_` ID. Name, type and
+currency are filled by the Server. Invalid ID format or non-finite revenue returns
+false without enqueueing. Version 2.0.0 exposes only `trackAdPlacement`; migrate old
+`trackAd` call sites before upgrading. The server still accepts already released
+older SDKs. Report each exposure once.
 
 Create a new reporter for each ad request; a duplicate callback for that request
 must not create a second event, and the next playback must still report. A missing
@@ -115,7 +124,7 @@ impression / revenue callback and actual amount and currency.
 
 Before completing integration, play an ad and verify that the server accepted a
 new `ad_view` with the expected fields and original callback track ID. Cover early
-close and duplicate close notifications as well. `trackAd` returning `true` only
+close and duplicate close notifications as well. `trackAdPlacement` returning `true` only
 confirms enqueueing. Use `gamealgo events count --event-type ad_view --json` for
 the current UTC day's live ingress count; it includes debug and repeated requests,
 and disabled/unavailable counts do not prove delivery or absence. Before publishing
@@ -144,7 +153,7 @@ Set `autoSessionLifecycle: false` only when the game owns those boundaries;
 `autoLifecycle: false` disables all automatic browser lifecycle listeners.
 
 `ad_view` starts an immediate upload after successful enqueue, whether it comes
-from `tracker.trackAd(...)` or `tracker.track("ad_view", ...)`. It does not wait
+from `tracker.trackAdPlacement(...)` or `tracker.track("ad_view", ...)`. It does not wait
 for the 5-second timer or the 20-event threshold. H5 uses separate critical
 upload lanes for `ad_view` and `session_end`: neither waits for ordinary uploads
 or event-store writes, and a pending ad request cannot block a session end.

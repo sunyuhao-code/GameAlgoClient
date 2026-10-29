@@ -81,6 +81,8 @@ examples/   接入示例
 
 ## 协议一致性
 
+2.0.0 起，SDK 的广告专用接口只有 `trackAdPlacement`（Swift/Android/Web）、`GameAlgo.TrackAdPlacement`（Lua）或 `track_ad_placement`（Godot）：只传 CLI 返回的广告位 ID、revenue 和可选 network / payload。升级 SDK 前需注册点位并迁移旧广告调用；服务端继续兼容已发布旧 SDK 的历史格式。ID 必须为 `gap_` 加 32 位小写十六进制字符，revenue 必须是有限数字；非法参数返回 false。新方法发送标准 `ad_view`，服务端补齐名称、广告类型、币种，沿用既有队列、配额豁免和重试，不改变曝光口径。静态字段不再从 payload 上传，显式 ID/revenue 优先于 payload 中同名值；其他动态业务字段保留。
+
 Protocol v1 有五份客户端实现，都在本仓库：iOS / Android / Web / Lua / Godot。`protocol/openapi.yaml` 是唯一真相源，`protocol/fixtures/` 是跨实现的共同闸门。
 
 Godot SDK 是 GDScript，进不了 Node 和 Swift 的测试套件，所以它的协议常量由 `rest-api/src/godot-sdk-drift.test.ts` 直接读源码校验，`npm run check` 就会跑，不需要装 Godot。GDScript 自身的契约测试用 `npm run check:godot`。

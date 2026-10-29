@@ -567,20 +567,25 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         return track("milestone", merged);
     }
 
-    public boolean trackAd(String placement, String adType, double revenue, String currency) {
-        return trackAd(placement, adType, revenue, currency, null, new LinkedHashMap<String, Object>());
+    public boolean trackAdPlacement(String adPlacementId, double revenue) {
+        return trackAdPlacement(adPlacementId, revenue, null, null);
     }
 
-    public boolean trackAd(String placement, String adType, double revenue, String currency, String network) {
-        return trackAd(placement, adType, revenue, currency, network, new LinkedHashMap<String, Object>());
+    public boolean trackAdPlacement(String adPlacementId, double revenue, String network) {
+        return trackAdPlacement(adPlacementId, revenue, network, null);
     }
 
-    public boolean trackAd(String placement, String adType, double revenue, String currency, String network, Map<String, Object> payload) {
+    /** Static placement fields are supplied by the server's registered definition. */
+    public boolean trackAdPlacement(String adPlacementId, double revenue, String network, Map<String, Object> payload) {
+        if (adPlacementId == null || !adPlacementId.matches("^gap_[a-f0-9]{32}$") || !Double.isFinite(revenue)) {
+            return false;
+        }
         Map<String, Object> merged = copyPayload(payload);
-        merged.put("placement", placement);
-        merged.put("adType", adType);
+        merged.remove("placement");
+        merged.remove("adType");
+        merged.remove("currency");
+        merged.put("adPlacementId", adPlacementId);
         merged.put("revenue", revenue);
-        merged.put("currency", currency);
         if (!isBlank(network)) {
             merged.put("network", network);
         }

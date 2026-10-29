@@ -1086,7 +1086,7 @@ final class GameAlgoSDKTests: XCTestCase {
         let firstOverflow = await tracker.trackEvent("overflow")
         let secondOverflow = await tracker.trackEvent("overflow")
         let purchase = await tracker.trackPurchase(productId: "sku", revenue: 1, currency: "USD")
-        let adView = await tracker.trackAd(placement: "home", adType: "rewarded", revenue: 1, currency: "USD")
+        let adView = await tracker.trackAdPlacement(adPlacementId: "gap_0123456789abcdef0123456789abcdef", revenue: 1)
         XCTAssertTrue(first)
         XCTAssertTrue(second)
         XCTAssertFalse(firstOverflow)
@@ -1152,49 +1152,40 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(payload?["value"] as? Double, 2)
     }
 
-    func testTrackAdUploadsStandardAdViewPayload() async throws {
-        let suiteName = "GameAlgoSDKTests.trackAd.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-
+    func testTrackAdPlacementSharedContract() async throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let fixture = try JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("protocol/fixtures/ad-placement-event.json"))) as! [String: Any]
+        let id = fixture["adPlacementId"] as! String
         let httpClient = MockHTTPClient()
         try await httpClient.enqueueJSON(configResponse(version: "v1"))
-        try await httpClient.enqueueJSON(["ok": true, "accepted": 1])
-        let sdk = GameAlgoSDK(
-            gameKey: gameKey,
-            baseURL: URL(string: "https://gamealgo.test")!,
-            httpClient: httpClient,
-            userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
-            userId: "u1",
-            eventFlushInterval: 0
-        )
-
+        try await httpClient.enqueueJSON(["ok": true, "accepted": 2])
+        let suiteName = "GameAlgoSDKTests.registeredAd.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let sdk = GameAlgoSDK(gameKey: gameKey, baseURL: URL(string: "https://gamealgo.test")!, httpClient: httpClient, userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults), userId: "u1", eventFlushInterval: 0)
         let ready = await sdk.waitForReady()
         XCTAssertTrue(ready)
-        let didTrackAd = await sdk.tracker.trackAd(
-            placement: "rewarded_level_end",
-            adType: "reward",
-            revenue: 0.018,
-            currency: "USD",
-            network: "admob",
-            payload: .object(["source": .string("reward")])
-        )
-        XCTAssertTrue(didTrackAd)
+        for invalid in fixture["invalidIds"] as! [String] {
+            let accepted = await sdk.tracker.trackAdPlacement(adPlacementId: invalid, revenue: 0)
+            XCTAssertFalse(accepted)
+        }
+        for value in [Double.nan, .infinity, -.infinity] {
+            let accepted = await sdk.tracker.trackAdPlacement(adPlacementId: id, revenue: value)
+            XCTAssertFalse(accepted)
+        }
+        let payload = try JSONDecoder().decode(JSONValue.self, from: JSONSerialization.data(withJSONObject: fixture["payload"]!))
+        let accepted = await sdk.tracker.trackAdPlacement(adPlacementId: id, revenue: fixture["revenue"] as! Double, network: fixture["network"] as? String, payload: payload)
+        XCTAssertTrue(accepted)
+        let zero = await sdk.tracker.trackAdPlacement(adPlacementId: id, revenue: 0)
+        XCTAssertTrue(zero)
         await sdk.tracker.flush()
-
         let requests = await httpClient.requests
-        let body = try JSONSerialization.jsonObject(with: requests[1].body ?? Data()) as? [String: Any]
-        let events = body?["events"] as? [[String: Any]]
-        let payload = events?[0]["payload"] as? [String: Any]
-
-        XCTAssertEqual(events?[0]["eventType"] as? String, "ad_view")
-        XCTAssertEqual(payload?["source"] as? String, "reward")
-        XCTAssertEqual(payload?["placement"] as? String, "rewarded_level_end")
-        XCTAssertEqual(payload?["adType"] as? String, "reward")
-        XCTAssertEqual(payload?["revenue"] as? Double, 0.018)
-        XCTAssertEqual(payload?["currency"] as? String, "USD")
-        XCTAssertEqual(payload?["network"] as? String, "admob")
+        let body = try JSONSerialization.jsonObject(with: requests[1].body!) as! [String: Any]
+        let events = body["events"] as! [[String: Any]]
+        XCTAssertEqual(events.count, 2)
+        XCTAssertEqual(events[0]["eventType"] as? String, "ad_view")
+        XCTAssertEqual(events[0]["payload"] as? NSDictionary, fixture["expectedPayload"] as? NSDictionary)
+        XCTAssertEqual(payload.objectValue?["placement"], .string("legacy-name"))
     }
 
     func testTrackSessionEndFlushesImmediately() async throws {

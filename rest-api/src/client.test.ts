@@ -830,7 +830,7 @@ test("tracker applies the downloaded ordinary-event limit per context and exempt
   assert.equal(client.tracker.trackEvent("overflow"), false);
   assert.equal(client.tracker.trackEvent("overflow"), false);
   assert.equal(client.tracker.trackPurchase("sku", 1, "USD"), true);
-  assert.equal(client.tracker.trackAd("home", "rewarded", 1, "USD"), true);
+  assert.equal(client.tracker.trackAdPlacement("gap_0123456789abcdef0123456789abcdef", 1), true);
   await client.tracker.flush();
   await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -1193,47 +1193,44 @@ test("custom events preserve payload", async () => {
   client.tracker.close();
 });
 
-test("trackAd uploads standard ad_view payload", async () => {
-  let uploadedEvents: Array<Record<string, unknown>> = [];
+test("trackAdPlacement sends the shared ID-only contract, rejects invalid input and leaves caller payload intact", async () => {
+  const fixture = JSON.parse(await (await import("node:fs/promises")).readFile(new URL("../../protocol/fixtures/ad-placement-event.json", import.meta.url), "utf8"));
+  const uploaded: Array<Record<string, any>> = [];
+  let failures = 1;
+  const attempts: Array<Record<string, any>[]> = [];
   const client = createClient({
-    baseUrl: "https://gamealgo.test",
-    gameKey,
-    userId: "u1",
-    eventFlushIntervalMs: 0,
+    baseUrl: "https://gamealgo.test", gameKey, userId: "u1", eventFlushIntervalMs: 0,
     fetchImpl: async (input, init) => {
       const request = new Request(input, init);
       if (request.url.endsWith("/v1/events/batch")) {
-        const body = await request.json() as { events: Array<Record<string, unknown>> };
-        uploadedEvents = body.events;
+        const body = await request.json() as { events: Array<Record<string, any>> };
+        attempts.push(body.events);
+        if (failures-- > 0) return jsonResponse({ error: "ad_placement_unavailable" }, 503);
+        uploaded.push(...body.events);
         return jsonResponse({ ok: true, accepted: body.events.length });
       }
-      return jsonResponse({
-        contextId: "ctx-1",
-        gameId: "Mahjong",
-        environment: "live",
-        configVersion: "v1",
-        ttlSeconds: 60,
-        serverTime: "2026-05-28T10:00:00.000Z",
-        experiments: [],
-        configFiles: [],
-      });
+      return jsonResponse({ contextId: "ctx-placement", gameId: "Mahjong", environment: "live", configVersion: "v1", ttlSeconds: 60, serverTime: "2026-10-28T00:00:00Z", experiments: [], configFiles: [] });
     },
   });
-
-  assert.equal(await client.waitForReady(), true);
-  assert.equal(client.tracker.trackAd("rewarded_level_end", "reward", 0.018, "USD", "admob", { source: "reward" }), true);
-  await client.tracker.flush();
-
-  assert.equal(uploadedEvents[0].eventType, "ad_view");
-  assert.deepEqual(uploadedEvents[0].payload, {
-    source: "reward",
-    placement: "rewarded_level_end",
-    adType: "reward",
-    revenue: 0.018,
-    currency: "USD",
-    network: "admob",
-  });
-  client.tracker.close();
+  try {
+    assert.equal(await client.waitForReady(), true);
+    assert.equal("trackAd" in client.tracker, false, "new SDK exposes only the registered placement API");
+    for (const id of fixture.invalidIds) assert.equal(client.tracker.trackAdPlacement(id, 0), false, JSON.stringify(id));
+    for (const value of [NaN, Infinity, -Infinity]) assert.equal(client.tracker.trackAdPlacement(fixture.adPlacementId, value), false);
+    assert.equal(client.tracker.trackAdPlacement(fixture.adPlacementId, fixture.revenue, fixture.network, fixture.payload), true);
+    assert.equal(client.tracker.trackAdPlacement(fixture.adPlacementId, 0, { trackId: "zero" }), true);
+    assert.equal(client.tracker.trackAdPlacement(fixture.adPlacementId, 0), true);
+    await assert.rejects(client.tracker.flush());
+    await client.tracker.flush();
+    assert.equal(uploaded.length, 3);
+    assert.equal(uploaded[0].eventType, "ad_view");
+    assert.deepEqual(uploaded[0].payload, fixture.expectedPayload);
+    assert.deepEqual(uploaded[1].payload, { adPlacementId: fixture.adPlacementId, revenue: 0, trackId: "zero" });
+    assert.deepEqual(uploaded[2].payload, { adPlacementId: fixture.adPlacementId, revenue: 0 });
+    assert.equal(attempts[0][0].eventId, attempts[1][0].eventId);
+    assert.equal(fixture.payload.placement, "legacy-name");
+    assert.equal(fixture.payload.revenue, 999);
+  } finally { client.tracker.close(); }
 });
 
 test("DDA controller persists rolling behavior windows and executes decisions", async () => {

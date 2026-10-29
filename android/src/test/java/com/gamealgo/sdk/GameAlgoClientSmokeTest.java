@@ -40,7 +40,7 @@ public final class GameAlgoClientSmokeTest {
         testTrackerLimitsCustomEventsAndReportsGuardDiagnostic();
         testTrackerAppliesDownloadedContextQuotaAndExemptsRevenue();
         testCustomEventsPreservePayload();
-        testTrackAdUploadsStandardAdViewPayload();
+        testTrackAdPlacementSharedContract();
         testDDAControllerPersistsBehaviorWindowAndReturnsDecision();
     }
 
@@ -976,45 +976,30 @@ public final class GameAlgoClientSmokeTest {
         client.tracker().close();
     }
 
-    private static void testTrackAdUploadsStandardAdViewPayload() throws Exception {
+    private static void testTrackAdPlacementSharedContract() throws Exception {
+        Map<String, Object> fixture = GameAlgoJson.asObject(GameAlgoJson.parse(new String(Files.readAllBytes(Paths.get("../protocol/fixtures/ad-placement-event.json")), StandardCharsets.UTF_8)), "fixture");
+        String id = (String) fixture.get("adPlacementId");
         FakeHttpClient httpClient = new FakeHttpClient();
         httpClient.enqueue(jsonResponse(configJson("v1")));
-        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":1}"));
-        GameAlgoClient client = new GameAlgoClient(
-                "ga_live_test_key_0123456789abcdef",
-                "https://gamealgo.test",
-                "1.0.0",
-                null,
-                "android",
-                httpClient,
-                new FakeScriptRuntime(),
-                null,
-                null,
-                GameAlgoLogger.console(),
-                new GameAlgoFetchConfigRequest("u1")
-        );
-
+        httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":3}"));
+        GameAlgoClient client = new GameAlgoClient("ga_live_test_key_0123456789abcdef", "https://gamealgo.test", "1.0.0", null, "android", httpClient, new FakeScriptRuntime(), null, null, GameAlgoLogger.console(), new GameAlgoFetchConfigRequest("u1"));
         client.ready().get();
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("source", "reward");
-        check(client.tracker().trackAd("rewarded_level_end", "reward", 0.018, "USD", "admob", payload), "ad_view should enqueue");
+        for (Object invalid : GameAlgoJson.asArray(fixture.get("invalidIds"), "invalidIds")) check(!client.tracker().trackAdPlacement((String) invalid, 0), "invalid ID must not enqueue");
+        check(!client.tracker().trackAdPlacement(null, 0), "null ID must not enqueue");
+        check(!client.tracker().trackAdPlacement(id, Double.NaN), "NaN must not enqueue");
+        check(!client.tracker().trackAdPlacement(id, Double.POSITIVE_INFINITY), "infinite revenue must not enqueue");
+        Map<String, Object> payload = GameAlgoJson.asObject(fixture.get("payload"), "payload");
+        check(client.tracker().trackAdPlacement(id, ((Number) fixture.get("revenue")).doubleValue(), (String) fixture.get("network"), payload), "registered placement must enqueue");
+        check(client.tracker().trackAdPlacement(id, 0), "zero revenue ID-only overload must enqueue");
+        check(client.tracker().trackAdPlacement(id, 0, "admob"), "network overload must enqueue");
         client.tracker().flush();
-
-        Map<String, Object> body = GameAlgoJson.asObject(
-                GameAlgoJson.parse(new String(httpClient.requests.get(1).getBody(), StandardCharsets.UTF_8)),
-                "body"
-        );
+        Map<String, Object> body = GameAlgoJson.asObject(GameAlgoJson.parse(new String(httpClient.requests.get(1).getBody(), StandardCharsets.UTF_8)), "body");
         List<Object> events = GameAlgoJson.asArray(body.get("events"), "events");
-        Map<String, Object> event = GameAlgoJson.asObject(events.get(0), "events[]");
-        Map<String, Object> eventPayload = GameAlgoJson.asObject(event.get("payload"), "payload");
-
-        check("ad_view".equals(event.get("eventType")), "trackAd should upload ad_view");
-        check("reward".equals(eventPayload.get("source")), "ad_view should preserve custom payload");
-        check("rewarded_level_end".equals(eventPayload.get("placement")), "ad_view should include placement");
-        check("reward".equals(eventPayload.get("adType")), "ad_view should include adType");
-        check(((Number) eventPayload.get("revenue")).doubleValue() == 0.018, "ad_view should include revenue");
-        check("USD".equals(eventPayload.get("currency")), "ad_view should include currency");
-        check("admob".equals(eventPayload.get("network")), "ad_view should include network");
+        check(events.size() == 3, "invalid calls must not reach upload");
+        Map<String, Object> event = GameAlgoJson.asObject(events.get(0), "event");
+        check("ad_view".equals(event.get("eventType")), "registered ads must remain standard ad_view");
+        check(GameAlgoJson.asObject(event.get("payload"), "payload").equals(GameAlgoJson.asObject(fixture.get("expectedPayload"), "expectedPayload")), "registered placement must match shared wire fixture");
+        check("legacy-name".equals(payload.get("placement")), "caller payload must not be mutated");
         client.tracker().close();
     }
 
@@ -1080,7 +1065,7 @@ public final class GameAlgoClientSmokeTest {
         check(!client.tracker().trackEvent("overflow"), "later ordinary events should stay rejected");
         check(client.tracker().trackPurchase("sku", 1.0, "USD", new LinkedHashMap<String, Object>()),
                 "purchase should be exempt");
-        check(client.tracker().trackAd("home", "rewarded", 1.0, "USD", null, new LinkedHashMap<String, Object>()),
+        check(client.tracker().trackAdPlacement("gap_0123456789abcdef0123456789abcdef", 1.0, null, new LinkedHashMap<String, Object>()),
                 "ad_view should be exempt");
         for (int index = 0; index < 100 && httpClient.requests.isEmpty(); index += 1) Thread.sleep(10L);
         check(httpClient.requests.size() == 1, "context quota should emit one diagnostic");

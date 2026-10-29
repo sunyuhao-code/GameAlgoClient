@@ -637,20 +637,23 @@ public actor GameAlgoEventTracker {
         return track("milestone", payload: .object(merged))
     }
 
+    /// Static placement fields are supplied by the server's registered definition.
     @discardableResult
-    public func trackAd(
-        placement: String,
-        adType: String,
+    public func trackAdPlacement(
+        adPlacementId: String,
         revenue: Double,
-        currency: String,
         network: String? = nil,
         payload: JSONValue = .object([:])
     ) -> Bool {
+        guard adPlacementId.utf8.count == 36,
+              adPlacementId.range(of: "^gap_[a-f0-9]{32}$", options: .regularExpression) != nil,
+              revenue.isFinite else { return false }
         var merged = payload.objectValue ?? [:]
-        merged["placement"] = .string(placement)
-        merged["adType"] = .string(adType)
+        merged.removeValue(forKey: "placement")
+        merged.removeValue(forKey: "adType")
+        merged.removeValue(forKey: "currency")
+        merged["adPlacementId"] = .string(adPlacementId)
         merged["revenue"] = .number(revenue)
-        merged["currency"] = .string(currency)
         if let network, !network.isEmpty {
             merged["network"] = .string(network)
         }
