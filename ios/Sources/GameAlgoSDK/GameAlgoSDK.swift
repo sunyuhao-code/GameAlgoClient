@@ -4,7 +4,7 @@ import UIKit
 #endif
 
 public actor GameAlgoSDK {
-    public static let defaultSDKVersion = "2.0.0"
+    public static let defaultSDKVersion = "2.0.2"
 
     private let gameKey: String
     private let baseURL: URL

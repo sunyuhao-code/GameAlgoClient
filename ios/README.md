@@ -119,7 +119,9 @@ let decision = dda.decide(context: .object([
 
 初始化后自动监听 App 整体的 `didEnterBackground`、`willEnterForeground`、`willTerminate` 通知，无需修改 AppDelegate 或 SceneDelegate。后台通知先同步生成并保存 `reason=background` 的 `session_end`，随后通过有限后台任务尝试上传，主动预算为 2.5 秒，系统可更早收回执行时间。保存不等待 Swift actor 获得执行机会；失败事件保留供之后恢复。全屏广告、控制中心和权限弹窗引起的普通失焦不结束会话；真正进入后台才结束。恢复前台沿用原 `sessionId`，后续再次退后台可再次上报。
 
-前台每 10 秒保存最后观察时间，广告显示期间也更新。进程被直接杀死且没有后台通知时，下次初始化为未关闭旧会话补 `reason=process_restart`、`recovered=true`、`endTimeEstimated=true` 的结束事件；时间和时长取上次最后观察值，不包含重启间隔，并保留旧用户、session、context 和预留 eventId。恢复事件与新会话标记一起提交，重试不更换恢复事件 ID。未取得 context 的旧事件通过已保存的原配置请求补取，只绑定原 session，不发布为新会话配置。存储不可用时保持内存状态供后续重试。
+`sessionDurationMs` 改为 1 秒采样累计：每次直接读取系统当前前后台状态，单次最多累计 1 秒，不追补暂停期间的长间隔；漏掉前台通知不会导致持续停计。后台不累计，广告期间采样可运行时累计，暂停时允许少计。手动结束、自动生命周期结束和会话切换共用累计值。每秒只更新内存，沿用 10 秒心跳及事件操作持久化，强杀恢复只使用最后保存的累计时长。初始化或显式新会话重置，恢复前台不重置。
+
+前台每 10 秒保存最后观察时间，广告显示期间也更新。进程被直接杀死且没有后台通知时，下次初始化为未关闭旧会话补 `reason=process_restart`、`recovered=true`、`endTimeEstimated=true` 的结束事件；事件时间取上次最后观察值，时长取当时保存的累计值，不包含重启间隔，并保留旧用户、session、context 和预留 eventId。恢复事件与新会话标记一起提交，重试不更换恢复事件 ID。未取得 context 的旧事件通过已保存的原配置请求补取，只绑定原 session，不发布为新会话配置。存储不可用时保持内存状态供后续重试。
 
 `await sdk.tracker.newSession()` 自动为尚未结束的旧会话生成 `reason=new_session` 的结束事件，保留旧用户、session 和 context，时长截止切换；尝试持久化完整未发送队列（含在途事件）后立即启动异步 flush，不等待网络成功才切换。无需先手动结束旧会话。已入队过结束事件的旧会话不再补报或延长时长；相同 session ID 为无操作。存储不可用时队列仍保留在内存，落盘依赖所配置的 storage。
 

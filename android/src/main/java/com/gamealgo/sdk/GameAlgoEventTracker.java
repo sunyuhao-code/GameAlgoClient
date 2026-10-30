@@ -145,7 +145,7 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         if (!isBlank(userId) && !sessionHasEnd) {
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("reason", "new_session");
-            payload.put("sessionDurationMs", Math.max(0L, endedAt.getTime() - sessionStartMillis));
+            payload.put("sessionDurationMs", sessionDurationMillis());
             enqueue(new GameAlgoEvent(isBlank(contextId) ? "" : contextId, userId, previousSessionId, "session_end")
                     .eventId(UUID.randomUUID().toString()).payload(payload).isDebug(isDebug)
                     .timestamp(GameAlgoClient.isoTimestamp(endedAt))
@@ -248,6 +248,14 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         lifecycleJournal.observe(foreground, nowMillis);
         importLifecycleEvents();
         if (!foreground) flushAsync();
+    }
+
+    synchronized void sampleSessionDuration(boolean foreground, long nowMillis) {
+        if (!lifecycleClosed && lifecycleJournal != null) lifecycleJournal.sample(foreground, nowMillis);
+    }
+
+    private long sessionDurationMillis() {
+        return lifecycleJournal == null ? 0L : lifecycleJournal.duration(sessionId);
     }
 
     synchronized void retainLifecycleConfig(String sessionId, String body) {
@@ -542,7 +550,7 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         Map<String, Object> merged = copyPayload(payload);
         synchronized (this) {
             if (sessionStartMillis > 0L) {
-                merged.put("sessionDurationMs", Math.max(0L, System.currentTimeMillis() - sessionStartMillis));
+                merged.put("sessionDurationMs", sessionDurationMillis());
             }
         }
         return track("session_end", merged);

@@ -13,7 +13,7 @@ test("Maker SDK does not expose multiplayer", async () => {
     readdir(luaRootUrl),
   ]);
 
-  assert.match(gameAlgo, /local SDK_VERSION = "2\.0\.0-lua"/);
+  assert.match(gameAlgo, /local SDK_VERSION = "2\.0\.2-lua"/);
   assert.doesNotMatch(gameAlgo, /Multiplayer|multiplayer|Matchmaking|ConnectRoom/);
   assert.doesNotMatch(readme, /GameAlgo\.(?:Matchmaking|ConnectRoom|DefineMultiplayerProtocol)/);
   assert.match(readme, /Maker \/ Lua SDK 不提供匹配、Lobby、房间连接或实时状态同步/);

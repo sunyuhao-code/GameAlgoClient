@@ -106,7 +106,9 @@ SDK 会在 `/v1/config` 请求里自动带上 UTC `userCreatedAt`、本地 `user
 
 Android AAR 内置的非导出 ContentProvider 在 Application 启动时安装进程级监听，无需修改游戏 Activity。所有 Activity（包括广告 Activity）都停止持续 100ms 后，立即生成并保存 `reason=background` 的 `session_end`，再异步 Flush；同时监听 `onTrimMemory(TRIM_MEMORY_UI_HIDDEN)` 和 `SCREEN_OFF`，这两种明确后台信号不等待 100ms。正常广告 Activity 切换不结束会话；从广告页回桌面会结束。配置变更重建 Activity、单纯的其他内存压力通知不作为后台结束；亮屏留在桌面或锁屏界面不恢复前台。恢复前台不更换 `sessionId`，后续再次退后台可再次上报。
 
-前台每 10 秒保存最后观察时间，广告 Activity 显示期间也更新。进程被直接杀死且没有后台通知时，下次初始化为未关闭旧会话补 `reason=process_restart`、`recovered=true`、`endTimeEstimated=true` 的结束事件。时间和时长采用上次最后观察值，不包含重启间隔；保留旧用户、session、context 和预留 eventId。恢复事件与新会话标记一起提交，重复启动不会为同一旧会话不断生成新 ID。未取得 context 的旧事件使用已保存的原 `/v1/config` 请求补取，只绑定原 session。存储不可用时保留内存状态供后续重试。`tracker().close()` 会解除该 tracker 的生命周期订阅。
+`sessionDurationMs` 改为 1 秒采样累计：每次直接读取系统当前前后台状态，单次最多累计 1 秒，不追补暂停期间的长间隔；漏掉前台通知不会导致持续停计。后台不累计，广告期间采样可运行时累计，暂停时允许少计。手动结束、自动生命周期结束和会话切换共用累计值。每秒只更新内存，沿用 10 秒心跳及事件操作持久化，强杀恢复只使用最后保存的累计时长。初始化或显式新会话重置，恢复前台不重置。
+
+前台每 10 秒保存最后观察时间，广告 Activity 显示期间也更新。进程被直接杀死且没有后台通知时，下次初始化为未关闭旧会话补 `reason=process_restart`、`recovered=true`、`endTimeEstimated=true` 的结束事件。事件时间采用上次最后观察值，时长采用当时保存的累计值，不包含重启间隔；保留旧用户、session、context 和预留 eventId。恢复事件与新会话标记一起提交，重复启动不会为同一旧会话不断生成新 ID。未取得 context 的旧事件使用已保存的原 `/v1/config` 请求补取，只绑定原 session。存储不可用时保留内存状态供后续重试。`tracker().close()` 会解除该 tracker 的生命周期订阅。
 
 `tracker().newSession()` 自动为尚未结束的旧会话生成 `reason=new_session` 的 `session_end`，保留旧用户、session 和 context，时长截止本次切换；尝试持久化完整未发送队列（含在途事件）后立即调度 `flushAsync()`，不等待网络成功才切换。无需先手动调用 `trackSessionEnd()`。旧会话已入队过结束事件时不再补报，也不延长原时长；`newSession(currentSessionId)` 为无操作。存储不可用时仍保留内存队列，持久化能力仍取决于配置的 storage。
 

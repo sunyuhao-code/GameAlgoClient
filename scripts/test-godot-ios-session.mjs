@@ -64,7 +64,9 @@ try {
   assert.equal(background.events.length, 1);
   assert.equal(background.events[0].payload.endTimeEstimated, false);
   assert.equal(background.events[0].payload.sessionDurationMs,
-    background.session.last_seen_ms - first.session.started_at_ms);
+    background.session.duration_ms);
+  assert.ok(background.session.duration_ms > 0, "the native timer accumulates while the surrogate ad is visible");
+  assert.ok(background.session.duration_ms <= background.session.last_seen_ms - first.session.started_at_ms);
   console.log("PASS: leaving the ad for another app immediately persists a normal session_end");
 
   const resumed = await sim("launch", bundle);
@@ -87,7 +89,7 @@ try {
   assert.equal(recovered[0].sessionId, first.session.event.sessionId);
   assert.equal(recovered[0].contextId, "smoke-context");
   assert.equal(recovered[0].payload.endTimeEstimated, true);
-  assert.equal(recovered[0].payload.sessionDurationMs, killed.session.last_seen_ms - first.session.started_at_ms);
+  assert.equal(recovered[0].payload.sessionDurationMs, killed.session.duration_ms);
   assert.equal(recovered[0].timestamp, killed.session.event.timestamp);
   console.log("PASS: SIGKILL during the ad recovers the old session identity and last-observed duration");
   console.log(`iOS native session integration passed on ${device.name}`);

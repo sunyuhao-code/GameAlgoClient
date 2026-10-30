@@ -173,7 +173,9 @@ local enabled = GameAlgo.ConfigValue("ads.rewarded.enabled", true, "gameplay.jso
 
 `GameAlgo.TrackAdPlacement` 在广告事件入队后会立即 Flush。发送前，SDK 会把 inflight batch 和剩余队列按 JSON Lines 写入内部自动存储；下次启动自动恢复，按下述批次完成策略确认后才删除持久化副本。请求超过 15 秒没有终态回调时，watchdog 会释放请求、把 inflight batch 放回队首，并按退避间隔重试。迟到或重复回调由 request token 忽略；成功后 SDK 会连续发送，直到所有已有 context 的事件全部排空。事件入队时即固定 `sessionId` 和已有的 `contextId`；同一 session 刷新 context 不会重绑旧事件。
 
-SDK 自动监听 Maker 的 `AppWillEnterBackground`、`AppTerminating`、`ExitRequested`，收到通知时生成标准 `session_end`，立即保存完整队列并触发 Flush。对应 `reason` 为 `app_background`、`app_terminating`、`exit_requested`，payload 同时记录 `lifecycleEvent`。该结束事件不占用普通事件额度，仍受队列容量上限约束。Maker 打开全屏广告也会触发后台通知，SDK 同样上报；同一会话后续再次退后台、退出或终止可以重复上报。不会自动切换 `sessionId`，每条时长都从当前会话起点计算到该次通知。
+SDK 自动监听 Maker 的 `AppWillEnterBackground`、`AppTerminating`、`ExitRequested`，收到通知时生成标准 `session_end`，立即保存完整队列并触发 Flush。对应 `reason` 为 `app_background`、`app_terminating`、`exit_requested`，payload 同时记录 `lifecycleEvent`。该结束事件不占用普通事件额度，仍受队列容量上限约束。Maker 打开全屏广告也会触发后台通知，SDK 同样上报；同一会话后续再次退后台、退出或终止可以重复上报。不会自动切换 `sessionId`。
+
+默认 `sessionDurationMs` 为当前会话累计的引擎运行时长：在已有的 Update 接收器中直接累加有效的 `TimeStep × 1000`，以整数毫秒生成快照。计时不维护依赖生命周期通知恢复的暂停标记；引擎在后台或全屏广告期间停止 Update 时不补算墙钟间隔。累计值只在 `Init` 或切换到不同 session 时归零，刷新 context、生命周期快照和相同 ID 的 `NewSession` 不清零。每帧计时只更新内存，不触发额外写盘或上报。自定义运行时没有 Maker Update / TimeStep 时不会凭墙钟推算游玩时长；`TrackSessionEnd` 显式提供的时长仍保留。
 
 生命周期上报是会话时长快照，不作为游戏显式结束会话的标记；广告后继续游戏再调用 `NewSession`，仍会为旧会话生成截至切换时的结束事件。监听使用 SDK 自己的 `LuaScriptObject`，不会替换游戏的 Update 或生命周期回调。初始化存储尚未就绪时先暂存通知时刻的事件，存储就绪后保存，取得 context 后 Flush。直接杀进程而没有宿主通知时无法新建结束事件；已成功保存的队列会在下次启动恢复。
 

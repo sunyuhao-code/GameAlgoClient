@@ -11,7 +11,7 @@ import { GameAlgoBrowserStorage, type GameAlgoBrowserStorageOptions } from "./br
 import { GameAlgoWebScriptRuntime } from "./script-runtime.ts";
 import { GameAlgoMatchmakingClient } from "./multiplayer.ts";
 
-export const GAMEALGO_WEB_SDK_VERSION = "2.0.1";
+export const GAMEALGO_WEB_SDK_VERSION = "2.0.2";
 const WEB_KEEPALIVE_BODY_LIMIT_BYTES = 60 * 1024;
 const WEB_EVENT_BATCH_BODY_BUDGET_BYTES = 48 * 1024;
 const TAPDB_CONTEXT_LINK_EVENT = "gamealgo_context_link";
@@ -139,6 +139,7 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
     });
     this.lifecycleTarget = typeof window === "undefined" ? undefined : window;
     this.documentTarget = typeof document === "undefined" ? undefined : document;
+    this.tracker.setSessionDurationVisibility(() => this.documentTarget?.visibilityState !== "hidden");
     this.autoSessionLifecycle = options.autoSessionLifecycle !== false;
     this.onVisibilityChange = () => {
       this.attachTapLifecycle();
@@ -345,6 +346,7 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
 
   private endSessionAndFlush(reason: string): void {
     if (this.closed) return;
+    this.tracker.observeSessionDurationVisibility();
     const session = this.tracker.currentSessionId();
     if (this.autoSessionLifecycle && this.endedSessionId !== session) {
       if (this.tracker.trackSessionEndSnapshot({ reason })) this.endedSessionId = session;
@@ -354,6 +356,7 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
 
   private resumeSession(): void {
     if (this.closed) return;
+    this.tracker.observeSessionDurationVisibility();
     const hadEnd = this.endedSessionId !== undefined;
     this.endedSessionId = undefined;
     if (!hadEnd) return;

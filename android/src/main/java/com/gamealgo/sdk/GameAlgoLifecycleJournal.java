@@ -18,6 +18,8 @@ final class GameAlgoLifecycleJournal {
     private boolean active;
     private boolean foreground;
     private boolean durable;
+    private long sampleAt;
+    private boolean sampleForeground;
 
     GameAlgoLifecycleJournal(GameAlgoCacheStorage storage, String key, boolean foreground, int queueLimit) {
         this.storage = storage;
@@ -55,12 +57,19 @@ final class GameAlgoLifecycleJournal {
             session = new LinkedHashMap<>();
             session.put("sessionId", template.getSessionId());
             session.put("startedAtMs", startedAt);
+            session.put("durationMs", 0L);
+            sampleAt = startedAt;
+            sampleForeground = foreground;
             session.put("lastSeenMs", startedAt);
             session.put("open", foreground);
             session.put("hasEnd", hasEnd);
             session.put("eventId", UUID.randomUUID().toString());
             session.put("timestamp", GameAlgoClient.isoTimestamp(new Date(startedAt)));
             session.put("createdLocalAt", GameAlgoClient.localTimestamp(new Date(startedAt)));
+        }
+        if (number("startedAtMs") != startedAt) {
+            session.put("durationMs", 0L);
+            sampleAt = startedAt;
         }
         session.put("startedAtMs", startedAt);
         Date start = new Date(startedAt);
@@ -79,6 +88,7 @@ final class GameAlgoLifecycleJournal {
     }
 
     synchronized void observe(boolean nextForeground, long now) {
+        sample(nextForeground, now);
         boolean changed = foreground != nextForeground;
         foreground = nextForeground;
         if (!active || session == null) return;
@@ -95,6 +105,21 @@ final class GameAlgoLifecycleJournal {
             session.put("hasEnd", true);
         }
         persist();
+    }
+
+    /** Memory only; the caller reads current OS visibility on every tick. */
+    synchronized void sample(boolean currentForeground, long now) {
+        if (!active || session == null) return;
+        if (currentForeground && sampleForeground) {
+            session.put("durationMs", number("durationMs") + Math.min(1000L, Math.max(0L, now - sampleAt)));
+        }
+        if (currentForeground) session.put("lastSeenMs", Math.max(now, number("startedAtMs")));
+        sampleAt = now;
+        sampleForeground = currentForeground;
+    }
+
+    synchronized long duration(String sessionId) {
+        return active && session != null && sessionId.equals(session.get("sessionId")) ? number("durationMs") : 0L;
     }
 
     synchronized void bind(String sessionId, String contextId) {
@@ -140,7 +165,7 @@ final class GameAlgoLifecycleJournal {
             payload.put("reason", reason);
             payload.put("recovered", recovered);
             payload.put("endTimeEstimated", recovered);
-            payload.put("sessionDurationMs", Math.max(0L, at - number("startedAtMs")));
+            payload.put("sessionDurationMs", session.containsKey("durationMs") ? number("durationMs") : Math.max(0L, number("lastSeenMs") - number("startedAtMs")));
             Date date = new Date(at);
             return template.eventId((String) session.get("eventId")).payload(payload)
                     .timestamp(recovered && session.get("timestamp") instanceof String ? (String) session.get("timestamp") : GameAlgoClient.isoTimestamp(date))
@@ -163,6 +188,11 @@ final class GameAlgoLifecycleJournal {
         value.put("version", 1);
         List<Object> rows = new ArrayList<>();
         try {
+            if (active && session != null) {
+                Date observed = new Date(number("lastSeenMs"));
+                session.put("timestamp", GameAlgoClient.isoTimestamp(observed));
+                session.put("createdLocalAt", GameAlgoClient.localTimestamp(observed));
+            }
             Date now = new Date();
             for (GameAlgoEvent event : events.values()) rows.add(event.toJson(GameAlgoClient.isoTimestamp(now), GameAlgoClient.localTimestamp(now)));
             value.put("events", rows);

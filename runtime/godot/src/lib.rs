@@ -191,6 +191,11 @@ impl GameAlgoRuntime {
     }
 
     #[func]
+    fn event_backend_session_duration_ms(&self) -> i64 {
+        self.event_backend.duration_ms()
+    }
+
+    #[func]
     fn event_backend_enqueue(&self, event_json: GString) -> bool {
         self.event_backend.enqueue(&event_json.to_string())
     }

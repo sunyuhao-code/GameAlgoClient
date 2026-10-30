@@ -16,6 +16,7 @@ final class GameAlgoLifecycleTests: XCTestCase {
         let storage = storage()
         let first = GameAlgoLifecycleJournal(storage: storage, key: "journal")
         first.activate(template("old"), startedAt: date(1000), hasEnd: false, foreground: true, pending: [])
+        for second in 1001...1010 { first.sample(foreground: true, at: date(Double(second))) }
         first.observe(foreground: true, at: date(1010))
         let second = GameAlgoLifecycleJournal(storage: storage, key: "journal")
         second.activate(template("new"), startedAt: date(9000), hasEnd: false, foreground: true, pending: [])
@@ -43,17 +44,19 @@ final class GameAlgoLifecycleTests: XCTestCase {
         await tracker.identify(userId: "user", sessionId: "same-session")
         await tracker.setContextId("ctx")
         await tracker.enableLifecycle(foreground: true)
+        for second in 1001...1003 { tracker.lifecycleJournal.sample(foreground: true, at: date(Double(second))) }
         tracker.lifecycleJournal.observe(foreground: false, at: date(1003))
         let raw = try XCTUnwrap(storage.loadValue(cacheKey: "queue:lifecycle"))
         XCTAssertTrue(raw.contains("session_end"), "UIKit commits the end synchronously before an actor task runs")
         await tracker.flush()
         tracker.lifecycleJournal.observe(foreground: true, at: date(1010))
+        for second in 1011...1013 { tracker.lifecycleJournal.sample(foreground: true, at: date(Double(second))) }
         tracker.lifecycleJournal.observe(foreground: false, at: date(1013))
         await tracker.flush()
         let events = await uploader.events
         XCTAssertEqual(events.count, 2)
         XCTAssertEqual(events.map(\.sessionId), ["same-session", "same-session"])
-        XCTAssertEqual(events.map { $0.payload["sessionDurationMs"] }, [.number(3000), .number(13_000)])
+        XCTAssertEqual(events.map { $0.payload["sessionDurationMs"] }, [.number(3000), .number(6000)])
         XCTAssertNotEqual(events[0].eventId, events[1].eventId)
         let current = await tracker.currentSessionId()
         XCTAssertEqual(current, "same-session")
@@ -64,6 +67,33 @@ final class GameAlgoLifecycleTests: XCTestCase {
         let restart = GameAlgoLifecycleJournal(storage: storage, key: "queue:lifecycle")
         restart.activate(template("new"), startedAt: date(9000), hasEnd: false, foreground: true, pending: [])
         XCTAssertFalse(restart.pending().contains { $0.sessionId == "same-session" }, "normal background and ACK leave a closed old marker")
+    }
+
+    func testSamplesRecoverWithoutResumeAndDoNotWriteEverySecond() throws {
+        let storage = storage()
+        let journal = GameAlgoLifecycleJournal(storage: storage, key: "journal")
+        journal.activate(template("same"), startedAt: date(1000), hasEnd: false, foreground: true, pending: [])
+        let initial = try storage.loadValue(cacheKey: "journal")
+        journal.sample(foreground: true, at: date(1001))
+        journal.sample(foreground: true, at: date(1042)) // delayed callback, no catch-up
+        XCTAssertEqual(journal.duration(sessionId: "same"), 2000)
+        XCTAssertEqual(try storage.loadValue(cacheKey: "journal"), initial)
+        journal.observe(foreground: false, at: date(1042))
+        journal.sample(foreground: false, at: date(1100)) // native timer can run in background
+        XCTAssertEqual(journal.duration(sessionId: "same"), 2000)
+        journal.sample(foreground: true, at: date(1200)) // no foreground notification
+        journal.sample(foreground: true, at: date(1201))
+        XCTAssertEqual(journal.duration(sessionId: "same"), 3000)
+        journal.observe(foreground: true, at: date(1201)) // checkpoint rearms recovery
+        journal.sample(foreground: true, at: date(1202))
+        let restored = GameAlgoLifecycleJournal(storage: storage, key: "journal")
+        restored.activate(template("next"), startedAt: date(9000), hasEnd: false, foreground: true, pending: [])
+        let recovered = try XCTUnwrap(restored.pending().first { $0.payload["reason"] == .string("process_restart") })
+        XCTAssertEqual(recovered.payload["sessionDurationMs"], .number(3000), "only the last durable duration is recovered")
+        journal.activate(template("same"), startedAt: date(1000), hasEnd: false, foreground: nil, pending: [])
+        XCTAssertEqual(journal.duration(sessionId: "same"), 4000, "metadata refresh keeps duration")
+        journal.activate(template("next"), startedAt: date(1202), hasEnd: false, foreground: nil, pending: [])
+        XCTAssertEqual(journal.duration(sessionId: "next"), 0)
     }
 
     func testBackgroundDuringAnInflightUploadIsNotLostOrRemovedByItsAck() async throws {

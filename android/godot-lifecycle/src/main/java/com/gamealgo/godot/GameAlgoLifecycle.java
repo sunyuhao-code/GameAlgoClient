@@ -1,6 +1,7 @@
 package com.gamealgo.godot;
 
 import android.app.Activity;
+import android.app.ActivityManager;
 import android.app.Application;
 import android.content.BroadcastReceiver;
 import android.content.ComponentCallbacks2;
@@ -28,15 +29,28 @@ public final class GameAlgoLifecycle implements Application.ActivityLifecycleCal
     private final ProcessVisibility visibility;
     private final PowerManager powerManager;
     private boolean nativeReady;
+    private final ActivityManager.RunningAppProcessInfo process = new ActivityManager.RunningAppProcessInfo();
+    private long lastCheckpoint = System.currentTimeMillis();
     private final Runnable retry = new Runnable() {
         @Override public void run() { update(visibility.isForeground()); }
     };
     private final Runnable heartbeat = new Runnable() {
         @Override public void run() {
-            if (nativeReady && visibility.isForeground()) {
-                update(true);
-                main.postDelayed(this, 10_000L);
+            if (!nativeReady) return;
+            long now = System.currentTimeMillis();
+            boolean foreground = currentForeground();
+            try {
+                nativeSample(foreground, now, timestamp(now, true), timestamp(now, false));
+            } catch (LinkageError error) {
+                nativeReady = false;
+                Log.e("GameAlgoSDK", "Duration bridge and GDExtension versions do not match", error);
+                return;
             }
+            if (now - lastCheckpoint >= 10_000L) {
+                lastCheckpoint = now;
+                update(foreground);
+            }
+            main.postDelayed(this, 1000L);
         }
     };
 
@@ -47,9 +61,7 @@ public final class GameAlgoLifecycle implements Application.ActivityLifecycleCal
             public void cancel(Runnable task) { main.removeCallbacks(task); }
         }, foreground -> {
             if (!nativeReady) return;
-            main.removeCallbacks(heartbeat);
             update(foreground);
-            if (foreground) main.postDelayed(heartbeat, 10_000L);
         });
         if (!isInteractive()) visibility.screenOff();
         application.registerActivityLifecycleCallbacks(this);
@@ -68,6 +80,12 @@ public final class GameAlgoLifecycle implements Application.ActivityLifecycleCal
         } else {
             application.registerReceiver(screenReceiver, screenFilter);
         }
+    }
+
+    private boolean currentForeground() {
+        ActivityManager.getMyMemoryState(process);
+        return isInteractive() && (process.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+                || process.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE);
     }
 
     private boolean isInteractive() {
@@ -92,9 +110,7 @@ public final class GameAlgoLifecycle implements Application.ActivityLifecycleCal
             instance.nativeReady = true;
             instance.main.removeCallbacks(instance.heartbeat);
             instance.update(instance.visibility.isForeground());
-            if (instance.visibility.isForeground()) {
-                instance.main.postDelayed(instance.heartbeat, 10_000L);
-            }
+            instance.main.postDelayed(instance.heartbeat, 1000L);
         });
         return true;
     }
@@ -117,6 +133,14 @@ public final class GameAlgoLifecycle implements Application.ActivityLifecycleCal
             Log.e("GameAlgoSDK", "Lifecycle bridge and GDExtension versions do not match", error);
         }
     }
+
+    private static String timestamp(long now, boolean utc) {
+        SimpleDateFormat formatter = new SimpleDateFormat(utc ? "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'" : "yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.US);
+        if (utc) formatter.setTimeZone(TimeZone.getTimeZone("UTC"));
+        return formatter.format(new Date(now));
+    }
+
+    private static native void nativeSample(boolean foreground, long nowMs, String timestamp, String local);
 
     private static native boolean nativeUpdate(
             boolean foreground, long nowMs, String timestamp, String createdLocalAt, String nextEventId);

@@ -43,7 +43,7 @@ for (const platform of ["maker", "web", "android", "ios"] as const) {
     assert.equal(end.accountUserId, "old-account");
     assert.equal(end.isDebug, true);
     assert.equal(end.timestamp, new Date(4500).toISOString());
-    assert.deepEqual(end.payload, { reason: "new_session", sessionDurationMs: 3500 });
+    assert.deepEqual(end.payload, { reason: "new_session", sessionDurationMs: platform === "web" ? 1000 : 3500 });
     h.tracker.close();
   });
 }

@@ -53,6 +53,8 @@ Helper 从 `rest-api/src/index.ts` 导出：
 
 `client.tracker.newSession()` 自动为尚未结束的旧会话入队 `reason=new_session` 的 `session_end`，保留旧用户、session 和 context，时长截止本次切换；配置了 storage 时主动安排队列持久化，并立即触发 flush。切换同步返回，不等待网络或异步存储完成；上传失败保留原事件重试。已经结束的旧会话不再补报或延长时长，相同 session ID 为无操作。未绑定旧事件继续保留，只能由原会话的 context 补绑定；迟到的旧配置响应不覆盖当前快照。自定义配置接入可调用 `bindSessionContext(sessionId, contextId)`。此行为由 H5 SDK 共同复用，不新增宿主生命周期监听。
 
+`web` 平台的 tracker 每秒在内存采样运行时长，每次最多累计 1000 毫秒，不补算停顿间隔。H5 包装层提供实时页面可见性，每次采样重新判断，不依赖前台通知解除暂停；手动结束、生命周期快照和显式切换都读取同一累计值。其他 REST 平台的计时保持原有行为。采样不触发额外持久化或网络请求。
+
 `baseUrl` 可以包含服务路径前缀，例如 `https://dirichlet.ai/algo_sdk`。Helper 会在该前缀后追加 `/v1/*`，不会把请求发送到域名根路径。
 
 GameAlgo 控制台 Configs 页面创建的文件也可以在需要时直接拉取：

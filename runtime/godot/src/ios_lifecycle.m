@@ -4,10 +4,22 @@
 extern int32_t gamealgo_godot_lifecycle_update(int32_t foreground, int64_t now_ms,
     const char *timestamp, const char *local, const char *next_event_id);
 
+extern void gamealgo_godot_duration_sample(int32_t foreground, int64_t now_ms, const char *timestamp, const char *local);
+
+static NSString *GameAlgoTimestamp(NSDate *date, BOOL local) {
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    formatter.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
+    formatter.calendar = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
+    formatter.timeZone = local ? NSTimeZone.localTimeZone : [NSTimeZone timeZoneForSecondsFromGMT:0];
+    formatter.dateFormat = local ? @"yyyy-MM-dd'T'HH:mm:ss.SSSxxx" : @"yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
+    return [formatter stringFromDate:date];
+}
+
 @interface GameAlgoGodotLifecycle : NSObject
 @property(nonatomic) BOOL foreground;
 @property(nonatomic, strong) NSTimer *heartbeat;
 @property(nonatomic, strong) NSTimer *retry;
+@property(nonatomic) NSTimeInterval lastCheckpoint;
 - (void)report;
 - (void)stop;
 @end
@@ -17,16 +29,27 @@ extern int32_t gamealgo_godot_lifecycle_update(int32_t foreground, int64_t now_m
     self = [super init];
     if (self) {
         _foreground = UIApplication.sharedApplication.applicationState != UIApplicationStateBackground;
+        _lastCheckpoint = NSDate.date.timeIntervalSince1970;
         NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
         [center addObserver:self selector:@selector(background:) name:UIApplicationDidEnterBackgroundNotification object:nil];
         [center addObserver:self selector:@selector(foreground:) name:UIApplicationWillEnterForegroundNotification object:nil];
         // Do not observe resign-active: ads, Control Center and permission
         // dialogs may make the app inactive without putting it in background.
         __weak GameAlgoGodotLifecycle *weakSelf = self;
-        _heartbeat = [NSTimer timerWithTimeInterval:10.0 repeats:YES block:^(NSTimer *timer) {
+        _heartbeat = [NSTimer timerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *timer) {
             (void)timer;
             GameAlgoGodotLifecycle *observer = weakSelf;
-            if (observer.foreground) [observer report];
+            if (!observer) return;
+            NSDate *date = NSDate.date;
+            NSTimeInterval now = date.timeIntervalSince1970;
+            BOOL foreground = UIApplication.sharedApplication.applicationState != UIApplicationStateBackground;
+            gamealgo_godot_duration_sample(foreground ? 1 : 0, (int64_t)(now * 1000.0),
+                GameAlgoTimestamp(date, NO).UTF8String, GameAlgoTimestamp(date, YES).UTF8String);
+            if (now - observer.lastCheckpoint >= 10.0) {
+                observer.lastCheckpoint = now;
+                observer.foreground = foreground;
+                [observer report];
+            }
         }];
         [NSRunLoop.mainRunLoop addTimer:_heartbeat forMode:NSRunLoopCommonModes];
     }
@@ -49,15 +72,8 @@ extern int32_t gamealgo_godot_lifecycle_update(int32_t foreground, int64_t now_m
     [self.retry invalidate];
     self.retry = nil;
     NSDate *now = NSDate.date;
-    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
-    formatter.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
-    formatter.calendar = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
-    formatter.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
-    formatter.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
-    NSString *utc = [formatter stringFromDate:now];
-    formatter.timeZone = NSTimeZone.localTimeZone;
-    formatter.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss.SSSxxx";
-    NSString *local = [formatter stringFromDate:now];
+    NSString *utc = GameAlgoTimestamp(now, NO);
+    NSString *local = GameAlgoTimestamp(now, YES);
     NSString *eventId = NSUUID.UUID.UUIDString.lowercaseString;
     int32_t accepted = gamealgo_godot_lifecycle_update(self.foreground ? 1 : 0,
         (int64_t)(now.timeIntervalSince1970 * 1000.0), utc.UTF8String, local.UTF8String, eventId.UTF8String);

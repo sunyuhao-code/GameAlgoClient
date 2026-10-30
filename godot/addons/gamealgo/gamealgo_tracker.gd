@@ -32,7 +32,7 @@ var _user_id := ""
 var _session_id := ""
 var _context_id := ""
 var _platform := "rest"
-var _sdk_version := "2.0.0"
+var _sdk_version := "2.0.2"
 var _app_version := ""
 var _timezone := "UTC"
 var _user_created_at := ""
@@ -45,6 +45,9 @@ var _event_sequence: Dictionary = {}
 var _next_event_sequence := 0
 var _is_flushing := false
 var _session_start_unix := 0.0
+var _session_duration_ms := 0
+var _duration_sample_at := 0
+var _duration_was_visible := true
 var _consecutive_failures := 0
 var _has_persisted_queue := false
 var _measurement_allowed := false
@@ -85,7 +88,7 @@ func configure(client: Object, storage: Variant, options: Dictionary) -> bool:
 	if _session_id.is_empty():
 		_session_id = GameAlgoUtil.uuid()
 	_platform = String(options.get("platform", "rest"))
-	_sdk_version = String(options.get("sdk_version", "2.0.0"))
+	_sdk_version = String(options.get("sdk_version", "2.0.2"))
 	_app_version = String(options.get("app_version", ""))
 	_timezone = String(options.get("timezone", GameAlgoUtil.timezone_name()))
 	_user_created_at = String(options.get("user_created_at", ""))
@@ -94,6 +97,8 @@ func configure(client: Object, storage: Variant, options: Dictionary) -> bool:
 	_measurement_allowed = bool(measurement_value)
 	_measurement_resolved = bool(measurement_resolved_value)
 	_session_start_unix = Time.get_unix_time_from_system()
+	_session_duration_ms = 0
+	_duration_sample_at = Time.get_ticks_msec()
 	if _native_events:
 		var configured: Variant = _event_backend.call(
 			"event_backend_configure",
@@ -192,6 +197,8 @@ func new_session(session_id: String = "") -> bool:
 	var previous_session_id := _session_id
 	var previous_context_id := _context_id
 	var previous_start := _session_start_unix
+	var previous_duration := _session_duration_ms
+	var previous_sample_at := _duration_sample_at
 	var previous_quota := _event_quota
 	_session_id = next_session_id
 	if _session_id.is_empty():
@@ -199,10 +206,14 @@ func new_session(session_id: String = "") -> bool:
 	_context_id = ""
 	_event_quota = {}
 	_session_start_unix = Time.get_unix_time_from_system()
+	_session_duration_ms = 0
+	_duration_sample_at = Time.get_ticks_msec()
 	if not _start_native_session():
 		_session_id = previous_session_id
 		_context_id = previous_context_id
 		_session_start_unix = previous_start
+		_session_duration_ms = previous_duration
+		_duration_sample_at = previous_sample_at
 		_event_quota = previous_quota
 		return false
 	_diagnostic_keys.clear()
@@ -298,6 +309,14 @@ func has_unbound_session(session_id: String) -> bool:
 
 
 func tick(delta: float) -> void:
+	if not _native_events and _measurement_allowed:
+		var now := Time.get_ticks_msec()
+		if now - _duration_sample_at >= 1000:
+			var visible := DisplayServer.get_name() == "headless" or DisplayServer.window_is_focused()
+			if visible and _duration_was_visible:
+				_session_duration_ms += mini(1000, maxi(0, now - _duration_sample_at))
+			_duration_sample_at = now
+			_duration_was_visible = visible
 	if _flush_interval <= 0.0:
 		return
 	_flush_elapsed += maxf(delta, 0.0)
@@ -722,10 +741,10 @@ func track_purchase(
 
 func track_session_end(payload: Variant = {}, flush_immediately: bool = true) -> bool:
 	var merged: Dictionary = payload.duplicate(true) if payload is Dictionary else {}
-	if _session_start_unix > 0.0:
-		merged["sessionDurationMs"] = int(maxf(
-			(Time.get_unix_time_from_system() - _session_start_unix) * 1000.0, 0.0
-		))
+	if _native_events and _event_backend.has_method("event_backend_session_duration_ms"):
+		merged["sessionDurationMs"] = int(_event_backend.call("event_backend_session_duration_ms"))
+	else:
+		merged["sessionDurationMs"] = _session_duration_ms
 	var accepted := track("session_end", merged)
 	if accepted and flush_immediately:
 		await flush()

@@ -1,6 +1,7 @@
 package com.gamealgo.sdk;
 
 import android.app.Activity;
+import android.app.ActivityManager;
 import android.app.Application;
 import android.content.BroadcastReceiver;
 import android.content.ComponentCallbacks2;
@@ -26,11 +27,22 @@ public final class GameAlgoAndroidLifecycle implements Application.ActivityLifec
     private final CopyOnWriteArrayList<WeakReference<GameAlgoEventTracker>> trackers = new CopyOnWriteArrayList<>();
     private final PowerManager power;
     private final GameAlgoProcessVisibility visibility;
+    private final ActivityManager.RunningAppProcessInfo process = new ActivityManager.RunningAppProcessInfo();
+    private long lastCheckpoint = System.currentTimeMillis();
     private final Runnable heartbeat = new Runnable() {
         @Override public void run() {
-            if (!visibility.isForeground()) return;
-            report(true);
-            if (!trackers.isEmpty()) main.postDelayed(this, 10_000L);
+            long now = System.currentTimeMillis();
+            boolean foreground = currentForeground();
+            for (WeakReference<GameAlgoEventTracker> reference : trackers) {
+                GameAlgoEventTracker tracker = reference.get();
+                if (tracker == null) trackers.remove(reference);
+                else tracker.sampleSessionDuration(foreground, now);
+            }
+            if (now - lastCheckpoint >= 10_000L) {
+                lastCheckpoint = now;
+                report(foreground);
+            }
+            if (!trackers.isEmpty()) main.postDelayed(this, 1000L);
         }
     };
 
@@ -47,10 +59,10 @@ public final class GameAlgoAndroidLifecycle implements Application.ActivityLifec
         AtomicBoolean detached = new AtomicBoolean();
         Runnable attach = () -> {
             if (detached.get()) return;
-            tracker.enableLifecycle(monitor.visibility.isForeground());
+            tracker.enableLifecycle(monitor.currentForeground());
             monitor.trackers.add(reference);
             monitor.main.removeCallbacks(monitor.heartbeat);
-            if (monitor.visibility.isForeground()) monitor.main.postDelayed(monitor.heartbeat, 10_000L);
+            monitor.main.postDelayed(monitor.heartbeat, 1000L);
         };
         if (Looper.myLooper() == Looper.getMainLooper()) attach.run();
         else monitor.main.post(attach);
@@ -63,8 +75,7 @@ public final class GameAlgoAndroidLifecycle implements Application.ActivityLifec
             public void later(Runnable task, long delay) { main.postDelayed(task, delay); }
             public void cancel(Runnable task) { main.removeCallbacks(task); }
         }, foreground -> {
-            main.removeCallbacks(heartbeat); report(foreground);
-            if (foreground && !trackers.isEmpty()) main.postDelayed(heartbeat, 10_000L);
+            report(foreground);
         });
         if (!interactive()) visibility.screenOff();
         application.registerActivityLifecycleCallbacks(this);
@@ -79,6 +90,11 @@ public final class GameAlgoAndroidLifecycle implements Application.ActivityLifec
         };
         if (Build.VERSION.SDK_INT >= 33) application.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED);
         else application.registerReceiver(receiver, filter);
+    }
+    private boolean currentForeground() {
+        ActivityManager.getMyMemoryState(process);
+        return interactive() && (process.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+                || process.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE);
     }
     private boolean interactive() { return power == null || power.isInteractive(); }
     private void report(boolean foreground) {

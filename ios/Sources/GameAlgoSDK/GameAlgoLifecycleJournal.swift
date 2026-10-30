@@ -12,6 +12,8 @@ final class GameAlgoLifecycleJournal: @unchecked Sendable {
         var nextEventId: String
         var timestamp: String
         var createdLocalAt: String
+        // Optional so journals written before sampled timing remain readable.
+        var durationMs: Double?
     }
     private struct State: Codable {
         var version = 1
@@ -27,6 +29,8 @@ final class GameAlgoLifecycleJournal: @unchecked Sendable {
     private var active = false
     private var foreground = true
     private var durable = false
+    private var sampleAt: Date?
+    private var sampleForeground = true
 
     init(storage: (any GameAlgoCacheStorage)?, key: String?, queueLimit: Int = 1000) {
         self.storage = storage
@@ -49,9 +53,15 @@ final class GameAlgoLifecycleJournal: @unchecked Sendable {
             state.session = Session(event: template, startedAt: startedAt, lastSeen: startedAt,
                                     open: foreground, hasEnd: hasEnd, nextEventId: UUID().uuidString,
                                     timestamp: GameAlgoEventBatchUploader.isoTimestamp(startedAt),
-                                    createdLocalAt: GameAlgoEventBatchUploader.localTimestamp(startedAt))
+                                    createdLocalAt: GameAlgoEventBatchUploader.localTimestamp(startedAt), durationMs: 0)
+            sampleAt = startedAt
+            sampleForeground = foreground
         } else {
             state.session?.event = template
+            if state.session?.startedAt != startedAt {
+                state.session?.durationMs = 0
+                sampleAt = startedAt
+            }
             state.session?.startedAt = startedAt
         }
         active = true
@@ -70,6 +80,7 @@ final class GameAlgoLifecycleJournal: @unchecked Sendable {
 
     func observe(foreground next: Bool, at date: Date) {
         lock.lock(); defer { lock.unlock() }
+        sampleLocked(foreground: next, at: date)
         let changed = foreground != next
         foreground = next
         guard active, var session = state.session else { return }
@@ -86,6 +97,33 @@ final class GameAlgoLifecycleJournal: @unchecked Sendable {
         }
         state.session = session
         persist()
+    }
+
+    /// Memory only. Every tick supplies live UIKit state; notifications never
+    /// leave this clock waiting for a matching resume callback.
+    func sample(foreground: Bool, at date: Date) {
+        lock.lock(); defer { lock.unlock() }
+        sampleLocked(foreground: foreground, at: date)
+    }
+
+    func duration(sessionId: String) -> Double {
+        lock.lock(); defer { lock.unlock() }
+        guard let session = state.session, active, session.event.sessionId == sessionId else { return 0 }
+        return (session.durationMs ?? 0).rounded(.down)
+    }
+
+    private func sampleLocked(foreground: Bool, at date: Date) {
+        guard active, let previous = sampleAt else { return }
+        if foreground && sampleForeground {
+            let duration = (state.session?.durationMs ?? 0) + min(1000, max(0, date.timeIntervalSince(previous) * 1000))
+            state.session?.durationMs = duration
+        }
+        if foreground {
+            let observed = max(date, state.session?.startedAt ?? date)
+            state.session?.lastSeen = observed
+        }
+        sampleAt = date
+        sampleForeground = foreground
     }
 
     func bind(sessionId: String, contextId: String) {
@@ -138,7 +176,7 @@ final class GameAlgoLifecycleJournal: @unchecked Sendable {
         event.timestamp = recovered ? session.timestamp : GameAlgoEventBatchUploader.isoTimestamp(date)
         event.createdLocalAt = recovered ? session.createdLocalAt : GameAlgoEventBatchUploader.localTimestamp(date)
         event.payload = ["reason": .string(reason), "recovered": .bool(recovered), "endTimeEstimated": .bool(recovered),
-                         "sessionDurationMs": .number(max(0, date.timeIntervalSince(session.startedAt) * 1000).rounded(.down))]
+                         "sessionDurationMs": .number((session.durationMs ?? max(0, session.lastSeen.timeIntervalSince(session.startedAt) * 1000)).rounded(.down))]
         return event
     }
     private func persist() {
@@ -148,6 +186,10 @@ final class GameAlgoLifecycleJournal: @unchecked Sendable {
         durable = false
         guard let storage, let key else { return }
         do {
+            if let lastSeen = state.session?.lastSeen {
+                state.session?.timestamp = GameAlgoEventBatchUploader.isoTimestamp(lastSeen)
+                state.session?.createdLocalAt = GameAlgoEventBatchUploader.localTimestamp(lastSeen)
+            }
             let data = try JSONEncoder().encode(state)
             try storage.saveValue(String(decoding: data, as: UTF8.self), cacheKey: key)
             durable = true

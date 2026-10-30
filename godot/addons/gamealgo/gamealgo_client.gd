@@ -18,7 +18,7 @@ signal startup_completed(success: bool)
 ## console there; this signal is how an iOS host gets the same information.
 signal sdk_log(message: String)
 
-const SDK_VERSION := "2.0.0"
+const SDK_VERSION := "2.0.2"
 # The Protocol v1 client is platform-neutral. Storage and script execution are
 # injected capabilities; no native runtime is required.
 ## Godot exports to five targets, but GameAlgo only accepts the two mobile

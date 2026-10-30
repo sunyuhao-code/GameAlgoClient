@@ -197,7 +197,7 @@ public actor GameAlgoEventTracker {
                 timestamp: GameAlgoEventBatchUploader.isoTimestamp(endedAt),
                 createdLocalAt: GameAlgoEventBatchUploader.localTimestamp(endedAt), accountUserId: accountUserId,
                 payload: ["reason": .string("new_session"), "sessionDurationMs": .number(
-                    max(0, endedAt.timeIntervalSince(sessionStartDate ?? endedAt) * 1000).rounded(.down))]
+                    lifecycleJournal.duration(sessionId: previousSessionId))]
             ))
         }
         self.sessionId = nextSession
@@ -604,8 +604,8 @@ public actor GameAlgoEventTracker {
     @discardableResult
     public func trackSessionEnd(payload: JSONValue = .object([:])) async -> Bool {
         var merged = payload.objectValue ?? [:]
-        if let sessionStartDate {
-            let durationMs = max(0, Int(now().timeIntervalSince(sessionStartDate) * 1000))
+        if sessionStartDate != nil {
+            let durationMs = Int(lifecycleJournal.duration(sessionId: sessionId))
             merged["sessionDurationMs"] = .number(Double(durationMs))
         }
         let didTrack = track("session_end", payload: .object(merged))

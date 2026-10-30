@@ -57,3 +57,24 @@ unsafe extern "C" fn gamealgo_godot_lifecycle_update(
     };
     i32::from(backend.lifecycle(foreground != 0, now_ms, timestamp, local, event_id))
 }
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn gamealgo_godot_duration_sample(
+    foreground: i32,
+    now_ms: i64,
+    timestamp: *const c_char,
+    local: *const c_char,
+) {
+    if timestamp.is_null() || local.is_null() {
+        return;
+    }
+    let (Ok(timestamp), Ok(local)) = (unsafe { CStr::from_ptr(timestamp).to_str() }, unsafe {
+        CStr::from_ptr(local).to_str()
+    }) else {
+        return;
+    };
+    let backend = BACKEND.lock().ok().and_then(|slot| slot.clone());
+    if let Some(backend) = backend {
+        backend.sample_duration_at(foreground != 0, now_ms, timestamp, local);
+    }
+}

@@ -51,7 +51,7 @@ test("Maker automatic storage uses normal Maker global lookup and hydrates befor
   assert.doesNotMatch(gameAlgo, /SubscribeToEvent\("Update", handlerName\)/);
   assert.match(gameAlgo, /eventNode = nodeFactory\(\)/);
   assert.match(gameAlgo, /eventObject = eventNode:CreateScriptObject\("LuaScriptObject"\)/);
-  assert.match(gameAlgo, /eventObject:SubscribeToEvent\("Update", function\(\)/);
+  assert.match(gameAlgo, /eventObject:SubscribeToEvent\("Update", function\(/);
   assert.match(gameAlgo, /state_\.internalUpdateObject = eventObject/);
   assert.match(gameAlgo, /isRetryableConfigFailure/);
   assert.match(gameAlgo, /prefetchedMakerUserId = options\.accountUserId or resolveMakerUserId\(\)/);

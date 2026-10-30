@@ -17,6 +17,7 @@ final class GameAlgoLifecycleTest {
         historicalConfigKeepsItsOriginalSession();
         trackerRecoversHistoricalConfigWithoutSwitchingCurrentSession();
         processVisibilityIncludesAdvertisingActivities();
+        sampledDurationDoesNotDependOnResumeCallbacks();
     }
     private static void check(boolean value, String message) { if (!value) throw new AssertionError(message); }
     private static GameAlgoEvent template(String session, String context, long start) {
@@ -33,7 +34,7 @@ final class GameAlgoLifecycleTest {
         GameAlgoEvent recovered = second.pending().get(0);
         check(recovered.getSessionId().equals("old") && recovered.getContextId().equals("ctx-old"), "recovery keeps ownership");
         check(recovered.getPayload().get("reason").equals("process_restart"), "recover an unfinished session");
-        check(((Number) recovered.getPayload().get("sessionDurationMs")).longValue() == 3000, "offline time is excluded");
+        check(((Number) recovered.getPayload().get("sessionDurationMs")).longValue() == 1000, "delayed ticks never catch up offline time");
         check(Boolean.TRUE.equals(recovered.getPayload().get("endTimeEstimated")), "recovered duration is estimated");
         check(recovered.getTimestamp().equals(GameAlgoClient.isoTimestamp(new Date(4000))), "use the last observed time");
         GameAlgoLifecycleJournal third = new GameAlgoLifecycleJournal(storage, "journal", true, 1000);
@@ -45,6 +46,31 @@ final class GameAlgoLifecycleTest {
         GameAlgoLifecycleJournal fourth = new GameAlgoLifecycleJournal(storage, "journal", true, 1000);
         fourth.activate(template("fourth", "ctx-fourth", 300_000), 300_000, false, Collections.emptyList());
         for (GameAlgoEvent event : fourth.pending()) check(!event.getSessionId().equals("old"), "ACK is durable");
+    }
+    private static void sampledDurationDoesNotDependOnResumeCallbacks() throws Exception {
+        Memory storage = new Memory();
+        GameAlgoLifecycleJournal journal = new GameAlgoLifecycleJournal(storage, "journal", true, 1000);
+        journal.activate(template("same", "ctx", 1000), 1000, false, Collections.emptyList());
+        String initial = storage.getItem("journal");
+        journal.sample(true, 2000); journal.sample(true, 43_000);
+        check(journal.duration("same") == 2000, "each observation adds at most one second");
+        check(storage.getItem("journal").equals(initial), "sampling does not perform storage writes");
+        journal.observe(false, 43_000);
+        journal.sample(false, 100_000);
+        check(journal.duration("same") == 2000, "background handler ticks cannot inflate duration");
+        journal.sample(true, 200_000); // deliberately omit the resume notification
+        journal.sample(true, 201_000);
+        check(journal.duration("same") == 3000, "live foreground sampling recovers without resume");
+        journal.observe(true, 201_000); // ten-second checkpoint persists the accumulator
+        journal.sample(true, 202_000);
+        GameAlgoLifecycleJournal restored = new GameAlgoLifecycleJournal(storage, "journal", true, 1000);
+        restored.activate(template("next", "ctx", 900_000), 900_000, false, Collections.emptyList());
+        GameAlgoEvent recovered = restored.pending().stream().filter(e -> "process_restart".equals(e.getPayload().get("reason"))).findFirst().get();
+        check(((Number) recovered.getPayload().get("sessionDurationMs")).longValue() == 3000, "recovery uses only the persisted duration");
+        journal.activate(template("same", "ctx-new", 1000), 1000, false, Collections.emptyList());
+        check(journal.duration("same") == 4000, "metadata refresh does not reset duration");
+        journal.activate(template("next", "ctx", 202_000), 202_000, false, Collections.emptyList());
+        check(journal.duration("next") == 0, "session rotation resets duration");
     }
     private static void backgroundPersistsBeforeTransportAndKeepsSession() throws Exception {
         Memory storage = new Memory();

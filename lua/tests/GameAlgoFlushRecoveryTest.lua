@@ -138,14 +138,14 @@ do
     equal(sent[1].sessionId, previous.sessionId)
     equal(sent[1].contextId, previous.contextId)
     equal(sent[1].payload.reason, "new_session")
-    equal(sent[1].payload.sessionDurationMs, 3500, "same-ID call must not reset the start time")
+    equal(sent[1].payload.sessionDurationMs, 0, "wall time without engine frames must not accrue duration")
     harness.setTime(4500)
     assert(harness.sdk.TrackSessionEnd({ reason = "manual" }))
     harness.setTime(100000)
     harness.sdk.NewSession("rotation-third")
     equal(#sent, 2, "already-ended session is not ended again")
     equal(sent[2].payload.reason, "manual")
-    equal(sent[2].payload.sessionDurationMs, 1000, "manual duration excludes the subsequent gap")
+    equal(sent[2].payload.sessionDurationMs, 0, "manual duration excludes wall time without engine frames")
 end
 
 do
@@ -355,8 +355,22 @@ do
     end
     local harness = makeSdk(acceptPersisted)
     local handlers = receivers[#receivers]
+    local function frames(target, seconds)
+        for _ = 1, math.floor(seconds * 60 + 0.5) do
+            target.Update(nil, nil, { GetFloat = function(_, field)
+                equal(field, "TimeStep")
+                return 1 / 60
+            end })
+        end
+    end
     local previous = harness.sdk.Snapshot()
     harness.setTime(3000)
+    for _, delta in ipairs({ -1, 0, math.huge, 0 / 0 }) do
+        handlers.Update(nil, nil, { GetFloat = function() return delta end })
+    end
+    handlers.Update(nil, nil, { GetFloat = function() error("missing TimeStep") end })
+    frames(handlers, 3)
+    harness.sdk.NewSession(previous.sessionId)
     handlers.AppWillEnterBackground()
     equal(harness.requests(), 1, "background flushes without waiting for Update or five-second timer")
     equal(sent[1].eventType, "session_end")
@@ -367,19 +381,22 @@ do
     equal(sent[1].contextId, previous.contextId)
     equal(harness.sdk.Snapshot().sessionId, previous.sessionId, "background does not rotate session")
     harness.setTime(8000)
+    frames(handlers, 1.25)
     handlers.AppWillEnterBackground()
     equal(#sent, 2, "another background can report the same session again")
-    equal(sent[2].payload.sessionDurationMs, 8000, "repeated snapshot retains original session start")
+    equal(sent[2].payload.sessionDurationMs, 4250, "resumed engine frames count even without a foreground notification")
     assert(sent[1].eventId ~= sent[2].eventId, "separate backgrounds are distinct events")
     harness.setTime(12000)
     harness.sdk.NewSession("after-lifecycle-snapshots")
     equal(#sent, 3, "an ad/background snapshot must not suppress explicit rotation's end")
     equal(sent[3].sessionId, previous.sessionId)
     equal(sent[3].payload.reason, "new_session")
-    equal(sent[3].payload.sessionDurationMs, 12000)
+    equal(sent[3].payload.sessionDurationMs, 4250, "rotation closes the frozen old duration")
     harness.setTime(14000)
+    frames(handlers, 2.5)
     handlers.ExitRequested()
     harness.setTime(15000)
+    frames(handlers, 0.5)
     handlers.AppTerminating()
     equal(sent[4].payload.reason, "exit_requested")
     equal(sent[5].payload.reason, "app_terminating")
@@ -401,6 +418,7 @@ do
     })
     equal(subscriptions, oldSubscriptions, "reinitialization reuses the independent event receiver")
     reinitTime = 22000
+    frames(handlers, 2)
     handlers.AppWillEnterBackground()
     equal(#sent, 6, "reinitialization must not duplicate lifecycle listeners")
     equal(sent[6].sessionId, "lifecycle-reinit", "existing handler uses current SDK state")
@@ -435,6 +453,7 @@ do
     assert(busy.sdk.TrackEvent("busy", {}))
     busy.sdk.Flush(nil)
     busy.setTime(1700)
+    frames(receivers[#receivers], 1.7)
     receivers[#receivers].AppWillEnterBackground()
     equal(busy.requests(), 1, "background coalesces with active HTTP request")
     local saved = persistedEvents(busySession)
@@ -461,6 +480,7 @@ do
     assert(cloudRead, "first storage read must still be pending")
     local delayedSession = delayed.sdk.Snapshot().sessionId
     delayed.setTime(2500)
+    frames(receivers[#receivers], 2.5)
     receivers[#receivers].AppWillEnterBackground()
     equal(delayed.sdk.Snapshot().pendingEvents, 1, "early background waits for storage identity")
     delayed.setTime(9000)
@@ -476,7 +496,7 @@ do
     delayed.sdk.NewSession("delayed-lifecycle-next")
     equal(#delayedSent, 2, "pending background snapshot must also preserve rotation's final end")
     equal(delayedSent[2].payload.reason, "new_session")
-    equal(delayedSent[2].payload.sessionDurationMs, 11000)
+    equal(delayedSent[2].payload.sessionDurationMs, 2500, "storage and background delays do not inflate rotation")
     clientCloud = nil
     Node = nil
 end

@@ -161,9 +161,15 @@ When TapTap sends `tap.onHide`, or the document becomes hidden, the SDK records
 a `session_end` snapshot and starts uploading it immediately. `pagehide` is a
 fallback. Repeated hide notifications during the same hidden period are coalesced.
 When the page becomes visible again (including back-forward cache restoration),
-the SDK retains the current session ID and duration origin, refreshes its context,
+the SDK retains the current session ID and accumulated duration, refreshes its context,
 and preloads current config files. A later hide can report another `session_end`
-for that same session, with duration measured from the original start. Only SDK
+for that same session. `sessionDurationMs` accumulates running time with an in-memory
+one-second sampler. Each observation adds at most one second; suspended intervals
+are not caught up. Every sample reads current document visibility; hidden observations
+do not continue accumulating. Lifecycle callbacks only observe boundaries: a missed
+show callback cannot leave a persistent paused flag. A hide or explicit end includes the subsecond tail
+(also capped at one second). Ads that hide or suspend the WebView can be excluded
+from duration. Sampling performs no event upload or storage write. Only SDK
 initialization or an explicit `tracker.newSession()` creates a new session. TapTap
 `onShow` received while the document is still hidden does not resume the page.
 Set `autoSessionLifecycle: false` only when the game owns those boundaries;
@@ -188,7 +194,7 @@ at the switch. It schedules persistence and immediately starts critical upload,
 without waiting for the network before switching. A session already ended by the
 game is not ended again; passing the current session ID is a no-op. Lifecycle
 snapshots leave the session open, so an explicit switch after an ad/background
-reports its duration through the switch. Unbound old events
+reports its accumulated running duration through the switch. Unbound old events
 remain queued for their own context and cannot inherit the new session's context.
 This explicit boundary also applies when automatic lifecycle handling is disabled.
 
@@ -198,7 +204,7 @@ Fullscreen ads can hide the WebView, and going Home from the ad may produce no
 second hide notification. The SDK therefore records and flushes a `session_end`
 snapshot on the first hide, including during ads. These snapshots bypass gameplay
 event quotas and request durable queue persistence. They keep the same session ID
-and original duration start. `ad_view` still uploads immediately.
+and accumulated duration. `ad_view` still uploads immediately.
 
 Games no longer need to call `setAdShowing`. That method remains as a deprecated
 compatibility no-op, so existing integrations also report ad-related hides.

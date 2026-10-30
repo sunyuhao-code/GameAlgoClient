@@ -40,3 +40,24 @@ pub extern "system" fn Java_com_gamealgo_godot_GameAlgoLifecycle_nativeUpdate(
     };
     backend.lifecycle(foreground != 0, now_ms, &timestamp, &local, &event_id) as jboolean
 }
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_gamealgo_godot_GameAlgoLifecycle_nativeSample(
+    mut env: JNIEnv,
+    _class: JClass,
+    foreground: jboolean,
+    now_ms: jlong,
+    timestamp: JString,
+    local: JString,
+) {
+    let (Ok(timestamp), Ok(local)) = (
+        env.get_string(&timestamp).map(String::from),
+        env.get_string(&local).map(String::from),
+    ) else {
+        return;
+    };
+    let backend = BACKEND.lock().ok().and_then(|slot| slot.clone());
+    if let Some(backend) = backend {
+        backend.sample_duration_at(foreground != 0, now_ms, &timestamp, &local);
+    }
+}

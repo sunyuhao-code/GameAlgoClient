@@ -9,7 +9,7 @@ final class GameAlgoLifecycleObserver {
     private let now: @Sendable () -> Date
     private var tokens: [NSObjectProtocol] = []
     private var heartbeat: Timer?
-    private var foreground: Bool
+    private var lastCheckpoint: Date
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var upload: Task<Void, Never>?
     private var generation = 0
@@ -18,7 +18,7 @@ final class GameAlgoLifecycleObserver {
         self.journal = journal
         self.tracker = tracker
         self.now = now
-        foreground = UIApplication.shared.applicationState != .background
+        lastCheckpoint = now()
         let center = NotificationCenter.default
         tokens.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) {
             [weak self] _ in MainActor.assumeIsolated { self?.background() }
@@ -29,24 +29,28 @@ final class GameAlgoLifecycleObserver {
         tokens.append(center.addObserver(forName: UIApplication.willTerminateNotification, object: nil, queue: .main) {
             [weak self] _ in MainActor.assumeIsolated { self?.background() }
         })
-        let timer = Timer(timeInterval: 10, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.foreground else { return }
-                self.journal.observe(foreground: true, at: self.now())
+                guard let self else { return }
+                let date = self.now()
+                let foreground = UIApplication.shared.applicationState != .background
+                self.journal.sample(foreground: foreground, at: date)
+                if date.timeIntervalSince(self.lastCheckpoint) >= 10 {
+                    self.lastCheckpoint = date
+                    self.journal.observe(foreground: foreground, at: date)
+                }
             }
         }
         heartbeat = timer
         RunLoop.main.add(timer, forMode: .common)
-        journal.observe(foreground: foreground, at: now())
+        journal.observe(foreground: UIApplication.shared.applicationState != .background, at: now())
     }
 
     private func resume() {
-        foreground = true
         journal.observe(foreground: true, at: now())
     }
 
     private func background() {
-        foreground = false
         // The durable end exists before scheduling any actor or network work.
         journal.observe(foreground: false, at: now())
         finishUpload()

@@ -28,6 +28,7 @@ function browser(t: TestContext) {
     show() { doc.visibilityState = "visible"; doc.dispatchEvent(new Event("visibilitychange")); },
     pagehide() { win.dispatchEvent(new Event("pagehide")); },
     pageshow() { win.dispatchEvent(new Event("pageshow")); },
+    visibility(state: string) { doc.visibilityState = state; },
   };
 }
 
@@ -98,6 +99,88 @@ function harness(t: TestContext, options: Partial<GameAlgoWebClientOptions> = {}
       .flatMap(([, value]) => value.split("\n").map((line) => JSON.parse(line) as GameEvent)),
   };
 }
+
+test("H5 samples running time in memory, freezes hidden time and resets only on rotation", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const page = browser(t);
+  let now = 0;
+  const h = harness(t, { now: () => now });
+  await h.client.waitForReady();
+  const oldSession = h.client.tracker.currentSessionId();
+  const stored = [...h.values];
+  const advance = (ms: number) => { now += ms; t.mock.timers.tick(ms); };
+  advance(1000);
+  advance(750);
+  assert.equal(h.requests.length, 0, "duration sampling does not upload events");
+  assert.deepEqual([...h.values], stored, "duration sampling does not write storage");
+  page.hide();
+  await h.client.flush();
+  assert.equal(h.events()[0].payload?.sessionDurationMs, 1750, "hide captures the subsecond tail");
+  advance(60_000);
+  page.show();
+  await tick();
+  advance(1000);
+  advance(250);
+  page.hide();
+  await h.client.flush();
+  assert.equal(h.events()[1].payload?.sessionDurationMs, 3000, "hidden minute was excluded");
+  assert.equal(h.client.tracker.currentSessionId(), oldSession);
+  advance(60_000);
+  h.client.tracker.newSession("next-running-session");
+  await h.client.flush();
+  assert.equal(h.events()[2].payload?.sessionDurationMs, 3000, "rotation uses the same sampled duration");
+  page.show();
+  await tick();
+  advance(250);
+  h.client.tracker.trackSessionEnd({ reason: "manual" });
+  await h.client.flush();
+  assert.equal(h.events()[3].sessionId, "next-running-session");
+  assert.equal(h.events()[3].payload?.sessionDurationMs, 250, "new session duration starts at zero");
+  h.client.close();
+  advance(60_000);
+  assert.equal(h.events().length, 4, "closing the client leaves no ticking upload work");
+});
+
+test("H5 delayed callbacks add at most one second and manual endings share that clock", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  let now = 0;
+  const h = harness(t, { now: () => now, autoLifecycle: false });
+  await h.client.waitForReady();
+  now = 41_000; // The WebView was suspended; only one timer callback can run now.
+  t.mock.timers.tick(1000);
+  now += 1000;
+  t.mock.timers.tick(1000);
+  h.client.tracker.trackSessionEnd();
+  await h.client.flush();
+  assert.equal(h.events()[0].payload?.sessionDurationMs, 2000);
+});
+
+test("H5 live visibility recovers from missing show callbacks and a spurious host hide cannot freeze time", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const page = browser(t);
+  const tap = tapHost(t);
+  let now = 0;
+  const h = harness(t, { now: () => now });
+  await h.client.waitForReady();
+  const advance = (ms: number) => { now += ms; t.mock.timers.tick(ms); };
+  advance(1000);
+  tap.hide(); // A host hide that never changes the live visibility must not freeze sampling.
+  await h.client.flush();
+  advance(1000);
+  h.client.tracker.trackSessionEndSnapshot();
+  await h.client.flush();
+  assert.equal(h.events().at(-1)?.payload?.sessionDurationMs, 2000);
+  page.visibility("hidden"); // Neither transition dispatches a lifecycle callback.
+  advance(1000);
+  advance(30_000);
+  page.visibility("visible");
+  advance(1000); // Observe foreground and establish the new sampling baseline.
+  advance(1000);
+  h.client.tracker.trackSessionEndSnapshot();
+  await h.client.flush();
+  assert.equal(h.events().at(-1)?.payload?.sessionDurationMs, 4000,
+    "timer observations resume counting even when every show notification was missed");
+});
 
 for (const [label, configured, interval] of [
   ["default", undefined, 5_000],
@@ -293,7 +376,7 @@ test("H5 context readiness immediately sends an ad buffered in the current sessi
   assert.equal(h.events()[1].sessionId, h.client.tracker.currentSessionId());
 });
 
-test("H5 foreground restoration preserves the session and duration origin across repeated hides", async (t) => {
+test("H5 foreground restoration preserves the session and accumulated running duration across repeated hides", async (t) => {
   const page = browser(t);
   let now = 10_000;
   const h = harness(t, { now: () => now });
@@ -306,7 +389,7 @@ test("H5 foreground restoration preserves the session and duration origin across
   assert.equal(end.eventType, "session_end");
   assert.equal(end.sessionId, oldSession);
   assert.equal(end.contextId, "ctx-1");
-  assert.equal(end.payload?.sessionDurationMs, 2500);
+  assert.equal(end.payload?.sessionDurationMs, 1000, "a delayed sample never catches up more than one second");
   assert.equal(end.payload?.reason, "visibility_hidden");
   page.pagehide();
   page.hide();
@@ -325,7 +408,7 @@ test("H5 foreground restoration preserves the session and duration origin across
   assert.equal(h.events().length, 2);
   assert.equal(h.events()[1].sessionId, oldSession);
   assert.equal(h.events()[1].contextId, "ctx-2");
-  assert.equal(h.events()[1].payload?.sessionDurationMs, 3500, "duration still starts at SDK initialization");
+  assert.equal(h.events()[1].payload?.sessionDurationMs, 2000, "foreground restoration continues the accumulated duration");
   assert.notEqual(h.events()[1].eventId, end.eventId, "a later background generates a distinct end event");
 });
 
@@ -346,9 +429,9 @@ test("an explicit session switch after hidden is not rotated again by the stale 
   const ends = h.events().filter(event => event.eventType === "session_end");
   assert.equal(ends.length, 2, "a lifecycle snapshot does not replace the explicit session boundary");
   assert.equal(ends[0].sessionId, ends[1].sessionId);
-  assert.equal(ends[0].payload?.sessionDurationMs, 2000);
+  assert.equal(ends[0].payload?.sessionDurationMs, 1000);
   assert.equal(ends[1].payload?.reason, "new_session");
-  assert.equal(ends[1].payload?.sessionDurationMs, 9000);
+  assert.equal(ends[1].payload?.sessionDurationMs, 1000, "rotation does not add hidden wall time");
   assert.equal(h.contexts.at(-1)?.sessionId, "explicit-new", "resume still obtains the explicit session's context");
   h.client.tracker.trackLevelStart();
   await h.client.flush();
@@ -401,7 +484,7 @@ test("Tap lock-screen callback jitter while hidden preserves the session and pen
   tap.hide();
   await h.client.flush();
   assert.equal(h.events().length, 1);
-  assert.equal(h.events()[0].payload?.sessionDurationMs, 1500);
+  assert.equal(h.events()[0].payload?.sessionDurationMs, 1000);
   assert.equal(h.contexts.length, 1, "a hidden onShow must not refresh the context");
   now = 5000;
   page.show();
@@ -414,7 +497,7 @@ test("Tap lock-screen callback jitter while hidden preserves the session and pen
   tap.hide();
   await h.client.flush();
   assert.equal(h.events().length, 2);
-  assert.equal(h.events()[1].payload?.sessionDurationMs, 5000);
+  assert.equal(h.events()[1].payload?.sessionDurationMs, 2000);
   assert.equal(h.events()[1].sessionId, session);
   h.client.close();
   assert.deepEqual(tap.listeners(), { hide: 0, show: 0 });

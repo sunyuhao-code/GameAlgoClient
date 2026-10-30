@@ -234,7 +234,9 @@ final class GameAlgoSDKTests: XCTestCase {
         await tracker.newSession("old")
         let before = await uploader.uploadedEvents()
         XCTAssertTrue(before.isEmpty)
+        await tracker.enableLifecycle(foreground: true)
         clock.advance(2.5)
+        tracker.lifecycleJournal.sample(foreground: true, at: clock.now())
         await tracker.newSession("new")
         let current = await tracker.currentSessionId()
         XCTAssertEqual(current, "new")
@@ -248,7 +250,7 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(uploaded[0].accountUserId, "old-account")
         XCTAssertEqual(uploaded[0].isDebug, true)
         XCTAssertEqual(uploaded[0].payload["reason"], .string("new_session"))
-        XCTAssertEqual(uploaded[0].payload["sessionDurationMs"], .number(3500))
+        XCTAssertEqual(uploaded[0].payload["sessionDurationMs"], .number(1000))
         XCTAssertEqual(uploaded[0].timestamp, "1970-01-01T00:00:04.500Z")
     }
 
@@ -258,7 +260,11 @@ final class GameAlgoSDKTests: XCTestCase {
         let tracker = GameAlgoEventTracker(uploader: uploader, flushInterval: 0, now: { clock.now() })
         await tracker.identify(userId: "u", sessionId: "old")
         await tracker.setContextId("old-context")
-        clock.advance(2)
+        await tracker.enableLifecycle(foreground: true)
+        clock.advance(1)
+        tracker.lifecycleJournal.sample(foreground: true, at: clock.now())
+        clock.advance(1)
+        tracker.lifecycleJournal.sample(foreground: true, at: clock.now())
         let accepted = await tracker.trackSessionEnd(payload: .object(["reason": .string("manual")]))
         XCTAssertTrue(accepted)
         clock.advance(3600)
@@ -1210,7 +1216,9 @@ final class GameAlgoSDKTests: XCTestCase {
 
         let ready = await sdk.waitForReady()
         XCTAssertTrue(ready)
+        await sdk.tracker.enableLifecycle(foreground: true)
         clock.advance(2.5)
+        sdk.tracker.lifecycleJournal.sample(foreground: true, at: clock.now())
         let didTrackSessionEnd = await sdk.tracker.trackSessionEnd(payload: .object(["reason": .string("background")]))
         XCTAssertTrue(didTrackSessionEnd)
 
@@ -1225,7 +1233,7 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(events?.map { $0["eventType"] as? String }, ["session_end"])
         XCTAssertEqual(sessionEnd?["userId"] as? String, "u1")
         XCTAssertEqual(sessionEndPayload?["reason"] as? String, "background")
-        XCTAssertEqual(sessionEndPayload?["sessionDurationMs"] as? Double, 2500)
+        XCTAssertEqual(sessionEndPayload?["sessionDurationMs"] as? Double, 1000)
     }
 
     func testThrowsStructuredAPIErrors() async throws {

@@ -729,6 +729,11 @@ export class GameAlgoEventTracker {
   private flushTimer?: ReturnType<typeof setInterval>;
   private activeFlush?: Promise<EventBatchResponse[]>;
   private sessionStartMs?: number;
+  private sessionDurationTimer?: ReturnType<typeof setInterval>;
+  private sampledSessionDurationMs = 0;
+  private sessionDurationSampleAt = 0;
+  private sessionDurationVisible?: () => boolean;
+  private sessionDurationWasVisible = true;
   private sessionHasEnd = false;
   private consecutiveFailures = 0;
   private hasPersistedQueue = false;
@@ -775,6 +780,11 @@ export class GameAlgoEventTracker {
     this.persistOnEnqueue = options.persistOnEnqueue ?? false;
     this.now = options.now;
     this.sessionStartMs = this.now();
+    this.sessionDurationSampleAt = this.sessionStartMs;
+    if (this.platform === "web") {
+      this.sessionDurationTimer = setInterval(() => this.sampleSessionDuration(), 1000);
+      this.sessionDurationTimer.unref?.();
+    }
     this.storage = options.storage;
     this.persistenceKey = clean(options.persistenceKey);
     this.milestonePersistenceKey = this.persistenceKey ? `${this.persistenceKey}:milestones` : undefined;
@@ -791,6 +801,7 @@ export class GameAlgoEventTracker {
       this.sessionId = sessionId!;
       this.sessionHasEnd = false;
       this.sessionStartMs = this.now();
+      this.resetSessionDuration(this.sessionStartMs);
     }
     if (clean(userCreatedAt)) this.userCreatedAt = userCreatedAt;
     if (clean(accountUserId)) this.accountUserId = accountUserId;
@@ -810,7 +821,7 @@ export class GameAlgoEventTracker {
         sessionId: previousSessionId, eventType: "session_end", isDebug: this.isDebug,
         timestamp: new Date(endedAt).toISOString(), createdLocalAt: localTimestamp(endedAt),
         accountUserId: this.accountUserId,
-        payload: { reason: "new_session", sessionDurationMs: Math.max(0, endedAt - (this.sessionStartMs ?? endedAt)) },
+        payload: { reason: "new_session", sessionDurationMs: this.sessionDuration(endedAt) },
       });
     }
     this.sessionId = sessionId;
@@ -822,6 +833,7 @@ export class GameAlgoEventTracker {
     this.contextId = undefined;
     this.eventQuota = undefined;
     this.sessionStartMs = endedAt;
+    this.resetSessionDuration(endedAt);
     this.hasPersistedQueue = true;
     void this.persistPendingQueue().catch(() => undefined);
     if (this.platform === "web") void this.flushUrgent().catch(() => undefined);
@@ -891,6 +903,42 @@ export class GameAlgoEventTracker {
 
   markSessionStarted(): void {
     this.sessionStartMs = this.now();
+    this.resetSessionDuration(this.sessionStartMs);
+  }
+
+  /** @internal Read live visibility on every sample; no resume notification is required. */
+  setSessionDurationVisibility(visible: () => boolean): void {
+    this.sessionDurationVisible = visible;
+    this.sessionDurationWasVisible = visible();
+  }
+
+  /** @internal Lifecycle callbacks can observe a boundary, but never gate future samples. */
+  observeSessionDurationVisibility(): void {
+    if (this.platform === "web") this.sampleSessionDuration();
+  }
+
+  private resetSessionDuration(now: number): void {
+    this.sampledSessionDurationMs = 0;
+    this.sessionDurationSampleAt = now;
+    this.sessionDurationWasVisible = this.sessionDurationVisible?.() ?? true;
+  }
+
+  private sampleSessionDuration(now = this.now()): void {
+    if (!Number.isFinite(now)) return;
+    const visible = this.sessionDurationVisible?.() ?? true;
+    if (this.sessionDurationWasVisible) {
+      // Never catch up a suspended WebView. Short tails are captured at an
+      // explicit boundary, while each observation contributes at most 1s.
+      this.sampledSessionDurationMs += Math.min(1000, Math.max(0, now - this.sessionDurationSampleAt));
+    }
+    this.sessionDurationWasVisible = visible;
+    this.sessionDurationSampleAt = now;
+  }
+
+  private sessionDuration(now: number): number {
+    if (this.platform !== "web") return Math.max(0, now - (this.sessionStartMs ?? now));
+    this.sampleSessionDuration(now);
+    return Math.round(this.sampledSessionDurationMs);
   }
 
   track(eventType: string, payload: JsonValue = {}, options: TrackEventOptions = {}): boolean {
@@ -1123,7 +1171,7 @@ export class GameAlgoEventTracker {
   trackSessionEnd(payload: JsonValue = {}): boolean {
     const merged = objectPayload(payload);
     if (this.sessionStartMs !== undefined) {
-      merged.sessionDurationMs = Math.max(0, this.now() - this.sessionStartMs);
+      merged.sessionDurationMs = this.sessionDuration(this.now());
     }
     return this.track("session_end", merged);
   }
@@ -1134,7 +1182,7 @@ export class GameAlgoEventTracker {
     if (!userId) return false;
     const occurredAt = this.now();
     const merged = objectPayload(payload);
-    merged.sessionDurationMs = Math.max(0, occurredAt - (this.sessionStartMs ?? occurredAt));
+    merged.sessionDurationMs = this.sessionDuration(occurredAt);
     this.hasPersistedQueue = true;
     this.enqueue({
       eventId: randomId(), contextId: this.contextId ?? "", userId,
@@ -1303,6 +1351,10 @@ export class GameAlgoEventTracker {
   }
 
   close(): void {
+    if (this.sessionDurationTimer) {
+      clearInterval(this.sessionDurationTimer);
+      this.sessionDurationTimer = undefined;
+    }
     if (this.flushTimer) {
       clearInterval(this.flushTimer);
       this.flushTimer = undefined;

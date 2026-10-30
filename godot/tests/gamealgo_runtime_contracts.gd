@@ -61,6 +61,8 @@ func _test_native_session_recovery_for_platform(native: Object, platform: String
 	}
 	_check(native.call("event_backend_start_session", JSON.stringify(event), 1000),
 		"Godot binding persists the open session without requiring an ordinary event")
+	_check(native.call("event_backend_session_duration_ms") == 0,
+		"Godot manual ends read the same sampled native clock")
 	_check(native.call("event_backend_bind_context", "old-session", "old-context"),
 		"context binding also persists the native session template")
 	_check(configure.call(), "native session backend reloads its durable state")
@@ -88,9 +90,9 @@ func _test_native_session_recovery_for_platform(native: Object, platform: String
 		and events[1]["sessionId"] == "new-session" and events[1]["contextId"] == "" \
 		and events[1]["timestamp"] == event["timestamp"] \
 		and events[1]["payload"]["reason"] == "new_session" \
-		and events[1]["payload"]["sessionDurationMs"] == 50_000 \
+		and events[1]["payload"]["sessionDurationMs"] == 0 \
 		and events[1]["payload"]["endTimeEstimated"] == false,
-		"live rotation preserves old ownership and records the exact switch duration")
+		"live rotation preserves ownership without inventing unsampled duration")
 	_check(native.call("event_backend_clear") and not FileAccess.file_exists(path),
 		"native clear deletes the recovered event and session marker")
 

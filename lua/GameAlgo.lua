@@ -28,7 +28,7 @@ local MakerAutoStorage = requireSdkModule("MakerAutoStorage")
 local GameAlgo = {}
 local unpackArgs = table.unpack or unpack
 
-local SDK_VERSION = "2.0.0-lua"
+local SDK_VERSION = "2.0.2-lua"
 local DEFAULT_BASE_URL = "https://game-algo-sdk.dictapis.cn"
 local DEFAULT_FLUSH_INTERVAL_MS = 5000
 local DEFAULT_FLUSH_TIMEOUT_MS = 15000
@@ -65,6 +65,7 @@ local state_ = {
     prefetchedMakerUserId = nil,
     sessionId = nil,
     sessionStartMs = nil,
+    sessionDurationMs = 0,
     sessionHasEnd = false,
     contextId = nil,
     config = nil,
@@ -974,7 +975,7 @@ local function handleLifecycleSessionEnd(eventName, reason)
     local payload = {
         reason = reason,
         lifecycleEvent = eventName,
-        sessionDurationMs = math.max(0, occurredAt - state_.sessionStartMs),
+        sessionDurationMs = math.floor(state_.sessionDurationMs + 0.5),
     }
     if not state_.storageReady then
         if #state_.pendingTracks >= state_.maxQueueSize then
@@ -1018,7 +1019,13 @@ local function ensureAutomaticUpdateDriver()
     local subscribed = pcall(function()
         eventNode = nodeFactory()
         eventObject = eventNode:CreateScriptObject("LuaScriptObject")
-        eventObject:SubscribeToEvent("Update", function()
+        eventObject:SubscribeToEvent("Update", function(_, _, eventData)
+            if eventData ~= nil then
+                local ok, delta = pcall(function() return eventData:GetFloat("TimeStep") end)
+                if ok and type(delta) == "number" and delta == delta and delta > 0 and delta < math.huge then
+                    state_.sessionDurationMs = state_.sessionDurationMs + delta * 1000
+                end
+            end
             local updateOk, updateError = pcall(GameAlgo.Update)
             if not updateOk then log("automatic update failed: " .. tostring(updateError)) end
         end)
@@ -1158,6 +1165,7 @@ function GameAlgo.Init(options)
     state_.preloadConfigFiles = options.preloadConfigFiles ~= false
     state_.sessionId = options.sessionId or randomId("ga_session")
     state_.sessionStartMs = clockMs()
+    state_.sessionDurationMs = 0
     state_.sessionHasEnd = false
     state_.userId = nil
     state_.userCreatedAt = nil
@@ -1700,7 +1708,7 @@ function GameAlgo.TrackSessionEnd(payload)
     local merged, payloadError = preparePayload(payload)
     if payloadError then return false, payloadError end
     if merged.sessionDurationMs == nil and state_.sessionStartMs then
-        merged.sessionDurationMs = math.max(0, clockMs() - state_.sessionStartMs)
+        merged.sessionDurationMs = math.floor(state_.sessionDurationMs + 0.5)
     end
     return GameAlgo.Track("session_end", merged)
 end
@@ -1972,7 +1980,7 @@ function GameAlgo.NewSession(sessionId, callback)
     if not state_.sessionHasEnd then
         local accepted, error = enqueueTrack("session_end", {
             reason = "new_session",
-            sessionDurationMs = math.max(0, endedAt - (state_.sessionStartMs or endedAt)),
+            sessionDurationMs = math.floor(state_.sessionDurationMs + 0.5),
         })
         if not accepted then
             safeCallback(callback, error, nil)
@@ -1985,6 +1993,7 @@ function GameAlgo.NewSession(sessionId, callback)
     state_.eventGuardDiagnosticKeys = {}
     state_.eventGuardDiagnosticCount = 0
     state_.sessionStartMs = endedAt
+    state_.sessionDurationMs = 0
     state_.contextId = nil
     state_.config = nil
     state_.eventQuota = nil

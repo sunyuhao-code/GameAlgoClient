@@ -61,6 +61,14 @@ struct Session {
     // does not extend the old session across the time spent in the background.
     #[serde(default)]
     has_end: bool,
+    // None is the pre-sampling journal format; retain its saved estimate only
+    // when recovering that old record. All newly started sessions use Some(0).
+    #[serde(default)]
+    duration_ms: Option<u64>,
+    #[serde(skip)]
+    sample_at_ms: u64,
+    #[serde(skip)]
+    sample_foreground: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -344,6 +352,9 @@ impl EventBackend {
                 last_seen_ms: started_at_ms as u64,
                 open: inner.foreground,
                 has_end: false,
+                duration_ms: Some(0),
+                sample_at_ms: started_at_ms as u64,
+                sample_foreground: inner.foreground,
             };
             persist_state(&config.path, &candidate, Some(&session))?;
             inner.queue = candidate;
@@ -392,6 +403,7 @@ impl EventBackend {
                 .session
                 .clone()
                 .ok_or_else(|| "native_session_missing".to_string())?;
+            sample_duration(&mut session, foreground, now_ms as u64);
             session.last_seen_ms = now_ms as u64;
             session.event["timestamp"] = json!(timestamp);
             session.event["createdLocalAt"] = json!(created_local_at);
@@ -430,6 +442,63 @@ impl EventBackend {
             self.start_flush(2_500);
         }
         accepted
+    }
+
+    /// No persistence, event creation or upload on the one-second sampling path.
+    #[cfg(test)]
+    pub(crate) fn sample_duration(&self, foreground: bool, now_ms: i64) {
+        if now_ms <= 0 {
+            return;
+        }
+        if let Ok(mut inner) = self.inner.lock() {
+            if inner.session_tracking {
+                if let Some(session) = inner.session.as_mut() {
+                    sample_duration(session, foreground, now_ms as u64);
+                }
+            }
+        }
+    }
+
+    #[cfg(any(target_os = "android", target_os = "ios", test))]
+    pub(crate) fn sample_duration_at(
+        &self,
+        foreground: bool,
+        now_ms: i64,
+        timestamp: &str,
+        local: &str,
+    ) {
+        if now_ms <= 0 {
+            return;
+        }
+        if let Ok(mut inner) = self.inner.lock() {
+            if inner.session_tracking {
+                if let Some(session) = inner.session.as_mut() {
+                    sample_duration(session, foreground, now_ms as u64);
+                    if foreground {
+                        session.last_seen_ms = now_ms as u64;
+                        session.event["timestamp"] = json!(timestamp);
+                        session.event["createdLocalAt"] = json!(local);
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn duration_ms(&self) -> i64 {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|inner| {
+                if !inner.session_tracking {
+                    return None;
+                }
+                inner
+                    .session
+                    .as_ref()
+                    .and_then(|session| session.duration_ms)
+            })
+            .unwrap_or(0)
+            .min(i64::MAX as u64) as i64
     }
 
     pub(crate) fn snapshot_json(&self) -> String {
@@ -927,13 +996,27 @@ fn event_id_of(event: &Value) -> Option<&str> {
     event.get("eventId").and_then(Value::as_str)
 }
 
+#[cfg(any(target_os = "android", target_os = "ios", test))]
+fn sample_duration(session: &mut Session, foreground: bool, now_ms: u64) {
+    if foreground && session.sample_foreground {
+        session.duration_ms = Some(
+            session
+                .duration_ms
+                .unwrap_or(0)
+                .saturating_add(now_ms.saturating_sub(session.sample_at_ms).min(1000)),
+        );
+    }
+    session.sample_at_ms = now_ms;
+    session.sample_foreground = foreground;
+}
+
 fn session_end(session: &Session, reason: &str, recovered: bool) -> Value {
     let mut event = session.event.clone();
     event["payload"] = json!({
         "reason": reason,
         "recovered": recovered,
         "endTimeEstimated": recovered,
-        "sessionDurationMs": session.last_seen_ms.saturating_sub(session.started_at_ms),
+        "sessionDurationMs": session.duration_ms.unwrap_or_else(|| session.last_seen_ms.saturating_sub(session.started_at_ms)),
     });
     event
 }
@@ -1512,7 +1595,7 @@ mod tests {
             assert_eq!(queue[1]["timestamp"], next["timestamp"]);
             assert_eq!(queue[1]["createdLocalAt"], next["createdLocalAt"]);
             assert_eq!(queue[1]["payload"]["reason"], "new_session");
-            assert_eq!(queue[1]["payload"]["sessionDurationMs"], 3000);
+            assert_eq!(queue[1]["payload"]["sessionDurationMs"], 500);
             assert_eq!(queue[1]["payload"]["recovered"], false);
             assert_eq!(queue[1]["payload"]["endTimeEstimated"], false);
             let session = session.unwrap();
@@ -1584,7 +1667,7 @@ mod tests {
             job_id,
             generation,
             |_, batch, _| {
-                assert_eq!(batch[0]["payload"]["sessionDurationMs"], 1000);
+                assert_eq!(batch[0]["payload"]["sessionDurationMs"], 0);
                 Ok(batch.len())
             },
         );
@@ -1644,7 +1727,7 @@ mod tests {
         let (queue, session) = load_state(&path).unwrap();
         assert_eq!(queue.len(), 2);
         assert_eq!(queue[1]["eventId"], "old-end");
-        assert_eq!(queue[1]["payload"]["sessionDurationMs"], 2000);
+        assert_eq!(queue[1]["payload"]["sessionDurationMs"], 0);
         assert_eq!(session.unwrap().event["sessionId"], "new");
         assert!(backend.clear());
     }
@@ -1745,6 +1828,71 @@ mod tests {
     }
 
     #[test]
+    fn samples_recover_without_resume_and_only_checkpoints_are_durable() {
+        let path = temporary_path("sampled-duration");
+        let backend = configured(&path);
+        assert!(backend.start_session(&session_event("end", "same", "ctx").to_string(), 1000));
+        let initial = fs::read(&path).unwrap();
+        backend.sample_duration(true, 2000);
+        backend.sample_duration(true, 43_000);
+        assert_eq!(backend.duration_ms(), 2000); // never catch up a delayed callback
+        assert_eq!(fs::read(&path).unwrap(), initial); // no per-second writes
+        heartbeat(&backend, false, 43_000, "unused");
+        backend.sample_duration(false, 100_000);
+        assert_eq!(backend.duration_ms(), 2000); // background handlers may still execute
+        backend.sample_duration(true, 200_000); // omit the resume notification
+        backend.sample_duration(true, 201_000);
+        assert_eq!(backend.duration_ms(), 3000);
+        heartbeat(&backend, true, 201_000, "rearmed-end");
+        backend.sample_duration(true, 202_000);
+        assert_eq!(backend.duration_ms(), 4000);
+        let restored = configured(&path);
+        assert!(restored.start_session(
+            &session_event("new-end", "next", "ctx").to_string(),
+            900_000
+        ));
+        let queue: Vec<Value> = serde_json::from_str(&restored.snapshot_json()).unwrap();
+        let recovered = queue
+            .iter()
+            .find(|e| e["payload"]["reason"] == "process_restart")
+            .unwrap();
+        assert_eq!(recovered["payload"]["sessionDurationMs"], 3000);
+        assert!(backend.start_session(
+            &session_event("ignored", "same", "ctx2").to_string(),
+            999_000
+        ));
+        assert_eq!(backend.duration_ms(), 4000); // same-ID metadata does not reset timing
+        assert!(backend.start_session(
+            &session_event("new-end", "next", "ctx").to_string(),
+            999_000
+        ));
+        assert_eq!(backend.duration_ms(), 0);
+        assert!(backend.clear());
+    }
+
+    #[test]
+    fn event_writes_between_heartbeats_save_matching_duration_and_observation_time() {
+        let path = temporary_path("sample-event-persist");
+        let backend = configured(&path);
+        assert!(backend.start_session(&session_event("end", "old", "ctx").to_string(), 1000));
+        backend.sample_duration_at(
+            true,
+            2000,
+            "2026-10-30T00:00:02.000Z",
+            "2026-10-30T08:00:02.000+08:00",
+        );
+        assert!(backend.enqueue(&event("ordinary", "old", "ctx").to_string()));
+        let restored = configured(&path);
+        assert!(
+            restored.start_session(&session_event("new-end", "new", "ctx").to_string(), 900_000)
+        );
+        let queue: Vec<Value> = serde_json::from_str(&restored.snapshot_json()).unwrap();
+        assert_eq!(queue[1]["payload"]["sessionDurationMs"], 1000);
+        assert_eq!(queue[1]["timestamp"], "2026-10-30T00:00:02.000Z");
+        assert!(restored.clear());
+    }
+
+    #[test]
     fn killed_session_recovers_original_identity_context_and_last_seen_time() {
         let path = temporary_path("killed-session");
         let backend = configured(&path);
@@ -1768,7 +1916,7 @@ mod tests {
         assert_eq!(queue[0]["eventId"], "old-end");
         assert_eq!(queue[0]["sessionId"], "old-session");
         assert_eq!(queue[0]["contextId"], "old-context");
-        assert_eq!(queue[0]["payload"]["sessionDurationMs"], 2500);
+        assert_eq!(queue[0]["payload"]["sessionDurationMs"], 1000);
         assert_eq!(queue[0]["payload"]["reason"], "process_restart");
         assert_eq!(queue[0]["payload"]["endTimeEstimated"], true);
         assert_eq!(queue[0]["timestamp"], "2026-10-21T04:00:01.000Z");
@@ -1800,7 +1948,7 @@ mod tests {
         assert_eq!(queue.len(), 3);
         assert_eq!(queue[1]["eventId"], "end-1");
         assert_eq!(queue[2]["eventId"], "end-2");
-        assert_eq!(queue[2]["payload"]["sessionDurationMs"], 3000);
+        assert_eq!(queue[2]["payload"]["sessionDurationMs"], 0);
         // Simulate the same atomic removal that the upload worker performs.
         {
             let inner = backend.lock().unwrap();
@@ -1894,7 +2042,7 @@ mod tests {
         assert_eq!(queue[0]["eventId"], "ios-end");
         assert_eq!(queue[0]["payload"]["reason"], "background");
         assert_eq!(queue[0]["payload"]["endTimeEstimated"], false);
-        assert_eq!(queue[0]["payload"]["sessionDurationMs"], 1100);
+        assert_eq!(queue[0]["payload"]["sessionDurationMs"], 500);
         assert!(!backend.lock().unwrap().session.as_ref().unwrap().open);
         assert!(backend.clear());
     }
