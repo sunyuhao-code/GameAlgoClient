@@ -1219,6 +1219,7 @@ final class GameAlgoSDKTests: XCTestCase {
         await sdk.tracker.enableLifecycle(foreground: true)
         clock.advance(2.5)
         sdk.tracker.lifecycleJournal.sample(foreground: true, at: clock.now())
+        XCTAssertEqual(sdk.getForegroundTimeMs(), 1000, "SDK exposes a synchronous read of the tracker clock")
         let didTrackSessionEnd = await sdk.tracker.trackSessionEnd(payload: .object(["reason": .string("background")]))
         XCTAssertTrue(didTrackSessionEnd)
 

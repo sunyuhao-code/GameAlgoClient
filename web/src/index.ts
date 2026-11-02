@@ -11,7 +11,7 @@ import { GameAlgoBrowserStorage, type GameAlgoBrowserStorageOptions } from "./br
 import { GameAlgoWebScriptRuntime } from "./script-runtime.ts";
 import { GameAlgoMatchmakingClient } from "./multiplayer.ts";
 
-export const GAMEALGO_WEB_SDK_VERSION = "2.0.2";
+export const GAMEALGO_WEB_SDK_VERSION = "2.1.0";
 const WEB_KEEPALIVE_BODY_LIMIT_BYTES = 60 * 1024;
 const WEB_EVENT_BATCH_BODY_BUDGET_BYTES = 48 * 1024;
 const TAPDB_CONTEXT_LINK_EVENT = "gamealgo_context_link";
@@ -169,6 +169,11 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
 
   static init(options: GameAlgoWebClientOptions): GameAlgoWebClient {
     return new GameAlgoWebClient(options);
+  }
+
+  /** Cumulative foreground milliseconds since initialization; NewSession does not reset it. */
+  getForegroundTimeMs(): number {
+    return this.tracker.getForegroundTimeMs();
   }
 
   override fetchConfig(options: FetchConfigOptions = {}): Promise<ConfigResponse> {

@@ -100,6 +100,48 @@ function harness(t: TestContext, options: Partial<GameAlgoWebClientOptions> = {}
   };
 }
 
+test("foreground clock is read-only and survives session rotation and refresh", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const page = browser(t);
+  let now = 0;
+  const h = harness(t, { now: () => now });
+  await h.client.waitForReady();
+  assert.equal(h.client.getForegroundTimeMs(), 0);
+  const advance = (ms: number) => { now += ms; t.mock.timers.tick(ms); };
+  advance(1000);
+  const start = h.client.getForegroundTimeMs();
+  const saved = [...h.values];
+  const requests = h.requests.length;
+  now += 100; // A read must not sample this partial interval.
+  t.mock.timers.tick(100);
+  for (let index = 0; index < 100; index++) assert.equal(h.client.getForegroundTimeMs(), start);
+  assert.deepEqual([...h.values], saved);
+  assert.equal(h.requests.length, requests);
+  advance(900);
+  assert.equal(h.client.getForegroundTimeMs(), 2000);
+  h.client.tracker.newSession("foreground-clock-next");
+  await h.client.flush();
+  assert.equal(h.client.getForegroundTimeMs(), 2000, "rotation keeps the instance clock");
+  await h.client.refresh({ forceRefresh: true });
+  assert.equal(h.client.getForegroundTimeMs(), 2000, "refresh keeps the instance clock");
+  advance(1000);
+  h.client.tracker.trackSessionEnd();
+  await h.client.flush();
+  assert.equal(h.client.getForegroundTimeMs() - start, 2000, "business elapsed time can cross a session boundary");
+  assert.equal(h.events().at(-1)?.payload?.sessionDurationMs, 1000, "session uses its offset into the same clock");
+  page.hide();
+  await h.client.flush();
+  const beforeHidden = h.client.getForegroundTimeMs();
+  advance(60_000);
+  assert.equal(h.client.getForegroundTimeMs(), beforeHidden);
+  h.client.close();
+  advance(60_000);
+  assert.equal(h.client.getForegroundTimeMs(), beforeHidden, "close stops the clock");
+  const next = harness(t, { now: () => now });
+  await next.client.waitForReady();
+  assert.equal(next.client.getForegroundTimeMs(), 0, "a new SDK instance never restores a previous clock");
+});
+
 test("H5 samples running time in memory, freezes hidden time and resets only on rotation", async (t) => {
   t.mock.timers.enable({ apis: ["setInterval"] });
   const page = browser(t);

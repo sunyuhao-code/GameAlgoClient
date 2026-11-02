@@ -331,3 +331,5 @@ GAMEALGO_BASE_URL=https://gamealgo.example.com \
 GAMEALGO_KEY=ga_live_xxx \
 node rest-api/examples/node/basic.ts
 ```
+
+H5 所复用的 `GameAlgoEventTracker.getForegroundTimeMs()` 只读取其累计前台采样值，跨 session 不归零；该采样器仅适用于 `platform: "web"`，其他 REST 平台辅助代码没有宿主前后台信息，不能用它替代原生 SDK 的同名接口。

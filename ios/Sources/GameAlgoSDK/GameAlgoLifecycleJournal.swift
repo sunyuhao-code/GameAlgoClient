@@ -31,6 +31,8 @@ final class GameAlgoLifecycleJournal: @unchecked Sendable {
     private var durable = false
     private var sampleAt: Date?
     private var sampleForeground = true
+    private var foregroundTimeMs: Double = 0
+    private var sessionForegroundStartMs: Double = 0
 
     init(storage: (any GameAlgoCacheStorage)?, key: String?, queueLimit: Int = 1000) {
         self.storage = storage
@@ -54,12 +56,14 @@ final class GameAlgoLifecycleJournal: @unchecked Sendable {
                                     open: foreground, hasEnd: hasEnd, nextEventId: UUID().uuidString,
                                     timestamp: GameAlgoEventBatchUploader.isoTimestamp(startedAt),
                                     createdLocalAt: GameAlgoEventBatchUploader.localTimestamp(startedAt), durationMs: 0)
+            sessionForegroundStartMs = foregroundTimeMs.rounded(.down)
             sampleAt = startedAt
-            sampleForeground = foreground
+            if !active { sampleForeground = foreground }
         } else {
             state.session?.event = template
             if state.session?.startedAt != startedAt {
                 state.session?.durationMs = 0
+                sessionForegroundStartMs = foregroundTimeMs.rounded(.down)
                 sampleAt = startedAt
             }
             state.session?.startedAt = startedAt
@@ -109,15 +113,20 @@ final class GameAlgoLifecycleJournal: @unchecked Sendable {
     func duration(sessionId: String) -> Double {
         lock.lock(); defer { lock.unlock() }
         guard let session = state.session, active, session.event.sessionId == sessionId else { return 0 }
-        return (session.durationMs ?? 0).rounded(.down)
+        return max(0, foregroundTimeMs.rounded(.down) - sessionForegroundStartMs)
+    }
+
+    func getForegroundTimeMs() -> Double {
+        lock.lock(); defer { lock.unlock() }
+        return foregroundTimeMs.rounded(.down)
     }
 
     private func sampleLocked(foreground: Bool, at date: Date) {
         guard active, let previous = sampleAt else { return }
         if foreground && sampleForeground {
-            let duration = (state.session?.durationMs ?? 0) + min(1000, max(0, date.timeIntervalSince(previous) * 1000))
-            state.session?.durationMs = duration
+            foregroundTimeMs += min(1000, max(0, date.timeIntervalSince(previous) * 1000))
         }
+        state.session?.durationMs = max(0, foregroundTimeMs.rounded(.down) - sessionForegroundStartMs)
         if foreground {
             let observed = max(date, state.session?.startedAt ?? date)
             state.session?.lastSeen = observed

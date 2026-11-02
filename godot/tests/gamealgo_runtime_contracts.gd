@@ -61,6 +61,7 @@ func _test_native_session_recovery_for_platform(native: Object, platform: String
 	}
 	_check(native.call("event_backend_start_session", JSON.stringify(event), 1000),
 		"Godot binding persists the open session without requiring an ordinary event")
+	_check(native.call("event_backend_foreground_time_ms") == 0, "native cumulative clock is exposed")
 	_check(native.call("event_backend_session_duration_ms") == 0,
 		"Godot manual ends read the same sampled native clock")
 	_check(native.call("event_backend_bind_context", "old-session", "old-context"),

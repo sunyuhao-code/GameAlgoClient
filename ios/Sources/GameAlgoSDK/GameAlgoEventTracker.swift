@@ -215,6 +215,11 @@ public actor GameAlgoEventTracker {
         Task { await self.flush() }
     }
 
+    /// Pure memory read of the cumulative clock for this SDK instance.
+    public nonisolated func getForegroundTimeMs() -> Int64 {
+        Int64(lifecycleJournal.getForegroundTimeMs())
+    }
+
     public func currentSessionId() -> String {
         sessionId
     }

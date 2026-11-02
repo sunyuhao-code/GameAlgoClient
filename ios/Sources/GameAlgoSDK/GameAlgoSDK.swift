@@ -4,7 +4,7 @@ import UIKit
 #endif
 
 public actor GameAlgoSDK {
-    public static let defaultSDKVersion = "2.0.2"
+    public static let defaultSDKVersion = "2.1.0"
 
     private let gameKey: String
     private let baseURL: URL
@@ -34,6 +34,11 @@ public actor GameAlgoSDK {
 
     public nonisolated let config: GameAlgoConfigReader
     public nonisolated let tracker: GameAlgoEventTracker
+
+    /// Cumulative sampled foreground time. Session/config changes do not reset it.
+    public nonisolated func getForegroundTimeMs() -> Int64 {
+        tracker.getForegroundTimeMs()
+    }
 
     private var cachedConfig: CachedConfig?
     private var didLogUserId = false

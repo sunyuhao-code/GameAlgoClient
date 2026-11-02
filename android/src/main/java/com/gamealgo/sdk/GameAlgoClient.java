@@ -21,7 +21,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
 
 public final class GameAlgoClient {
-    public static final String DEFAULT_SDK_VERSION = "2.0.2";
+    public static final String DEFAULT_SDK_VERSION = "2.1.0";
     private static final String USER_ID_KEY = "gamealgo_user_id";
     private static final String USER_CREATED_AT_KEY = "gamealgo_user_created_at";
     private static final String USER_CREATED_LOCAL_AT_KEY = "gamealgo_user_created_local_at";
@@ -171,6 +171,9 @@ public final class GameAlgoClient {
         this.readyFuture = autoStart ? initializeAsync(initialRequest == null ? new GameAlgoFetchConfigRequest(null) : initialRequest) : CompletableFuture.completedFuture(null);
         GameAlgoPlatformServices.attach(tracker);
     }
+
+    /** Cumulative sampled foreground milliseconds since SDK initialization. */
+    public long getForegroundTimeMs() { return tracker.getForegroundTimeMs(); }
 
     public CompletableFuture<Void> ready() {
         return readyFuture;

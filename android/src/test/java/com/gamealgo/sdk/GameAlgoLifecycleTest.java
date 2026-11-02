@@ -18,11 +18,37 @@ final class GameAlgoLifecycleTest {
         trackerRecoversHistoricalConfigWithoutSwitchingCurrentSession();
         processVisibilityIncludesAdvertisingActivities();
         sampledDurationDoesNotDependOnResumeCallbacks();
+        foregroundClockOutlivesSessions();
     }
     private static void check(boolean value, String message) { if (!value) throw new AssertionError(message); }
     private static GameAlgoEvent template(String session, String context, long start) {
         return new GameAlgoEvent(context, "user", session, "session_end").eventId("template")
                 .timestamp(GameAlgoClient.isoTimestamp(new Date(start))).createdLocalAt(GameAlgoClient.localTimestamp(new Date(start)));
+    }
+    private static void foregroundClockOutlivesSessions() throws Exception {
+        Memory storage = new Memory();
+        GameAlgoLifecycleJournal journal = new GameAlgoLifecycleJournal(storage, "journal", true, 1000);
+        check(journal.getForegroundTimeMs() == 0, "new clock starts at zero");
+        journal.activate(template("old", "ctx", 1000), 1000, false, Collections.emptyList());
+        journal.sample(true, 2000);
+        long start = journal.getForegroundTimeMs();
+        String saved = storage.getItem("journal");
+        for (int i = 0; i < 100; i++) check(journal.getForegroundTimeMs() == 1000, "reads do not sample");
+        check(saved.equals(storage.getItem("journal")), "reads do not write storage");
+        journal.activate(template("next", "ctx", 2000), 2000, false, Collections.emptyList());
+        check(journal.getForegroundTimeMs() == start, "new session does not reset cumulative time");
+        journal.sample(true, 3000);
+        check(journal.getForegroundTimeMs() - start == 1000, "business elapsed time spans sessions");
+        check(journal.duration("next") == 1000, "session duration uses its clock offset");
+        journal.observe(false, 3000); journal.sample(false, 90_000);
+        check(journal.getForegroundTimeMs() == 2000, "background does not accrue time");
+        journal.sample(true, 91_000); journal.sample(true, 92_000); // no resume notification
+        long before = journal.getForegroundTimeMs();
+        journal.activate(template("third", "ctx", 92_000), 92_000, false, Collections.emptyList());
+        journal.sample(true, 93_000);
+        check(journal.getForegroundTimeMs() == before + 1000, "rotation preserves live sample state");
+        GameAlgoLifecycleJournal restarted = new GameAlgoLifecycleJournal(storage, "journal", true, 1000);
+        check(restarted.getForegroundTimeMs() == 0, "new initialization does not restore old totals");
     }
     private static void recoveryUsesLastObservationAndKeepsEventIds() throws Exception {
         Memory storage = new Memory();

@@ -126,6 +126,16 @@ Android 和 iOS 在测量获准后，原生队列同时保存未关闭会话及�
 
 `sessionDurationMs` 使用原生 1 秒采样累计：每次直接读取系统当前前后台状态，单次最多累计 1 秒，不追补暂停期间的长间隔，也不依赖收到前台通知才能恢复。后台不累计；广告期间原生采样能运行时可累计，暂停时允许少计。手动结束、生命周期结束及会话切换共用这一计时值。每秒只更新内存，原有 10 秒心跳和事件操作负责持久化；强杀恢复取最后保存的累计值，不计重启间隔。桌面／纯 GDScript 回退在 `tick` 中按同样的 1 秒上限累计。
 
+## 读取前台耗时
+
+```gdscript
+var start := client.get_foreground_time_ms()
+# 业务结束；期间允许 new_session()
+var elapsed_ms := client.get_foreground_time_ms() - start
+```
+
+`client.tracker.get_foreground_time_ms()` 返回同一读数。累计值属于本次 SDK 初始化，配置刷新、会话切换和 `session_end` 不清零；重新配置 SDK 或重启从零开始，不要跨初始化保存后相减。读取只访问内存，不推进采样、写盘或发送事件。沿用原生／GDScript 回退现有的 1 秒采样口径，广告挂起可能少计；SDK 自动 session 时长使用同一累计时钟减去 session 起始读数。原生计时沿用测量授权控制，未开始测量时不累计。
+
 ### Milestone 去重
 
 ```gdscript

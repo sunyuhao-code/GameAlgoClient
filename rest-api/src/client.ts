@@ -730,7 +730,8 @@ export class GameAlgoEventTracker {
   private activeFlush?: Promise<EventBatchResponse[]>;
   private sessionStartMs?: number;
   private sessionDurationTimer?: ReturnType<typeof setInterval>;
-  private sampledSessionDurationMs = 0;
+  private sampledForegroundTimeMs = 0;
+  private sessionForegroundStartMs = 0;
   private sessionDurationSampleAt = 0;
   private sessionDurationVisible?: () => boolean;
   private sessionDurationWasVisible = true;
@@ -906,6 +907,11 @@ export class GameAlgoEventTracker {
     this.resetSessionDuration(this.sessionStartMs);
   }
 
+  /** Sampled web foreground milliseconds since tracker creation. Pure memory read. */
+  getForegroundTimeMs(): number {
+    return Math.round(this.sampledForegroundTimeMs);
+  }
+
   /** @internal Read live visibility on every sample; no resume notification is required. */
   setSessionDurationVisibility(visible: () => boolean): void {
     this.sessionDurationVisible = visible;
@@ -918,9 +924,8 @@ export class GameAlgoEventTracker {
   }
 
   private resetSessionDuration(now: number): void {
-    this.sampledSessionDurationMs = 0;
-    this.sessionDurationSampleAt = now;
-    this.sessionDurationWasVisible = this.sessionDurationVisible?.() ?? true;
+    if (this.platform === "web") this.sampleSessionDuration(now);
+    this.sessionForegroundStartMs = this.getForegroundTimeMs();
   }
 
   private sampleSessionDuration(now = this.now()): void {
@@ -929,7 +934,7 @@ export class GameAlgoEventTracker {
     if (this.sessionDurationWasVisible) {
       // Never catch up a suspended WebView. Short tails are captured at an
       // explicit boundary, while each observation contributes at most 1s.
-      this.sampledSessionDurationMs += Math.min(1000, Math.max(0, now - this.sessionDurationSampleAt));
+      this.sampledForegroundTimeMs += Math.min(1000, Math.max(0, now - this.sessionDurationSampleAt));
     }
     this.sessionDurationWasVisible = visible;
     this.sessionDurationSampleAt = now;
@@ -938,7 +943,7 @@ export class GameAlgoEventTracker {
   private sessionDuration(now: number): number {
     if (this.platform !== "web") return Math.max(0, now - (this.sessionStartMs ?? now));
     this.sampleSessionDuration(now);
-    return Math.round(this.sampledSessionDurationMs);
+    return this.getForegroundTimeMs() - this.sessionForegroundStartMs;
   }
 
   track(eventType: string, payload: JsonValue = {}, options: TrackEventOptions = {}): boolean {

@@ -196,6 +196,11 @@ impl GameAlgoRuntime {
     }
 
     #[func]
+    fn event_backend_foreground_time_ms(&self) -> i64 {
+        self.event_backend.foreground_time_ms()
+    }
+
+    #[func]
     fn event_backend_enqueue(&self, event_json: GString) -> bool {
         self.event_backend.enqueue(&event_json.to_string())
     }

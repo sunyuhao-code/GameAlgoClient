@@ -20,6 +20,8 @@ final class GameAlgoLifecycleJournal {
     private boolean durable;
     private long sampleAt;
     private boolean sampleForeground;
+    private long foregroundTimeMs;
+    private long sessionForegroundStartMs;
 
     GameAlgoLifecycleJournal(GameAlgoCacheStorage storage, String key, boolean foreground, int queueLimit) {
         this.storage = storage;
@@ -58,8 +60,9 @@ final class GameAlgoLifecycleJournal {
             session.put("sessionId", template.getSessionId());
             session.put("startedAtMs", startedAt);
             session.put("durationMs", 0L);
+            sessionForegroundStartMs = foregroundTimeMs;
             sampleAt = startedAt;
-            sampleForeground = foreground;
+            if (!active) sampleForeground = foreground;
             session.put("lastSeenMs", startedAt);
             session.put("open", foreground);
             session.put("hasEnd", hasEnd);
@@ -69,6 +72,7 @@ final class GameAlgoLifecycleJournal {
         }
         if (number("startedAtMs") != startedAt) {
             session.put("durationMs", 0L);
+            sessionForegroundStartMs = foregroundTimeMs;
             sampleAt = startedAt;
         }
         session.put("startedAtMs", startedAt);
@@ -111,16 +115,19 @@ final class GameAlgoLifecycleJournal {
     synchronized void sample(boolean currentForeground, long now) {
         if (!active || session == null) return;
         if (currentForeground && sampleForeground) {
-            session.put("durationMs", number("durationMs") + Math.min(1000L, Math.max(0L, now - sampleAt)));
+            foregroundTimeMs += Math.min(1000L, Math.max(0L, now - sampleAt));
         }
+        session.put("durationMs", Math.max(0L, foregroundTimeMs - sessionForegroundStartMs));
         if (currentForeground) session.put("lastSeenMs", Math.max(now, number("startedAtMs")));
         sampleAt = now;
         sampleForeground = currentForeground;
     }
 
     synchronized long duration(String sessionId) {
-        return active && session != null && sessionId.equals(session.get("sessionId")) ? number("durationMs") : 0L;
+        return active && session != null && sessionId.equals(session.get("sessionId")) ? Math.max(0L, foregroundTimeMs - sessionForegroundStartMs) : 0L;
     }
+
+    synchronized long getForegroundTimeMs() { return foregroundTimeMs; }
 
     synchronized void bind(String sessionId, String contextId) {
         for (Map.Entry<String, GameAlgoEvent> entry : events.entrySet()) {

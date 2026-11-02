@@ -22,6 +22,16 @@ val sdk = GameAlgo.init(
 
 关于何时创建新版本、Strategy 最低版本和托管实验覆盖率门槛，运行 `gamealgo docs experiments --host <admin-host>` 查看当前平台规则。
 
+## 读取前台耗时
+
+```java
+long start = client.getForegroundTimeMs();
+// 业务结束；期间允许 newSession
+long elapsedMs = client.getForegroundTimeMs() - start;
+```
+
+`client.tracker().getForegroundTimeMs()` 和初始化后的 `GameAlgo.getForegroundTimeMs()` 返回同一读数。这是线程安全的内存读取，不推进采样、写盘或发送请求。累计值属于本次 SDK 实例，配置刷新、会话切换和 `session_end` 不清零；重新初始化或重启从零开始，不能跨初始化保存后相减。沿用当前 1 秒采样口径，后台不累计，广告挂起可能少计。SDK 自动 session 时长使用同一累计时钟减去 session 起始读数。
+
 ## 使用方式
 
 ```kotlin

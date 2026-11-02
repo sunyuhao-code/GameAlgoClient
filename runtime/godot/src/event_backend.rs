@@ -48,6 +48,7 @@ struct Inner {
     session: Option<Session>,
     session_tracking: bool,
     foreground: bool,
+    foreground_time_ms: u64,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -69,6 +70,8 @@ struct Session {
     sample_at_ms: u64,
     #[serde(skip)]
     sample_foreground: bool,
+    #[serde(skip)]
+    foreground_start_ms: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -93,6 +96,7 @@ impl EventBackend {
                 session: None,
                 session_tracking: false,
                 foreground: true,
+                foreground_time_ms: 0,
             })),
         }
     }
@@ -145,6 +149,7 @@ impl EventBackend {
             // Consent must be confirmed before recovery or lifecycle collection.
             inner.session_tracking = false;
             inner.foreground = true;
+            inner.foreground_time_ms = 0;
             inner.active_event_ids.clear();
             inner.results.clear();
             inner.last_error.clear();
@@ -354,7 +359,13 @@ impl EventBackend {
                 has_end: false,
                 duration_ms: Some(0),
                 sample_at_ms: started_at_ms as u64,
-                sample_foreground: inner.foreground,
+                sample_foreground: inner
+                    .session
+                    .as_ref()
+                    .filter(|_| inner.session_tracking)
+                    .map(|previous| previous.sample_foreground)
+                    .unwrap_or(inner.foreground),
+                foreground_start_ms: inner.foreground_time_ms,
             };
             persist_state(&config.path, &candidate, Some(&session))?;
             inner.queue = candidate;
@@ -403,7 +414,13 @@ impl EventBackend {
                 .session
                 .clone()
                 .ok_or_else(|| "native_session_missing".to_string())?;
-            sample_duration(&mut session, foreground, now_ms as u64);
+            let mut foreground_time_ms = inner.foreground_time_ms;
+            sample_duration(
+                &mut session,
+                &mut foreground_time_ms,
+                foreground,
+                now_ms as u64,
+            );
             session.last_seen_ms = now_ms as u64;
             session.event["timestamp"] = json!(timestamp);
             session.event["createdLocalAt"] = json!(created_local_at);
@@ -424,6 +441,7 @@ impl EventBackend {
             inner.queue = candidate;
             inner.session = Some(session);
             inner.foreground = foreground;
+            inner.foreground_time_ms = foreground_time_ms;
             should_flush = changed && !foreground;
             if should_flush {
                 platform_support::log(&format!(
@@ -452,8 +470,13 @@ impl EventBackend {
         }
         if let Ok(mut inner) = self.inner.lock() {
             if inner.session_tracking {
-                if let Some(session) = inner.session.as_mut() {
-                    sample_duration(session, foreground, now_ms as u64);
+                let Inner {
+                    session,
+                    foreground_time_ms,
+                    ..
+                } = &mut *inner;
+                if let Some(session) = session {
+                    sample_duration(session, foreground_time_ms, foreground, now_ms as u64);
                 }
             }
         }
@@ -472,8 +495,13 @@ impl EventBackend {
         }
         if let Ok(mut inner) = self.inner.lock() {
             if inner.session_tracking {
-                if let Some(session) = inner.session.as_mut() {
-                    sample_duration(session, foreground, now_ms as u64);
+                let Inner {
+                    session,
+                    foreground_time_ms,
+                    ..
+                } = &mut *inner;
+                if let Some(session) = session {
+                    sample_duration(session, foreground_time_ms, foreground, now_ms as u64);
                     if foreground {
                         session.last_seen_ms = now_ms as u64;
                         session.event["timestamp"] = json!(timestamp);
@@ -492,13 +520,22 @@ impl EventBackend {
                 if !inner.session_tracking {
                     return None;
                 }
-                inner
-                    .session
-                    .as_ref()
-                    .and_then(|session| session.duration_ms)
+                inner.session.as_ref().map(|session| {
+                    inner
+                        .foreground_time_ms
+                        .saturating_sub(session.foreground_start_ms)
+                })
             })
             .unwrap_or(0)
             .min(i64::MAX as u64) as i64
+    }
+
+    /// Process-local cumulative clock; never restored from a previous process.
+    pub(crate) fn foreground_time_ms(&self) -> i64 {
+        self.inner
+            .lock()
+            .map(|inner| inner.foreground_time_ms.min(i64::MAX as u64) as i64)
+            .unwrap_or(0)
     }
 
     pub(crate) fn snapshot_json(&self) -> String {
@@ -997,15 +1034,11 @@ fn event_id_of(event: &Value) -> Option<&str> {
 }
 
 #[cfg(any(target_os = "android", target_os = "ios", test))]
-fn sample_duration(session: &mut Session, foreground: bool, now_ms: u64) {
+fn sample_duration(session: &mut Session, total: &mut u64, foreground: bool, now_ms: u64) {
     if foreground && session.sample_foreground {
-        session.duration_ms = Some(
-            session
-                .duration_ms
-                .unwrap_or(0)
-                .saturating_add(now_ms.saturating_sub(session.sample_at_ms).min(1000)),
-        );
+        *total = total.saturating_add(now_ms.saturating_sub(session.sample_at_ms).min(1000));
     }
+    session.duration_ms = Some(total.saturating_sub(session.foreground_start_ms));
     session.sample_at_ms = now_ms;
     session.sample_foreground = foreground;
 }
@@ -1836,7 +1869,10 @@ mod tests {
         backend.sample_duration(true, 2000);
         backend.sample_duration(true, 43_000);
         assert_eq!(backend.duration_ms(), 2000); // never catch up a delayed callback
-        assert_eq!(fs::read(&path).unwrap(), initial); // no per-second writes
+        for _ in 0..100 {
+            assert_eq!(backend.foreground_time_ms(), 2000);
+        }
+        assert_eq!(fs::read(&path).unwrap(), initial); // sampling and reads never write
         heartbeat(&backend, false, 43_000, "unused");
         backend.sample_duration(false, 100_000);
         assert_eq!(backend.duration_ms(), 2000); // background handlers may still execute
@@ -1867,6 +1903,38 @@ mod tests {
             999_000
         ));
         assert_eq!(backend.duration_ms(), 0);
+        assert_eq!(
+            backend.foreground_time_ms(),
+            4000,
+            "session rotation preserves the instance clock"
+        );
+        let start = backend.foreground_time_ms();
+        backend.sample_duration(true, 1_000_000);
+        assert_eq!(backend.foreground_time_ms() - start, 1000);
+        assert_eq!(
+            backend.duration_ms(),
+            1000,
+            "session duration is its clock delta"
+        );
+        heartbeat(&backend, false, 1_000_000, "unused");
+        backend.sample_duration(true, 1_001_000); // no resume notification
+        backend.sample_duration(true, 1_002_000);
+        let before = backend.foreground_time_ms();
+        assert!(backend.start_session(
+            &session_event("third-end", "third", "ctx").to_string(),
+            1_002_000
+        ));
+        backend.sample_duration(true, 1_003_000);
+        assert_eq!(
+            backend.foreground_time_ms(),
+            before + 1000,
+            "rotation preserves live sample state when resume was missed"
+        );
+        assert_eq!(
+            restored.foreground_time_ms(),
+            0,
+            "recovery never restores process-local elapsed time"
+        );
         assert!(backend.clear());
     }
 

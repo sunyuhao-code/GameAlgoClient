@@ -233,6 +233,16 @@ Config-only strategies and script-backed `executor(...).execute(...)` are both
 supported. `dda(...)` uses the same sandbox and persists its rolling state in
 the browser store.
 
+## 读取前台耗时
+
+```ts
+const start = client.getForegroundTimeMs();
+// 业务结束；期间允许 newSession()
+const elapsedMs = client.getForegroundTimeMs() - start;
+```
+
+`client.tracker.getForegroundTimeMs()` 返回同一读数。读数是本次 SDK 实例的累计前台运行毫秒数，配置刷新、`newSession()`、`session_end` 不会清零；新建实例或重启从零开始，不要跨初始化保存后相减。读取只访问内存，不推进采样、写盘或发送事件。精度沿用现有 1 秒采样口径，后台不累计，广告挂起可能少计；单位为毫秒不代表毫秒级采样精度。SDK 自动 session 时长是同一时钟减去该 session 的起始读数。
+
 ## Optional URL attribution
 
 URL attribution is opt-in. It sends only an allow-list of campaign parameters

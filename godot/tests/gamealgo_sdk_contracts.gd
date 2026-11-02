@@ -365,6 +365,7 @@ func _run() -> void:
 	_test_platform_allowlist()
 	_test_base_url_and_key_validation()
 	_test_device_os_version()
+	await _test_foreground_clock()
 	await _test_config_request_envelope()
 	await _test_device_version_override()
 	await _test_event_envelope_and_batching()
@@ -423,6 +424,38 @@ func _run() -> void:
 
 
 # --- contracts ---------------------------------------------------------------
+
+
+func _test_foreground_clock() -> void:
+	var storage := MemoryStore.new()
+	var tracker := Tracker.new()
+	_check(tracker.configure(null, storage, {
+		"user_id": "clock-user", "session_id": "clock-old", "measurement_allowed": true,
+		"flush_interval": 0.0,
+	}), "foreground clock configures")
+	_check(tracker.get_foreground_time_ms() == 0, "clock starts at zero")
+	tracker._duration_sample_at = Time.get_ticks_msec() - 41_000
+	tracker.tick(0.0)
+	var start := tracker.get_foreground_time_ms()
+	_check(start == 1000, "delayed tick adds at most one second")
+	var saved := storage.values.duplicate(true)
+	var unchanged := true
+	for _index: int in range(100):
+		unchanged = unchanged and tracker.get_foreground_time_ms() == start
+	_check(unchanged, "repeated reads do not advance clock")
+	_check(storage.values == saved, "reads never write storage")
+	_check(tracker.new_session("clock-next"), "new session starts")
+	_check(tracker.get_foreground_time_ms() == start, "new session preserves cumulative time")
+	tracker._duration_sample_at = Time.get_ticks_msec() - 1000
+	tracker.tick(0.0)
+	_check(tracker.get_foreground_time_ms() - start == 1000, "elapsed time spans session rotation")
+	tracker.set_context_id("clock-ctx")
+	_check(await tracker.track_session_end({}, false), "manual end uses the clock")
+	var events := tracker.pending_events_for_testing()
+	_check(events[-1]["payload"]["sessionDurationMs"] == 1000, "session end uses clock offset")
+	var client := _make_client({})
+	_check(client.get_foreground_time_ms() == client.tracker.get_foreground_time_ms(), "client exposes tracker clock")
+	client.free()
 
 
 func _test_platform_allowlist() -> void:

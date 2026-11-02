@@ -12,6 +12,35 @@ final class GameAlgoLifecycleTests: XCTestCase {
     }
     private func date(_ seconds: Double) -> Date { Date(timeIntervalSince1970: seconds) }
 
+    func testForegroundClockIsReadOnlyAndOutlivesSessions() throws {
+        let storage = storage()
+        let journal = GameAlgoLifecycleJournal(storage: storage, key: "journal")
+        XCTAssertEqual(journal.getForegroundTimeMs(), 0)
+        journal.activate(template("old"), startedAt: date(1000), hasEnd: false, foreground: true, pending: [])
+        journal.sample(foreground: true, at: date(1001))
+        let start = journal.getForegroundTimeMs()
+        let saved = try storage.loadValue(cacheKey: "journal")
+        for _ in 0..<100 { XCTAssertEqual(journal.getForegroundTimeMs(), 1000) }
+        XCTAssertEqual(try storage.loadValue(cacheKey: "journal"), saved)
+        journal.activate(template("next"), startedAt: date(1001), hasEnd: false, foreground: nil, pending: [])
+        XCTAssertEqual(journal.getForegroundTimeMs(), start)
+        journal.sample(foreground: true, at: date(1002))
+        XCTAssertEqual(journal.getForegroundTimeMs() - start, 1000)
+        XCTAssertEqual(journal.duration(sessionId: "next"), 1000)
+        journal.observe(foreground: false, at: date(1002))
+        journal.sample(foreground: false, at: date(9000))
+        XCTAssertEqual(journal.getForegroundTimeMs(), 2000)
+        XCTAssertEqual(journal.pending().last?.payload["sessionDurationMs"], .number(1000))
+        journal.sample(foreground: true, at: date(9001)) // no foreground notification
+        journal.sample(foreground: true, at: date(9002))
+        let before = journal.getForegroundTimeMs()
+        journal.activate(template("third"), startedAt: date(9002), hasEnd: false, foreground: nil, pending: [])
+        journal.sample(foreground: true, at: date(9003))
+        XCTAssertEqual(journal.getForegroundTimeMs(), before + 1000, "rotation preserves live sample state")
+        let restarted = GameAlgoLifecycleJournal(storage: storage, key: "journal")
+        XCTAssertEqual(restarted.getForegroundTimeMs(), 0, "previous process totals are never restored")
+    }
+
     func testRecoveryUsesLastHeartbeatAndAnIdempotentEvent() throws {
         let storage = storage()
         let first = GameAlgoLifecycleJournal(storage: storage, key: "journal")

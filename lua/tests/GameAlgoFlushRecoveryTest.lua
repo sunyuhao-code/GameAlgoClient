@@ -119,6 +119,44 @@ local function success(callback, batchSize)
     })
 end
 
+-- Business timing uses the same instance clock across session boundaries.
+do
+    local previousNode = Node
+    local onUpdate
+    Node = function() return { CreateScriptObject = function()
+        return { SubscribeToEvent = function(_, eventName, handler)
+            if eventName == "Update" then onUpdate = handler end
+        end }
+    end } end
+    local sent = {}
+    local harness = makeSdk(function(_, callback, batch)
+        for _, event in ipairs(batch) do table.insert(sent, event) end
+        success(callback, #batch)
+    end)
+    local function frame() onUpdate(nil, nil, { GetFloat = function() return 0.25 end }) end
+    equal(harness.sdk.GetForegroundTimeMs(), 0)
+    for _ = 1, 4 do frame() end
+    local start = harness.sdk.GetForegroundTimeMs()
+    equal(start, 1000)
+    local saved, requests = files["gamealgo_sdk_storage_v1.json"], harness.requests()
+    harness.setTime(60000) -- reading does not advance the frame-driven clock
+    for _ = 1, 100 do equal(harness.sdk.GetForegroundTimeMs(), start) end
+    equal(files["gamealgo_sdk_storage_v1.json"], saved, "reads never write storage")
+    equal(harness.requests(), requests, "reads never perform HTTP")
+    harness.sdk.NewSession("foreground-clock-next")
+    equal(harness.sdk.GetForegroundTimeMs(), start, "rotation preserves the instance clock")
+    harness.sdk.FetchConfig(function(error) assert(error == nil, tostring(error)) end)
+    equal(harness.sdk.GetForegroundTimeMs(), start, "config refresh preserves the clock")
+    frame(); frame()
+    harness.sdk.TrackSessionEnd()
+    harness.sdk.Flush(nil)
+    equal(harness.sdk.GetForegroundTimeMs() - start, 500)
+    equal(sent[#sent].payload.sessionDurationMs, 500, "session duration uses its clock offset")
+    local restarted = makeSdk(function(_, callback, batch) success(callback, #batch) end)
+    equal(restarted.sdk.GetForegroundTimeMs(), 0, "initialization resets the instance clock")
+    Node = previousNode
+end
+
 -- Explicit session boundaries belong to the SDK, independently of lifecycle
 -- callbacks. A same-ID call is a no-op and a manual end is never extended.
 do

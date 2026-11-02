@@ -20,6 +20,16 @@ https://github.com/sunyuhao-code/GameAlgoClient.git
 import GameAlgoSDK
 ```
 
+## 读取前台耗时
+
+```swift
+let start = sdk.getForegroundTimeMs()
+// 业务结束；期间允许 newSession
+let elapsedMs = sdk.getForegroundTimeMs() - start
+```
+
+返回 `Int64` 毫秒数；`sdk.tracker.getForegroundTimeMs()` 返回同一读数。这是同步的线程安全内存读取，无需 `await`，不推进采样、写盘或发送事件。累计值属于本次 SDK 实例，配置刷新、会话切换和 `session_end` 不清零；重新初始化或重启从零开始，不能跨初始化保存后相减。沿用当前 1 秒采样口径，后台不累计，广告挂起可能少计。SDK 自动 session 时长使用同一累计时钟减去该 session 起始读数。
+
 ## 最小 API
 
 ```swift

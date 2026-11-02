@@ -59,6 +59,8 @@ public final class GameAlgo {
         return client;
     }
 
+    public static long getForegroundTimeMs() { return client().getForegroundTimeMs(); }
+
     public static GameAlgoClient client() {
         GameAlgoClient current = client;
         if (current == null) {

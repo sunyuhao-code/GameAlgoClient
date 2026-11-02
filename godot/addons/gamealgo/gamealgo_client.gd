@@ -18,7 +18,7 @@ signal startup_completed(success: bool)
 ## console there; this signal is how an iOS host gets the same information.
 signal sdk_log(message: String)
 
-const SDK_VERSION := "2.0.2"
+const SDK_VERSION := "2.1.0"
 # The Protocol v1 client is platform-neutral. Storage and script execution are
 # injected capabilities; no native runtime is required.
 ## Godot exports to five targets, but GameAlgo only accepts the two mobile
@@ -897,6 +897,11 @@ func _attribution_needs_context(session: String) -> bool:
 		if String(body["sessionId"]) == session and String(body.get("contextId", "")).is_empty():
 			return true
 	return false
+
+
+## Cumulative sampled foreground time since configure; no I/O or sampling on read.
+func get_foreground_time_ms() -> int:
+	return tracker.get_foreground_time_ms()
 
 
 func _process(delta: float) -> void:

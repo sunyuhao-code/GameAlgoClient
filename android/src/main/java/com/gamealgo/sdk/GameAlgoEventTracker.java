@@ -166,6 +166,11 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         flushAsync();
     }
 
+    /** Pure memory read; neither session rotation nor tracking resets this clock. */
+    public synchronized long getForegroundTimeMs() {
+        return lifecycleJournal == null ? 0L : lifecycleJournal.getForegroundTimeMs();
+    }
+
     public synchronized String currentSessionId() {
         return sessionId;
     }

@@ -89,6 +89,16 @@ SDK 从 `GameAlgo.Init` 开始设置一个固定 10 秒的初始化看门狗。1
 
 Lua SDK 会同时记录 UTC 时间和带 UTC offset 的客户端本地时间：通过内部自动存储持久化 `userCreatedAt` / `userCreatedLocalAt`，context 上报 `createdLocalAt`，事件上报 `timestamp` / `createdLocalAt`。这些字段由 SDK 自动维护；事件进入队列时即固定发生时间，延迟上传或重试不会改写。
 
+## 读取前台耗时
+
+```lua
+local start = GameAlgo.GetForegroundTimeMs()
+-- 结束业务时读取；期间允许切换 session
+local elapsedMs = GameAlgo.GetForegroundTimeMs() - start
+```
+
+返回本次 `Init` 以来累计的前台运行毫秒数；`NewSession`、配置刷新和上报 `session_end` 不清零。沿用 Maker `Update.TimeStep` 计时，广告或后台暂停时允许少计。读取只访问内存，不推进计时、不写盘、不上报。SDK 自动计算的 session 时长使用同一时钟减去 session 起点；显式传入的 `sessionDurationMs` 仍遵循原覆盖规则。再次初始化或重启从零开始，读数不要跨初始化保存后相减。
+
 ## 实验
 
 ```lua
