@@ -1947,6 +1947,14 @@ function GameAlgo.Flush(callback)
 
     local currentTime = clockMs()
     recoverTimedOutFlush(currentTime)
+    -- Flush is also a durability boundary. A busy request or missing context
+    -- must not leave newly queued exit events waiting for Update/the HTTP ACK.
+    -- The normal send path checkpoints in startFlush before starting HTTP.
+    if state_.activeFlush or (not hasFlushableEvents() and #state_.queue > 0) then
+        state_.queuePersistenceActive = true
+        persistEventQueue()
+        flushAutomaticStorage()
+    end
     if not queueFlushCallback(callback) then return end
     if state_.activeFlush then
         state_.flushRequested = true

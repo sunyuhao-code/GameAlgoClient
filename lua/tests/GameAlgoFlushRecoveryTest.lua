@@ -81,7 +81,7 @@ local function makeSdk(eventHandler, options)
 
     local sdk = dofile("lua/GameAlgo.lua")
     sdk.Init({
-        gameKey = "ga_live_flush_recovery_" .. tostring(testSequence),
+        gameKey = options.gameKey or ("ga_live_flush_recovery_" .. tostring(testSequence)),
         userId = options.userId,
         userCreatedAt = options.userCreatedAt,
         userCreatedLocalAt = options.userCreatedLocalAt,
@@ -499,6 +499,109 @@ do
     equal(delayedSent[2].payload.sessionDurationMs, 2500, "storage and background delays do not inflate rotation")
     clientCloud = nil
     Node = nil
+end
+
+-- A manual exit Flush must checkpoint events appended during an earlier HTTP
+-- request, before either request completes or another Update gets to run.
+do
+    local previousFileSystem = fileSystem
+    fileSystem = { FileExists = function(_, name) return files[name] ~= nil end }
+    local function savedEvents(sessionId)
+        local result = {}
+        local snapshot = cjson.decode(files["gamealgo_sdk_storage_v1.json"])
+        for key, value in pairs(snapshot.data) do
+            if key:match(":events:jsonl$") then
+                for line in value:gmatch("[^\r\n]+") do
+                    local event = cjson.decode(line)
+                    if event.sessionId == sessionId then table.insert(result, event) end
+                end
+            end
+        end
+        return result
+    end
+
+    for _, acknowledgeFirst in ipairs({ false, true }) do
+        local held = {}
+        local options = { gameKey = "ga_live_exit_checkpoint_" .. tostring(acknowledgeFirst),
+            userId = "exit-checkpoint-user" }
+        local harness = makeSdk(function(_, callback, batch)
+            table.insert(held, { callback = callback, batch = batch })
+            return { request = "held" }
+        end, options)
+        local original = harness.sdk.Snapshot()
+        assert(harness.sdk.TrackLevelStart({ level_attempt_id = "exit-attempt", level_id = "main_1" }))
+        harness.sdk.Flush(nil)
+        equal(#savedEvents(original.sessionId), 1, "first request is already durable")
+
+        harness.setTime(100) -- below the one-second persistence interval
+        assert(harness.sdk.TrackLevelEnd({ level_attempt_id = "exit-attempt", level_id = "main_1", result = "quit" }))
+        assert(harness.sdk.TrackEvent("exit_summary", { completedLevels = 3 }))
+        assert(harness.sdk.TrackSessionEnd({ reason = "business_exit", completedLevels = 3 }))
+        equal(#savedEvents(original.sessionId), 1, "tail has not reached the periodic persistence boundary")
+        local finished = false
+        harness.sdk.Flush(function() finished = true end)
+        equal(harness.requests(), 1, "exit Flush cannot start a parallel request")
+        equal(finished, false, "inflight flush callback is not completed prematurely")
+        local saved = savedEvents(original.sessionId)
+        equal(#saved, 4, "exit Flush synchronously persists the inflight batch and every tail event")
+        equal(saved[2].eventType, "level_end")
+        equal(saved[3].eventType, "_exit_summary")
+        equal(saved[4].eventType, "session_end")
+        equal(saved[4].payload.completedLevels, 3)
+        for _, event in ipairs(saved) do equal(event.contextId, original.contextId, "checkpoint retains context") end
+
+        local expectedStart = 1
+        if acknowledgeFirst then
+            success(held[1].callback, #held[1].batch)
+            expectedStart = 2
+            equal(harness.requests(), 2, "ACK starts the held tail request")
+            equal(#savedEvents(original.sessionId), 3, "ACK only removes the first batch from disk")
+            success(held[1].callback, #held[1].batch) -- stale duplicate ACK
+            equal(#savedEvents(original.sessionId), 3, "stale ACK cannot erase the persisted tail")
+        end
+
+        -- Simulate destruction: no Update, lifecycle notification, timeout or
+        -- remaining transport callbacks. The replacement SDK only has File.
+        local restoredEvents = {}
+        local restarted = makeSdk(function(_, callback, batch)
+            for _, event in ipairs(batch) do table.insert(restoredEvents, event) end
+            success(callback, #batch)
+        end, { gameKey = options.gameKey, userId = options.userId, skipConfig = true })
+        equal(restarted.sdk.Snapshot().queuedEvents, 5 - expectedStart, "cold start restores every unacknowledged event")
+        restarted.sdk.FetchConfig(function(error) assert(error == nil, tostring(error)) end)
+        restarted.sdk.Flush(nil)
+        equal(#restoredEvents, 5 - expectedStart)
+        for index, event in ipairs(restoredEvents) do
+            local previous = saved[index + expectedStart - 1]
+            equal(event.eventId, previous.eventId, "recovery keeps event ID")
+            equal(event.sessionId, original.sessionId, "recovery keeps old session")
+            equal(event.contextId, original.contextId, "new config cannot take ownership of old events")
+            equal(event.timestamp, previous.timestamp, "recovery keeps occurrence time")
+        end
+        equal(#savedEvents(original.sessionId), 0, "only successful ACK clears the durable tail")
+    end
+    -- Missing config is another early-return path: persist before delivering
+    -- the error callback, then send these same events once config is available.
+    local sent = {}
+    local unbound = makeSdk(function(_, callback, batch)
+        for _, event in ipairs(batch) do table.insert(sent, event) end
+        success(callback, #batch)
+    end, { skipConfig = true })
+    local unboundSession = unbound.sdk.Snapshot().sessionId
+    assert(unbound.sdk.TrackLevelEnd({ level_attempt_id = "unbound-exit", result = "quit" }))
+    assert(unbound.sdk.TrackSessionEnd({ reason = "business_exit" }))
+    local unboundError, savedBeforeCallback = nil, 0
+    unbound.sdk.Flush(function(error)
+        unboundError = error
+        savedBeforeCallback = #savedEvents(unboundSession)
+    end)
+    equal(savedBeforeCallback, 2, "unbound tail is saved before Flush calls back")
+    equal(unboundError, "context not ready")
+    equal(unbound.requests(), 0, "unbound events do not bypass config ownership")
+    unbound.sdk.FetchConfig(function(error) assert(error == nil, tostring(error)) end)
+    equal(#sent, 2, "config completion drains the saved unbound tail")
+    equal(#savedEvents(unboundSession), 0, "unbound tail is cleared after ACK")
+    fileSystem = previousFileSystem
 end
 
 -- A missing callback times out, rolls back the inflight batch, ignores the late
