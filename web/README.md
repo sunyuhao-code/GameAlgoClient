@@ -51,7 +51,18 @@ const decision = await gameAlgo.executor("level_dda").execute({ level: 12 });
 
 ### TapDB identity linking in TapTap
 
-On the first successful server config response with a valid `contextId`, each
+TapDB identity linking is disabled by default. Only a fresh successful server
+config response with a valid `contextId` and boolean `tapdbContextLinkEnabled: true`
+authorizes linking. Missing, false or malformed flags cause no TapDB calls or
+bridge discovery. A restored offline snapshot never grants startup permission.
+A later successful disabled response clears pending linking and stops discovery;
+this takes effect before snapshot persistence, even if browser storage is slow or fails.
+re-enabling does not reset the once-per-client guard. Calls already made to the
+host cannot be undone. This controls only GameAlgo's automatic identity link,
+not the game's own TapDB calls or GameAlgo telemetry. Older SDKs must be upgraded
+to honor this server switch.
+
+On the first enabled server config response, each
 H5 client instance makes one best-effort `gamealgo_context_link` report through
 the host's `tap.logEvent({ name, properties, success, fail, complete })`. Games
 do not need to call this themselves. The event and flat properties match Maker:
@@ -76,10 +87,10 @@ successful server response can. Closing a client suppresses late responses.
 Missing host APIs, native errors and callback failures do not block initialization
 or ordinary event uploads. The SDK does not retry this event, wait for callbacks,
 or treat the normal `undefined` return value as confirmation of delivery.
-If the bridge is not ready at the first successful config response, the SDK
+If the bridge is not ready at the first enabled config response, the SDK
 retains that response's context and identity, checking for the bridge every
 500 ms for up to 10 seconds without blocking initialization. Later successful
-config responses also check for availability without replacing the pending
+enabled config responses also check for availability without replacing the pending
 first identity. The one-call guard is set only immediately before the native
 call; native rejection or failure is not retried. Closing the client cancels
 discovery and discards its pending link. This event bypasses the GameAlgo event

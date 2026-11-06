@@ -71,7 +71,9 @@ SDK 从 `GameAlgo.Init` 开始设置一个固定 10 秒的初始化看门狗。1
 
 ### TapDB 身份关联
 
-本次 `GameAlgo.Init` 首次取得有效的 `/v1/config` 响应后，SDK 自动通过 Maker 宿主的 `sdk:LogEvent(name, properties)` 尝试上报一次 `gamealgo_context_link`，用于 DW 关联 GameAlgo Context 与 TapDB 身份。游戏无需另行调用。
+TapDB 身份关联默认关闭。仅在本次 `GameAlgo.Init` 取得新鲜、有效的 `/v1/config` 响应，且 `tapdbContextLinkEnabled` 为布尔值 `true` 时，SDK 才通过 Maker 宿主的 `sdk:LogEvent(name, properties)` 尝试上报一次 `gamealgo_context_link`，用于 DW 关联 GameAlgo Context 与 TapDB 身份。游戏无需另行调用，也不要自行补报该事件。
+
+字段缺失、为 `false` 或类型异常时，不调用或探测宿主 TapDB 接口。旧的本地配置快照不能开启本次初始化的关联；首次配置失败时保持关闭。后续成功的配置响应关闭开关时，立即丢弃待发关联并停止探测；重新开启不会重置“每次 Init 最多尝试一次”的限制。已调用宿主后，SDK 无法撤回其内部处理。此开关不控制游戏自己调用的 TapDB 上报，也不影响 GameAlgo 配置与事件采集。旧版 SDK 不识别此开关，需更新游戏内的 SDK 模块才能生效。
 
 | 自定义属性 | 含义 |
 | --- | --- |
@@ -81,11 +83,11 @@ SDK 从 `GameAlgo.Init` 开始设置一个固定 10 秒的初始化看门狗。1
 
 属性均为扁平值。TapDB 落库时可按 `dataname=gamealgo_context_link` 定位事件，从 `_preset.gamealgo_context_id`、`_preset.gamealgo_device_id` 读取关联键，并结合 TapDB 的 `deviceid`、`userid` 等字段处理。`gamealgo_device_id` 不等同于 TapDB `deviceid`、OAID 或 CAID。
 
-显式 `autoFetch=false` 时，在首次手动 `FetchConfig` 成功后上报；配置请求失败或缺少有效 `contextId` 时不上报，恢复成功后再尝试。一次 Init 内的配置刷新、`NewSession` 和重复响应不会重复上报，重新 Init 后可再上报一次。
+显式 `autoFetch=false` 时，在手动 `FetchConfig` 成功且开关明确开启后上报；配置请求失败或缺少有效 `contextId` 时不上报，恢复成功并获得开启许可后再尝试。一次 Init 内的配置刷新、`NewSession` 和重复响应不会重复上报，重新 Init 后需重新获取开启许可。
 
 该事件直接走宿主 TapDB 通道，不进入 GameAlgo 事件队列、不占用普通事件额度。宿主缺少接口、抛错或返回 `false` 都不影响配置读取和游戏初始化；不在 SDK 内重试该事件，不传额外回调参数。宿主受理不代表最终落库成功，后续仍以 TapDB 数据为准。
 
-如果首次配置成功时宿主接口尚未就绪，SDK 保留该次 Context 和身份，在更新循环中每 500ms 检查接口，持续最多 10 秒，不阻塞初始化。后续成功的配置响应也会再次检查接口，但不会覆盖待发的首次身份。只有真正调用宿主前才设置“已尝试”；调用被拒绝或抛错后不再重试。重新 Init 会清除旧的待发关联。
+如果配置成功且开关开启时宿主接口尚未就绪，SDK 保留该次 Context 和身份，在更新循环中每 500ms 检查接口，持续最多 10 秒，不阻塞初始化。后续成功且开启的配置响应也会再次检查接口，但不会覆盖待发的首次身份；关闭会清除该身份，之后重新开启使用新响应的身份。只有真正调用宿主前才设置“已尝试”；调用被拒绝或抛错后不再重试。重新 Init 会清除旧的待发关联。
 
 Lua SDK 会同时记录 UTC 时间和带 UTC offset 的客户端本地时间：通过内部自动存储持久化 `userCreatedAt` / `userCreatedLocalAt`，context 上报 `createdLocalAt`，事件上报 `timestamp` / `createdLocalAt`。这些字段由 SDK 自动维护；事件进入队列时即固定发生时间，延迟上传或重试不会改写。
 

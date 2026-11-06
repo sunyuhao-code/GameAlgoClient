@@ -29,6 +29,8 @@ export type ConfigResponse = {
   configVersion: string;
   ttlSeconds: number;
   serverTime: string;
+  /** Absent/false disables Maker/H5 TapDB identity linking; never restored as startup permission. */
+  tapdbContextLinkEnabled?: boolean;
   eventQuota?: EventQuotaConfig;
   experiments: ExperimentAssignment[];
   configFiles: ConfigFileRef[];

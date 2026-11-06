@@ -67,18 +67,70 @@ local function harness()
         options.logger = function(line) table.insert(h.logs, line) end
         h.client.Init(options)
     end
-    function h.reply(index, contextId)
-        h.pending[index].callback(nil, { status = 200, body = cjson.encode({
+    function h.reply(index, contextId, flags)
+        local config = {
             contextId = contextId,
             gameId = "game-context-link-test",
             configVersion = "1",
             configFiles = {},
             experiments = {},
-        }) })
+        }
+        flags = flags or { tapdbContextLinkEnabled = true }
+        for key, value in pairs(flags) do config[key] = value end
+        h.pending[index].callback(nil, { status = 200, body = cjson.encode(config) })
     end
     sdk = h.host
     return h
 end
+
+-- Only boolean true in a fresh response permits even looking up the host.
+for _, flags in ipairs({ {}, { tapdbContextLinkEnabled = false }, { tapdbContextLinkEnabled = "true" },
+    { tapdbContextLinkEnabled = 1 }, { tapdbContextLinkEnabled = cjson.null } }) do
+    local disabled = harness()
+    local now, lookups = 1000, 0
+    sdk = setmetatable({}, { __index = function() lookups = lookups + 1; return nil end })
+    disabled.init({ nowMs = function() return now end })
+    disabled.reply(1, "ctx-disabled", flags)
+    for _ = 1, 30 do now = now + 500; disabled.client.Update() end
+    assert(lookups == 0, "disabled TapDB must not probe native methods")
+    assert(disabled.client.TrackEvent("normal_event", {}))
+    disabled.client.Flush()
+    assert(#disabled.batches == 1, "normal telemetry remains available")
+    sdk = disabled.host
+    disabled.client.FetchConfig()
+    disabled.reply(2, "ctx-enabled-later")
+    assert(#disabled.calls == 1)
+    assert(disabled.calls[1].properties.gamealgo_context_id == "ctx-enabled-later")
+end
+
+-- Closing the switch drops the pending identity and cancels discovery.
+local switched = harness()
+local switchNow, switchLookups = 1000, 0
+sdk = setmetatable({}, { __index = function() switchLookups = switchLookups + 1; return nil end })
+switched.init({ nowMs = function() return switchNow end })
+switched.reply(1, "ctx-pending-enabled")
+assert(switchLookups > 0)
+switched.client.FetchConfig()
+switched.reply(2, "ctx-disabled", { tapdbContextLinkEnabled = false })
+local stoppedAt = switchLookups
+switchNow = switchNow + 500
+switched.client.Update()
+assert(switchLookups == stoppedAt)
+sdk = switched.host
+switched.client.Update()
+assert(#switched.calls == 0)
+switched.client.FetchConfig()
+switched.reply(3, "ctx-reenabled")
+assert(#switched.calls == 1 and switched.calls[1].properties.gamealgo_context_id == "ctx-reenabled")
+switched.client.FetchConfig()
+switched.reply(4, "ctx-disabled-again", {})
+switched.client.FetchConfig()
+switched.reply(5, "ctx-enabled-again")
+assert(#switched.calls == 1, "switch changes must not reset the once-per-init guard")
+switched.init({ autoFetch = false })
+switchNow = switchNow + 500
+switched.client.Update()
+assert(#switched.calls == 1, "a cached enabled config cannot authorize a new Init")
 
 -- Initialization waits for a real context and uses the same anonymous identity
 -- as config/events, rather than the Maker account identity.

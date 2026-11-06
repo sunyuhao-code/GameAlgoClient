@@ -13,10 +13,11 @@ type LinkEvent = {
 };
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
-const configResponse = (contextId: unknown) => Response.json({
+const configResponse = (contextId: unknown, flags: Record<string, unknown> = { tapdbContextLinkEnabled: true }) => Response.json({
   contextId, gameId: "web-test", environment: "live", configVersion: "1",
   ttlSeconds: 60, serverTime: new Date().toISOString(), experiments: [], configFiles: [],
   eventQuota: { mode: "enforce", policyVersion: 1, ordinaryEventLimit: 1, quotaDate: "2026-10-27", resetAt: "2026-10-28T00:00:00Z", exemptEventTypes: ["session_end"] },
+  ...flags,
 });
 
 function tapHost(t: TestContext, value: unknown): void {
@@ -56,6 +57,89 @@ function harness(t: TestContext, options: Partial<GameAlgoWebClientOptions> & { 
   t.after(() => client.close());
   return { client, control, storage, requests, logs };
 }
+
+test("disabled, missing or malformed server flags never touch the TapDB host or start discovery", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  let lookups = 0;
+  tapHost(t, { get logEvent() { lookups++; return undefined; } });
+  for (const flags of [{}, ...[false, null, "true", 1].map(value => ({ tapdbContextLinkEnabled: value }))]) {
+    const h = harness(t, { autoStart: false });
+    h.control.config = () => configResponse("ctx-disabled", flags);
+    await h.client.fetchConfig();
+    t.mock.timers.tick(30_000);
+    assert.equal(lookups, 0);
+    assert.equal(h.client.tracker.track("ordinary_probe", {}), true);
+    await h.client.flush();
+    assert.equal(h.requests.filter(r => r.url.endsWith("/v1/events/batch")).length, 1);
+    h.client.close();
+  }
+});
+
+test("closing the server switch cancels pending discovery; reopening uses the newly enabled context once", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  let lookups = 0;
+  tapHost(t, { get logEvent() { lookups++; return undefined; } });
+  const h = harness(t);
+  assert.equal(await h.client.waitForReady(), true);
+  assert.ok(lookups > 0);
+  h.control.config = () => configResponse("ctx-disabled", { tapdbContextLinkEnabled: false });
+  await h.client.fetchConfig({ forceRefresh: true });
+  const stoppedAt = lookups;
+  t.mock.timers.tick(30_000);
+  assert.equal(lookups, stoppedAt);
+  const calls: LinkEvent[] = [];
+  Object.defineProperty(globalThis, "tap", { configurable: true, value: { logEvent: (event: LinkEvent) => { calls.push(event); } } });
+  t.mock.timers.tick(500);
+  assert.equal(calls.length, 0);
+  h.control.config = () => configResponse("ctx-reenabled");
+  await h.client.fetchConfig({ forceRefresh: true });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].properties.gamealgo_context_id, "ctx-reenabled");
+  h.control.config = () => configResponse("ctx-disabled-again", {});
+  await h.client.fetchConfig({ forceRefresh: true });
+  h.control.config = () => configResponse("ctx-enabled-again");
+  await h.client.fetchConfig({ forceRefresh: true });
+  assert.equal(calls.length, 1, "switch changes must not reset the once-per-init guard");
+});
+
+test("a fresh disabled response stops TapDB discovery before slow or failed snapshot persistence", async (t) => {
+  for (const mode of ["pending", "failed"]) {
+    await t.test(mode, async (t) => {
+      t.mock.timers.enable({ apis: ["setInterval"] });
+      let available = false;
+      let lookups = 0;
+      const calls: LinkEvent[] = [];
+      tapHost(t, { get logEvent() {
+        lookups++;
+        return available ? (event: LinkEvent) => { calls.push(event); } : undefined;
+      } });
+      const h = harness(t);
+      assert.equal(await h.client.waitForReady(), true);
+      assert.ok(lookups > 0);
+
+      const setItem = h.storage.setItem;
+      let release: (() => void) | undefined;
+      let persisting = false;
+      h.storage.setItem = (key, value) => {
+        if (!key.includes(":snapshot:")) return setItem(key, value);
+        persisting = true;
+        if (mode === "failed") throw new Error("snapshot storage unavailable");
+        return new Promise<void>((resolve) => { release = resolve; });
+      };
+      h.control.config = () => configResponse("ctx-disabled", { tapdbContextLinkEnabled: false });
+      const refresh = h.client.fetchConfig({ forceRefresh: true });
+      await tick();
+      assert.equal(persisting, true);
+      const stoppedAt = lookups;
+      available = true;
+      t.mock.timers.tick(1_000);
+      release?.();
+      await refresh;
+      assert.equal(calls.length, 0, "a received disable must take effect independently of storage");
+      assert.equal(lookups, stoppedAt, "disabled discovery must not touch the host");
+    });
+  }
+});
 
 test("H5 initialization sends one flat TapDB identity link using the verified object/callback signature", async (t) => {
   const calls: LinkEvent[] = [];

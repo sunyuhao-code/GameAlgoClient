@@ -11,7 +11,7 @@ import { GameAlgoBrowserStorage, type GameAlgoBrowserStorageOptions } from "./br
 import { GameAlgoWebScriptRuntime } from "./script-runtime.ts";
 import { GameAlgoMatchmakingClient } from "./multiplayer.ts";
 
-export const GAMEALGO_WEB_SDK_VERSION = "2.1.1";
+export const GAMEALGO_WEB_SDK_VERSION = "2.1.2";
 const WEB_KEEPALIVE_BODY_LIMIT_BYTES = 60 * 1024;
 const WEB_EVENT_BATCH_BODY_BUDGET_BYTES = 48 * 1024;
 const TAPDB_CONTEXT_LINK_EVENT = "gamealgo_context_link";
@@ -194,8 +194,14 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
   }
 
   protected override onConfigReady(config: ConfigResponse, identity: { userId: string; sessionId: string; isDebug: boolean }): void {
-    if (this.closed || this.tapDbContextLinkAttempted || identity.sessionId !== this.tracker.currentSessionId()
-      || typeof config.contextId !== "string" || !config.contextId.trim() || !identity.userId.trim()) return;
+    if (this.closed || identity.sessionId !== this.tracker.currentSessionId()) return;
+    if (config.tapdbContextLinkEnabled !== true) {
+      this.stopTapDbContextLinkDiscovery();
+      this.tapDbContextLinkProperties = undefined;
+      return;
+    }
+    if (this.tapDbContextLinkAttempted || typeof config.contextId !== "string"
+      || !config.contextId.trim() || !identity.userId.trim()) return;
     this.tapDbContextLinkProperties ??= {
       gamealgo_context_id: config.contextId,
       gamealgo_device_id: identity.userId,

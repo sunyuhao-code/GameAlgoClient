@@ -324,8 +324,10 @@ export class GameAlgoRestClient {
         updatedAt: this.now(),
         userId: identity.userId,
       };
-      await this.persistSnapshot();
+      // Apply live operational controls before optional cache I/O: a delayed or
+      // failed snapshot write must not leave a disabled native bridge active.
       this.onConfigReady(config, { userId: identity.userId, sessionId, isDebug });
+      await this.persistSnapshot();
       this.log(`config fetched: version=${config.configVersion}, experiments=${config.experiments.length}, configFiles=${config.configFiles.length}, ttl=${config.ttlSeconds}s`);
       this.logAssignments(config.experiments, "config ready");
       return config;

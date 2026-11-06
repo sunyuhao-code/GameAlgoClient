@@ -28,7 +28,7 @@ local MakerAutoStorage = requireSdkModule("MakerAutoStorage")
 local GameAlgo = {}
 local unpackArgs = table.unpack or unpack
 
-local SDK_VERSION = "2.1.1-lua"
+local SDK_VERSION = "2.1.2-lua"
 local DEFAULT_BASE_URL = "https://game-algo-sdk.dictapis.cn"
 local DEFAULT_FLUSH_INTERVAL_MS = 5000
 local DEFAULT_FLUSH_TIMEOUT_MS = 15000
@@ -502,12 +502,18 @@ local function tryTapDbContextLink()
     end
 end
 
-local function reportTapDbContextLink(contextId, requestBody)
+local function reportTapDbContextLink(config, requestBody)
+    if config.tapdbContextLinkEnabled ~= true then
+        state_.tapDbContextLinkProperties = nil
+        state_.tapDbContextLinkNextCheckAtMs = 0
+        state_.tapDbContextLinkDiscoveryUntilMs = 0
+        return
+    end
     if state_.tapDbContextLinkAttempted then return end
     if state_.tapDbContextLinkProperties == nil then
         -- Preserve the first config request identity while the host is loading.
         state_.tapDbContextLinkProperties = {
-            gamealgo_context_id = contextId,
+            gamealgo_context_id = config.contextId,
             gamealgo_device_id = requestBody.userId,
             gamealgo_is_debug = requestBody.isDebug == true,
         }
@@ -1422,7 +1428,7 @@ performConfigFetchAttempt = function()
             state_.scheduler:Cancel(state_.initWatchdogHandle)
             state_.initWatchdogHandle = nil
         end
-        reportTapDbContextLink(contextId, requestBody)
+        reportTapDbContextLink(config, requestBody)
         log("config fetched: version=" .. tostring(config and config.configVersion or "unknown"))
         finishConfigFetch(nil, config)
         if current and requestBody.sessionId == state_.sessionId and state_.preloadConfigFiles and config then
