@@ -21,16 +21,31 @@ gamealgo docs sdk-integration --host <admin-host>
 gamealgo listapi --host <admin-host>
 ```
 
-开发者通常只需要提供游戏维度的 Game Admin Key，格式为 `ga_admin_*`。在游戏项目根目录登录后，AI Agent 应通过 CLI 创建或读取运行时使用的 `ga_live_*`，完成 SDK 接入、事件验证、Report Pack 和实验配置。
+在游戏项目根目录执行 `gamealgo whoami --json`，先复用有效的项目绑定或已有组织登录，再按当前 Server 的 [SDK 接入文档](https://game-algo-admin.dictapis.cn/dashboard/docs/index.html?topic=sdk-integration)选择流程；海外使用上表对应 Admin host。不要要求所有开发者先在网页注册、创建游戏和复制管理密钥。
+
+- **Maker / TapTap H5 首次基础接入**：项目能提供真实运行时小游戏 ID 时，按在线文档执行 `gamealgo integration bootstrap`，取得真实 SDK Key 和有效期 24 小时的临时接入 Key。Maker 至少正常构建过一次才会生成 `.project/project.json`，读取 `taptap_publish.miniapp_id`；H5 按文档从已授权的 TapTap 发布流程获取 `mini_app_id`，不要用数字 App ID、项目 ID 或猜测的值代替。临时接入权限支持元数据登记、初始 Report Pack 配置和实时验证，不开放历史查询、配置文件、脚本或实验。
+- **已有游戏、其他平台或正式管理**：优先复用有效登录。没有适用权限时，使用下面的 TapTap 浏览器授权；开发者网页已登录时可以直接确认。在开发者本机执行可加 `--open`，远程 Agent 展示返回的 `authorizationUrl`，并在发起命令的同一 CLI 环境完成登录。授权后再通过 `game list` / `game bind` 选择目标游戏，不自动选择第一项，也不为已接入游戏重复创建数据空间。
+- **手工密钥作为备选**：组织管理员可提供 `ga_org_*` 或目标游戏的 `ga_admin_*`，非组织管理员提供目标游戏的 `ga_admin_*`，两种只需一种。组织管理 Key 从“Admin 控制台 → 组织管理 → 组织管理密钥”获取，通过 `gamealgo login --region <cn|global> --admin-key <provided-key>` 登录。临时接入 Key 过期、丢失或权限不足时转正式授权，不反复匿名领取。
+
+需要正式授权时执行：
 
 ```bash
-gamealgo login --host <admin-host> --admin-key <ga_admin_xxx>
+gamealgo login --region <cn|global> --json
+# 完成授权后列出并绑定目标游戏，再用 whoami 核对；已有有效绑定时跳过登录。
+gamealgo game list --json
+gamealgo game bind <gameId> --json
+gamealgo whoami --json
+```
+
+确认目标游戏后，两种接入方式都继续读取计划：
+
+```bash
 gamealgo integration get-plan --environment <domestic|overseas> --platform <ios|android|maker|web> --out gamealgo-integration-plan.json
 ```
 
-AI Agent 必须先执行 `integration get-plan`，并按返回的完整清单完成接入和人工验收。不要依赖只读某一份 README 后自行推断其他平台规则。
+SDK 接入必须先执行 `integration get-plan`，并按返回的完整清单完成接入和真实运行验证。临时接入阶段直接读取该计划，不要求先读取需要正式管理权限的优化任务目录。不要依赖只读某一份 README 后自行推断其他平台规则。
 
-凭据保存在当前游戏项目的 `.gamealgo/cli.json`，不同游戏互不覆盖。CLI 命令说明不在本仓库重复维护，每次通过 Server 获取最新版本：
+正式游戏绑定保存在当前项目的 `.gamealgo/cli.json`，临时接入凭据在 `.gamealgo/telemetry.json`，组织登录全局保存；不要提交这些凭据文件。创建正式管理 Key 后临时接入 Key 永久失效，原 SDK Key 和游戏数据继续使用。CLI 命令说明不在本仓库重复维护，每次通过 Server 获取最新版本：
 
 ```bash
 gamealgo help
@@ -51,7 +66,7 @@ gamealgo experiment run create --help
 - [客户端示例](./examples/README.md)
 - [Protocol OpenAPI](./protocol/openapi.yaml)
 
-海外 SDK 地址包含 `/algo_sdk` 路径前缀，必须完整保留。客户端只能配置 `ga_live_*`；`ga_admin_*` 只允许用于开发机器、AI Agent 或 CI。
+海外 SDK 地址包含 `/algo_sdk` 路径前缀，必须完整保留。客户端只能配置 `ga_live_*`；`ga_org_*`、`ga_admin_*`、`ga_setup_*` 只允许用于开发机器、AI Agent 或 CI，不写入日志或聊天摘要。
 
 ## Godot SDK
 
