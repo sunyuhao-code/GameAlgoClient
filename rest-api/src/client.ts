@@ -28,6 +28,7 @@ import type {
 import { sha256HexSync } from "./sha256.ts";
 import type { GameAlgoDDAOptions } from "./types.ts";
 import { GameAlgoDDAController } from "./dda.ts";
+import { IncrementalEventQueue } from "./event-queue-store.ts";
 
 type RefreshOptions = FetchConfigOptions & {
   preloadConfigFiles?: boolean | string[];
@@ -738,6 +739,10 @@ export class GameAlgoEventTracker {
   private sessionHasEnd = false;
   private consecutiveFailures = 0;
   private hasPersistedQueue = false;
+  private queueRestorePending = false;
+  private incrementalQueue?: IncrementalEventQueue;
+  private queuePersistActive?: Promise<void>;
+  private queuePersistRevision = 0;
   private readonly customCounts = new Map<string, { total: number; byType: Map<string, number> }>();
   private readonly ordinaryCounts = new Map<string, number>();
   private eventQuota?: EventQuotaConfig;
@@ -788,6 +793,9 @@ export class GameAlgoEventTracker {
     }
     this.storage = options.storage;
     this.persistenceKey = clean(options.persistenceKey);
+    if (this.persistOnEnqueue && this.storage && this.persistenceKey) {
+      this.incrementalQueue = new IncrementalEventQueue(this.storage, this.persistenceKey);
+    }
     this.milestonePersistenceKey = this.persistenceKey ? `${this.persistenceKey}:milestones` : undefined;
     this.milestoneRestorePromise = this.restorePersistedMilestones();
     this.restorePromise = Promise.all([
@@ -1258,6 +1266,7 @@ export class GameAlgoEventTracker {
     await this.restorePromise;
     await this.milestonePersistPromise;
     await this.queuePersistPromise;
+    if (this.queueRestorePending) await this.persistPendingQueue().catch(() => undefined);
 
     const responses: EventBatchResponse[] = [];
     while (this.retryBatch.length > 0 || this.queue.length > 0) {
@@ -1275,7 +1284,9 @@ export class GameAlgoEventTracker {
         responses.push(await this.uploadEvents(uploadBatch));
         this.inflightBatch = [];
         this.consecutiveFailures = 0;
-        if (this.hasPersistedQueue) await this.persistPendingQueue();
+        // A storage failure after a successful HTTP ACK must not turn that
+        // response into a transport failure or requeue the acknowledged batch.
+        if (this.hasPersistedQueue) await this.persistPendingQueue().catch(() => undefined);
       } catch (error) {
         this.inflightBatch = [];
         this.retryBatch = [...uploadBatch, ...this.retryBatch];
@@ -1293,7 +1304,7 @@ export class GameAlgoEventTracker {
     }
     await this.queuePersistPromise;
     if (this.hasPersistedQueue && this.retryBatch.length === 0 && this.queue.length === 0) {
-      await this.clearPersistedQueue();
+      await this.clearPersistedQueue().catch(() => undefined);
     }
     return responses;
   }
@@ -1392,16 +1403,49 @@ export class GameAlgoEventTracker {
 
   private async restorePersistedQueue(): Promise<void> {
     if (!this.storage || !this.persistenceKey) return;
-    const raw = await this.storage.getItem(this.persistenceKey);
-    if (!raw) return;
+    // A transient root read failure must not clear or overwrite durable data.
+    const durable = this.storage as GameAlgoStorage & { getItemDurably?: GameAlgoStorage["getItem"] };
+    let raw: string | undefined | null;
     try {
+      raw = await (durable.getItemDurably ?? durable.getItem).call(durable, this.persistenceKey);
+    } catch {
+      // Keep the unread queue untouched. New events can still upload from
+      // memory; a later persistence attempt retries restoration first.
+      this.queueRestorePending = true;
+      this.hasPersistedQueue = true;
+      return;
+    }
+    this.queueRestorePending = false;
+    if (!raw) return;
+    if (this.incrementalQueue) {
+      let restored: GameEvent[];
+      try { restored = await this.incrementalQueue.load(raw); }
+      catch {
+        this.incrementalQueue.reset();
+        await this.storage.removeItem?.(this.persistenceKey);
+        return;
+      }
+      const existingIds = new Set([...this.retryBatch, ...this.inflightBatch, ...this.queue].map(event => event.eventId));
+      this.retryBatch = [...restored.filter(event => !existingIds.has(event.eventId)), ...this.retryBatch];
+      this.hasPersistedQueue = restored.length > 0;
+      return;
+    }
+    try {
+      if (raw.includes('"format":"gamealgo-event-chunks-v2"')) {
+        this.incrementalQueue = new IncrementalEventQueue(this.storage, this.persistenceKey);
+        const restored = await this.incrementalQueue.load(raw);
+        const existingIds = new Set([...this.retryBatch, ...this.inflightBatch, ...this.queue].map(event => event.eventId));
+        this.retryBatch = [...restored.filter(event => !existingIds.has(event.eventId)), ...this.retryBatch];
+        this.hasPersistedQueue = restored.length > 0;
+        return;
+      }
       const restored = raw
         .split("\n")
         .map((line) => line.trim())
         .filter(Boolean)
         .map((line) => JSON.parse(line) as GameEvent)
         .filter((event) => clean(event.eventId) && clean(event.userId) && clean(event.sessionId) && clean(event.eventType));
-      const existingIds = new Set([...this.retryBatch, ...this.queue].map((event) => event.eventId));
+      const existingIds = new Set([...this.retryBatch, ...this.inflightBatch, ...this.queue].map((event) => event.eventId));
       this.retryBatch = [...restored.filter((event) => !existingIds.has(event.eventId)), ...this.retryBatch];
       this.hasPersistedQueue = restored.length > 0;
     } catch {
@@ -1439,18 +1483,34 @@ export class GameAlgoEventTracker {
 
   private persistPendingQueue(): Promise<void> {
     if (!this.storage || !this.persistenceKey) return Promise.resolve();
+    this.queuePersistRevision++;
+    if (this.queuePersistActive) return this.queuePersistActive;
     const persist = async () => {
-      await this.restorePromise;
-      const pending = [...this.retryBatch, ...this.inflightBatch, ...this.queue];
-      if (pending.length === 0) {
-        await this.storage!.removeItem?.(this.persistenceKey!);
-        this.hasPersistedQueue = false;
-      } else {
-        await this.storage!.setItem(this.persistenceKey!, pending.map((event) => JSON.stringify(event)).join("\n"));
-        this.hasPersistedQueue = true;
+      try {
+        await this.restorePromise;
+        if (this.queueRestorePending) {
+          await this.restorePersistedQueue();
+          if (this.queueRestorePending) throw new Error("Event queue storage is unavailable");
+        }
+        let revision: number;
+        do {
+          revision = this.queuePersistRevision;
+          const pending = [...this.retryBatch, ...this.inflightBatch, ...this.queue];
+          if (this.incrementalQueue) this.hasPersistedQueue = await this.incrementalQueue.save(pending);
+          else if (pending.length === 0) {
+            await this.storage!.removeItem?.(this.persistenceKey!);
+            this.hasPersistedQueue = false;
+          } else {
+            await this.storage!.setItem(this.persistenceKey!, pending.map((event) => JSON.stringify(event)).join("\n"));
+            this.hasPersistedQueue = true;
+          }
+        } while (revision !== this.queuePersistRevision);
+      } finally {
+        this.queuePersistActive = undefined;
       }
     };
     const operation = this.queuePersistPromise.then(persist, persist);
+    this.queuePersistActive = operation;
     this.queuePersistPromise = operation.catch(() => undefined);
     return operation;
   }

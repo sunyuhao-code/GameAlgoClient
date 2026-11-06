@@ -206,6 +206,20 @@ impl GameAlgoRuntime {
     }
 
     #[func]
+    fn event_backend_enqueue_delta(&self, event_json: GString) -> GString {
+        GString::from(
+            self.event_backend
+                .enqueue_delta(&event_json.to_string())
+                .as_str(),
+        )
+    }
+
+    #[func]
+    fn event_backend_snapshot_state_json(&self) -> GString {
+        GString::from(self.event_backend.snapshot_state_json().as_str())
+    }
+
+    #[func]
     fn event_backend_import(&self, events_json: GString) -> bool {
         self.event_backend.import_events(&events_json.to_string())
     }

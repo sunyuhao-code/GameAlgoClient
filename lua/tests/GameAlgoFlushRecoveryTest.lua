@@ -2,7 +2,11 @@ local cjson = require("cjson")
 
 package.path = "lua/?.lua;lua/?/init.lua;" .. package.path
 
+local savedEventsFromFiles = require("tests.support.PersistedEvents")
+
 local files = {}
+local localWrites = 0
+local failLocalWrites = false
 
 FILE_READ = 1
 FILE_WRITE = 2
@@ -15,6 +19,8 @@ function File(name, mode)
         IsOpen = function() return readable or writable end,
         ReadString = function() return buffer end,
         WriteString = function(_, value)
+            if failLocalWrites then error("simulated local write failure") end
+            localWrites = localWrites + 1
             buffer = value
             files[name] = value
         end,
@@ -90,7 +96,7 @@ local function makeSdk(eventHandler, options)
         autoFetch = false,
         preloadConfigFiles = false,
         maxBatchSize = options.maxBatchSize or 100,
-        maxQueueSize = options.maxQueueSize or 10000,
+        maxQueueSize = options.maxQueueSize,
         flushIntervalMs = options.flushIntervalMs == nil and 5000 or options.flushIntervalMs,
         flushTimeoutMs = options.flushTimeoutMs or 15000,
         nowMs = function() return currentTime end,
@@ -117,6 +123,157 @@ local function success(callback, batchSize)
         body = cjson.encode({ ok = true, accepted = batchSize }),
         headers = {},
     })
+end
+
+-- Idle queues have no send deadline and never inspect availability. The first
+-- queued event arms the deadline; retry backoff also waits without count polling.
+do
+    local held, checks = {}, 0
+    local harness = makeSdk(function(_, callback)
+        table.insert(held, callback)
+        return { request = "held" }
+    end)
+    local index, original = 1, nil
+    while true do
+        local name, value = debug.getupvalue(harness.sdk.Update, index)
+        assert(name, "Update's queue-availability probe must be measurable")
+        if name == "hasFlushableEvents" then original = value; break end
+        index = index + 1
+    end
+    debug.setupvalue(harness.sdk.Update, index, function()
+        checks = checks + 1
+        return original()
+    end)
+    for _ = 1, 200 do harness.sdk.Update() end
+    equal(checks, 0, "idle frames must not inspect the event count")
+    harness.setTime(5000)
+    harness.sdk.Update()
+    equal(checks, 0, "empty queues must not arm a send timer")
+    for _ = 1, 200 do harness.sdk.Update() end
+    equal(checks, 0, "idle elapsed time must not cause repeated empty-queue checks")
+
+    harness.setTime(5001)
+    assert(harness.sdk.TrackLevelEnd({ result = "quit" }))
+    for _ = 1, 200 do harness.sdk.Update() end
+    equal(checks, 0, "a small batch waits for its timer without count polling")
+    harness.setTime(10000)
+    harness.sdk.Update()
+    equal(checks, 0, "the first event owns the five-second deadline")
+    harness.setTime(10001)
+    harness.sdk.Update()
+    equal(checks, 1)
+    equal(harness.requests(), 1, "the scheduled batch still sends on time")
+    held[1]("offline", nil)
+    for _ = 1, 200 do harness.sdk.Update() end
+    equal(checks, 1, "backoff must not poll the unchanged event count")
+    harness.setTime(11001)
+    harness.sdk.Update()
+    equal(checks, 2)
+    equal(harness.requests(), 2, "retry sends at its deadline")
+    success(held[2], 1)
+    local afterAck = checks
+    harness.setTime(100000)
+    for _ = 1, 200 do harness.sdk.Update() end
+    equal(checks, afterAck, "drained queues return to the idle fast path")
+    debug.setupvalue(harness.sdk.Update, index, original)
+end
+
+-- An inflight request does not shorten the normal five-second save interval.
+-- Explicit exit Flush still checkpoints the tail immediately before returning.
+do
+    local harness = makeSdk(function() return { request = "held" } end)
+    local sessionId = harness.sdk.Snapshot().sessionId
+    assert(harness.sdk.TrackLevelStart({ level_attempt_id = "checkpoint-interval" }))
+    harness.sdk.Flush(nil)
+    local savedWrites = localWrites
+    harness.setTime(100)
+    assert(harness.sdk.TrackLevelEnd({ level_attempt_id = "checkpoint-interval", result = "quit" }))
+    for _, time in ipairs({ 1000, 4999 }) do
+        harness.setTime(time)
+        harness.sdk.Update()
+        equal(localWrites, savedWrites, "busy requests must not save before five seconds")
+        equal(#savedEventsFromFiles(files, sessionId), 1, "tail stays in memory until its save boundary")
+    end
+    harness.setTime(5000)
+    harness.sdk.Update()
+    equal(localWrites, savedWrites + 1, "five-second boundary saves only the changed chunk")
+    equal(#savedEventsFromFiles(files, sessionId), 2)
+    equal(harness.requests(), 1, "checkpoint must not start a parallel HTTP request")
+    harness.setTime(6000)
+    assert(harness.sdk.TrackSessionEnd({ reason = "business_exit" }))
+    equal(localWrites, savedWrites + 1, "next tail waits for the same save interval")
+    harness.sdk.Flush(nil)
+    equal(localWrites, savedWrites + 2, "explicit Flush saves immediately without waiting five seconds")
+    equal(#savedEventsFromFiles(files, sessionId), 3)
+    equal(harness.requests(), 1)
+    for _ = 1, 20 do harness.sdk.Update() end
+    equal(localWrites, savedWrites + 2, "unchanged queues must not be written again")
+end
+
+-- Ordinary tracking and busy Flush polling must not repeatedly rewrite the
+-- SDK snapshot. A new tail still checkpoints immediately, and failed local
+-- writes must never make a later Flush treat that tail as already durable.
+do
+    local harness = makeSdk(function() return { request = "held" } end)
+    local beforeTracking = localWrites
+    for sequence = 1, 50 do
+        assert(harness.sdk.TrackLevelEnd({ level_attempt_id = "perf-" .. sequence, result = "quit" }))
+    end
+    equal(localWrites, beforeTracking, "ordinary tracking must not rewrite unchanged identity")
+    harness.setTime(1000)
+    harness.sdk.Update()
+    equal(localWrites, beforeTracking, "optimization must preserve the pre-flush persistence cadence")
+    harness.sdk.Flush(nil)
+    local savedWrites = localWrites
+    equal(savedWrites, beforeTracking + 2, "first Flush creates a small directory and one chunk")
+
+    local originalEncode = cjson.encode
+    local encodes = 0
+    cjson.encode = function(...)
+        encodes = encodes + 1
+        return originalEncode(...)
+    end
+    for _ = 1, 25 do harness.sdk.Flush(nil) end
+    cjson.encode = originalEncode
+    equal(encodes, 0, "unchanged busy Flush must not serialize the queue or storage snapshot")
+    equal(localWrites, savedWrites, "unchanged busy Flush must not rewrite storage")
+
+    assert(harness.sdk.TrackSessionEnd({ reason = "business_exit" }))
+    local oldSnapshot = files["gamealgo_sdk_storage_v1.json"]
+    failLocalWrites = true
+    harness.sdk.Flush(nil)
+    equal(files["gamealgo_sdk_storage_v1.json"], oldSnapshot, "failed checkpoint must leave old disk contents")
+    failLocalWrites = false
+    harness.sdk.Flush(nil)
+    equal(localWrites, savedWrites + 1, "repeated Flush retries the unpersisted tail")
+    equal(savedEventsFromFiles(files, harness.sdk.Snapshot().sessionId)[51].payload.reason, "business_exit", "retry must persist the new session_end")
+    harness.sdk.Flush(nil)
+    equal(localWrites, savedWrites + 1, "successful retry makes later busy Flush a no-op")
+end
+
+-- Cached storage keys must follow Init's game and user, including returning to
+-- an earlier namespace. Reusing one SDK module must not mix their event queues.
+do
+    local previousFileSystem = fileSystem
+    fileSystem = { FileExists = function(_, name) return files[name] ~= nil end }
+    local sdk = dofile("lua/GameAlgo.lua")
+    local identities = {
+        { "ga_live_storage_cache_a", "cache-user-a" },
+        { "ga_live_storage_cache_a", "cache-user-b" },
+        { "ga_live_storage_cache_b", "cache-user-b" },
+        { "ga_live_storage_cache_a", "cache-user-a" },
+    }
+    for index, identity in ipairs(identities) do
+        sdk.Init({ gameKey = identity[1], userId = identity[2], autoFetch = false,
+            sessionId = "storage-cache-" .. index, logger = function() end,
+            preloadConfigFiles = false, nowMs = function() return 0 end })
+        equal(sdk.Snapshot().queuedEvents, index == 4 and 1 or 0, "each game/user restores only its own queue")
+        if index < 4 then
+            assert(sdk.TrackLevelEnd({ level_attempt_id = "cache-" .. index, result = "quit" }))
+            sdk.Flush(nil)
+        end
+    end
+    fileSystem = previousFileSystem
 end
 
 -- Business timing uses the same instance clock across session boundaries.
@@ -197,11 +354,7 @@ do
     harness.sdk.NewSession("offline-next")
     equal(harness.sdk.Snapshot().sessionId, "offline-next", "network errors do not undo rotation")
     equal(harness.sdk.Snapshot().queuedEvents, 1, "unacknowledged old end stays queued")
-    local snapshot = cjson.decode(files["gamealgo_sdk_storage_v1.json"])
-    local persisted = nil
-    for _, value in pairs(snapshot.data) do
-        if type(value) == "string" and value:find('"eventType":"session_end"', 1, true) then persisted = cjson.decode(value) end
-    end
+    local persisted = savedEventsFromFiles(files, old)[1]
     assert(persisted, "rotation must persist its end before any transport success")
     equal(persisted.sessionId, old)
     equal(persisted.eventId, attempted[1].eventId)
@@ -366,17 +519,7 @@ do
     end
 
     local function persistedEvents(sessionId)
-        local snapshot = cjson.decode(assert(files["gamealgo_sdk_storage_v1.json"]))
-        local result = {}
-        for key, value in pairs(snapshot.data) do
-            if key:match(":events:jsonl$") and type(value) == "string" then
-                for line in value:gmatch("[^\r\n]+") do
-                    local event = cjson.decode(line)
-                    if event.sessionId == sessionId then table.insert(result, event) end
-                end
-            end
-        end
-        return result
+        return savedEventsFromFiles(files, sessionId)
     end
 
     local sent = {}
@@ -545,17 +688,7 @@ do
     local previousFileSystem = fileSystem
     fileSystem = { FileExists = function(_, name) return files[name] ~= nil end }
     local function savedEvents(sessionId)
-        local result = {}
-        local snapshot = cjson.decode(files["gamealgo_sdk_storage_v1.json"])
-        for key, value in pairs(snapshot.data) do
-            if key:match(":events:jsonl$") then
-                for line in value:gmatch("[^\r\n]+") do
-                    local event = cjson.decode(line)
-                    if event.sessionId == sessionId then table.insert(result, event) end
-                end
-            end
-        end
-        return result
+        return savedEventsFromFiles(files, sessionId)
     end
 
     for _, acknowledgeFirst in ipairs({ false, true }) do
@@ -571,7 +704,7 @@ do
         harness.sdk.Flush(nil)
         equal(#savedEvents(original.sessionId), 1, "first request is already durable")
 
-        harness.setTime(100) -- below the one-second persistence interval
+        harness.setTime(100) -- below the five-second persistence interval
         assert(harness.sdk.TrackLevelEnd({ level_attempt_id = "exit-attempt", level_id = "main_1", result = "quit" }))
         assert(harness.sdk.TrackEvent("exit_summary", { completedLevels = 3 }))
         assert(harness.sdk.TrackSessionEnd({ reason = "business_exit", completedLevels = 3 }))
@@ -654,7 +787,7 @@ do
         end
         success(callback, #batch)
         return { request = "complete" }
-    end)
+    end, { maxQueueSize = 2500 })
     assert(harness.sdk.Track("level_start", { sequence = 1 }))
     local timeoutError = nil
     harness.sdk.Flush(function(error) timeoutError = error end)
@@ -685,6 +818,43 @@ do
     equal(harness.requests(), 21, "retry drains all twenty batches")
     equal(harness.sdk.Snapshot().queuedEvents, 0, "retry drains the full backlog")
     equal(harness.sdk.Snapshot().flushing, false, "retry finishes unlocked")
+end
+
+-- Default capacity is 500 including the inflight batch. Reducing the default
+-- must not truncate a larger, already durable queue from an older SDK.
+do
+    local harness = makeSdk(function() return { request = "held" } end)
+    for sequence = 1, 500 do
+        assert(harness.sdk.TrackLevelEnd({ level_attempt_id = "bounded-" .. sequence, result = "quit" }))
+    end
+    local accepted, error = harness.sdk.TrackLevelEnd({ result = "quit" })
+    equal(accepted, false)
+    equal(error, "event queue is full (max=500)")
+    equal(harness.sdk.Snapshot().queuedEvents, 500)
+
+    local previousFileSystem = fileSystem
+    fileSystem = { FileExists = function(_, name) return files[name] ~= nil end }
+    local Sha256 = require("Sha256")
+    local gameKey, userId = "ga_live_legacy_over_capacity", "legacy-over-capacity-user"
+    local key = "gamealgo:v2:game:" .. Sha256.hex(gameKey) .. ":user:" .. Sha256.hex(userId) .. ":events:jsonl"
+    local snapshot, snapshotFile = require("tests.support.PersistedSnapshot")(files)
+    local lines = {}
+    for sequence = 1, 620 do
+        lines[sequence] = cjson.encode({ eventId = "legacy-capacity-" .. sequence,
+            sessionId = "legacy-capacity-session", contextId = "legacy-capacity-context",
+            eventType = "level_end", payload = { result = "quit" } })
+    end
+    snapshot.data[key] = table.concat(lines, "\n")
+    snapshot.revision = snapshot.revision + 1
+    files[snapshotFile] = cjson.encode(snapshot)
+    local legacy = makeSdk(function(_, callback, batch) success(callback, #batch) end,
+        { gameKey = gameKey, userId = userId, skipConfig = true })
+    equal(legacy.sdk.Snapshot().queuedEvents, 620, "upgrade must keep all existing events")
+    equal(legacy.sdk.TrackLevelEnd({ result = "quit" }), false, "full legacy backlog rejects new events")
+    legacy.sdk.Flush(nil)
+    equal(legacy.sdk.Snapshot().queuedEvents, 0, "existing backlog can drain past the reduced admission limit")
+    equal(legacy.sent(), 620)
+    fileSystem = previousFileSystem
 end
 
 -- Payloads are rejected before entering the queue if cjson cannot encode them.

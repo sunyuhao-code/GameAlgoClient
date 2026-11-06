@@ -60,7 +60,7 @@ Lua SDK 自动管理持久化，不允许传入 `storage`：
 - 优先读取 Maker `File` 本地快照，启动时同步恢复身份、脚本缓存和 DDA 状态。
 - 本地快照不存在或当前运行模式不能读文件时，自动从 `clientCloud` 恢复。
 - 首次云端读取完成前，SDK 会暂存埋点和 DDA 操作，不会使用空 DDA 状态提前决策。
-- 写入先更新内存并尝试保存本地文件；云端写入按快照合并，在 SDK flush 时提交，避免每次行为计数都请求云端。
+- 身份、配置和 DDA 继续使用 SDK 快照；快照和事件目录本地采用两份交替写入的文件，启动时选择版本最新且完整可读的一份，避免目录覆盖写中断后找不到旧事件。事件队列独立分块存储，每块最多 100 条，各块同样交替写入两份文件，云端按块同步。新增事件、context 绑定和上传确认只保存受影响块，不重新编码或覆盖整个队列。云端先同步事件块，再发布块目录。
 - `File` 和 `clientCloud` 都暂时不可用时，Maker 运行时使用内存兜底，不阻塞游戏主流程，并在后续 flush 时重试云端。
 
 接入代码不要自行探测单机/联网模式，不要实现 GameAlgo 专用存档适配器，也不要给 `GameAlgo.Init` 传 `storage`。如果传入，SDK 会直接报错，避免本地存档和云端存档出现两套冲突语义。
@@ -183,19 +183,23 @@ local enabled = GameAlgo.ConfigValue("ads.rewarded.enabled", true, "gameplay.jso
 
 主动调用 `Flush()` 时，即使上一批 HTTP 尚未完成或事件还没有 context，也会在返回前把 inflight batch 和剩余队列一起写入本地自动存储，并触发自动存储 Flush；不会等下一帧、定时器或上一批回调才保存退出时追加的事件。已有请求继续串行发送；写入本地不代表上传成功，callback 沿用原有上传结果／错误语义。
 
-`GameAlgo.TrackAdPlacement` 在广告事件入队后会立即 Flush。发送前，SDK 会把 inflight batch 和剩余队列按 JSON Lines 写入内部自动存储；下次启动自动恢复，按下述批次完成策略确认后才删除持久化副本。请求超过 15 秒没有终态回调时，watchdog 会释放请求、把 inflight batch 放回队首，并按退避间隔重试。迟到或重复回调由 request token 忽略；成功后 SDK 会连续发送，直到所有已有 context 的事件全部排空。事件入队时即固定 `sessionId` 和已有的 `contextId`；同一 session 刷新 context 不会重绑旧事件。
+在途请求或失败积压期间，新增变化的定时补存间隔同样为 5 秒；累计 100 个事件变化也会提前保存。发送前、上传确认后、主动 Flush 和生命周期边界仍立即保存对应变化；没有变化不写盘。
 
-SDK 自动监听 Maker 的 `AppWillEnterBackground`、`AppTerminating`、`ExitRequested`，收到通知时生成标准 `session_end`，立即保存完整队列并触发 Flush。对应 `reason` 为 `app_background`、`app_terminating`、`exit_requested`，payload 同时记录 `lifecycleEvent`。该结束事件不占用普通事件额度，仍受队列容量上限约束。Maker 打开全屏广告也会触发后台通知，SDK 同样上报；同一会话后续再次退后台、退出或终止可以重复上报。不会自动切换 `sessionId`。
+旧版本保存的 JSON Lines 队列会自动迁移；所有事件块成功写入前保留旧队列，迁移中断仍可恢复。事件的 ID、session、context 和发生时间保持原值。
+
+`GameAlgo.TrackAdPlacement` 在广告事件入队后会立即 Flush。发送前，SDK 会把 inflight batch 和剩余队列中尚未落盘的变化写入独立事件块；下次启动自动恢复，按下述批次完成策略确认后才删除持久化副本。请求超过 15 秒没有终态回调时，watchdog 会释放请求、把 inflight batch 放回队首，并按退避间隔重试。迟到或重复回调由 request token 忽略；成功后 SDK 会连续发送，直到所有已有 context 的事件全部排空。事件入队时即固定 `sessionId` 和已有的 `contextId`；同一 session 刷新 context 不会重绑旧事件。
+
+SDK 自动监听 Maker 的 `AppWillEnterBackground`、`AppTerminating`、`ExitRequested`，收到通知时生成标准 `session_end`，立即保存队列中尚未落盘的变化并触发 Flush。对应 `reason` 为 `app_background`、`app_terminating`、`exit_requested`，payload 同时记录 `lifecycleEvent`。该结束事件不占用普通事件额度，仍受队列容量上限约束。Maker 打开全屏广告也会触发后台通知，SDK 同样上报；同一会话后续再次退后台、退出或终止可以重复上报。不会自动切换 `sessionId`。
 
 默认 `sessionDurationMs` 为当前会话累计的引擎运行时长：在已有的 Update 接收器中直接累加有效的 `TimeStep × 1000`，以整数毫秒生成快照。计时不维护依赖生命周期通知恢复的暂停标记；引擎在后台或全屏广告期间停止 Update 时不补算墙钟间隔。累计值只在 `Init` 或切换到不同 session 时归零，刷新 context、生命周期快照和相同 ID 的 `NewSession` 不清零。每帧计时只更新内存，不触发额外写盘或上报。自定义运行时没有 Maker Update / TimeStep 时不会凭墙钟推算游玩时长；`TrackSessionEnd` 显式提供的时长仍保留。
 
 生命周期上报是会话时长快照，不作为游戏显式结束会话的标记；广告后继续游戏再调用 `NewSession`，仍会为旧会话生成截至切换时的结束事件。监听使用 SDK 自己的 `LuaScriptObject`，不会替换游戏的 Update 或生命周期回调。初始化存储尚未就绪时先暂存通知时刻的事件，存储就绪后保存，取得 context 后 Flush。直接杀进程而没有宿主通知时无法新建结束事件；已成功保存的队列会在下次启动恢复。
 
-`GameAlgo.NewSession(sessionId, callback)` 自动为尚未结束的旧会话入队 `reason=new_session` 的 `session_end`，保留旧用户、session 和 context，时长截止切换；主动保存完整队列并立即触发 Flush，再取新会话配置，无需游戏先调用 `TrackSessionEnd()`。上传失败留队重试，不阻止本地切换；旧会话已手动结束时不再补报或延长时长，相同 ID 为无操作。初始化存储尚未就绪或队列全在途、无法接纳结束事件时，返回 `nil, error` 并回调错误，保留旧会话。
+`GameAlgo.NewSession(sessionId, callback)` 自动为尚未结束的旧会话入队 `reason=new_session` 的 `session_end`，保留旧用户、session 和 context，时长截止切换；主动保存队列变化并立即触发 Flush，再取新会话配置，无需游戏先调用 `TrackSessionEnd()`。上传失败留队重试，不阻止本地切换；旧会话已手动结束时不再补报或延长时长，相同 ID 为无操作。初始化存储尚未就绪或队列全在途、无法接纳结束事件时，返回 `nil, error` 并回调错误，保留旧会话。
 
 未绑定的旧事件不再随切换丢弃。重叠的配置请求按各自原会话排队，响应只绑定其原会话事件；旧响应不会发布为新会话的配置。已绑定事件可先发送，不被未绑定旧事件阻塞。
 
-队列默认最多保留 10,000 个事件，包含 inflight batch；达到上限时新的 Track 调用会返回 `false, "event queue is full ..."`，避免断网或宿主异常造成无界内存增长。payload 会在入队前做快照和 JSON 可序列化校验，非法结构不会污染整个发送队列。
+队列默认最多保留 500 个事件，包含 inflight batch；达到上限时新的 Track 调用会返回 `false, "event queue is full ..."`，避免断网或宿主异常造成无界内存增长。可通过 `maxQueueSize` 显式调整；升级时已有的更大队列不会被截断，会继续发送，积压未降到上限以下前不接纳新事件。payload 会在入队前做快照和 JSON 可序列化校验，非法结构不会污染整个发送队列。
 
 事件上传采用不阻塞优先策略：有效成功响应中只要 `accepted > 0`，整批就出队，不再要求 `accepted + rejected.length` 等于发送数。其余未接收或未说明结果的事件不重试，允许丢弃；`accepted` 仍报告服务端实际接收数，不把整批出队算作全部接收成功。`rejected` 明细仅作日志和 `rejectedCount` 诊断，缺失或格式错误不会阻塞已有接收的批次。`accepted = 0` 时，只有整批都有明确的拒绝记录才出队；否则保留重试。网络错误、请求失败、无法解析的响应或非法接收数仍保留重试。日志中的 `notAccepted` 包含明确拒绝及未说明结果的事件。
 

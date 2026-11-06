@@ -18,7 +18,7 @@ signal startup_completed(success: bool)
 ## console there; this signal is how an iOS host gets the same information.
 signal sdk_log(message: String)
 
-const SDK_VERSION := "2.1.0"
+const SDK_VERSION := "2.1.1"
 # The Protocol v1 client is platform-neutral. Storage and script execution are
 # injected capabilities; no native runtime is required.
 ## Godot exports to five targets, but GameAlgo only accepts the two mobile
@@ -69,6 +69,9 @@ var _pending_configs: Dictionary = {}
 var _recovered_contexts: Dictionary = {}
 var _config_recovery_enabled := false
 var _retry_states: Dictionary = {}
+var _pending_scan_in := 0.0
+var _pending_scan_elapsed := 0.0
+var _pending_work_revision := 0
 var _pending_attributions: Dictionary = {}
 var _attribution_inflight: Dictionary = {}
 var _attribution_allowed := true
@@ -216,6 +219,7 @@ func configure(options: Dictionary) -> bool:
 		last_error = "native_event_backend_configuration_failed" \
 				if _event_backend != null else "event_storage_cleanup_failed"
 		return false
+	_pending_work_changed()
 	_attribution_allowed = bool(attribution_value)
 	if not _restore_pending_requests():
 		last_error = "pending_request_storage_read_failed"
@@ -325,6 +329,7 @@ func refresh(force_refresh: bool = false) -> bool:
 	if status == "unconfigured":
 		last_error = "not_configured"
 		return false
+	_pending_work_changed()
 	_config_recovery_enabled = true
 	var request_body := _config_request()
 	var fingerprint := _config_fingerprint(request_body)
@@ -350,6 +355,7 @@ func _config_fingerprint(body: Dictionary) -> String:
 func _remember_config_request() -> bool:
 	var session := tracker.current_session_id()
 	if not _pending_configs.has(session):
+		_pending_work_changed()
 		_pending_configs[session] = _config_request()
 	return _persist_config_requests()
 
@@ -366,6 +372,7 @@ func _fetch_pending_config(session: String) -> bool:
 	# Retry a failed durable write even when the original envelope is already
 	# in memory. Never regenerate its timestamps, device, or session identity.
 	_persist_config_requests()
+	_pending_work_changed()
 	_refreshing = true
 	var request_body: Dictionary = _pending_configs[session].duplicate(true)
 	if session == tracker.current_session_id():
@@ -375,6 +382,7 @@ func _fetch_pending_config(session: String) -> bool:
 	var config := _normalize_config(response.get("value", null)) if bool(response.get("ok", false)) else {}
 	if config.is_empty():
 		_schedule_retry("config:" + session)
+		_pending_work_changed()
 		_refreshing = false
 		var error := String(response.get("error", "invalid_config_response"))
 		if session == tracker.current_session_id():
@@ -384,12 +392,14 @@ func _fetch_pending_config(session: String) -> bool:
 		_log("config fetch failed: " + error)
 		return false
 	# A historical response supplies ownership for its retained events only.
+	_pending_work_changed()
 	_recovered_contexts[session] = String(config["contextId"])
 	if session == tracker.current_session_id():
 		tracker.set_event_quota(config.get("eventQuota", {}))
 	if not _bind_pending_config(session):
 		_schedule_retry("config:" + session)
 	if session != tracker.current_session_id():
+		_pending_work_changed()
 		_refreshing = false
 		return true
 	_generation += 1
@@ -409,6 +419,7 @@ func _fetch_pending_config(session: String) -> bool:
 	var snapshot_saved := _persist_snapshot()
 	_prepared_script_hashes.clear()
 	var preload_ok := await _preload_config(config)
+	_pending_work_changed()
 	_refreshing = false
 	# new_session() may run while config files are loading. Do not publish stale
 	# assignments or ready signals into that new session.
@@ -447,8 +458,11 @@ func _bind_pending_config(session: String) -> bool:
 	var attribution_saved := _persist_request_queue("pending_attribution_", _pending_attributions)
 	if not events_saved or not attribution_saved or not tracker.measurement_resolved():
 		return false
+	_pending_work_changed()
 	_pending_configs.erase(session)
+	_pending_work_changed()
 	_recovered_contexts.erase(session)
+	_pending_work_changed()
 	_retry_states.erase("config:" + session)
 	_persist_request_queue("config_requests_", _pending_configs)
 	return true
@@ -589,12 +603,15 @@ func set_attribution_allowed(allowed: bool, clear_pending: bool = false) -> bool
 		return false
 	if _attribution_allowed != allowed or clear_pending:
 		_attribution_generation += 1
+	_pending_work_changed()
 	_attribution_allowed = false
 	if clear_pending:
 		_attribution_clear_required = true
+		_pending_work_changed()
 		_pending_attributions.clear()
 		for key: String in _retry_states.keys():
 			if key.begins_with("attribution:"):
+				_pending_work_changed()
 				_retry_states.erase(key)
 	if _attribution_clear_required:
 		var pending_cleared := _persist_request_queue("pending_attribution_", {})
@@ -602,6 +619,7 @@ func set_attribution_allowed(allowed: bool, clear_pending: bool = false) -> bool
 		if not pending_cleared or not acks_cleared:
 			return false
 		_attribution_clear_required = false
+	_pending_work_changed()
 	_attribution_allowed = allowed
 	return true
 
@@ -634,6 +652,7 @@ func _queue_attribution(provider: String, attribution: Dictionary, options: Dict
 	# An unchanged callback keeps its original occurrence and session. A newer
 	# callback replaces only the pending slot, never the in-flight request.
 	if String(_pending_attributions.get(clean_provider, {}).get("attributionHash", "")) != hash_value:
+		_pending_work_changed()
 		_pending_attributions[clean_provider] = {
 			"userId": _identity["userId"], "userCreatedAt": _identity["userCreatedAt"],
 			"sessionId": tracker.current_session_id(), "contextId": _context_id(),
@@ -642,6 +661,7 @@ func _queue_attribution(provider: String, attribution: Dictionary, options: Dict
 			"attributedAt": attributed_at if not attributed_at.is_empty() else GameAlgoUtil.utc_timestamp(),
 			"attributionHash": hash_value,
 		}
+		_pending_work_changed()
 		_retry_states.erase("attribution:" + clean_provider)
 	if not _persist_request_queue("pending_attribution_", _pending_attributions):
 		_schedule_retry("attribution:" + clean_provider)
@@ -660,6 +680,7 @@ func _send_pending_attribution(provider: String) -> Dictionary:
 	# sending the already acknowledged occurrence over the network again.
 	if String(_attribution_acks().get(provider, "")) == String(body["attributionHash"]):
 		if _remove_pending_attribution(provider, body):
+			_pending_work_changed()
 			_retry_states.erase("attribution:" + provider)
 		else:
 			_schedule_retry("attribution:" + provider)
@@ -671,8 +692,10 @@ func _send_pending_attribution(provider: String) -> Dictionary:
 		_schedule_retry("attribution:" + provider)
 		return {"ok": false, "accepted": 0, "error": "attribution_persistence_failed"}
 	var generation := _attribution_generation
+	_pending_work_changed()
 	_attribution_inflight[provider] = true
 	var response := await _request_json("POST", "/v1/attribution", body)
+	_pending_work_changed()
 	_attribution_inflight.erase(provider)
 	if not _attribution_allowed or generation != _attribution_generation:
 		return {"ok": false, "accepted": 0, "error": "attribution_consent_changed"}
@@ -690,6 +713,7 @@ func _send_pending_attribution(provider: String) -> Dictionary:
 		_schedule_retry("attribution:" + provider)
 		return {"ok": false, "accepted": int(value["accepted"]), "error": "attribution_ack_persistence_failed"}
 	if _remove_pending_attribution(provider, body):
+		_pending_work_changed()
 		_retry_states.erase("attribution:" + provider)
 	else:
 		_schedule_retry("attribution:" + provider)
@@ -705,6 +729,7 @@ func _remove_pending_attribution(provider: String, body: Dictionary) -> bool:
 	remaining.erase(provider)
 	if not _persist_request_queue("pending_attribution_", remaining):
 		return false
+	_pending_work_changed()
 	_pending_attributions.erase(provider)
 	return true
 
@@ -825,8 +850,10 @@ func _restore_pending_requests() -> bool:
 					or GameAlgoUtil.clean(body.get("attributionHash", "")).is_empty()):
 				return false
 		if prefix == "config_requests_":
+			_pending_work_changed()
 			_pending_configs = value.duplicate(true)
 		else:
+			_pending_work_changed()
 			_pending_attributions = value.duplicate(true)
 	return true
 
@@ -839,6 +866,7 @@ func _persist_request_queue(prefix: String, queue: Dictionary) -> bool:
 
 func _schedule_retry(key: String) -> void:
 	var attempt := mini(int(_retry_states.get(key, {}).get("attempt", 0)) + 1, 7)
+	_pending_work_changed()
 	_retry_states[key] = {"attempt": attempt, "remaining": minf(pow(2.0, attempt - 1), 60.0)}
 
 
@@ -847,7 +875,7 @@ func _retry_ready(key: String) -> bool:
 
 
 func _prune_pending_configs() -> void:
-	if not tracker.measurement_resolved():
+	if not _retry_ready("config:prune") or not tracker.measurement_resolved():
 		return
 	var retired: Array[String] = []
 	for session: String in _pending_configs:
@@ -858,19 +886,42 @@ func _prune_pending_configs() -> void:
 		if session != tracker.current_session_id() and not tracker.has_unbound_session(session) \
 				and not _attribution_needs_context(session):
 			retired.append(session)
-	if retired.is_empty() or not tracker.persist_pending():
+	if retired.is_empty():
 		return
+	if not tracker.persist_pending():
+		_schedule_retry("config:prune")
+		return
+	_pending_work_changed()
+	_retry_states.erase("config:prune")
 	# Confirm event removals on disk before removing their recovery envelopes.
 	for session: String in retired:
+		_pending_work_changed()
 		_pending_configs.erase(session)
+		_pending_work_changed()
 		_recovered_contexts.erase(session)
+		_pending_work_changed()
 		_retry_states.erase("config:" + session)
 	_persist_config_requests()
 
 
+func _pending_work_changed() -> void:
+	_pending_work_revision += 1
+	# Advance existing retries before a callback inserts a fresh delay.
+	if _pending_scan_elapsed > 0.0:
+		for state: Dictionary in _retry_states.values():
+			state["remaining"] = maxf(float(state["remaining"]) - _pending_scan_elapsed, 0.0)
+		_pending_scan_elapsed = 0.0
+	_pending_scan_in = 0.0
+
+
 func _tick_pending_requests(delta: float) -> void:
-	for state: Dictionary in _retry_states.values():
-		state["remaining"] = maxf(float(state["remaining"]) - maxf(delta, 0.0), 0.0)
+	var elapsed := maxf(delta, 0.0)
+	_pending_scan_elapsed += elapsed
+	_pending_scan_in -= elapsed
+	if _pending_scan_in > 0.0:
+		return
+	_pending_work_changed()
+	var revision := _pending_work_revision
 	if _config_recovery_enabled and not _refreshing:
 		_prune_pending_configs()
 		for session: String in _pending_configs.keys():
@@ -890,6 +941,16 @@ func _tick_pending_requests(delta: float) -> void:
 		for provider: String in _pending_attributions.keys():
 			if not _attribution_inflight.has(provider) and _retry_ready("attribution:" + provider):
 				_send_pending_attribution(provider)
+
+	# Queue/config changes wake this driver. Otherwise wait until the earliest
+	# retry instead of rescanning recovery envelopes on every frame.
+	_pending_scan_in = INF
+	for state: Dictionary in _retry_states.values():
+		var remaining := float(state["remaining"])
+		if remaining > 0.0:
+			_pending_scan_in = minf(_pending_scan_in, remaining)
+	if revision != _pending_work_revision:
+		_pending_scan_in = 0.0
 
 
 func _attribution_needs_context(session: String) -> bool:

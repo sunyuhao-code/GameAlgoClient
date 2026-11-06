@@ -24,6 +24,9 @@ var _storage: Variant
 var _storage_key := ""
 var _event_backend: Variant
 var _native_events := false
+var _native_revision := -1
+var _ownership_dirty := true
+var _unbound_sessions: Dictionary = {}
 var _max_batch_size := DEFAULT_MAX_BATCH_SIZE
 var _queue_limit := DEFAULT_QUEUE_LIMIT
 var _flush_interval := DEFAULT_FLUSH_INTERVAL
@@ -32,7 +35,7 @@ var _user_id := ""
 var _session_id := ""
 var _context_id := ""
 var _platform := "rest"
-var _sdk_version := "2.1.0"
+var _sdk_version := "2.1.1"
 var _app_version := ""
 var _timezone := "UTC"
 var _user_created_at := ""
@@ -89,7 +92,7 @@ func configure(client: Object, storage: Variant, options: Dictionary) -> bool:
 	if _session_id.is_empty():
 		_session_id = GameAlgoUtil.uuid()
 	_platform = String(options.get("platform", "rest"))
-	_sdk_version = String(options.get("sdk_version", "2.1.0"))
+	_sdk_version = String(options.get("sdk_version", "2.1.1"))
 	_app_version = String(options.get("app_version", ""))
 	_timezone = String(options.get("timezone", GameAlgoUtil.timezone_name()))
 	_user_created_at = String(options.get("user_created_at", ""))
@@ -135,8 +138,11 @@ func set_measurement_allowed(allowed: bool) -> bool:
 			return true
 		_consent_generation += 1
 		_measurement_resolved = true
+		_pending_changed()
 		_retry_batch.clear()
+		_pending_changed()
 		_queue.clear()
+		_pending_changed()
 		_inflight_batch.clear()
 		_pending_milestone_keys.clear()
 		_event_sequence.clear()
@@ -157,8 +163,11 @@ func set_measurement_allowed(allowed: bool) -> bool:
 	_measurement_allowed = false
 	_pending_milestone_keys.clear()
 	_event_sequence.clear()
+	_pending_changed()
 	_retry_batch.clear()
+	_pending_changed()
 	_queue.clear()
+	_pending_changed()
 	_inflight_batch.clear()
 	return _clear_persisted()
 
@@ -308,13 +317,21 @@ func bind_session_context(session_id: String, context_id: String) -> bool:
 	return true
 
 
+func _pending_changed() -> void:
+	_ownership_dirty = true
+	if is_instance_valid(_client) and _client.has_method("_pending_work_changed"):
+		_client.call("_pending_work_changed")
+
+
 func has_unbound_session(session_id: String) -> bool:
-	for events: Array[Dictionary] in [_retry_batch, _queue]:
-		for event: Dictionary in events:
-			if String(event.get("sessionId", "")) == session_id \
-					and String(event.get("contextId", "")).is_empty():
-				return true
-	return false
+	if _ownership_dirty:
+		_unbound_sessions.clear()
+		for events: Array[Dictionary] in [_retry_batch, _queue]:
+			for event: Dictionary in events:
+				if String(event.get("contextId", "")).is_empty():
+					_unbound_sessions[String(event.get("sessionId", ""))] = true
+		_ownership_dirty = false
+	return _unbound_sessions.has(session_id)
 
 
 func tick(delta: float) -> void:
@@ -368,20 +385,9 @@ func track(event_type: String, payload: Variant = {}) -> bool:
 		event["accountUserId"] = _account_user_id
 	if _native_events:
 		var count_before := pending_count()
-		var stored: Variant = _event_backend.call(
-			"event_backend_enqueue", GameAlgoUtil.canonical_json(event)
-		)
-		if not stored is bool or not bool(stored):
-			_log("event persistence failed: error=%s, pending=%d" % [
-				_native_backend_error(), pending_count(),
-			])
+		if not _enqueue_native(event):
+			_log("event persistence failed: error=%s, pending=%d" % [_native_backend_error(), pending_count()])
 			return false
-		if not _sync_native_queue(false):
-			# The native write is already durable, so never tell the app to retry
-			# with a second event ID merely because this in-memory mirror failed.
-			_queue.append(event.duplicate(true))
-			_event_sequence[event["eventId"]] = _next_event_sequence
-			_next_event_sequence += 1
 		_consume_custom_event_quota(event_type)
 		_consume_ordinary_event_quota(event_type)
 		if not String(milestone.get("key", "")).is_empty():
@@ -407,6 +413,7 @@ func track(event_type: String, payload: Variant = {}) -> bool:
 		return false
 	_event_sequence[event["eventId"]] = _next_event_sequence
 	_next_event_sequence += 1
+	_pending_changed()
 	_queue.append(event)
 	_consume_custom_event_quota(event_type)
 	_consume_ordinary_event_quota(event_type)
@@ -800,12 +807,15 @@ func _flush_legacy() -> Dictionary:
 	while not _retry_batch.is_empty() or not _queue.is_empty():
 		var pending := _pending_events()
 		var batch: Array[Dictionary] = []
+		_pending_changed()
 		_queue.clear()
+		_pending_changed()
 		_retry_batch.clear()
 		for event: Dictionary in pending:
 			if not String(event.get("contextId", "")).is_empty() and batch.size() < _max_batch_size:
 				batch.append(event.duplicate(true))
 			else:
+				_pending_changed()
 				_queue.append(event)
 		if batch.is_empty():
 			_persist_pending()
@@ -813,11 +823,13 @@ func _flush_legacy() -> Dictionary:
 			return _flush_result(
 				false, accepted_total, false, "context_not_ready", acked_event_ids
 			)
+		_pending_changed()
 		_inflight_batch = batch.duplicate(true)
 		var response: Variant = await _client.call("upload_events", batch)
 		if not _measurement_allowed or consent_generation != _consent_generation:
 			# Revocation already removed the old generation. Do not erase events
 			# accepted after a later grant while this upload was in flight.
+			_pending_changed()
 			_inflight_batch.clear()
 			_is_flushing = false
 			return _flush_result(
@@ -825,7 +837,9 @@ func _flush_legacy() -> Dictionary:
 			)
 		var result := GameAlgoUtil.event_batch_result(response, batch.size())
 		if not result["ok"]:
+			_pending_changed()
 			_retry_batch = _inflight_batch.duplicate(true)
+			_pending_changed()
 			_inflight_batch.clear()
 			_consecutive_failures += 1
 			_log("flush failed: %d event(s) held, consecutiveFailures=%d, queued=%d" % [
@@ -842,6 +856,7 @@ func _flush_legacy() -> Dictionary:
 			_event_sequence.erase(event["eventId"])
 			acked_event_ids.append(String(event["eventId"]))
 		accepted_total += int(result["accepted"])
+		_pending_changed()
 		_inflight_batch.clear()
 		_consecutive_failures = 0
 		_log("flush ok: accepted=%d, notAccepted=%d, remaining=%d" % [
@@ -929,9 +944,11 @@ func _enforce_queue_limit() -> bool:
 		return false
 	for event_id: String in discarded:
 		_event_sequence.erase(event_id)
+	_pending_changed()
 	_retry_batch = _retry_batch.filter(func(event: Dictionary) -> bool:
 		return not discarded.has(event["eventId"])
 	)
+	_pending_changed()
 	_queue = _queue.filter(func(event: Dictionary) -> bool:
 		return not discarded.has(event["eventId"])
 	)
@@ -954,6 +971,7 @@ func _restore_pending_milestones() -> void:
 
 
 func _bind_context(events: Array[Dictionary], session_id: String, context_id: String) -> void:
+	_pending_changed()
 	for index: int in range(events.size()):
 		var event := events[index]
 		if String(event.get("contextId", "")).is_empty() \
@@ -980,6 +998,7 @@ func _restore_queue() -> bool:
 	# save. Replace that attempt instead of appending the same durable events.
 	for event: Dictionary in _retry_batch:
 		_event_sequence.erase(event["eventId"])
+	_pending_changed()
 	_retry_batch.clear()
 	for value: Variant in restored:
 		if not _valid_event(value):
@@ -987,6 +1006,7 @@ func _restore_queue() -> bool:
 		var event := value as Dictionary
 		_event_sequence[event["eventId"]] = _next_event_sequence
 		_next_event_sequence += 1
+		_pending_changed()
 		_retry_batch.append(event.duplicate(true))
 	_restore_custom_event_quota(_pending_events())
 	var trimmed := _enforce_queue_limit()
@@ -1031,9 +1051,56 @@ func _restore_native_queue() -> bool:
 	return true
 
 
+func _enqueue_native(event: Dictionary) -> bool:
+	if _event_backend.has_method("event_backend_enqueue_delta"):
+		var delta: Variant = JSON.parse_string(String(_event_backend.call(
+			"event_backend_enqueue_delta", GameAlgoUtil.canonical_json(event))))
+		if not delta is Dictionary or not bool(delta.get("ok", false)):
+			return false
+		if int(delta.get("previous", -2)) == _native_revision:
+			var removed: Dictionary = {}
+			for event_id: String in delta.get("removed", []):
+				removed[event_id] = true
+				_event_sequence.erase(event_id)
+			if not removed.is_empty():
+				_pending_changed()
+				_retry_batch = _retry_batch.filter(func(row: Dictionary) -> bool: return not removed.has(row["eventId"]))
+				_pending_changed()
+				_queue = _queue.filter(func(row: Dictionary) -> bool: return not removed.has(row["eventId"]))
+				_restore_pending_milestones()
+			if not bool(delta.get("duplicate", false)):
+				_append_native_mirror(event)
+			_native_revision = int(delta["revision"])
+			return true
+	else:
+		var stored: Variant = _event_backend.call("event_backend_enqueue", GameAlgoUtil.canonical_json(event))
+		if not stored is bool or not bool(stored):
+			return false
+	# Concurrent ACK/lifecycle changes require one authoritative resync. A
+	# refused mirror update must never make the app retry an already durable ID.
+	if not _sync_native_queue(false):
+		_append_native_mirror(event)
+	return true
+
+
+func _append_native_mirror(event: Dictionary) -> void:
+	_pending_changed()
+	_retry_batch.append(event.duplicate(true))
+	_event_sequence[event["eventId"]] = _next_event_sequence
+	_next_event_sequence += 1
+
+
 func _sync_native_queue(rebuild_derived: bool) -> bool:
-	var encoded := String(_event_backend.call("event_backend_snapshot_json"))
-	var decoded: Variant = JSON.parse_string(encoded)
+	var next_revision := -1
+	var decoded: Variant
+	if _event_backend.has_method("event_backend_snapshot_state_json"):
+		var state: Variant = JSON.parse_string(String(_event_backend.call("event_backend_snapshot_state_json")))
+		if not state is Dictionary:
+			return false
+		next_revision = int(state.get("revision", -1))
+		decoded = state.get("events", null)
+	else:
+		decoded = JSON.parse_string(String(_event_backend.call("event_backend_snapshot_json")))
 	if not decoded is Array:
 		return false
 	var events: Array[Dictionary] = []
@@ -1041,16 +1108,21 @@ func _sync_native_queue(rebuild_derived: bool) -> bool:
 		if not _valid_event(value):
 			return false
 		events.append((value as Dictionary).duplicate(true))
+	_pending_changed()
 	_retry_batch.clear()
+	_pending_changed()
 	_inflight_batch.clear()
+	_pending_changed()
 	_queue.clear()
 	_event_sequence.clear()
 	_next_event_sequence = 0
 	for event: Dictionary in events:
 		_event_sequence[event["eventId"]] = _next_event_sequence
 		_next_event_sequence += 1
+		_pending_changed()
 		_retry_batch.append(event)
 	_has_persisted_queue = false
+	_native_revision = next_revision
 	if rebuild_derived:
 		_restore_custom_event_quota(events)
 	_restore_pending_milestones()

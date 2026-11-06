@@ -117,13 +117,9 @@ for _ = 1, 3 do
     assert(flushError == "simulated network failure")
 end
 
-local snapshot = cjson.decode(assert(files["gamealgo_sdk_storage_v1.json"]))
-local persistedJsonl = nil
-for key, value in pairs(snapshot.data) do
-    if key:match(":events:jsonl$") then persistedJsonl = value end
-end
-assert(type(persistedJsonl) == "string" and persistedJsonl ~= "")
-local persistedEvent = cjson.decode(persistedJsonl)
+local savedEventsFromFiles = require("tests.support.PersistedEvents")
+local snapshot = require("tests.support.PersistedSnapshot")(files)
+local persistedEvent = assert(savedEventsFromFiles(files)[1])
 assert(persistedEvent.contextId == "ctx-fixture-001")
 assert(persistedEvent.accountUserId == "maker-account-001")
 assert(persistedEvent.payload.level == 7)
@@ -138,10 +134,8 @@ local finalFlushError = "not-called"
 GameAlgo.Flush(function(error) finalFlushError = error end)
 assert(finalFlushError == nil)
 
-snapshot = cjson.decode(assert(files["gamealgo_sdk_storage_v1.json"]))
-for key, value in pairs(snapshot.data) do
-    if key:match(":events:jsonl$") then assert(value == "") end
-end
+snapshot = require("tests.support.PersistedSnapshot")(files)
+assert(#savedEventsFromFiles(files) == 0)
 
 assert(GameAlgo.TrackMilestone("new_user", "完成引导", {
     milestoneType = "ignored",
@@ -159,7 +153,7 @@ assert(milestoneEvents[1].payload.milestoneType == "new_user")
 assert(milestoneEvents[1].payload.milestonePoint == "完成引导")
 assert(type(milestoneEvents[1].payload.elapsedSinceRegistrationMs) == "number")
 assert(milestoneEvents[1].payload.elapsedSinceRegistrationMs ~= 999999)
-snapshot = cjson.decode(assert(files["gamealgo_sdk_storage_v1.json"]))
+snapshot = require("tests.support.PersistedSnapshot")(files)
 local persistedMilestones = nil
 for key, value in pairs(snapshot.data) do
     if key:match(":milestones$") then persistedMilestones = value end

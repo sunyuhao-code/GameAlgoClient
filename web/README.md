@@ -157,6 +157,23 @@ browser returns online. Override `eventFlushIntervalMs` to change the interval;
 Event batches use `fetch(..., { keepalive: true })` and are capped at 20 events
 to stay below browser keepalive limits.
 
+Queue persistence coalesces consecutive enqueue requests and stores events in
+100-event chunks. It serializes new or rebound events and rewrites only changed
+chunks, then commits a small directory last. Unchanged queues do not write storage.
+Existing JSON Lines queues migrate automatically; a failed directory commit keeps
+the previously committed queue readable. This changes storage work, not the flush
+interval or the immediate upload behavior of critical events.
+
+The built-in browser store requires an IndexedDB or localStorage commit for queue
+chunks and their directory. A memory-only fallback does not advance the committed
+queue; failed saves remain eligible for retry. Retries re-read the committed
+directory before choosing chunk banks, including when a write committed but its
+completion was interrupted. Identity/config caches retain their memory fallback,
+and queue-cleanup failures after an HTTP acknowledgement do not resend that batch
+in the current process. When the old queue cannot be read, the SDK retains it
+untouched, continues uploading new events from memory, and retries restoration
+before a later queue write.
+
 When TapTap sends `tap.onHide`, or the document becomes hidden, the SDK records
 a `session_end` snapshot and starts uploading it immediately. `pagehide` is a
 fallback. Repeated hide notifications during the same hidden period are coalesced.

@@ -15,6 +15,14 @@ const Runtime := preload("res://addons/gamealgo/gamealgo_script_runtime.gd")
 const BASE_URL := "https://gamealgo.example/api"
 const GAME_KEY := "ga_live_fixture"
 
+class OwnershipProbe:
+	extends "res://addons/gamealgo/gamealgo_tracker.gd"
+	var checks := 0
+	func has_unbound_session(_session: String) -> bool:
+		checks += 1
+		return true
+
+
 var _passed := 0
 var _failed := 0
 
@@ -360,9 +368,29 @@ func _init() -> void:
 	call_deferred("_run")
 
 
+func _test_recovery_checks_wait_for_changes_or_retry_deadlines() -> void:
+	var client := Client.new()
+	var probe := OwnershipProbe.new()
+	client.tracker = probe
+	client._config_recovery_enabled = true
+	client._pending_configs["old"] = {"sessionId": "old"}
+	for index in range(6):
+		client._schedule_retry("config:old")
+	client._tick_pending_requests(0.0)
+	_check(probe.checks == 1, "recovery initially checks ownership once")
+	for index in range(120):
+		client._tick_pending_requests(1.0 / 60.0)
+	_check(probe.checks == 1, "backoff does not rescan pending sessions each frame")
+	client._pending_work_changed()
+	client._tick_pending_requests(0.0)
+	_check(probe.checks == 2, "state changes wake recovery immediately")
+	client.free()
+
+
 func _run() -> void:
 	print("GameAlgo Godot SDK Protocol v1 contracts")
 	_test_platform_allowlist()
+	_test_recovery_checks_wait_for_changes_or_retry_deadlines()
 	_test_base_url_and_key_validation()
 	_test_device_os_version()
 	await _test_foreground_clock()

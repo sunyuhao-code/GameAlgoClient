@@ -28,13 +28,13 @@ local MakerAutoStorage = requireSdkModule("MakerAutoStorage")
 local GameAlgo = {}
 local unpackArgs = table.unpack or unpack
 
-local SDK_VERSION = "2.1.0-lua"
+local SDK_VERSION = "2.1.1-lua"
 local DEFAULT_BASE_URL = "https://game-algo-sdk.dictapis.cn"
 local DEFAULT_FLUSH_INTERVAL_MS = 5000
 local DEFAULT_FLUSH_TIMEOUT_MS = 15000
-local DEFAULT_MAX_QUEUE_SIZE = 10000
+local DEFAULT_MAX_QUEUE_SIZE = 500
 local DEFAULT_MAX_PENDING_FLUSH_CALLBACKS = 1000
-local QUEUE_PERSIST_INTERVAL_MS = 1000
+local QUEUE_PERSIST_INTERVAL_MS = DEFAULT_FLUSH_INTERVAL_MS
 local QUEUE_PERSIST_EVENT_COUNT = 100
 local CONFIG_FETCH_RETRY_BASE_MS = 1000
 local CONFIG_FETCH_RETRY_MAX_MS = 30000
@@ -74,6 +74,8 @@ local state_ = {
     scripts = {},
     ddaControllers = {},
     queue = {},
+    flushableEvents = 0,
+    eventQueueStorage = nil,
     flushing = false,
     activeFlush = nil,
     flushSequence = 0,
@@ -125,6 +127,7 @@ local state_ = {
     consecutiveFlushFailures = 0,
     queuePersistenceActive = false,
     queuePersistenceDirty = false,
+    queuePersistenceSaved = false,
     queueEventsSincePersist = 0,
     lastQueuePersistAtMs = 0,
     logger = nil,
@@ -284,12 +287,21 @@ end
 
 local function storageSet(key, value)
     local storage = state_.storage
-    if not storage then return end
-    pcall(function() storage:SetItem(key, value) end)
+    if not storage then return false end
+    local ok, persisted = pcall(function() return storage:SetItem(key, value) end)
+    return ok and persisted ~= false
 end
 
+local cachedGameKey, cachedGameNamespace, cachedUserId, cachedUserNamespace
+
 local function gameStorageNamespace()
-    return "gamealgo:v2:game:" .. Sha256.hex(tostring(state_.gameKey or "anonymous"))
+    local gameKey = tostring(state_.gameKey or "anonymous")
+    if cachedGameKey ~= gameKey then
+        cachedGameKey = gameKey
+        cachedGameNamespace = "gamealgo:v2:game:" .. Sha256.hex(gameKey)
+        cachedUserNamespace = nil
+    end
+    return cachedGameNamespace
 end
 
 local function identityStorageKey(name)
@@ -297,7 +309,13 @@ local function identityStorageKey(name)
 end
 
 local function userStorageNamespace()
-    return gameStorageNamespace() .. ":user:" .. Sha256.hex(tostring(state_.userId or "anonymous"))
+    local gameNamespace = gameStorageNamespace()
+    local userId = tostring(state_.userId or "anonymous")
+    if not cachedUserNamespace or cachedUserId ~= userId then
+        cachedUserId = userId
+        cachedUserNamespace = gameNamespace .. ":user:" .. Sha256.hex(userId)
+    end
+    return cachedUserNamespace
 end
 
 local function queueStorageKey()
@@ -841,6 +859,7 @@ local function chunkEvents()
         end
     end
     state_.queue = remaining
+    state_.flushableEvents = state_.flushableEvents - #batch
     return batch
 end
 
@@ -849,32 +868,28 @@ local function outstandingEventCount()
     return activeCount + #state_.queue
 end
 
+local function armAutoFlush()
+    if state_.flushIntervalMs > 0 and not state_.nextAutoFlushAtMs then
+        state_.nextAutoFlushAtMs = clockMs() + state_.flushIntervalMs
+    end
+end
+
 local function persistEventQueue()
     if not state_.storageReady or not state_.userId then return end
-    local events = {}
-    if state_.activeFlush and state_.activeFlush.batch then
-        for _, event in ipairs(state_.activeFlush.batch) do table.insert(events, event) end
-    end
-    for _, event in ipairs(state_.queue) do table.insert(events, event) end
-    if #events == 0 then
-        storageSet(queueStorageKey(), "")
-        state_.queuePersistenceDirty = false
-        state_.queueEventsSincePersist = 0
-        state_.lastQueuePersistAtMs = clockMs()
-        return
-    end
-    local lines = {}
-    for _, event in ipairs(events) do
-        local ok, encoded = pcall(cjson.encode, event)
-        if ok then table.insert(lines, encoded) end
-    end
-    storageSet(queueStorageKey(), table.concat(lines, "\n"))
-    state_.queuePersistenceDirty = false
+    if state_.queuePersistenceSaved and not state_.queuePersistenceDirty then return end
+    local ok, result = pcall(function() return state_.eventQueueStorage:Persist() end)
+    local persisted = ok and result == true
+    if not ok then log("event queue persistence failed: " .. tostring(result)) end
+    state_.queuePersistenceSaved = persisted
+    state_.queuePersistenceDirty = not persisted
     state_.queueEventsSincePersist = 0
     state_.lastQueuePersistAtMs = clockMs()
 end
 
 local function scheduleEventQueuePersistence()
+    -- Invalidate the snapshot before periodic persistence is enabled, while
+    -- preserving the normal save interval until the first flush.
+    state_.queuePersistenceSaved = false
     if not state_.queuePersistenceActive then return end
     state_.queuePersistenceDirty = true
     state_.queueEventsSincePersist = state_.queueEventsSincePersist + 1
@@ -885,32 +900,33 @@ local function scheduleEventQueuePersistence()
 end
 
 local function restoreEventQueue()
-    local encoded = storageGet(queueStorageKey())
-    if type(encoded) ~= "string" or encoded == "" then return end
+    state_.eventQueueStorage = state_.storage:EventQueue(queueStorageKey())
     local restored = 0
-    for line in encoded:gmatch("[^\r\n]+") do
-        local ok, event = pcall(cjson.decode, line)
-        if ok and type(event) == "table" and event.eventId and event.sessionId then
-            table.insert(state_.queue, event)
-            restored = restored + 1
-        end
+    for _, event in ipairs(state_.eventQueueStorage:Events()) do
+        table.insert(state_.queue, event)
+        if event.contextId and event.contextId ~= "" then state_.flushableEvents = state_.flushableEvents + 1 end
+        restored = restored + 1
     end
     if restored > 0 then
         state_.queuePersistenceActive = true
+        if state_.flushableEvents > 0 then armAutoFlush() end
+        if #state_.queue >= state_.maxBatchSize and state_.flushableEvents > 0 then state_.flushRequested = true end
         log("restored persisted events: " .. tostring(restored))
-    else
-        storageSet(queueStorageKey(), "")
     end
 end
 
 local function bindQueuedEvents(contextId, sessionId)
     if not contextId or contextId == "" then return end
+    local changed = false
     for _, event in ipairs(state_.queue) do
         if (not event.contextId or event.contextId == "") and event.sessionId == sessionId then
             event.contextId = contextId
+            state_.flushableEvents = state_.flushableEvents + 1
+            state_.eventQueueStorage:Upsert(event)
+            changed = true
         end
     end
-    scheduleEventQueuePersistence()
+    if changed then armAutoFlush(); scheduleEventQueuePersistence() end
 end
 
 local function rememberBoundMilestones(contextId)
@@ -943,7 +959,7 @@ local function enqueueTrack(eventType, payload, timestamp, createdLocalAt, sessi
     end
     local payloadCopy, payloadError = preparePayload(payload)
     if payloadError then return false, payloadError end
-    table.insert(state_.queue, {
+    local event = {
         eventId = randomId("ga_event"),
         contextId = state_.contextId or "",
         userId = state_.userId,
@@ -954,7 +970,14 @@ local function enqueueTrack(eventType, payload, timestamp, createdLocalAt, sessi
         timestamp = timestamp or isoNow(),
         createdLocalAt = createdLocalAt or localIsoNow(),
         payload = payloadCopy,
-    })
+    }
+    table.insert(state_.queue, event)
+    if event.contextId and event.contextId ~= "" then
+        state_.flushableEvents = state_.flushableEvents + 1
+        armAutoFlush()
+    end
+    if #state_.queue >= state_.maxBatchSize and state_.flushableEvents > 0 then state_.flushRequested = true end
+    state_.eventQueueStorage:Upsert(event)
     if eventType == "session_end" and not sessionEndSnapshot then state_.sessionHasEnd = true end
     scheduleEventQueuePersistence()
     return true, nil
@@ -1181,6 +1204,8 @@ function GameAlgo.Init(options)
     state_.scripts = {}
     state_.ddaControllers = {}
     state_.queue = {}
+    state_.flushableEvents = 0
+    state_.eventQueueStorage = nil
     state_.pendingTracks = {}
     state_.lifecycleFlushPending = false
     state_.customEventCounts = {}
@@ -1193,6 +1218,7 @@ function GameAlgo.Init(options)
     state_.consecutiveFlushFailures = 0
     state_.queuePersistenceActive = false
     state_.queuePersistenceDirty = false
+    state_.queuePersistenceSaved = false
     state_.queueEventsSincePersist = 0
     state_.lastQueuePersistAtMs = clockMs()
     state_.flushing = false
@@ -1202,7 +1228,7 @@ function GameAlgo.Init(options)
     state_.pendingFlushCallbacks = {}
     state_.pendingFlushAccepted = 0
     state_.pendingFlushRejected = 0
-    state_.nextAutoFlushAtMs = clockMs() + state_.flushIntervalMs
+    state_.nextAutoFlushAtMs = nil
     state_.retryFlushAtMs = nil
     state_.storageReady = false
     state_.initializationComplete = false
@@ -1623,7 +1649,7 @@ function GameAlgo.Track(eventType, payload)
     if state_.contextId and state_.contextId ~= ""
         and not state_.activeFlush
         and (#state_.queue >= state_.maxBatchSize
-            or (state_.flushIntervalMs > 0 and clockMs() >= state_.nextAutoFlushAtMs)) then
+            or (state_.nextAutoFlushAtMs and clockMs() >= state_.nextAutoFlushAtMs)) then
         GameAlgo.Flush(nil)
     end
     return true, nil
@@ -1722,14 +1748,13 @@ function GameAlgo.TrackSessionEnd(payload)
 end
 
 local function hasFlushableEvents()
-    for _, event in ipairs(state_.queue) do
-        if event.contextId and event.contextId ~= "" then return true end
-    end
-    return false
+    return state_.flushableEvents > 0
 end
 
 local function prependBatch(batch)
     for index = #batch, 1, -1 do table.insert(state_.queue, 1, batch[index]) end
+    state_.flushableEvents = state_.flushableEvents + #batch
+    armAutoFlush()
 end
 
 local function retryDelayMs(failures)
@@ -1843,6 +1868,8 @@ local function finishActiveFlush(lifecycleGeneration, sequence, error, result)
     state_.consecutiveFlushFailures = 0
     state_.pendingFlushAccepted = state_.pendingFlushAccepted + accepted
     state_.pendingFlushRejected = state_.pendingFlushRejected + #rejected
+    state_.eventQueueStorage:Remove(active.batch)
+    state_.queuePersistenceDirty = true
     persistEventQueue()
     flushAutomaticStorage()
     log("flush ok: accepted=" .. tostring(accepted) .. ", rejected=" .. tostring(#rejected)
@@ -1862,7 +1889,7 @@ local function finishActiveFlush(lifecycleGeneration, sequence, error, result)
     local totalRejected = state_.pendingFlushRejected
     state_.pendingFlushAccepted = 0
     state_.pendingFlushRejected = 0
-    state_.nextAutoFlushAtMs = clockMs() + state_.flushIntervalMs
+    state_.nextAutoFlushAtMs = nil
     if outstandingEventCount() == 0 then state_.queuePersistenceActive = false end
     completeFlushCallbacks(nil, {
         ok = true,
@@ -1892,7 +1919,8 @@ startFlush = function(force)
     state_.flushing = true
     state_.flushRequested = false
     state_.queuePersistenceActive = true
-    state_.nextAutoFlushAtMs = currentTime + state_.flushIntervalMs
+    state_.nextAutoFlushAtMs = nil
+    if state_.flushableEvents > 0 then armAutoFlush() end
     persistEventQueue()
     flushAutomaticStorage()
 
@@ -1935,16 +1963,22 @@ function GameAlgo.Update()
         flushAutomaticStorage()
     end
     recoverTimedOutFlush(currentTime)
-    if state_.activeFlush or not hasFlushableEvents() then return end
+    if state_.activeFlush then return end
     if state_.retryFlushAtMs then
-        if currentTime >= state_.retryFlushAtMs then startFlush(false) end
+        if currentTime < state_.retryFlushAtMs then return end
+    elseif not state_.flushRequested
+        and not (state_.nextAutoFlushAtMs and currentTime >= state_.nextAutoFlushAtMs) then
         return
     end
-    if state_.flushRequested
-        or #state_.queue >= state_.maxBatchSize
-        or (state_.flushIntervalMs > 0 and currentTime >= state_.nextAutoFlushAtMs) then
-        startFlush(false)
+    -- Inspect queue availability only after a send has actually been requested
+    -- or its timer/backoff is due. Empty queues have no automatic deadline.
+    if not hasFlushableEvents() then
+        state_.flushRequested = false
+        state_.retryFlushAtMs = nil
+        state_.nextAutoFlushAtMs = nil
+        return
     end
+    startFlush(false)
 end
 
 function GameAlgo.Flush(callback)

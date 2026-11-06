@@ -2,6 +2,58 @@ import XCTest
 @testable import GameAlgoSDK
 
 final class GameAlgoLifecycleTests: XCTestCase {
+    func testIncrementalRecordsAndCompactionRecoverWithoutRewritingSnapshots() throws {
+        let storage = storage()
+        let journal = GameAlgoLifecycleJournal(storage: storage, key: "incremental")
+        journal.activate(template("session"), startedAt: date(1000), hasEnd: false, foreground: true, pending: [])
+        let events = (0..<300).map { GameAlgoEvent(eventId: "row-\($0)", contextId: "ctx", userId: "user", sessionId: "session", eventType: "level_end") }
+        for event in events { journal.record(event) }
+        let snapshot = try XCTUnwrap(storage.loadValue(cacheKey: "incremental"))
+        journal.record(GameAlgoEvent(eventId: "tail", contextId: "ctx", userId: "user", sessionId: "session", eventType: "level_end"))
+        XCTAssertEqual(try storage.loadValue(cacheKey: "incremental"), snapshot)
+        let records = try storage.loadJournalRecords(cacheKey: "incremental")
+        let last = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(records.last!.utf8)) as? [String: Any])
+        XCTAssertEqual((last["put"] as? [Any])?.count, 1)
+        XCTAssertEqual(GameAlgoLifecycleJournal(storage: storage, key: "incremental").pending().count, 301)
+        journal.acknowledge(Array(events.prefix(100)))
+        XCTAssertEqual(GameAlgoLifecycleJournal(storage: storage, key: "incremental").pending().count, 201)
+    }
+
+    func testFailedIncrementalWritesRetryPendingMutationsAndOldCompactedRecordsAreSkipped() {
+        let storage = IncrementalMemory()
+        let journal = GameAlgoLifecycleJournal(storage: storage, key: "journal")
+        journal.activate(template("session"), startedAt: date(1000), hasEnd: false, foreground: true, pending: [])
+        storage.fail = true
+        for id in ["failed-a", "failed-b"] {
+            journal.record(GameAlgoEvent(eventId: id, contextId: "ctx", userId: "user", sessionId: "session", eventType: "level_end"))
+        }
+        XCTAssertFalse(journal.isDurable())
+        storage.fail = false
+        journal.record(GameAlgoEvent(eventId: "success", contextId: "ctx", userId: "user", sessionId: "session", eventType: "level_end"))
+        XCTAssertEqual(GameAlgoLifecycleJournal(storage: storage, key: "journal").pending().count, 3)
+        for id in 0..<260 {
+            journal.record(GameAlgoEvent(eventId: "retained-\(id)", contextId: "ctx", userId: "user", sessionId: "session", eventType: "level_end"))
+        }
+        XCTAssertEqual(GameAlgoLifecycleJournal(storage: storage, key: "journal").pending().count, 263)
+    }
+
+    private final class IncrementalMemory: GameAlgoJournalStorage, @unchecked Sendable {
+        var values: [String: String] = [:]
+        var records: [String] = []
+        var fail = false
+        func loadSnapshot(cacheKey: String) throws -> GameAlgoSnapshot? { nil }
+        func saveSnapshot(_ snapshot: GameAlgoSnapshot, cacheKey: String) throws {}
+        func removeSnapshot(cacheKey: String) throws {}
+        func loadValue(cacheKey: String) throws -> String? { values[cacheKey] }
+        func saveValue(_ value: String, cacheKey: String) throws { values[cacheKey] = value }
+        func removeValue(cacheKey: String) throws { values.removeValue(forKey: cacheKey) }
+        func loadJournalRecords(cacheKey: String) throws -> [String] { records }
+        func appendJournalRecord(_ value: String, sequence: UInt64, cacheKey: String) throws {
+            if fail { throw GameAlgoError.invalidResponse }
+            records.append(value)
+        }
+        func compactJournal(_ value: String, cacheKey: String) throws { values[cacheKey] = value }
+    }
     private func storage() -> GameAlgoFileCacheStorage {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("gamealgo-lifecycle-tests-\(UUID())")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
@@ -75,8 +127,8 @@ final class GameAlgoLifecycleTests: XCTestCase {
         await tracker.enableLifecycle(foreground: true)
         for second in 1001...1003 { tracker.lifecycleJournal.sample(foreground: true, at: date(Double(second))) }
         tracker.lifecycleJournal.observe(foreground: false, at: date(1003))
-        let raw = try XCTUnwrap(storage.loadValue(cacheKey: "queue:lifecycle"))
-        XCTAssertTrue(raw.contains("session_end"), "UIKit commits the end synchronously before an actor task runs")
+        let committed = GameAlgoLifecycleJournal(storage: storage, key: "queue:lifecycle")
+        XCTAssertEqual(committed.pending().last?.eventType, "session_end", "UIKit commits the end synchronously before an actor task runs")
         await tracker.flush()
         tracker.lifecycleJournal.observe(foreground: true, at: date(1010))
         for second in 1011...1013 { tracker.lifecycleJournal.sample(foreground: true, at: date(Double(second))) }

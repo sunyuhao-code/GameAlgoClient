@@ -27,52 +27,116 @@ export class GameAlgoBrowserStorage implements GameAlgoStorage {
   }
 
   async getItem(key: string): Promise<string | undefined> {
+    return this.readItem(key, false);
+  }
+
+  /** @internal Queue commits cannot treat an in-memory fallback as durable. */
+  async getItemDurably(key: string): Promise<string | undefined> {
+    return this.readItem(key, true);
+  }
+
+  private async readItem(key: string, durable: boolean): Promise<string | undefined> {
+    let readError: unknown;
+    try {
+      const overlay = this.localStorage?.getItem(`gamealgo:fallback:${key}`);
+      if (overlay === "deleted") return undefined;
+      if (overlay === "value") return this.localStorage?.getItem(key) ?? (durable ? undefined : this.memory.get(key));
+    } catch (error) {
+      if (durable) throw error;
+      readError = error;
+    }
     if (this.indexedDB) {
       try {
         const value = await this.readIndexedDB(key);
         if (typeof value === "string") return value;
-      } catch {
+      } catch (error) {
+        // Without an authoritative fallback marker, an unread primary may
+        // contain a newer queue than the legacy localStorage value.
+        if (durable) throw error;
+        readError = error;
         // Fall through to the compatibility stores.
       }
     }
     try {
       const value = this.localStorage?.getItem(key);
       if (value !== null && value !== undefined) return value;
-    } catch {
+    } catch (error) {
+      readError = error;
       // Storage can be disabled in private or embedded browsing contexts.
     }
-    return this.memory.get(key);
+    if (durable && readError) throw readError;
+    return durable ? undefined : this.memory.get(key);
   }
 
   async setItem(key: string, value: string): Promise<void> {
+    return this.writeItem(key, value, false);
+  }
+
+  /** @internal Retain dirty chunks when both persistent stores are unavailable. */
+  async setItemDurably(key: string, value: string): Promise<void> {
+    return this.writeItem(key, value, true);
+  }
+
+  private async writeItem(key: string, value: string, durable: boolean): Promise<void> {
+    if (durable) this.localStorage?.getItem(`gamealgo:fallback:${key}`);
     this.memory.set(key, value);
     if (this.indexedDB) {
       try {
         await this.writeIndexedDB(key, value);
+        try {
+          this.localStorage?.removeItem(`gamealgo:fallback:${key}`);
+          this.localStorage?.removeItem(key);
+        } catch (error) {
+          // A retained fallback marker can still hide this primary value.
+          if (durable) throw error;
+        }
         return;
       } catch {
         // Fall through to localStorage.
       }
     }
     try {
+      if (!this.localStorage) throw new Error("Persistent browser storage is unavailable");
       this.localStorage?.setItem(key, value);
-    } catch {
+      // A failed transaction can leave an older primary value behind. Record
+      // that the fallback is authoritative, including after a page restart.
+      this.localStorage?.setItem(`gamealgo:fallback:${key}`, "value");
+    } catch (error) {
+      if (durable) throw error;
       // Memory remains available for the current page lifecycle.
     }
   }
 
   async removeItem(key: string): Promise<void> {
+    return this.deleteItem(key, false);
+  }
+
+  /** @internal Do not clean up chunks before their directory removal commits. */
+  async removeItemDurably(key: string): Promise<void> {
+    return this.deleteItem(key, true);
+  }
+
+  private async deleteItem(key: string, durable: boolean): Promise<void> {
     this.memory.delete(key);
+    let primaryRemoved = false;
     if (this.indexedDB) {
       try {
         await this.deleteIndexedDB(key);
+        primaryRemoved = true;
       } catch {
         // Continue clearing fallback storage.
       }
     }
     try {
+      if (!this.localStorage) {
+        if (primaryRemoved) return;
+        throw new Error("Persistent browser storage is unavailable");
+      }
       this.localStorage?.removeItem(key);
-    } catch {
+      if (primaryRemoved) this.localStorage?.removeItem(`gamealgo:fallback:${key}`);
+      else this.localStorage?.setItem(`gamealgo:fallback:${key}`, "deleted");
+    } catch (error) {
+      if (durable) throw error;
       // Nothing else to clear.
     }
   }

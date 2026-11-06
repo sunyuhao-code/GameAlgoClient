@@ -32,7 +32,7 @@ test("Maker automatic storage uses normal Maker global lookup and hydrates befor
   assert.match(storage, /local function makerGlobal\(read\)\s+local ok, value = pcall\(read\)/s);
   assert.match(storage, /makerGlobal\(function\(\) return File end\)/);
   assert.match(storage, /makerGlobal\(function\(\) return fileSystem end\)/);
-  assert.match(storage, /fileApi\.fileSystem:FileExists\(FILE_NAME\)/);
+  assert.match(storage, /fileApi\.fileSystem:FileExists\(name\)/);
   assert.match(storage, /if not existsOk or not exists then return nil end/);
   assert.match(storage, /makerGlobal\(function\(\) return clientCloud end\)/);
   assert.match(storage, /cloud:Get\(CLOUD_KEY/);

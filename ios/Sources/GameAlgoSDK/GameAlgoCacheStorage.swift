@@ -9,6 +9,12 @@ public protocol GameAlgoCacheStorage: Sendable {
     func removeValue(cacheKey: String) throws
 }
 
+protocol GameAlgoJournalStorage: GameAlgoCacheStorage {
+    func loadJournalRecords(cacheKey: String) throws -> [String]
+    func appendJournalRecord(_ value: String, sequence: UInt64, cacheKey: String) throws
+    func compactJournal(_ value: String, cacheKey: String) throws
+}
+
 public extension GameAlgoCacheStorage {
     func loadValue(cacheKey: String) throws -> String? { nil }
     func saveValue(_ value: String, cacheKey: String) throws {}

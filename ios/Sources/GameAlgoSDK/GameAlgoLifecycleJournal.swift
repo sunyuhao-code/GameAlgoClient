@@ -16,11 +16,27 @@ final class GameAlgoLifecycleJournal: @unchecked Sendable {
         var durationMs: Double?
     }
     private struct State: Codable {
-        var version = 1
+        var version = 2
+        var journalSequence: UInt64?
         var events: [GameAlgoEvent] = []
         var session: Session?
         var configRequests: [String: String] = [:]
     }
+    private struct Operation: Codable {
+        let journalSequence: UInt64
+        let put: [GameAlgoEvent]
+        let remove: [String]
+        let session: Session?
+        let configRequests: [String: String]?
+    }
+    private var eventIndex: [String: Int] = [:]
+    private var dirtyEvents = Set<String>()
+    private var removedEvents = Set<String>()
+    private var configsDirty = false
+    private var journalReady = true
+    private var sequence: UInt64 = 0
+    private var operations = 0
+    private var formattedAt: Date?
     private let lock = NSLock()
     private let storage: (any GameAlgoCacheStorage)?
     private let key: String?
@@ -38,10 +54,33 @@ final class GameAlgoLifecycleJournal: @unchecked Sendable {
         self.storage = storage
         self.key = key
         self.queueLimit = max(1, queueLimit)
-        if let key, let raw = try? storage?.loadValue(cacheKey: key),
-           let data = raw.data(using: .utf8), let restored = try? JSONDecoder().decode(State.self, from: data) {
-            state = restored
+        do {
+            if let key, let raw = try storage?.loadValue(cacheKey: key) {
+                state = try JSONDecoder().decode(State.self, from: Data(raw.utf8))
+            }
+        } catch {
+            // Preserve unread durable state instead of replacing it on enqueue.
+            journalReady = false
         }
+        rebuildIndex()
+        if journalReady, let key, let journal = storage as? any GameAlgoJournalStorage {
+            do {
+                for raw in try journal.loadJournalRecords(cacheKey: key) {
+                    let operation = try JSONDecoder().decode(Operation.self, from: Data(raw.utf8))
+                    guard operation.journalSequence > (state.journalSequence ?? 0) else { continue }
+                    for event in operation.put { merge(event) }
+                    let removed = Set(operation.remove)
+                    state.events.removeAll { removed.contains($0.eventId ?? "") }
+                    rebuildIndex()
+                    if let session = operation.session { state.session = session }
+                    if let configs = operation.configRequests { state.configRequests = configs }
+                    state.journalSequence = operation.journalSequence
+                    operations += 1
+                }
+            } catch { journalReady = false }
+        }
+        sequence = state.journalSequence ?? 0
+        dirtyEvents.removeAll(); removedEvents.removeAll()
     }
 
     func activate(_ template: GameAlgoEvent, startedAt: Date, hasEnd: Bool, foreground initialForeground: Bool?, pending: [GameAlgoEvent]) {
@@ -139,14 +178,16 @@ final class GameAlgoLifecycleJournal: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         for index in state.events.indices where state.events[index].sessionId == sessionId && state.events[index].contextId.isEmpty {
             state.events[index].contextId = contextId
+            dirtyEvents.insert(state.events[index].eventId ?? "")
         }
-        state.configRequests.removeValue(forKey: sessionId)
+        configsDirty = state.configRequests.removeValue(forKey: sessionId) != nil || configsDirty
         persist()
     }
 
     func retainConfig(sessionId: String, body: Data) {
         lock.lock(); defer { lock.unlock() }
         state.configRequests[sessionId] = String(decoding: body, as: UTF8.self)
+        configsDirty = true
         persist()
     }
     func unboundConfigs() -> [String: Data] {
@@ -173,11 +214,23 @@ final class GameAlgoLifecycleJournal: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         let ids = Set(events.compactMap(\.eventId))
         state.events.removeAll { ids.contains($0.eventId ?? "") }
+        removedEvents.formUnion(ids); dirtyEvents.subtract(ids)
+        rebuildIndex()
         persist()
     }
+    private func rebuildIndex() {
+        eventIndex = Dictionary(state.events.enumerated().map { ($0.element.eventId ?? "", $0.offset) }, uniquingKeysWith: { _, last in last })
+    }
     private func merge(_ event: GameAlgoEvent) {
-        if let index = state.events.firstIndex(where: { $0.eventId == event.eventId }) { state.events[index] = event }
-        else { state.events.append(event) }
+        let id = event.eventId ?? ""
+        if let index = eventIndex[id] {
+            if state.events[index] == event { return }
+            state.events[index] = event
+        } else {
+            eventIndex[id] = state.events.count
+            state.events.append(event)
+        }
+        dirtyEvents.insert(id); removedEvents.remove(id)
     }
     private func end(_ session: Session, reason: String, at date: Date, recovered: Bool) -> GameAlgoEvent {
         var event = session.event
@@ -189,19 +242,45 @@ final class GameAlgoLifecycleJournal: @unchecked Sendable {
         return event
     }
     private func persist() {
-        if state.events.count > queueLimit { state.events.removeFirst(state.events.count - queueLimit) }
-        let sessions = Set(state.events.map(\.sessionId)).union(state.session.map { [$0.event.sessionId] } ?? [])
-        state.configRequests = state.configRequests.filter { sessions.contains($0.key) }
+        if state.events.count > queueLimit {
+            let removed = state.events.prefix(state.events.count - queueLimit).compactMap(\.eventId)
+            removedEvents.formUnion(removed); dirtyEvents.subtract(removed)
+            state.events.removeFirst(state.events.count - queueLimit)
+            rebuildIndex()
+        }
+        if !removedEvents.isEmpty {
+            let sessions = Set(state.events.map(\.sessionId)).union(state.session.map { [$0.event.sessionId] } ?? [])
+            let retained = state.configRequests.filter { sessions.contains($0.key) }
+            configsDirty = retained != state.configRequests || configsDirty
+            state.configRequests = retained
+        }
         durable = false
-        guard let storage, let key else { return }
+        guard let storage, let key, journalReady else { return }
         do {
-            if let lastSeen = state.session?.lastSeen {
+            if let lastSeen = state.session?.lastSeen, formattedAt != lastSeen {
                 state.session?.timestamp = GameAlgoEventBatchUploader.isoTimestamp(lastSeen)
                 state.session?.createdLocalAt = GameAlgoEventBatchUploader.localTimestamp(lastSeen)
+                formattedAt = lastSeen
             }
-            let data = try JSONEncoder().encode(state)
-            try storage.saveValue(String(decoding: data, as: UTF8.self), cacheKey: key)
+            if let journal = storage as? any GameAlgoJournalStorage {
+                sequence += 1
+                state.journalSequence = sequence
+                let changed = dirtyEvents.compactMap { eventIndex[$0] }.sorted().map { state.events[$0] }
+                let operation = Operation(journalSequence: sequence, put: changed, remove: Array(removedEvents),
+                                          session: state.session, configRequests: configsDirty ? state.configRequests : nil)
+                try journal.appendJournalRecord(String(decoding: JSONEncoder().encode(operation), as: UTF8.self), sequence: sequence, cacheKey: key)
+                operations += 1
+                if operations >= 256 {
+                    operations = 0
+                    do {
+                        try journal.compactJournal(String(decoding: JSONEncoder().encode(state), as: UTF8.self), cacheKey: key)
+                    } catch { /* The incremental record is already committed. */ }
+                }
+            } else {
+                try storage.saveValue(String(decoding: JSONEncoder().encode(state), as: UTF8.self), cacheKey: key)
+            }
+            dirtyEvents.removeAll(); removedEvents.removeAll(); configsDirty = false
             durable = true
-        } catch { /* Retain all in-memory events for the next persistence/upload attempt. */ }
+        } catch { /* Retry all uncommitted changes on the next persistence attempt. */ }
     }
 }

@@ -12,6 +12,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 final class GameAlgoLifecycleTest {
     static void runAll() throws Exception {
+        incrementalStorageKeepsOnlyChangedEventsAndRecoversCompaction();
+        failedIncrementalWritesRetryEveryPendingMutation();
         recoveryUsesLastObservationAndKeepsEventIds();
         backgroundPersistsBeforeTransportAndKeepsSession();
         historicalConfigKeepsItsOriginalSession();
@@ -19,6 +21,66 @@ final class GameAlgoLifecycleTest {
         processVisibilityIncludesAdvertisingActivities();
         sampledDurationDoesNotDependOnResumeCallbacks();
         foregroundClockOutlivesSessions();
+    }
+    private static void incrementalStorageKeepsOnlyChangedEventsAndRecoversCompaction() throws Exception {
+        java.io.File directory = java.nio.file.Files.createTempDirectory("gamealgo-incremental-test").toFile();
+        try {
+            GameAlgoFileCacheStorage storage = new GameAlgoFileCacheStorage(directory);
+            GameAlgoLifecycleJournal journal = new GameAlgoLifecycleJournal(storage, "journal", true, 1000);
+            journal.activate(template("session", "ctx", 1000), 1000, false, Collections.emptyList());
+            List<GameAlgoEvent> events = new ArrayList<>();
+            for (int i = 0; i < 300; i++) {
+                GameAlgoEvent event = new GameAlgoEvent("ctx", "user", "session", "level_end").eventId("incremental-" + i);
+                events.add(event); journal.record(event);
+            }
+            String base = storage.getItem("journal");
+            check(base != null, "a bounded log is periodically compacted");
+            journal.record(new GameAlgoEvent("ctx", "user", "session", "level_end").eventId("tail"));
+            check(base.equals(storage.getItem("journal")), "ordinary tracking must not rewrite the full snapshot");
+            List<String> operations = storage.readJournalRecords("journal");
+            Map<String,Object> last = GameAlgoJson.asObject(GameAlgoJson.parse(operations.get(operations.size() - 1)), "operation");
+            check(((List<?>)last.get("put")).size() == 1, "one event writes one incremental row");
+            check(new GameAlgoLifecycleJournal(storage, "journal", true, 1000).pending().size() == 301, "cold start replays snapshot plus newer records");
+            journal.acknowledge(events.subList(0, 100));
+            check(new GameAlgoLifecycleJournal(storage, "journal", true, 1000).pending().size() == 201, "ACKs are durable without replaying old rows");
+        } finally { delete(directory); }
+    }
+    private static void delete(java.io.File directory) {
+        java.io.File[] children = directory.listFiles();
+        if (children != null) for (java.io.File child : children) delete(child);
+        directory.delete();
+    }
+    private static void failedIncrementalWritesRetryEveryPendingMutation() {
+        JournalMemory storage = new JournalMemory();
+        GameAlgoLifecycleJournal journal = new GameAlgoLifecycleJournal(storage, "journal", true, 1000);
+        journal.activate(template("session", "ctx", 1000), 1000, false, Collections.emptyList());
+        storage.fail = true;
+        journal.record(new GameAlgoEvent("ctx", "user", "session", "level_end").eventId("failed-a"));
+        journal.record(new GameAlgoEvent("ctx", "user", "session", "level_end").eventId("failed-b"));
+        check(!journal.isDurable(), "failed appends cannot claim durability");
+        storage.fail = false;
+        journal.record(new GameAlgoEvent("ctx", "user", "session", "level_end").eventId("success"));
+        check(new GameAlgoLifecycleJournal(storage, "journal", true, 1000).pending().size() == 3, "retry includes all earlier uncommitted changes");
+        storage.retainCompacted = true;
+        for (int i = 0; i < 260; i++) journal.record(new GameAlgoEvent("ctx", "user", "session", "level_end").eventId("retained-" + i));
+        check(new GameAlgoLifecycleJournal(storage, "journal", true, 1000).pending().size() == 263, "compaction interrupted before cleanup does not duplicate records");
+    }
+    private static final class JournalMemory implements GameAlgoJournalStorage {
+        final Map<String,String> values = new LinkedHashMap<>();
+        final List<String> operations = new ArrayList<>();
+        boolean fail, retainCompacted;
+        public String getItem(String key) { return values.get(key); }
+        public void setItem(String key, String value) { values.put(key, value); }
+        public void removeItem(String key) { values.remove(key); }
+        public List<String> readJournalRecords(String key) { return new ArrayList<>(operations); }
+        public void appendJournalRecord(String key, long sequence, String value) throws GameAlgoException {
+            if (fail) throw new GameAlgoException("simulated journal failure");
+            operations.add(value);
+        }
+        public void compactJournal(String key, String value) {
+            values.put(key, value);
+            if (!retainCompacted) operations.clear();
+        }
     }
     private static void check(boolean value, String message) { if (!value) throw new AssertionError(message); }
     private static GameAlgoEvent template(String session, String context, long start) {

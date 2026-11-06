@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
-use std::collections::{HashSet, VecDeque};
+use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error as StdError;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -28,6 +28,7 @@ struct Config {
     max_batch: usize,
     queue_limit: usize,
     platform: String,
+    journal: Arc<Mutex<EventJournal>>,
 }
 
 struct ActiveJob {
@@ -77,6 +78,8 @@ struct Session {
 #[derive(Serialize, Deserialize)]
 struct StoredState {
     version: u32,
+    #[serde(default)]
+    sequence: u64,
     events: Vec<Value>,
     session: Option<Session>,
 }
@@ -124,7 +127,7 @@ impl EventBackend {
             if !path.is_absolute() {
                 return Err("native_event_path_not_absolute".to_string());
             }
-            let (queue, session) = load_state(&path)?;
+            let (queue, session, sequence, operations) = load_journal_state(&path)?;
             if queue.len() > queue_limit as usize {
                 return Err("native_event_queue_exceeds_limit".to_string());
             }
@@ -143,6 +146,7 @@ impl EventBackend {
                 max_batch: max_batch as usize,
                 queue_limit: queue_limit as usize,
                 platform: platform.to_string(),
+                journal: Arc::new(Mutex::new(EventJournal::new(&queue, sequence, operations))),
             });
             inner.queue = queue;
             inner.session = session;
@@ -159,7 +163,24 @@ impl EventBackend {
     }
 
     pub(crate) fn enqueue(&self, event_json: &str) -> bool {
-        let result = (|| {
+        self.record(self.enqueue_impl(event_json).map(|_| ()))
+    }
+
+    pub(crate) fn enqueue_delta(&self, event_json: &str) -> String {
+        match self.enqueue_impl(event_json) {
+            Ok(delta) => {
+                self.record(Ok(()));
+                delta.to_string()
+            }
+            Err(error) => {
+                self.record(Err(error.clone()));
+                json!({"ok":false,"error":error}).to_string()
+            }
+        }
+    }
+
+    fn enqueue_impl(&self, event_json: &str) -> Result<Value, String> {
+        (|| {
             let event: Value = serde_json::from_str(event_json)
                 .map_err(|_| "invalid_native_event_json".to_string())?;
             let event_id = valid_event_id(&event)?;
@@ -168,12 +189,43 @@ impl EventBackend {
                 .config
                 .clone()
                 .ok_or_else(|| "native_event_backend_unconfigured".to_string())?;
-            if inner
-                .queue
-                .iter()
-                .any(|candidate| event_id_of(candidate) == Some(&event_id))
+            let previous_revision = config
+                .journal
+                .lock()
+                .map_err(|_| "native_event_lock_poisoned")?
+                .sequence;
+            if config
+                .journal
+                .lock()
+                .map_err(|_| "native_event_lock_poisoned")?
+                .committed
+                .contains_key(&event_id)
             {
-                return Ok(());
+                return Ok(
+                    json!({"ok":true,"duplicate":true,"previous":previous_revision,"revision":previous_revision,"removed":[]}),
+                );
+            }
+            if inner.queue.len() < config.queue_limit {
+                let mut session = inner.session.clone();
+                if event["eventType"] == "session_end" {
+                    if let Some(session) = session.as_mut() {
+                        if event.get("sessionId") == session.event.get("sessionId") {
+                            session.open = false;
+                            session.has_end = true;
+                        }
+                    }
+                }
+                persist_new_event(&config, &inner.queue, &event, session.as_ref())?;
+                inner.queue.push(event);
+                inner.session = session;
+                let revision = config
+                    .journal
+                    .lock()
+                    .map_err(|_| "native_event_lock_poisoned")?
+                    .sequence;
+                return Ok(
+                    json!({"ok":true,"duplicate":false,"previous":previous_revision,"revision":revision,"removed":[]}),
+                );
             }
             let mut candidate = inner.queue.clone();
             candidate.push(event.clone());
@@ -200,12 +252,30 @@ impl EventBackend {
                     }
                 }
             }
-            persist_state(&config.path, &candidate, session.as_ref())?;
+            let removed: Vec<String> = if candidate.len() <= inner.queue.len() {
+                let retained: HashSet<_> = candidate.iter().filter_map(event_id_of).collect();
+                inner
+                    .queue
+                    .iter()
+                    .filter_map(event_id_of)
+                    .filter(|id| !retained.contains(id))
+                    .map(str::to_owned)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            persist_incremental(&config, &candidate, session.as_ref())?;
             inner.queue = candidate;
             inner.session = session;
-            Ok(())
-        })();
-        self.record(result)
+            let revision = config
+                .journal
+                .lock()
+                .map_err(|_| "native_event_lock_poisoned")?
+                .sequence;
+            Ok(
+                json!({"ok":true,"duplicate":false,"previous":previous_revision,"revision":revision,"removed":removed}),
+            )
+        })()
     }
 
     pub(crate) fn import_events(&self, events_json: &str) -> bool {
@@ -234,7 +304,7 @@ impl EventBackend {
             if candidate.len() > config.queue_limit {
                 candidate.drain(0..candidate.len() - config.queue_limit);
             }
-            persist_state(&config.path, &candidate, inner.session.as_ref())?;
+            persist_incremental(&config, &candidate, inner.session.as_ref())?;
             inner.queue = candidate;
             Ok(())
         })();
@@ -275,7 +345,7 @@ impl EventBackend {
                 }
             }
             if changed {
-                persist_state(&config.path, &candidate, session.as_ref())?;
+                persist_incremental(&config, &candidate, session.as_ref())?;
                 inner.queue = candidate;
                 inner.session = session;
             }
@@ -292,6 +362,10 @@ impl EventBackend {
                 .clone()
                 .ok_or_else(|| "native_event_backend_unconfigured".to_string())?;
             remove_queue(&config.path)?;
+            *config
+                .journal
+                .lock()
+                .map_err(|_| "native_event_lock_poisoned")? = EventJournal::new(&[], 0, 0);
             inner.generation = inner.generation.wrapping_add(1);
             inner.queue.clear();
             inner.session = None;
@@ -367,7 +441,7 @@ impl EventBackend {
                     .unwrap_or(inner.foreground),
                 foreground_start_ms: inner.foreground_time_ms,
             };
-            persist_state(&config.path, &candidate, Some(&session))?;
+            persist_incremental(&config, &candidate, Some(&session))?;
             inner.queue = candidate;
             inner.session = Some(session);
             inner.session_tracking = true;
@@ -437,7 +511,7 @@ impl EventBackend {
                 session.open = false;
                 session.has_end = true;
             }
-            persist_state(&config.path, &candidate, Some(&session))?;
+            persist_incremental(&config, &candidate, Some(&session))?;
             inner.queue = candidate;
             inner.session = Some(session);
             inner.foreground = foreground;
@@ -536,6 +610,17 @@ impl EventBackend {
             .lock()
             .map(|inner| inner.foreground_time_ms.min(i64::MAX as u64) as i64)
             .unwrap_or(0)
+    }
+
+    pub(crate) fn snapshot_state_json(&self) -> String {
+        let Ok(inner) = self.inner.lock() else {
+            return String::new();
+        };
+        let revision = inner
+            .config
+            .as_ref()
+            .and_then(|config| config.journal.lock().ok().map(|journal| journal.sequence));
+        json!({"revision":revision,"events":inner.queue}).to_string()
     }
 
     pub(crate) fn snapshot_json(&self) -> String {
@@ -809,7 +894,7 @@ fn run_flush_with_post(
             })
             .cloned()
             .collect();
-        if let Err(error) = persist_state(&config.path, &candidate, inner.session.as_ref()) {
+        if let Err(error) = persist_incremental(&config, &candidate, inner.session.as_ref()) {
             inner.active_event_ids.clear();
             accepted_ids.extend(batch_ids_in_order);
             finish(
@@ -1079,44 +1164,242 @@ fn push_session_end(
     Ok(())
 }
 
-fn load_state(path: &Path) -> Result<(Vec<Value>, Option<Session>), String> {
-    if !path.exists() {
-        return Ok((Vec::new(), None));
+#[derive(Serialize, Deserialize)]
+struct JournalOperation {
+    sequence: u64,
+    put: Vec<Value>,
+    remove: Vec<String>,
+    session: Option<Session>,
+}
+
+struct EventJournal {
+    sequence: u64,
+    operations: usize,
+    committed: HashMap<String, String>,
+}
+
+impl EventJournal {
+    fn new(queue: &[Value], sequence: u64, operations: usize) -> Self {
+        Self {
+            sequence,
+            operations,
+            committed: queue
+                .iter()
+                .filter_map(|event| {
+                    Some((
+                        event_id_of(event)?.to_owned(),
+                        event["contextId"].as_str().unwrap_or_default().to_owned(),
+                    ))
+                })
+                .collect(),
+        }
     }
-    let bytes = fs::read(path).map_err(|error| format!("native_event_read_failed:{error}"))?;
-    let value: Value =
-        serde_json::from_slice(&bytes).map_err(|_| "native_event_storage_invalid".to_string())?;
-    // Accept the original array-only queue without losing any event IDs.
-    let (queue, session): (Vec<Value>, Option<Session>) = if value.is_array() {
-        (
-            serde_json::from_value(value)
-                .map_err(|_| "native_event_storage_invalid".to_string())?,
-            None,
-        )
-    } else {
-        let state: StoredState = serde_json::from_value(value)
+}
+
+fn journal_directory(path: &Path) -> PathBuf {
+    path.with_extension("journal")
+}
+
+fn load_journal_state(path: &Path) -> Result<(Vec<Value>, Option<Session>, u64, usize), String> {
+    let (mut queue, mut session, mut sequence) = if path.exists() {
+        let bytes = fs::read(path).map_err(|error| format!("native_event_read_failed:{error}"))?;
+        let value: Value = serde_json::from_slice(&bytes)
             .map_err(|_| "native_event_storage_invalid".to_string())?;
-        if state.version != 2 {
-            return Err("native_event_storage_version_invalid".to_string());
-        }
-        if let Some(session) = state.session.as_ref() {
-            valid_event_id(&session.event)?;
-            if session.started_at_ms == 0 || session.event["eventType"] != "session_end" {
-                return Err("invalid_native_session".to_string());
+        if value.is_array() {
+            (
+                serde_json::from_value(value).map_err(|_| "native_event_storage_invalid")?,
+                None,
+                0,
+            )
+        } else {
+            let state: StoredState =
+                serde_json::from_value(value).map_err(|_| "native_event_storage_invalid")?;
+            if !matches!(state.version, 2 | 3) {
+                return Err("native_event_storage_version_invalid".into());
             }
+            (state.events, state.session, state.sequence)
         }
-        (state.events, state.session)
+    } else {
+        (Vec::new(), None, 0)
     };
+    let directory = journal_directory(path);
+    let mut operations = 0;
+    if directory.exists() {
+        let mut files = fs::read_dir(&directory)
+            .map_err(|error| format!("native_event_read_failed:{error}"))?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|file| {
+                file.extension()
+                    .is_some_and(|extension| extension == "json")
+            })
+            .collect::<Vec<_>>();
+        files.sort();
+        for file in files {
+            let operation: JournalOperation = serde_json::from_slice(
+                &fs::read(file).map_err(|error| format!("native_event_read_failed:{error}"))?,
+            )
+            .map_err(|_| "native_event_storage_invalid")?;
+            if operation.sequence <= sequence {
+                continue;
+            }
+            let removed: HashSet<_> = operation.remove.iter().map(String::as_str).collect();
+            queue.retain(|event| !event_id_of(event).is_some_and(|id| removed.contains(id)));
+            for event in operation.put {
+                let id = valid_event_id(&event)?;
+                if let Some(index) = queue.iter().position(|old| event_id_of(old) == Some(&id)) {
+                    queue[index] = event;
+                } else {
+                    queue.push(event);
+                }
+            }
+            session = operation.session;
+            sequence = operation.sequence;
+            operations += 1;
+        }
+    }
     for event in &queue {
         valid_event_id(event)?;
     }
-    Ok((queue, session))
+    if let Some(session) = session.as_ref() {
+        valid_event_id(&session.event)?;
+        if session.started_at_ms == 0 || session.event["eventType"] != "session_end" {
+            return Err("invalid_native_session".into());
+        }
+    }
+    Ok((queue, session, sequence, operations))
+}
+
+fn load_state(path: &Path) -> Result<(Vec<Value>, Option<Session>), String> {
+    load_journal_state(path).map(|(events, session, _, _)| (events, session))
+}
+
+fn persist_incremental(
+    config: &Config,
+    queue: &[Value],
+    session: Option<&Session>,
+) -> Result<(), String> {
+    if config.path.exists() && !config.path.is_file() {
+        return Err("native_event_path_invalid".into());
+    }
+    let mut journal = config
+        .journal
+        .lock()
+        .map_err(|_| "native_event_lock_poisoned")?;
+    let mut current = HashMap::with_capacity(queue.len());
+    let mut put = Vec::new();
+    for event in queue {
+        let id = valid_event_id(event)?;
+        let context = event["contextId"].as_str().unwrap_or_default();
+        if journal.committed.get(&id).map(String::as_str) != Some(context) {
+            put.push(event.clone());
+        }
+        current.insert(id, context.to_owned());
+    }
+    let remove = journal
+        .committed
+        .keys()
+        .filter(|id| !current.contains_key(*id))
+        .cloned()
+        .collect();
+    append_operation(config, &mut journal, put, remove, session)?;
+    journal.committed = current;
+    compact_if_needed(config, &mut journal, queue, session);
+    Ok(())
+}
+
+fn append_operation(
+    config: &Config,
+    journal: &mut EventJournal,
+    put: Vec<Value>,
+    remove: Vec<String>,
+    session: Option<&Session>,
+) -> Result<(), String> {
+    journal.sequence += 1;
+    let operation = JournalOperation {
+        sequence: journal.sequence,
+        put,
+        remove,
+        session: session.cloned(),
+    };
+    let bytes = serde_json::to_vec(&operation).map_err(|_| "native_event_encoding_failed")?;
+    commit_bytes(
+        &journal_directory(&config.path).join(format!("{:020}.json", journal.sequence)),
+        &bytes,
+    )?;
+    journal.operations += 1;
+    Ok(())
+}
+
+fn persist_new_event(
+    config: &Config,
+    queue: &[Value],
+    event: &Value,
+    session: Option<&Session>,
+) -> Result<(), String> {
+    if config.path.exists() && !config.path.is_file() {
+        return Err("native_event_path_invalid".into());
+    }
+    let mut journal = config
+        .journal
+        .lock()
+        .map_err(|_| "native_event_lock_poisoned")?;
+    append_operation(
+        config,
+        &mut journal,
+        vec![event.clone()],
+        Vec::new(),
+        session,
+    )?;
+    journal.committed.insert(
+        valid_event_id(event)?,
+        event["contextId"].as_str().unwrap_or_default().to_owned(),
+    );
+    if journal.operations >= 256 {
+        let mut snapshot = queue.to_vec();
+        snapshot.push(event.clone());
+        compact_if_needed(config, &mut journal, &snapshot, session);
+    }
+    Ok(())
+}
+
+fn compact_if_needed(
+    config: &Config,
+    journal: &mut EventJournal,
+    queue: &[Value],
+    session: Option<&Session>,
+) {
+    if journal.operations < 256 {
+        return;
+    }
+    journal.operations = 0;
+    let snapshot =
+        json!({"version":3,"sequence":journal.sequence,"events":queue,"session":session});
+    if let Ok(bytes) = serde_json::to_vec(&snapshot) {
+        if commit_bytes(&config.path, &bytes).is_ok() {
+            let directory = journal_directory(&config.path);
+            let retired = directory.with_extension(format!("retired-{}", journal.sequence));
+            if fs::rename(&directory, &retired).is_ok() {
+                thread::spawn(move || {
+                    let _ = fs::remove_dir_all(retired);
+                });
+            }
+        }
+    }
 }
 
 fn persist_state(path: &Path, queue: &[Value], session: Option<&Session>) -> Result<(), String> {
     if queue.is_empty() && session.is_none() {
         return remove_queue(path);
     }
+    let bytes = serde_json::to_vec(&json!({"version":2,"events":queue,"session":session}))
+        .map_err(|_| "native_event_encoding_failed")?;
+    commit_bytes(path, &bytes)?;
+    let _ = fs::remove_dir_all(journal_directory(path));
+    Ok(())
+}
+
+fn commit_bytes(path: &Path, encoded: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| "native_event_path_invalid".to_string())?;
@@ -1138,20 +1421,13 @@ fn persist_state(path: &Path, queue: &[Value], session: Option<&Session>) -> Res
             .unwrap_or("events"),
         nonce
     ));
-    let encoded = if session.is_some() {
-        serde_json::to_vec(&json!({"version": 2, "events": queue, "session": session}))
-    } else {
-        // Keep the original wire format for backends without session tracking.
-        serde_json::to_vec(queue)
-    }
-    .map_err(|_| "native_event_encoding_failed".to_string())?;
     let write_result = (|| {
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&temporary)
             .map_err(|error| format!("native_event_temp_open_failed:{error}"))?;
-        file.write_all(&encoded)
+        file.write_all(encoded)
             .map_err(|error| format!("native_event_write_failed:{error}"))?;
         file.sync_all()
             .map_err(|error| format!("native_event_sync_failed:{error}"))?;
@@ -1167,10 +1443,35 @@ fn persist_state(path: &Path, queue: &[Value], session: Option<&Session>) -> Res
 }
 
 fn remove_queue(path: &Path) -> Result<(), String> {
+    let directory = journal_directory(path);
+    if directory.exists() {
+        fs::remove_dir_all(&directory)
+            .map_err(|error| format!("native_event_remove_failed:{error}"))?;
+    }
     if path.exists() {
         fs::remove_file(path).map_err(|error| format!("native_event_remove_failed:{error}"))?;
         if let Some(parent) = path.parent() {
             sync_parent(parent);
+        }
+    }
+    if let (Some(parent), Some(stem)) = (
+        path.parent(),
+        path.file_stem().and_then(|value| value.to_str()),
+    ) {
+        if let Ok(entries) = fs::read_dir(parent) {
+            for entry in entries.filter_map(Result::ok) {
+                if entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(&format!("{stem}.retired-"))
+                {
+                    if let Err(error) = fs::remove_dir_all(entry.path()) {
+                        if error.kind() != std::io::ErrorKind::NotFound {
+                            return Err(format!("native_event_remove_failed:{error}"));
+                        }
+                    }
+                }
+            }
         }
     }
     Ok(())
@@ -1203,7 +1504,7 @@ mod platform_support {
 
     #[cfg(target_os = "ios")]
     fn begin_ios_background_task() -> Option<usize> {
-        use std::ffi::{CString, c_char, c_void};
+        use std::ffi::{c_char, c_void, CString};
         #[link(name = "objc")]
         unsafe extern "C" {
             fn objc_getClass(name: *const c_char) -> *mut c_void;
@@ -1242,7 +1543,7 @@ mod platform_support {
 
     #[cfg(target_os = "ios")]
     fn end_ios_background_task(identifier: usize) {
-        use std::ffi::{CString, c_char, c_void};
+        use std::ffi::{c_char, c_void, CString};
         #[link(name = "objc")]
         unsafe extern "C" {
             fn objc_getClass(name: *const c_char) -> *mut c_void;
@@ -1280,7 +1581,7 @@ mod platform_support {
 
     #[cfg(target_os = "android")]
     pub(super) fn log(message: &str) {
-        use std::ffi::{CString, c_char};
+        use std::ffi::{c_char, CString};
         #[link(name = "log")]
         unsafe extern "C" {
             fn __android_log_write(priority: i32, tag: *const c_char, text: *const c_char) -> i32;
@@ -1294,7 +1595,7 @@ mod platform_support {
 
     #[cfg(target_os = "ios")]
     pub(super) fn log(message: &str) {
-        use std::ffi::{CString, c_char, c_void};
+        use std::ffi::{c_char, c_void, CString};
         #[link(name = "objc")]
         unsafe extern "C" {
             fn objc_getClass(name: *const c_char) -> *mut c_void;
@@ -1404,6 +1705,112 @@ mod tests {
             deadline: Instant::now() + Duration::from_secs(5),
         });
         (id, generation)
+    }
+
+    #[test]
+    fn incremental_records_only_encode_changes_and_compaction_skips_old_records() {
+        let path = temporary_path("incremental");
+        let backend = configured(&path);
+        let initial = (0..250)
+            .map(|id| event(&format!("event-{id}"), "session", "ctx"))
+            .collect::<Vec<_>>();
+        assert!(backend.import_events(&serde_json::to_string(&initial).unwrap()));
+        let before = fs::read(&path).ok();
+        let delta: Value = serde_json::from_str(
+            &backend.enqueue_delta(&event("tail", "session", "ctx").to_string()),
+        )
+        .unwrap();
+        assert_eq!(delta["ok"], true);
+        assert_eq!(delta["previous"], 1);
+        assert_eq!(delta["revision"], 2);
+        assert_eq!(fs::read(&path).ok(), before);
+        let record: JournalOperation = serde_json::from_slice(
+            &fs::read(journal_directory(&path).join("00000000000000000002.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(record.put.len(), 1);
+        assert!(record.remove.is_empty());
+        assert_eq!(configured(&path).pending_count(), 251);
+        for id in 0..260 {
+            assert!(backend.enqueue(&event(&format!("later-{id}"), "session", "ctx").to_string()));
+        }
+        assert!(path.exists());
+        let stale = JournalOperation {
+            sequence: 1,
+            put: vec![event("must-not-reappear", "session", "ctx")],
+            remove: vec![],
+            session: None,
+        };
+        fs::write(
+            journal_directory(&path).join("00000000000000000001.json"),
+            serde_json::to_vec(&stale).unwrap(),
+        )
+        .unwrap();
+        let restored = configured(&path);
+        assert_eq!(restored.pending_count(), 511);
+        assert!(!restored.snapshot_json().contains("must-not-reappear"));
+        fs::write(
+            journal_directory(&path).join(".interrupted.tmp"),
+            "truncated",
+        )
+        .unwrap();
+        assert_eq!(configured(&path).pending_count(), 511);
+        assert!(backend.clear());
+    }
+
+    #[test]
+    fn enqueue_deltas_detect_changes_outside_the_script_mirror() {
+        let path = temporary_path("delta");
+        let backend = configured(&path);
+        let first: Value = serde_json::from_str(
+            &backend.enqueue_delta(&event("first", "session", "").to_string()),
+        )
+        .unwrap();
+        assert_eq!(first["previous"], 0);
+        assert_eq!(first["revision"], 1);
+        assert!(backend.bind_context("session", "ctx"));
+        let next: Value = serde_json::from_str(
+            &backend.enqueue_delta(&event("second", "session", "ctx").to_string()),
+        )
+        .unwrap();
+        assert_eq!(next["previous"], 2);
+        let state: Value = serde_json::from_str(&backend.snapshot_state_json()).unwrap();
+        assert_eq!(state["revision"], 3);
+        assert_eq!(state["events"].as_array().unwrap().len(), 2);
+        assert_eq!(state["events"][0]["contextId"], "ctx");
+        assert!(backend.clear());
+    }
+
+    fn durable_bytes(path: &Path) -> Vec<u8> {
+        let mut bytes = fs::read(path).unwrap_or_default();
+        let directory = journal_directory(path);
+        if let Ok(entries) = fs::read_dir(directory) {
+            let mut paths = entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .collect::<Vec<_>>();
+            paths.sort();
+            for path in paths {
+                bytes.extend(fs::read(path).unwrap());
+            }
+        }
+        bytes
+    }
+
+    fn block_storage(path: &Path) -> Option<Vec<u8>> {
+        let saved = fs::read(path).ok();
+        if saved.is_some() {
+            fs::remove_file(path).unwrap();
+        }
+        fs::create_dir(path).unwrap();
+        saved
+    }
+
+    fn restore_storage(path: &Path, saved: Option<Vec<u8>>) {
+        fs::remove_dir(path).unwrap();
+        if let Some(bytes) = saved {
+            fs::write(path, bytes).unwrap();
+        }
     }
 
     #[test]
@@ -1540,32 +1947,25 @@ mod tests {
         let backend = configured(&path);
         assert!(backend.enqueue(&event("first", "session", "context").to_string()));
         assert!(backend.enqueue(&event("second", "session", "context").to_string()));
-        let saved = path.with_extension("saved");
-        fs::rename(&path, &saved).unwrap();
-        fs::create_dir(&path).unwrap();
+        let saved = block_storage(&path);
         let result = test_flush(&backend, |_, batch, _| {
             accepted_batch_count(&json!({"ok": true, "accepted": 1}), batch.len())
         });
         assert_eq!(result["ok"], false);
         assert_eq!(result["accepted"], 1);
         assert_eq!(result["remaining"], 2);
-        assert!(
-            result["error"]
-                .as_str()
-                .unwrap()
-                .starts_with("server_acked_local_commit_failed:")
-        );
-        fs::remove_dir(&path).unwrap();
-        fs::rename(&saved, &path).unwrap();
+        assert!(result["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("server_acked_local_commit_failed:"));
+        restore_storage(&path, saved);
         assert_eq!(configured(&path).pending_count(), 2);
-        assert!(
-            test_flush(&backend, |_, batch, _| accepted_batch_count(
-                &json!({"ok": true, "accepted": 1}),
-                batch.len()
-            ))["ok"]
-                .as_bool()
-                .unwrap()
-        );
+        assert!(test_flush(&backend, |_, batch, _| accepted_batch_count(
+            &json!({"ok": true, "accepted": 1}),
+            batch.len()
+        ))["ok"]
+            .as_bool()
+            .unwrap());
         assert_eq!(configured(&path).pending_count(), 0);
     }
 
@@ -1739,10 +2139,8 @@ mod tests {
             1000
         ));
         assert!(backend.enqueue(&event("gameplay", "old", "context").to_string()));
-        let durable_before = fs::read(&path).unwrap();
-        let saved = path.with_extension("saved");
-        fs::rename(&path, &saved).unwrap();
-        fs::create_dir(&path).unwrap();
+        let durable_before = durable_bytes(&path);
+        let saved = block_storage(&path);
         let next = session_event("new-end", "new", "").to_string();
         assert!(!backend.start_session(&next, 2000));
         assert_eq!(backend.pending_count(), 1);
@@ -1753,9 +2151,8 @@ mod tests {
             assert!(previous.open && !previous.has_end);
             assert!(inner.active.is_none());
         }
-        fs::remove_dir(&path).unwrap();
-        fs::rename(&saved, &path).unwrap();
-        assert_eq!(fs::read(&path).unwrap(), durable_before);
+        restore_storage(&path, saved);
+        assert_eq!(durable_bytes(&path), durable_before);
         assert!(backend.start_session(&next, 3000));
         let (queue, session) = load_state(&path).unwrap();
         assert_eq!(queue.len(), 2);
@@ -1804,10 +2201,10 @@ mod tests {
         ));
         assert!(backend.enqueue(&event("gameplay", "old", "context").to_string()));
         let result = test_flush(&backend, |_, _, _| {
-            let before = fs::read(&path).unwrap();
+            let before = durable_bytes(&path);
             assert!(!backend.start_session(&session_event("new-end", "new", "").to_string(), 2000));
             assert_eq!(backend.last_error(), "native_event_queue_full");
-            assert_eq!(fs::read(&path).unwrap(), before);
+            assert_eq!(durable_bytes(&path), before);
             assert_eq!(
                 backend.lock().unwrap().session.as_ref().unwrap().event["sessionId"],
                 "old"
@@ -1826,9 +2223,9 @@ mod tests {
             &session_event("old-end", "same", "context").to_string(),
             1000
         ));
-        let before = fs::read(&path).unwrap();
+        let before = durable_bytes(&path);
         assert!(backend.start_session(&session_event("new-end", "same", "").to_string(), 9000));
-        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(durable_bytes(&path), before);
         assert_eq!(backend.pending_count(), 0);
         assert!(backend.clear());
     }
@@ -1865,14 +2262,14 @@ mod tests {
         let path = temporary_path("sampled-duration");
         let backend = configured(&path);
         assert!(backend.start_session(&session_event("end", "same", "ctx").to_string(), 1000));
-        let initial = fs::read(&path).unwrap();
+        let initial = durable_bytes(&path);
         backend.sample_duration(true, 2000);
         backend.sample_duration(true, 43_000);
         assert_eq!(backend.duration_ms(), 2000); // never catch up a delayed callback
         for _ in 0..100 {
             assert_eq!(backend.foreground_time_ms(), 2000);
         }
-        assert_eq!(fs::read(&path).unwrap(), initial); // sampling and reads never write
+        assert_eq!(durable_bytes(&path), initial); // sampling and reads never write
         heartbeat(&backend, false, 43_000, "unused");
         backend.sample_duration(false, 100_000);
         assert_eq!(backend.duration_ms(), 2000); // background handlers may still execute
@@ -2061,14 +2458,11 @@ mod tests {
             1000
         ));
         let restored = configured(&path);
-        let saved = path.with_extension("saved");
-        fs::rename(&path, &saved).unwrap();
-        fs::create_dir(&path).unwrap(); // Force the final atomic rename to fail.
+        let saved = block_storage(&path); // Force the final atomic rename to fail.
         let new_event = session_event("new-end", "new-session", "").to_string();
         assert!(!restored.start_session(&new_event, 2000));
         assert_eq!(restored.pending_count(), 0);
-        fs::remove_dir(&path).unwrap();
-        fs::rename(&saved, &path).unwrap();
+        restore_storage(&path, saved);
         assert!(restored.start_session(&new_event, 2000));
         let queue: Vec<Value> = serde_json::from_str(&restored.snapshot_json()).unwrap();
         assert_eq!(queue.len(), 1);
@@ -2094,15 +2488,12 @@ mod tests {
         ));
         heartbeat(&backend, true, 1500, "unused");
         assert_eq!(backend.pending_count(), 0); // foreground/ad heartbeat
-        let saved = path.with_extension("saved");
-        fs::rename(&path, &saved).unwrap();
-        fs::create_dir(&path).unwrap();
+        let saved = block_storage(&path);
         assert!(!backend.lifecycle(false, 2000, "utc", "local", "unused"));
         assert_eq!(backend.pending_count(), 0);
         assert!(backend.lock().unwrap().foreground);
         assert!(backend.lock().unwrap().session.as_ref().unwrap().open);
-        fs::remove_dir(&path).unwrap();
-        fs::rename(&saved, &path).unwrap();
+        restore_storage(&path, saved);
         heartbeat(&backend, false, 2100, "unused");
         heartbeat(&backend, false, 2200, "unused"); // duplicate notification
         let queue: Vec<Value> = serde_json::from_str(&backend.snapshot_json()).unwrap();
@@ -2175,17 +2566,15 @@ mod tests {
             2,
             "ios"
         ));
-        assert!(
-            backend.import_events(
-                &json!([
-                    event("event-1", "session", "context"),
-                    event("event-2", "session", "context"),
-                    event("event-1", "session", "context"),
-                    event("event-3", "session", "context")
-                ])
-                .to_string()
-            )
-        );
+        assert!(backend.import_events(
+            &json!([
+                event("event-1", "session", "context"),
+                event("event-2", "session", "context"),
+                event("event-1", "session", "context"),
+                event("event-3", "session", "context")
+            ])
+            .to_string()
+        ));
         let queue: Vec<Value> = serde_json::from_str(&backend.snapshot_json()).unwrap();
         assert_eq!(queue.len(), 2);
         assert_eq!(queue[0]["eventId"], "event-2");

@@ -96,7 +96,14 @@ function harness(t: TestContext, options: Partial<GameAlgoWebClientOptions> = {}
     client, storage, values, requests, contexts, control,
     events: () => requests.flatMap((request) => request.events),
     pending: () => [...values.entries()].filter(([key]) => key.includes(":event-queue:") && !key.endsWith(":milestones"))
-      .flatMap(([, value]) => value.split("\n").map((line) => JSON.parse(line) as GameEvent)),
+      .flatMap(([, value]) => {
+        const decoded = JSON.parse(value);
+        if (decoded.format === "gamealgo-event-chunks-v2") {
+          return decoded.chunks.flatMap((ref: { key: string }) =>
+            JSON.parse(values.get(ref.key)!).rows.map((row: { event: string }) => JSON.parse(row.event) as GameEvent));
+        }
+        return value.split("\n").map((line) => JSON.parse(line) as GameEvent);
+      }),
   };
 }
 

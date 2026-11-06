@@ -7,6 +7,19 @@ extends SceneTree
 ## if the two ever disagree, one of the two suites breaks.
 
 const Runtime := preload("res://addons/gamealgo/gamealgo_script_runtime.gd")
+const Tracker := preload("res://addons/gamealgo/gamealgo_tracker.gd")
+
+class EventMirrorProbe:
+	extends RefCounted
+	var backend: Object
+	var snapshots := 0
+	func event_backend_enqueue_delta(encoded: String) -> String:
+		return String(backend.call("event_backend_enqueue_delta", encoded))
+	func event_backend_snapshot_state_json() -> String:
+		snapshots += 1
+		return String(backend.call("event_backend_snapshot_state_json"))
+	func event_backend_pending_count() -> int:
+		return int(backend.call("event_backend_pending_count"))
 
 const SINGLETON := "GameAlgoRuntime"
 ## Shared with the Rust suite; read from the real file rather than a copy.
@@ -38,8 +51,41 @@ func _run() -> void:
 	_test_prepared_scripts_are_evicted(native)
 	_test_sdk_wrapper_uses_the_runtime()
 	_test_native_session_recovery(native)
+	_test_incremental_event_mirror(native)
 	print("RESULT: %d passed, %d failed" % [_passed, _failed])
 	quit(0 if _failed == 0 else 1)
+
+
+func _test_incremental_event_mirror(native: Object) -> void:
+	var path := ProjectSettings.globalize_path("user://incremental-mirror-%d.json" % Time.get_ticks_usec())
+	_check(bool(native.call("event_backend_configure", path, "https://gamealgo.invalid/v1/events/batch", "ga_live_fixture", 100, 1000, "android")), "incremental mirror configures")
+	var probe := EventMirrorProbe.new()
+	probe.backend = native
+	var tracker := Tracker.new()
+	tracker._event_backend = probe
+	tracker._native_events = true
+	tracker._native_revision = 0
+	var event := {"eventId": "first", "contextId": "", "userId": "user", "sessionId": "session", "eventType": "level_end", "isDebug": false,
+		"timestamp": "2026-11-06T00:00:00Z", "createdLocalAt": "2026-11-06T00:00:00Z", "payload": {}}
+	_check(tracker._enqueue_native(event), "delta appends its first event")
+	_check(probe.snapshots == 0 and tracker._retry_batch.size() == 1, "ordinary enqueue never serializes the full native queue")
+	_check(tracker.has_unbound_session("session"), "ownership cache sees an unbound event")
+	var cached := true
+	for index in range(100):
+		cached = cached and tracker.has_unbound_session("session") and not tracker._ownership_dirty
+	_check(cached, "unchanged ownership uses the cached result")
+	event = event.duplicate(true)
+	event["eventId"] = "second"
+	_check(tracker._enqueue_native(event), "a second delta preserves the mirror")
+	_check(probe.snapshots == 0 and tracker._retry_batch.size() == 2, "multiple appends keep using incremental updates")
+	_check(bool(native.call("event_backend_bind_context", "session", "ctx")), "external native ownership change commits")
+	event = event.duplicate(true)
+	event["eventId"] = "third"
+	event["contextId"] = "ctx"
+	_check(tracker._enqueue_native(event), "revision mismatch recovers the authoritative queue")
+	_check(probe.snapshots == 1 and tracker._retry_batch.size() == 3, "external changes require only one full resync")
+	_check(not tracker.has_unbound_session("session"), "ownership cache is invalidated by resync")
+	_check(bool(native.call("event_backend_clear")), "incremental mirror storage clears")
 
 
 func _test_native_session_recovery(native: Object) -> void:

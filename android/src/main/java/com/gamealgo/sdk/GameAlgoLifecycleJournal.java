@@ -7,7 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-/** One durable record owns pending events and the unfinished session marker. */
+/** Incremental durable records share a small unfinished-session marker. */
 final class GameAlgoLifecycleJournal {
     private final GameAlgoCacheStorage storage;
     private final String key;
@@ -22,6 +22,13 @@ final class GameAlgoLifecycleJournal {
     private boolean sampleForeground;
     private long foregroundTimeMs;
     private long sessionForegroundStartMs;
+    private final java.util.Set<String> dirtyEvents = new java.util.LinkedHashSet<>();
+    private final java.util.Set<String> removedEvents = new java.util.LinkedHashSet<>();
+    private boolean configsDirty;
+    private boolean journalReady = true;
+    private long sequence;
+    private int operations;
+    private long formattedAt = Long.MIN_VALUE;
 
     GameAlgoLifecycleJournal(GameAlgoCacheStorage storage, String key, boolean foreground, int queueLimit) {
         this.storage = storage;
@@ -31,29 +38,39 @@ final class GameAlgoLifecycleJournal {
         if (storage == null || key == null) return;
         try {
             String raw = storage.getItem(key);
-            if (raw == null) return;
-            Map<String, Object> value = GameAlgoJson.asObject(GameAlgoJson.parse(raw), "lifecycle journal");
-            Object savedEvents = value.get("events");
-            if (savedEvents instanceof List) {
-                for (Object item : (List<?>) savedEvents) {
-                    GameAlgoEvent event = GameAlgoEvent.fromJson(GameAlgoJson.asObject(item, "event"));
-                    events.put(event.getEventId(), event);
+            if (raw != null) restore(GameAlgoJson.asObject(GameAlgoJson.parse(raw), "lifecycle journal"), false);
+            if (storage instanceof GameAlgoJournalStorage) {
+                for (String record : ((GameAlgoJournalStorage) storage).readJournalRecords(key)) {
+                    Map<String,Object> value = GameAlgoJson.asObject(GameAlgoJson.parse(record), "journal record");
+                    if (((Number) value.get("journalSequence")).longValue() > sequence) { restore(value, true); operations++; }
                 }
             }
-            if (value.get("session") instanceof Map) session = GameAlgoJson.asObject(value.get("session"), "session");
-            if (value.get("configRequests") instanceof Map) {
-                for (Map.Entry<String, Object> entry : GameAlgoJson.asObject(value.get("configRequests"), "config requests").entrySet()) {
-                    if (entry.getValue() instanceof String) configRequests.put(entry.getKey(), (String) entry.getValue());
-                }
+        } catch (GameAlgoException | RuntimeException ignored) { journalReady = false; }
+    }
+
+    private void restore(Map<String,Object> value, boolean incremental) throws GameAlgoException {
+        Object saved = value.get(incremental ? "put" : "events");
+        if (saved instanceof List) for (Object row : (List<?>) saved) {
+            GameAlgoEvent event = GameAlgoEvent.fromJson(GameAlgoJson.asObject(row, "event"));
+            events.put(event.getEventId(), event);
+        }
+        Object removed = value.get("remove");
+        if (removed instanceof List) for (Object id : (List<?>) removed) events.remove(id);
+        if (value.get("session") instanceof Map) session = GameAlgoJson.asObject(value.get("session"), "session");
+        if (value.get("configRequests") instanceof Map) {
+            configRequests.clear();
+            for (Map.Entry<String,Object> entry : GameAlgoJson.asObject(value.get("configRequests"), "config requests").entrySet()) {
+                if (entry.getValue() instanceof String) configRequests.put(entry.getKey(), (String) entry.getValue());
             }
-        } catch (GameAlgoException ignored) { /* A malformed journal must not prevent startup. */ }
+        }
+        if (value.get("journalSequence") instanceof Number) sequence = ((Number)value.get("journalSequence")).longValue();
     }
 
     synchronized void activate(GameAlgoEvent template, long startedAt, boolean hasEnd, List<GameAlgoEvent> pending) {
         merge(pending);
         if (!active && session != null && Boolean.TRUE.equals(session.get("open"))) {
             GameAlgoEvent recovered = end("process_restart", number("lastSeenMs"), true);
-            if (recovered != null) events.put(recovered.getEventId(), recovered);
+            if (recovered != null) put(recovered);
         }
         if (!active || session == null || !template.getSessionId().equals(session.get("sessionId"))) {
             session = new LinkedHashMap<>();
@@ -83,7 +100,7 @@ final class GameAlgoLifecycleJournal {
     }
 
     synchronized void record(GameAlgoEvent event) {
-        events.put(event.getEventId(), event);
+        put(event);
         if (session != null && event.getSessionId().equals(session.get("sessionId")) && "session_end".equals(event.getEventType())) {
             session.put("open", false);
             session.put("hasEnd", true);
@@ -104,7 +121,7 @@ final class GameAlgoLifecycleJournal {
             session.put("eventId", UUID.randomUUID().toString());
         } else if (changed) {
             GameAlgoEvent ended = end("background", now, false);
-            if (ended != null) events.put(ended.getEventId(), ended);
+            if (ended != null) put(ended);
             session.put("open", false);
             session.put("hasEnd", true);
         }
@@ -132,13 +149,13 @@ final class GameAlgoLifecycleJournal {
     synchronized void bind(String sessionId, String contextId) {
         for (Map.Entry<String, GameAlgoEvent> entry : events.entrySet()) {
             GameAlgoEvent event = entry.getValue();
-            if (sessionId.equals(event.getSessionId()) && blank(event.getContextId())) entry.setValue(event.withContextId(contextId));
+            if (sessionId.equals(event.getSessionId()) && blank(event.getContextId())) { entry.setValue(event.withContextId(contextId)); dirtyEvents.add(event.getEventId()); }
         }
-        configRequests.remove(sessionId);
+        configsDirty |= configRequests.remove(sessionId) != null;
         persist();
     }
 
-    synchronized void retainConfig(String sessionId, String body) { configRequests.put(sessionId, body); persist(); }
+    synchronized void retainConfig(String sessionId, String body) { configRequests.put(sessionId, body); configsDirty = true; persist(); }
     synchronized Map<String, String> unboundConfigs() {
         Map<String, String> result = new LinkedHashMap<>();
         for (GameAlgoEvent event : events.values()) {
@@ -157,12 +174,12 @@ final class GameAlgoLifecycleJournal {
     synchronized void mergePending(List<GameAlgoEvent> pending) { merge(pending); persist(); }
 
     synchronized void acknowledge(List<GameAlgoEvent> batch) {
-        for (GameAlgoEvent event : batch) events.remove(event.getEventId());
+        for (GameAlgoEvent event : batch) remove(event.getEventId());
         persist();
     }
 
     private void merge(List<GameAlgoEvent> pending) {
-        for (GameAlgoEvent event : pending) events.put(event.getEventId(), event);
+        for (GameAlgoEvent event : pending) if (events.get(event.getEventId()) != event) put(event);
     }
 
     private GameAlgoEvent end(String reason, long at, boolean recovered) {
@@ -183,30 +200,67 @@ final class GameAlgoLifecycleJournal {
     private long number(String name) { Object value = session.get(name); return value instanceof Number ? ((Number) value).longValue() : 0L; }
     private static boolean blank(String value) { return value == null || value.trim().isEmpty(); }
 
-    private void persist() {
-        while (events.size() > queueLimit) events.remove(events.keySet().iterator().next());
-        java.util.Set<String> sessions = new java.util.HashSet<>();
-        for (GameAlgoEvent event : events.values()) sessions.add(event.getSessionId());
-        if (session != null) sessions.add((String) session.get("sessionId"));
-        configRequests.keySet().retainAll(sessions);
-        durable = false;
-        if (storage == null || key == null) return;
-        Map<String, Object> value = new LinkedHashMap<>();
-        value.put("version", 1);
+    private void put(GameAlgoEvent event) {
+        events.put(event.getEventId(), event);
+        dirtyEvents.add(event.getEventId());
+        removedEvents.remove(event.getEventId());
+    }
+
+    private void remove(String id) {
+        if (events.remove(id) != null) removedEvents.add(id);
+        dirtyEvents.remove(id);
+    }
+
+    private Map<String,Object> eventJson(GameAlgoEvent event) {
+        Date now = new Date();
+        return event.toJson(event.getTimestamp() == null ? GameAlgoClient.isoTimestamp(now) : event.getTimestamp(),
+                event.getCreatedLocalAt() == null ? GameAlgoClient.localTimestamp(now) : event.getCreatedLocalAt());
+    }
+
+    private Map<String,Object> snapshot() {
+        Map<String,Object> value = new LinkedHashMap<>();
+        value.put("version", 2); value.put("journalSequence", sequence);
         List<Object> rows = new ArrayList<>();
+        for (GameAlgoEvent event : events.values()) rows.add(eventJson(event));
+        value.put("events", rows); value.put("session", session); value.put("configRequests", configRequests);
+        return value;
+    }
+
+    private void persist() {
+        while (events.size() > queueLimit) remove(events.keySet().iterator().next());
+        if (!removedEvents.isEmpty()) {
+            java.util.Set<String> sessions = new java.util.HashSet<>();
+            for (GameAlgoEvent event : events.values()) sessions.add(event.getSessionId());
+            if (session != null) sessions.add((String)session.get("sessionId"));
+            configsDirty |= configRequests.keySet().retainAll(sessions);
+        }
+        durable = false;
+        if (storage == null || key == null || !journalReady) return;
         try {
-            if (active && session != null) {
+            if (active && session != null && formattedAt != number("lastSeenMs")) {
                 Date observed = new Date(number("lastSeenMs"));
                 session.put("timestamp", GameAlgoClient.isoTimestamp(observed));
                 session.put("createdLocalAt", GameAlgoClient.localTimestamp(observed));
+                formattedAt = number("lastSeenMs");
             }
-            Date now = new Date();
-            for (GameAlgoEvent event : events.values()) rows.add(event.toJson(GameAlgoClient.isoTimestamp(now), GameAlgoClient.localTimestamp(now)));
-            value.put("events", rows);
-            value.put("session", session);
-            value.put("configRequests", configRequests);
-            storage.setItem(key, GameAlgoJson.stringify(value));
+            if (storage instanceof GameAlgoJournalStorage) {
+                Map<String,Object> value = new LinkedHashMap<>();
+                value.put("version", 2); value.put("journalSequence", ++sequence);
+                List<Object> rows = new ArrayList<>();
+                for (String id : dirtyEvents) if (events.containsKey(id)) rows.add(eventJson(events.get(id)));
+                value.put("put", rows); value.put("remove", new ArrayList<>(removedEvents));
+                value.put("session", session);
+                if (configsDirty) value.put("configRequests", configRequests);
+                GameAlgoJournalStorage journal = (GameAlgoJournalStorage)storage;
+                journal.appendJournalRecord(key, sequence, GameAlgoJson.stringify(value));
+                if (++operations >= 256) {
+                    operations = 0;
+                    try { journal.compactJournal(key, GameAlgoJson.stringify(snapshot())); }
+                    catch (GameAlgoException ignored) { /* The incremental record is already committed. */ }
+                }
+            } else storage.setItem(key, GameAlgoJson.stringify(snapshot()));
+            dirtyEvents.clear(); removedEvents.clear(); configsDirty = false;
             durable = true;
-        } catch (GameAlgoException ignored) { /* Retain the in-memory state for the next write/flush. */ }
+        } catch (GameAlgoException ignored) { /* Retry all uncommitted changes on the next write. */ }
     }
 }

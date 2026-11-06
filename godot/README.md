@@ -98,6 +98,8 @@ var result: Dictionary = await client.flush()
 
 事件入队时即固定 `eventId`、UTC `timestamp`、本地 `createdLocalAt` 和当前 `sessionId`，延迟上传或重试不会改写发生时间。所有事件（包括已绑定 context 的广告和会话事件）先确认原生队列落盘，再返回 `true`；这个返回值表示本地持久化接纳，不表示服务端收到。默认每批最多 100 条；队列达到 100 条或经过 30 秒时自动 flush。
 
+原生队列按新增、context 绑定、ACK 移除和会话变化写入增量记录，每 256 次提交整理一次快照，旧记录在后台清理；旧版快照自动读取，整理中断时通过提交序号避免重复恢复。GDScript 入队只接收原生队列变更，原生后台发生 ACK 等变化时再同步镜像，避免每条事件都跨桥复制和解析整个队列。配置与归因恢复由队列变化或重试期限唤醒，空闲帧不再扫描恢复队列。
+
 `flush(timeout_ms)` 是统一接口。Android/iOS 默认使用与 `SceneTree`、帧循环及 `HTTPRequest` 回调无关的原生 worker；超时是整个 drain 的总预算，队列超过一批时会在预算内连续发送。多个同时发生的 flush 会串行合并到当前任务。
 
 事件上传与 Maker 使用相同的不阻塞优先策略：有效成功响应中 `accepted > 0` 就原子移除整批，不要求 `accepted + rejected.length` 凑齐发送数；未接收或未说明结果的其余事件允许丢弃、不重试。`accepted` 保留服务端实际接收数，日志中的 `notAccepted` 表示该批其余事件。`rejected` 明细仅用于诊断，缺失或格式错误不会让已有接收的批次重试。`accepted = 0` 时，只有整批都有明确的拒绝记录才出队；否则保留。超时、断网、请求失败、无法解析或非法的接收数，以及本地落盘提交失败，仍保留原 `eventId` 供重试。
@@ -112,7 +114,7 @@ Android 同时监听应用级 `onTrimMemory(TRIM_MEMORY_UI_HIDDEN)` 和动态注
 
 iOS 在原生层监听 `UIApplication` 的整体前后台通知，不依赖 Godot 暂停通知或帧循环。展示全屏广告、控制中心和权限弹窗引起的失焦不会结束会话；真正进入后台时立即同步持久化 `session_end`，再用 2.5 秒预算和有限后台执行任务尝试上传，失败事件留待下次发送。监听内置于 iOS framework，无需修改游戏的 AppDelegate，也不需要声明长期后台运行权限。多 Scene 时按整个 App 的状态处理，不因单个 Scene 退后台就结束会话。游戏已有的 `track_session_end()` 可以保留，返回前台仍不自动新建 session。
 
-Android 和 iOS 在测量获准后，原生队列同时保存未关闭会话及最后观察到的时间；前台每 10 秒更新一次，广告播放期间也继续更新。进程被直接杀死时，下次获准测量并配置 SDK 后为旧会话补 `reason=process_restart`、`recovered=true`、`endTimeEstimated=true` 的 `session_end`。补报保留旧 `sessionId/contextId`，时间和时长按最后一次观察估算，不把两次启动之间的间隔算入会话。后台正常生成的结束事件使用 `reason=background`。补报与新会话标记在同一个原子文件中提交，重试保留原事件 ID。测量未授权时不生成标记或事件，明确撤回时一并清除。
+Android 和 iOS 在测量获准后，原生队列同时保存未关闭会话及最后观察到的时间；前台每 10 秒更新一次，广告播放期间也继续更新。进程被直接杀死时，下次获准测量并配置 SDK 后为旧会话补 `reason=process_restart`、`recovered=true`、`endTimeEstimated=true` 的 `session_end`。补报保留旧 `sessionId/contextId`，时间和时长按最后一次观察估算，不把两次启动之间的间隔算入会话。后台正常生成的结束事件使用 `reason=background`。补报与新会话标记在同一次原子增量记录中提交，重试保留原事件 ID。测量未授权时不生成标记或事件，明确撤回时一并清除。
 
 前台会话切换调用 `await client.new_session()`，无需 App 预先手动报结束。Android/iOS 原生队列会为尚未结束的旧会话生成 `reason=new_session` 的 `session_end`，保留旧用户、session 和 context，时间及 `sessionDurationMs` 截止本次切换；旧结束事件与新会话标记原子落盘后立即触发 flush，不等待上传成功才切换或请求新配置。旧 context 尚未取得时，结束事件留队等待原会话的配置恢复。已由原生后台监听或 App 手动结束的会话不再补报，不会把后台间隔延长到旧会话；正常广告展示仍不会自行切换会话。落盘失败保留旧会话并返回 `false`；传入当前相同的 session ID 为无操作。
 
