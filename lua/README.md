@@ -11,6 +11,12 @@ TapTap Maker 客户端支持直接访问 GameAlgo HTTPS API。接入时把以下
 
 `client_main.lua` 是可直接参考的初始化示例。
 
+新接入推荐将六个模块一起放在 `scripts/sdk/`，入口写 `require("sdk.GameAlgo")`。Maker 的 `scripts/` 是脚本资源根，模块路径不带 `scripts.` 前缀。SDK 内部先尝试 `sdk.<模块名>`，再尝试根模块名；已有把文件直接放在 `scripts/`、使用 `require("GameAlgo")` 的项目可以保留原约定。
+
+新增模块或入口脚本后，先通过项目现有 Maker 构建流程使文件进入资源 manifest，再运行宿主；源码目录中的文件存在不代表旧构建产物能加载它。缺少资源时检查资源根、构建产物及现有资源分组，不连续试造 require 路径。运行工具的入口参数以当前 Maker 文档为准。
+
+Maker 运行时支持直接访问 GameAlgo，使用官方 SDK HTTP 通道即可联网。先检查真实宿主的初始化、配置和 Flush 日志，实际报错再排查，不需要先搭 relay、代理或自定义 transport。独立自测工具的代理/DNS限制不代表 Maker 的联网能力；curl 重放只验证服务端协议，不能替代实际宿主验收。当前 `flush ok: accepted=...` 日志可用于定位，实际写入仍看事件 ACK 的 `stored`；`accepted` 可能包含终态过滤。
+
 ### 运行时游戏身份（仅采集观察）
 
 SDK 每次创建 Context 请求时读取宿主 `GetAppArgv("miniapp_id")`，
@@ -27,7 +33,7 @@ SDK 会先同步读取 Maker `lobby:GetMyUserId()` 并暂存为 `accountUserId`�
 ## 客户端配置
 
 ```lua
-local GameAlgo = require("GameAlgo")
+local GameAlgo = require("sdk.GameAlgo")
 
 GameAlgo.Init({
     baseUrl = "https://game-algo-sdk.dictapis.cn",
@@ -47,7 +53,7 @@ Lua SDK 会自动上报 `platform=maker`，接入代码不需要也不能选择�
 
 Maker / Lua SDK 不提供匹配、Lobby、房间连接或实时状态同步；需要这些能力的 H5 游戏请使用 [`@gamealgo/web`](../web/README.md)。
 
-`ga_live_xxx` 只是示例占位。实际接入必须使用真实 `ga_live_*`；如果当前没有真实 key，AI Agent 应使用 `ga_admin_*` 通过 GameAlgo CLI 创建或读取。`ga_admin_*` 只能给 CLI 使用，不能放入客户端。
+`ga_live_xxx` 只是示例占位。实际接入必须通过 CLI 取得真实 `ga_live_*`。首次 Maker 接入可用真实小游戏 ID 领取临时接入凭据；已有游戏优先复用有效绑定，需要正式管理时再走 TapTap 授权或使用管理 Key。具体流程以 [Server SDK 接入文档](https://game-algo-admin.dictapis.cn/dashboard/docs/index.html?topic=sdk-integration)为准；`ga_org_*`、`ga_admin_*`、`ga_setup_*` 只给 CLI 使用，不放入客户端。
 
 `experimentIntegrationVersion` 来自 `gamealgo experiment integration-version create`，表示当前小游戏版本支持的实验参数能力。它需要固定在发布代码中，不能在运行时查询 latest；没有接入实验时可省略，默认是 `0`。
 
@@ -56,6 +62,16 @@ Maker / Lua SDK 不提供匹配、Lobby、房间连接或实时状态同步；�
 ### 持久化存储
 
 Lua SDK 自动管理持久化，不允许传入 `storage`：
+
+首次本地运行前，把以下相对文件名模式加入 `.gitignore`，并按项目现有格式追加到 Maker 的 `asset_ignores`，防止打包或自动同步设备状态，保留其他已有忽略规则：
+
+```gitignore
+gamealgo_sdk_storage_v1.json
+gamealgo_sdk_storage_v1.backup.json
+gaq_*.json
+```
+
+这些文件包含设备身份、配置缓存和待上传事件，在开发宿主中可能落到工程目录。已被跟踪的文件不会因为新增 ignore 自动退出版本控制，需要核对后另外排除；保留本地设备需要的存档，不把它作为工程资源分发。
 
 - 优先读取 Maker `File` 本地快照，启动时同步恢复身份、脚本缓存和 DDA 状态。
 - 本地快照不存在或当前运行模式不能读文件时，自动从 `clientCloud` 恢复。
