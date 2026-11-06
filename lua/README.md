@@ -15,7 +15,11 @@ TapTap Maker 客户端支持直接访问 GameAlgo HTTPS API。接入时把以下
 
 新增模块或入口脚本后，先通过项目现有 Maker 构建流程使文件进入资源 manifest，再运行宿主；源码目录中的文件存在不代表旧构建产物能加载它。缺少资源时检查资源根、构建产物及现有资源分组，不连续试造 require 路径。运行工具的入口参数以当前 Maker 文档为准。
 
-Maker 运行时支持直接访问 GameAlgo，使用官方 SDK HTTP 通道即可联网。先检查真实宿主的初始化、配置和 Flush 日志，实际报错再排查，不需要先搭 relay、代理或自定义 transport。独立自测工具的代理/DNS限制不代表 Maker 的联网能力；curl 重放只验证服务端协议，不能替代实际宿主验收。当前 `flush ok: accepted=...` 日志可用于定位，实际写入仍看事件 ACK 的 `stored`；`accepted` 可能包含终态过滤。
+Maker 运行时支持直接访问 GameAlgo，使用官方 SDK HTTP 通道即可联网。**Maker Web 预览就是有效宿主**：日志中的 `Web(MacIntel)`、预览目录中的 `index.html` / `__preview-bridge.js` 不表示还缺另一种“真实宿主”，不要求新建原生或 WASM 构建，也不改变 SDK 的 Maker 平台。
+
+先查本次预览的已有初始化、配置和 Flush 日志；网页环境提供 `/opt/log/dev/user_script.log` 时先 `grep -n 'GameAlgoSDK' /opt/log/dev/user_script.log`。事件接收可由 ACK 的 `stored>0` 确认，也可由同次运行的成功配置/Flush 日志，加上对应业务事件实时计数增长及 `lastReceivedAt` 时间匹配确认。单独 `accepted` 可能包含过滤，历史总量非零也不证明本次接收；非 debug 标记从本次配置/请求核对。
+
+证据通过后，标记 SDK 网络通过并结束网络排查，继续剩余字段、广告和报表定义检查。独立 headless 的代理/DNS失败、渲染预热或截图时机不能推翻这一结果；不搭 relay、改 transport、curl 重放或另造 WASM。计数延迟时按 `refreshIntervalMs` 最多连续查 3 次，不足则记录具体缺证，不重复切换环境试联网。只有采集相关代码/配置变化或新的宿主错误才重开检查。详细验收顺序以 Server 的 Maker 接入小节为准。
 
 ### 运行时游戏身份（仅采集观察）
 
