@@ -1,6 +1,6 @@
 {
   "name": "@gamealgo/web",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "description": "GameAlgo SDK for H5 games and browser WebViews",
   "repository": {
     "type": "git",
@@ -31,7 +31,8 @@
     "prepack": "npm run build && node ../scripts/check-web-package.mjs"
   },
   "dependencies": {
-    "quickjs-emscripten": "^0.32.0"
+    "@jitl/quickjs-wasmfile-release-sync": "^0.32.0",
+    "quickjs-emscripten-core": "^0.32.0"
   },
   "engines": {
     "node": ">=18"

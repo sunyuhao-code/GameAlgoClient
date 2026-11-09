@@ -257,6 +257,12 @@ storage, network APIs, clocks, randomness, dynamic code generation, or host
 objects. Script source, input, output, memory, stack, and execution time are
 bounded; a stuck worker is terminated without blocking the game page.
 
+The runtime imports `quickjs-emscripten-core` with only
+`@jitl/quickjs-wasmfile-release-sync`, sharing one lazily initialized WASM module.
+It does not include debug or Asyncify variants. Avoid importing the
+`quickjs-emscripten` root or `/variants` entry in integrations: those entries
+can cause bundlers to emit unused WASM assets before tree-shaking.
+
 Config-only strategies and script-backed `executor(...).execute(...)` are both
 supported. `dda(...)` uses the same sandbox and persists its rolling state in
 the browser store.
@@ -295,6 +301,9 @@ embed a `ga_admin_*` key, persist the raw Client Key, or write it to logs.
 The npm package includes the worker entry and declares its QuickJS dependency.
 Use a modern bundler that supports `new Worker(new URL(..., import.meta.url))`,
 such as Vite, webpack, Rollup, Parcel, or an equivalent WebView build pipeline.
+For Vite production builds, configure `worker: { format: "es" }` for the module
+worker. `npm run check:web:pack` checks a minimal production build and asserts
+that it contains exactly one referenced WASM file matching release-sync.
 
 ## Lightweight multiplayer
 

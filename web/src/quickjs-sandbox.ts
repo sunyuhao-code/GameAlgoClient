@@ -1,6 +1,13 @@
-import { getQuickJS } from "quickjs-emscripten";
+import { newQuickJSWASMModuleFromVariant, type QuickJSWASMModule } from "quickjs-emscripten-core";
 
 import type { GameAlgoScriptInput, JsonValue } from "../../rest-api/src/types.ts";
+
+// Import only the variant we execute. The umbrella entry causes bundlers to
+// emit unused debug/Asyncify WASM assets before JavaScript tree-shaking.
+let modulePromise: Promise<QuickJSWASMModule> | undefined;
+function getQuickJSModule(): Promise<QuickJSWASMModule> {
+  return modulePromise ??= newQuickJSWASMModuleFromVariant(import("@jitl/quickjs-wasmfile-release-sync"));
+}
 
 export type BrowserScriptOperation = "prepare" | "execute";
 
@@ -88,7 +95,7 @@ export async function runQuickJSSandbox(
   const inputJson = input === undefined ? "null" : JSON.stringify(input);
   if (utf8Bytes(inputJson) > limits.inputBytes) throw new Error(`input exceeds ${limits.inputBytes} bytes`);
 
-  const QuickJS = await getQuickJS();
+  const QuickJS = await getQuickJSModule();
   const runtime = QuickJS.newRuntime();
   runtime.setMemoryLimit(limits.memoryBytes);
   runtime.setMaxStackSize(limits.stackBytes);
