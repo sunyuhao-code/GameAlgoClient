@@ -28,7 +28,7 @@ local MakerAutoStorage = requireSdkModule("MakerAutoStorage")
 local GameAlgo = {}
 local unpackArgs = table.unpack or unpack
 
-local SDK_VERSION = "2.1.2-lua"
+local SDK_VERSION = "2.1.3-lua"
 local DEFAULT_BASE_URL = "https://game-algo-sdk.dictapis.cn"
 local DEFAULT_FLUSH_INTERVAL_MS = 5000
 local DEFAULT_FLUSH_TIMEOUT_MS = 15000
@@ -1704,9 +1704,13 @@ function GameAlgo.ExtractAdTrackId(result)
     return nil
 end
 
+local function validAdPlacementId(adPlacementId)
+    return type(adPlacementId) == "string" and #adPlacementId == 36
+        and adPlacementId:match("^gap_[a-f0-9]+$") ~= nil
+end
+
 function GameAlgo.TrackAdPlacement(adPlacementId, revenue, network, payload)
-    if type(adPlacementId) ~= "string" or #adPlacementId ~= 36
-        or not adPlacementId:match("^gap_[a-f0-9]+$") then
+    if not validAdPlacementId(adPlacementId) then
         return false, "adPlacementId must be gap_ followed by 32 lowercase hex characters"
     end
     if type(revenue) ~= "number" or revenue ~= revenue or revenue == math.huge or revenue == -math.huge then
@@ -1727,6 +1731,67 @@ function GameAlgo.TrackAdPlacement(adPlacementId, revenue, network, payload)
     local tracked = GameAlgo.Track("ad_view", merged)
     if tracked then GameAlgo.Flush(nil) end
     return tracked
+end
+
+-- Maker's single result callback can also be a synchronous request rejection.
+-- Buffer it until ShowRewardVideoAd returns, and keep business handling separate
+-- from reporting. No synthetic result or additional lifecycle is introduced.
+function GameAlgo.ShowRewardVideoAd(adPlacementId, callback, payload)
+    if not validAdPlacementId(adPlacementId) then
+        return false, "adPlacementId must be gap_ followed by 32 lowercase hex characters"
+    end
+    if callback ~= nil and type(callback) ~= "function" then
+        return false, "callback must be a function or nil"
+    end
+    local snapshot, payloadError = preparePayload(payload)
+    if payloadError then return false, payloadError end
+
+    local requestId = randomId("ga_ad")
+    local returned, accepted, received, delivered = false, nil, false, false
+    local firstResult
+    local function deliver()
+        if delivered or not received then return end
+        delivered = true
+        if accepted == true then
+            local trackId
+            local ok, queued = pcall(function()
+                trackId = GameAlgo.ExtractAdTrackId(firstResult)
+                snapshot.trackId = trackId -- Never reuse a caller's stale Track ID.
+                return GameAlgo.TrackAdPlacement(adPlacementId, 0, "taptap", snapshot)
+            end)
+            log("reward ad result: requestId=" .. requestId
+                .. " queued=" .. tostring(ok and queued == true)
+                .. " hasTrackId=" .. tostring(trackId ~= nil))
+            if not ok then log("reward ad tracking failed: " .. tostring(queued)) end
+            if not trackId then log("reward ad missing trackId: requestId=" .. requestId) end
+        end
+        safeCallback(callback, firstResult)
+    end
+    local function onResult(result)
+        if received then
+            log("reward ad duplicate callback ignored: requestId=" .. requestId)
+            return
+        end
+        received, firstResult = true, result
+        if returned then deliver() end
+    end
+
+    local ok, value = pcall(function()
+        local host = sdk -- Maker globals may be exposed through a metatable.
+        if not host or type(host.ShowRewardVideoAd) ~= "function" then
+            error("Maker ShowRewardVideoAd is unavailable", 0)
+        end
+        return host:ShowRewardVideoAd(onResult)
+    end)
+    accepted = ok and value or false
+    returned = true
+    log("reward ad request: requestId=" .. requestId .. " accepted=" .. tostring(accepted))
+    deliver()
+    if not ok then
+        log("reward ad request failed: " .. tostring(value))
+        return false, tostring(value)
+    end
+    return value
 end
 
 function GameAlgo.TrackPurchase(productId, revenue, currency, payload)

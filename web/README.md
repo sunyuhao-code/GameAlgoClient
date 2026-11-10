@@ -97,67 +97,71 @@ discovery and discards its pending link. This event bypasses the GameAlgo event
 queue and ordinary-event quota. Failures use the optional SDK logger; success
 does not produce an extra log.
 
-### Wire ad reporting explicitly
+### TapTap H5 rewarded ads
 
-Games with ads must report `ad_view`; the Web SDK does not automatically observe
-the game's advertising API. For the TapTap / Dirichlet ad chain, report once in
-the existing ad `onClose` callback, just like Maker. Keep reporting independent
-of `success`, `isEnded`, reward granting, error codes, or whether the callback
-contains a track ID. Preserve the original `trackId`, use `revenue=0` and
-`currency=CNY`, and let the platform reconcile the actual revenue.
-
-Since `@gamealgo/web@1.0.23`, the SDK exports `extractAdTrackId(result)` to read `trackId` / `track_id` from
-the callback itself or from an object / JSON string in `extra`, `msg`, or
-`message`. It preserves the original non-empty string and returns `undefined`
-when no ID is available. The reporter below is a game-side adapter:
+Since `@gamealgo/web@2.1.4`, use the SDK wrapper for TapTap H5 rewarded ads:
 
 ```ts
-import { extractAdTrackId } from "@gamealgo/web";
-
-// adPlacementId comes from the project's CLI registration mapping.
-function createAdCloseReporter(adPlacementId: string) {
-  let reported = false;
-  return function onClose(result: Record<string, unknown> = {}) {
-    if (reported) return;
-    reported = true;
-    const trackId = extractAdTrackId(result);
-    const queued = gameAlgo.tracker.trackAdPlacement(
-      adPlacementId, 0, trackId ? { trackId } : {},
-    );
-    if (!trackId) console.warn("Ad onClose is missing trackId; fix the callback adapter");
-    if (!queued) console.warn("ad_view was not queued; check SDK identity and initialization");
-  };
+try {
+  await gameAlgo.showRewardVideoAd(adPlacementIds.revive, {
+    adUnitId: TAPTAP_AD_UNIT_ID,
+    onClose(result) {
+      if (result?.isEnded === true) revivePlayer();
+      // Keep game UI/audio cleanup here; do not report the same ad again.
+    },
+    onError(error) { showAdUnavailable(error); },
+  }, { level_no: currentLevel });
+} catch (error) {
+  showAdUnavailable(error);
 }
-
-const reportAdClose = createAdCloseReporter(adPlacementIds.revive);
-// At the start of this request's existing onClose(result), call reportAdClose(result).
-// Run the game's existing reward-completion check separately afterward.
 ```
 
-`trackAdPlacement(adPlacementId, revenue, network?, payload?)` sends only the
-registered ID and dynamic data; the third argument can be the payload directly.
-Register first through the CLI and use its returned `gap_` ID. Name, type and
-currency are filled by the Server. Invalid ID format or non-finite revenue returns
-false without enqueueing. Version 2.0.0 exposes only `trackAdPlacement`; migrate old
-`trackAd` call sites before upgrading. The server still accepts already released
-older SDKs. Report each exposure once.
+Register the GameAlgo placement as `reward` / `CNY` first. Its `gap_` ID and the
+TapTap `adUnitId` are different IDs. This wrapper requires the TapTap H5 host;
+it does not intercept external ad instances or support unrelated ad providers.
 
-Create a new reporter for each ad request; a duplicate callback for that request
-must not create a second event, and the next playback must still report. A missing
-`trackId` still produces `ad_view` and a diagnostic; fix the callback adapter and
-never invent an ID. Do not also report at request, load, show, or reward boundaries.
-Pre-display load failures, no fill, and rejected requests that do not enter
-`onClose` do not count as exposures. Other ad SDKs use their documented effective
-impression / revenue callback and actual amount and currency.
+`showRewardVideoAd(id, options, payload?): Promise<void>` creates one native
+`tap.createRewardedVideoAd({adUnitId})` instance, attaches `onClose` / `onError`,
+then calls optional `load()` and `show()`. The Promise follows load/show calls;
+it does **not** wait for close or confirm completion, a reward, or ingestion.
+Native creation/load/show exceptions and rejections reject the Promise unchanged.
+Native `onError` is forwarded once; it creates no exposure or synthetic Promise
+rejection. Both callbacks are optional and receive all original arguments.
+The SDK neither invents lifecycle events nor grants rewards or retries ads.
 
-Before completing integration, play an ad and verify that the server accepted a
-new `ad_view` with the expected fields and original callback track ID. Cover early
-close and duplicate close notifications as well. `trackAdPlacement` returning `true` only
-confirms enqueueing. Use `gamealgo events count --event-type ad_view --json` for
-the current UTC day's live ingress count; it includes debug and repeated requests,
-and disabled/unavailable counts do not prove delivery or absence. Before publishing
-a production game build, inspect that build's runtime logs and request flags to
-confirm non-debug telemetry (`isDebug=false`), separately from console verbosity.
+On the first real `onClose`, the SDK extracts the original track ID from all
+callback arguments, reports `ad_view` with revenue `0` and network `taptap`,
+starts the urgent keepalive upload, then calls game code. Early close,
+`isEnded=false`, failure codes and a missing ID still report. A missing ID is
+logged through the optional SDK logger; a stale `payload.trackId` is never used.
+The payload is copied at request time. Each playback has its own duplicate guard;
+duplicate close callbacks neither report nor run game code again. A queued real
+close after a native error still counts. Callback and cleanup exceptions cannot
+undo reporting; a reporting exception does not block the game callback.
+The SDK releases its listeners and owned instance after close/failure and on
+`client.close()`, which also makes retained callbacks inert.
+
+For an existing independent ad manager or another provider, keep using
+`gameAlgo.tracker.trackAdPlacement(id, revenue, network?, payload?)`; the SDK does
+not observe that manager automatically. TapTap / Dirichlet manual integrations
+must report once per real `onClose`, independently of `success`, `isEnded`,
+reward granting, codes or track ID availability. Use the exported
+`extractAdTrackId(result)` on each callback argument; it reads `trackId` /
+`track_id` directly or from object/JSON fields `extra`, `msg`, `message` without
+changing the ID. Missing ID still reports; never invent one. Only failures
+without an actual close skip reporting. Other ad providers use their documented
+impression/revenue callbacks and actual currency and amount.
+
+The low-level tracker fills only ID and dynamic data; Server supplies registered
+name/type/currency. Invalid ID or non-finite revenue returns false. Migrate removed
+`trackAd` calls before upgrading; released legacy traffic remains supported.
+
+Wrapper branches are covered by SDK tests. For each game still play a real ad,
+check placement, game rewards/UI, and confirm new non-debug `ad_view` reception
+and the original track ID. Avoid repeatedly inserting generic SDK probes.
+Manual adapters additionally need early/duplicate-close checks. Use
+`gamealgo events count --event-type ad_view --json` for live ingress; enqueue
+success or a mocked callback alone does not prove real ad delivery.
 
 The SDK uses IndexedDB for stable anonymous identity, config snapshots,
 milestone de-duplication, and its durable event queue. `localStorage` and then
