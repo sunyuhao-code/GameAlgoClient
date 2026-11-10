@@ -268,43 +268,52 @@ GameAlgo.TrackAdPlacement(AD_PLACEMENTS.revive, 0, {
 })
 ```
 
-新版只提供 `GameAlgo.TrackAdPlacement`，已移除旧 `TrackAd`。已有游戏升级前先注册广告位并迁移调用；服务端仍兼容已经发布的旧 SDK。每次有效曝光只上报一次。
+新版底层曝光上报接口为 `GameAlgo.TrackAdPlacement`，已移除旧 `TrackAd`；Maker 激励广告另有下文的调用封装。已有游戏升级前先注册广告位并迁移调用；服务端仍兼容已经发布的旧 SDK。每次有效曝光只上报一次。
 
 `GameAlgo.TrackAdPlacement` 上报的是 `ad_view`，只用于广告 SDK 确认实际产生收入的有效曝光。用户看了一部分广告后跳过，但广告 SDK 已确认本次曝光有效并产生收入，也应该调用 `TrackAdPlacement`；广告加载失败、未填充、播放失败，或广告 SDK 没有确认产生收入的展示，不要调用 `TrackAdPlacement`。
 
-TapTap Maker 的 `ShowRewardVideoAd` 关闭回调必须和“是否获得奖励”分开处理：**只要进入 `onClose` 回调，就调用一次 `GameAlgo.TrackAdPlacement`，不能放在 `if result.success then` 里面。** `result.success` 只表示用户是否完整看完广告、游戏是否应该发放奖励；用户提前关闭时通常仍然已经形成有效曝光和收入，也必须上报。加载失败、无填充或播放失败发生在展示前，不属于 `onClose` 有效曝光，只记录诊断事件。
+TapTap Maker 的广告曝光和“是否获得奖励”分开处理。Lua SDK `2.1.3-lua` 起，优先使用 `GameAlgo.ShowRewardVideoAd(adPlacementId, callback?, payload?)` 封装现有 `sdk:ShowRewardVideoAd(callback)`；它只调用一次真实宿主接口，不修改全局 `sdk`，不增加虚构的展示、关闭或奖励生命周期。
 
 TapTap Maker / TapTap 小游戏接入时，广告和付费事件的 `currency` 统一使用 `CNY`。不要默认使用 `USD`。
 
 TapTap Maker 的广告回调 `result.extra` 中通常会包含内部广告 `trackId`。这是 GameAlgo 把 Maker 游戏埋点和内部广告收入数据串起来的关键字段。Maker 游戏上报 `ad_view` 时必须尽量把 `trackId` 放进 payload；广告收入可以先填 `0`，后续平台通过 `trackId` 回补真实收入。
 
-Lua SDK 提供 `GameAlgo.ExtractAdTrackId(result)`，用于从 `result.trackId`、`result.track_id`、`result.extra` JSON、`result.msg` JSON 中解析 `trackId`。广告位 ID 来自 CLI 注册结果，业务字段和 trackId 仍来自当前回调：
+封装保留 Maker 的受理返回值，并将原始结果对象传给业务回调，每次请求最多传递一次。Maker 可能在返回 `false` 前同步调用失败回调；SDK 会等受理返回值确认后再执行同步回调，未受理请求不会记曝光。返回 `true` 仅表示受理，回调前不记曝光；已受理请求的首次结果回调统一提取真实 `trackId`，调用 `TrackAdPlacement(id, 0, "taptap", payload)` 并立即 Flush，再调用业务代码。不能根据 `success`、错误文案或缺少 `trackId` 过滤这次上报；缺少 ID 会记录 SDK 日志，且不会沿用传入 payload 的旧 Track ID。每次调用复制业务 payload，后续修改原 table 不会改变本次上报。
+
+`success` 只用于游戏发奖。重复通知不会重复上报或重复调用业务回调；业务回调异常会记录日志，不回滚上报、不重试发奖。统计失败也不会阻断业务回调。无宿主、原生调用抛错或参数非法时返回 `false, error`；不制造失败结果，不为原生没有触发的回调补调用。请求被拒绝后到达的原始回调仍最多透传一次，不记曝光。封装不会重试广告请求或承诺广告一定产生回调。
 
 ```lua
-sdk:ShowRewardVideoAd(function(result)
-    result = result or {}
-    local trackId = GameAlgo.ExtractAdTrackId(result)
+local accepted, requestError = GameAlgo.ShowRewardVideoAd(
+    AD_PLACEMENTS.classic_revive,
+    function(result)
+        if result and result.success == true then
+            RevivePlayer()
+        end
+        -- 使用游戏原有逻辑处理提前关闭、失败、UI/音频恢复。
+        -- 这里不再调用 TrackAdPlacement，封装已经负责上报。
+    end,
+    { round = round, wave = wave }
+)
+if accepted == false then
+    -- 沿用 Maker 返回 false 的处理逻辑；它可能已经同步回调，也可能不回调。
+    -- 恢复 UI 等操作保持幂等，不在这里伪造回调或发奖。
+    ShowAdUnavailable(requestError)
+end
+```
 
-    -- 这是广告关闭回调：无论 result.success 是否为 true，都上报本次曝光。
-    GameAlgo.TrackAdPlacement(AD_PLACEMENTS.classic_revive, 0, "taptap", {
-        round = round,
-        wave = wave,
-        score = score,
-        kills = totalKills,
-        reviveCount = reviveCount,
-        action = result.success and "completed" or "skipped",
-        trackId = trackId,
-    })
+该封装只适用于 Maker 当前激励视频与 trackId 回补链路，广告位注册为 `reward`、`CNY`。已有广告管理器不能切换调用入口时，保留 `TrackAdPlacement` 和 `ExtractAdTrackId`，自行确保真正的关闭通知只上报一次，且不把原生请求拒绝时的同步失败结果误当作关闭。不要同时使用封装和手工上报。
 
-    if not trackId then
-        GameAlgo.TrackEvent("ad_no_track_id", {
-            placement = "classic_revive",
-            adType = "reward",
-            network = "taptap",
-            message = tostring(result.msg),
-        })
-    end
-end)
+SDK 日志用同一 `requestId` 关联受理结果、入队结果、是否带 trackId 及重复通知；`queued=true` 仍只是入队，接收验收结合 ACK/实时计数。通用边界已经由 SDK 契约测试覆盖，接入游戏只需核对广告位、实际播放、游戏奖励/收尾与本次事件接收，不需要反复添加探针覆盖所有通用分支。模拟宿主或手工调用回调只能用于离线测试，不能证明真实广告播放成功。
+
+仍需手工上报时，`ExtractAdTrackId(result)` 按顺序读取直接字段、extra JSON 和 msg/message JSON，只解析 ID，不决定是否发奖：
+
+```lua
+-- 仅放在自有广告管理器已确认的实际广告关闭通知中。
+local trackId = GameAlgo.ExtractAdTrackId(result)
+GameAlgo.TrackAdPlacement(AD_PLACEMENTS.classic_revive, 0, {
+    trackId = trackId,
+    round = round,
+})
 ```
 
 客户端 HTTP 请求由 `HttpTransport.lua` 异步执行，不依赖 update loop 轮询网络进度。SDK 会通过独立 `LuaScriptObject` 自行驱动定时 Flush、watchdog 和失败重试，开发者不需要自己开发定时 Flush，也不需要新增 Update 调用。Transport 会持有活动请求对象直到终态回调，创建、参数设置或 `Send` 的同步异常会转换成普通请求错误，同一请求只允许结算一次。
