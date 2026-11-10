@@ -96,7 +96,9 @@ examples/   接入示例
 
 ## 协议一致性
 
-2.0.0 起，SDK 的广告专用接口只有 `trackAdPlacement`（Swift/Android/Web）、`GameAlgo.TrackAdPlacement`（Lua）或 `track_ad_placement`（Godot）：只传 CLI 返回的广告位 ID、revenue 和可选 network / payload。升级 SDK 前需注册点位并迁移旧广告调用；服务端继续兼容已发布旧 SDK 的历史格式。ID 必须为 `gap_` 加 32 位小写十六进制字符，revenue 必须是有限数字；非法参数返回 false。新方法发送标准 `ad_view`，服务端补齐名称、广告类型、币种，沿用既有队列、配额豁免和重试，不改变曝光口径。静态字段不再从 payload 上传，显式 ID/revenue 优先于 payload 中同名值；其他动态业务字段保留。
+SDK 的底层广告曝光接口为 `trackAdPlacement`（Swift/Android/Web）、`GameAlgo.TrackAdPlacement`（Lua）或 `track_ad_placement`（Godot）：只传 CLI 返回的广告位 ID、revenue 和可选 network / payload。升级 SDK 前需注册点位并迁移旧广告调用；服务端继续兼容已发布旧 SDK 的历史格式。ID 必须为 `gap_` 加 32 位小写十六进制字符，revenue 必须是有限数字；非法参数返回 false。新方法发送标准 `ad_view`，服务端补齐名称、广告类型、币种，沿用既有队列、配额豁免和重试，不改变曝光口径。静态字段不再从 payload 上传，显式 ID/revenue 优先于 payload 中同名值；其他动态业务字段保留。
+
+Maker Lua `2.1.3-lua` 起提供 `GameAlgo.ShowRewardVideoAd(id, callback?, payload?)`，TapTap H5 Web `2.1.4` 起提供 `client.showRewardVideoAd(id, { adUnitId, onClose, onError }, payload?)`。这些封装调用真实宿主广告接口，统一处理 trackId、去重和曝光上报；游戏回调只处理奖励与收尾，不重复调用底层曝光接口。精确语义见各平台 README。
 
 Protocol v1 有五份客户端实现，都在本仓库：iOS / Android / Web / Lua / Godot。`protocol/openapi.yaml` 是唯一真相源，`protocol/fixtures/` 是跨实现的共同闸门。
 
@@ -140,3 +142,5 @@ Android 模拟器／真机的 instrumentation 命令见 `android/README.md`；We
 Android AAR、Godot 发布包（`gamealgo-godot-<version>.zip`，含 iOS / Android 运行时二进制）和 Web npm 包由语义化版本 tag（`v1.2.3` 或 `1.2.3`）触发 `.github/workflows/release.yml` 构建，并附加到对应 GitHub Release。三个平台在各自的 runner 上并行构建，由同一个 `publish` job 统一发布。任一平台构建失败就不会发布，不会留下只有一部分产物的 Release。
 
 GitHub Release 成功后，独立的 `.github/workflows/publish.yml` 会仿照 GameAlgoCli 使用 `environment: npm` 和 OIDC trusted publishing 发布 `@gamealgo/web`。整仓 Release tag 与 Web npm 包各自独立版本；工作流读取 `web/package.json`，已发布的版本会安全跳过。npm 侧需要把 `sunyuhao-code/GameAlgoClient`、`publish.yml` 和 `npm` environment 配置为 package trusted publisher，不再需要 `NPM_TOKEN`。
+
+仅更新 Web npm 包时，在 **Publish Web npm** 工作流上手动运行 `workflow_dispatch` 即可，无需创建整仓 Release tag 或重发其他平台产物。Maker / Lua SDK 从仓库源码同步，不依赖 npm 发布。
