@@ -101,10 +101,33 @@ does not produce an extra log.
 
 Since `@gamealgo/web@2.1.4`, use the SDK wrapper for TapTap H5 rewarded ads:
 
+First inspect this game's existing ad integration. If it already has a real
+`adUnitId`, reuse its variable, configuration or lookup without calling MCP or
+asking the developer for it again. Route rewarded-ad playback through
+`showRewardVideoAd`, reusing that ID and the game reward/cleanup callbacks. The
+wrapper reports automatically; do not report the same exposure again in its `onClose`.
+
+Only for new ads or missing configuration, obtain `adUnitId` through the official
+**H5 Minigame MCP**, rather than asking the developer to apply for or type an ID.
+Read `get_ads_integration_workflow`, verify
+the intended app with `get_current_app_info`, then call `check_ads_status`. It
+queries the server and matches `space_id` to the app's confirmed orientation.
+Only status `1` plus a valid ID permits `get_ad_integration_guide`, whose generated
+code contains the value to pass as `tapTapAdUnitId` below. A new MCP lookup must
+use its current result without falling back to old query output. Do not use
+another app's ID, a sample or a placeholder. If activation,
+orientation or a valid ID is missing, follow the MCP recovery guidance without
+guessing or polling. See the [official MCP setup guide](https://developer.taptap.cn/minigameapidoc/quick-start/mcp-guide/mcp-setup/) if it is not configured.
+
+H5 games enable ads in TapTap Developer Center; they do not need to create media
+or ad units in Dirichlet for this flow. Zip-based Tap Minigames use a separate
+integration flow. Maker/UrhoX uses the Maker MCP's `get_ad_config` and Lua APIs;
+do not mix its tools, app context or IDs with this H5 flow.
+
 ```ts
 try {
   await gameAlgo.showRewardVideoAd(adPlacementIds.revive, {
-    adUnitId: TAPTAP_AD_UNIT_ID,
+    adUnitId: tapTapAdUnitId, // Existing game config, or H5 MCP value when absent.
     onClose(result) {
       if (result?.isEnded === true) revivePlayer();
       // Keep game UI/audio cleanup here; do not report the same ad again.
@@ -141,20 +164,14 @@ undo reporting; a reporting exception does not block the game callback.
 The SDK releases its listeners and owned instance after close/failure and on
 `client.close()`, which also makes retained callbacks inert.
 
-For an existing independent ad manager or another provider, keep using
-`gameAlgo.tracker.trackAdPlacement(id, revenue, network?, payload?)`; the SDK does
-not observe that manager automatically. TapTap / Dirichlet manual integrations
-must report once per real `onClose`, independently of `success`, `isEnded`,
-reward granting, codes or track ID availability. Use the exported
-`extractAdTrackId(result)` on each callback argument; it reads `trackId` /
-`track_id` directly or from object/JSON fields `extra`, `msg`, `message` without
-changing the ID. Missing ID still reports; never invent one. Only failures
-without an actual close skip reporting. Other ad providers use their documented
-impression/revenue callbacks and actual currency and amount.
-
-The low-level tracker fills only ID and dynamic data; Server supplies registered
-name/type/currency. Invalid ID or non-finite revenue returns false. Migrate removed
-`trackAd` calls before upgrading; released legacy traffic remains supported.
+Existing TapTap H5 rewarded-ad integrations should route playback through this
+wrapper, reusing the game's real ad unit ID and reward/cleanup callbacks.
+Other ad formats or providers use their documented impression/revenue callbacks
+to report standard `ad_view` events with this game's registered `adPlacementId`,
+actual `revenue` and optional `network` / `trackId`. Server supplies registered
+name/type/currency; the registered currency must match the actual revenue unit.
+The SDK does not observe external ad instances automatically. Report each valid
+exposure once; requests, loads and reward grants are not additional exposures.
 
 Wrapper branches are covered by SDK tests. For each game still play a real ad,
 check placement, game rewards/UI, and confirm new non-debug `ad_view` reception
@@ -207,8 +224,7 @@ initialization or an explicit `tracker.newSession()` creates a new session. TapT
 Set `autoSessionLifecycle: false` only when the game owns those boundaries;
 `autoLifecycle: false` disables all automatic browser lifecycle listeners.
 
-`ad_view` starts an immediate upload after successful enqueue, whether it comes
-from `tracker.trackAdPlacement(...)` or `tracker.track("ad_view", ...)`. It does not wait
+`ad_view` starts an immediate upload after successful enqueue. It does not wait
 for the 5-second timer or the 20-event threshold. H5 uses separate critical
 upload lanes for `ad_view` and `session_end`: neither waits for ordinary uploads
 or event-store writes, and a pending ad request cannot block a session end.

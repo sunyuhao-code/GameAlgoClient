@@ -96,7 +96,7 @@ examples/   接入示例
 
 ## 协议一致性
 
-SDK 的底层广告曝光接口为 `trackAdPlacement`（Swift/Android/Web）、`GameAlgo.TrackAdPlacement`（Lua）或 `track_ad_placement`（Godot）：只传 CLI 返回的广告位 ID、revenue 和可选 network / payload。升级 SDK 前需注册点位并迁移旧广告调用；服务端继续兼容已发布旧 SDK 的历史格式。ID 必须为 `gap_` 加 32 位小写十六进制字符，revenue 必须是有限数字；非法参数返回 false。新方法发送标准 `ad_view`，服务端补齐名称、广告类型、币种，沿用既有队列、配额豁免和重试，不改变曝光口径。静态字段不再从 payload 上传，显式 ID/revenue 优先于 payload 中同名值；其他动态业务字段保留。
+广告曝光使用标准 `ad_view` 事件，携带 CLI 返回的本游戏 `adPlacementId`、真实 `revenue` 和可选 `network`、`trackId` 等动态字段。名称、广告类型和币种由服务端按登记定义补齐，币种必须与实际收入单位一致。先登记点位再接入；服务端继续兼容已发布旧 SDK 的历史格式。
 
 Maker Lua `2.1.3-lua` 起提供 `GameAlgo.ShowRewardVideoAd(id, callback?, payload?)`，TapTap H5 Web `2.1.4` 起提供 `client.showRewardVideoAd(id, { adUnitId, onClose, onError }, payload?)`。这些封装调用真实宿主广告接口，统一处理 trackId、去重和曝光上报；游戏回调只处理奖励与收尾，不重复调用底层曝光接口。精确语义见各平台 README。
 

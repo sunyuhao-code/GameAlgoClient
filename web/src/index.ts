@@ -47,7 +47,7 @@ export type GameAlgoRewardVideoCloseResult = {
 };
 
 export type GameAlgoRewardVideoAdOptions = {
-  /** TapTap ad unit ID, distinct from the registered GameAlgo gap_ ID. */
+  /** Required TapTap ID from this game's existing ad config or H5 Minigame MCP; distinct from GameAlgo gap_ ID. */
   adUnitId: string;
   onClose?: (result: GameAlgoRewardVideoCloseResult | undefined, ...values: unknown[]) => void | Promise<void>;
   onError?: (...values: unknown[]) => void | Promise<void>;

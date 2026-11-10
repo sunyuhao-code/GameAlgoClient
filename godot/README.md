@@ -82,9 +82,12 @@ var decision: Dictionary = await dda.execute({"turn": 7})
 ```gdscript
 client.tracker.track_level_start({"levelId": "level_1"})
 client.tracker.track_level_end({"level": 3, "result": "win"})
-var admitted := client.tracker.track_ad_placement(
-    ad_placement_id, 0.018, "admob", {"trackId": callback_track_id}
-)
+var admitted := client.tracker.track("ad_view", {
+    "adPlacementId": ad_placement_id,
+    "revenue": 0.018,
+    "network": "admob",
+    "trackId": callback_track_id,
+})
 # 在 MAX paid callback 内调用。无需 await 也会先启动原生后台任务。
 if admitted:
     client.flush(2500)
@@ -94,7 +97,7 @@ var result: Dictionary = await client.flush()
 # result: ok, accepted, remaining, timed_out, error, acked_event_ids
 ```
 
-`ad_placement_id` 来自 CLI 注册结果。`track_ad_placement(id, revenue, network?, payload?)` 只上报 ID 和动态数据，服务端补齐名称、类型、币种；trackId 仍取真实回调。格式错误的 ID 或非有限收入返回 false。新版已移除旧 track_ad，升级前需注册广告位并迁移调用；服务端仍兼容已发布的旧 SDK。每次有效曝光只上报一次。
+`ad_placement_id` 来自本游戏 CLI 注册结果；payload 携带 `adPlacementId`、真实 `revenue` 和可选 `network` / `trackId`。服务端补齐名称、类型和币种，币种必须与回调金额一致。trackId 仍取真实回调，每次有效曝光只上报一次；加载失败、未填充或展示前失败不报曝光。
 
 事件入队时即固定 `eventId`、UTC `timestamp`、本地 `createdLocalAt` 和当前 `sessionId`，延迟上传或重试不会改写发生时间。所有事件（包括已绑定 context 的广告和会话事件）先确认原生队列落盘，再返回 `true`；这个返回值表示本地持久化接纳，不表示服务端收到。默认每批最多 100 条；队列达到 100 条或经过 30 秒时自动 flush。
 

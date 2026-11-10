@@ -265,15 +265,18 @@ milestone
 client.tracker.trackMilestone("new_user", "进入第一关");
 ```
 
-广告变现使用 `trackAdPlacement`，只传已注册的 adPlacementId、revenue 和可选 network/payload，服务端补齐名称、类型和币种。新版不再提供旧 trackAd。`ad_view` 只表示有效曝光；用户看了一部分后跳过但广告 SDK 已确认曝光有效，也应该上报。广告加载失败、未填充或展示前失败不报 ad_view。币种在注册定义中指定，必须与回调金额一致；Maker / TapTap 的 trackId 回补链路注册 CNY。
+广告变现使用标准 `ad_view`。Maker 激励视频使用 `GameAlgo.ShowRewardVideoAd`，TapTap H5 使用 `client.showRewardVideoAd`，由播放封装自动上报，游戏回调不重复统计。其他广告提供商在有效曝光/收入回调中上报本游戏已登记的 `adPlacementId`、真实 `revenue` 和可选 `network` / `trackId`，服务端补齐名称、类型和币种。
 
 ```ts
-client.tracker.trackAdPlacement(adPlacementIds.rewarded_level_end, 0.018, "admob");
-
-// Registered placement: static fields are supplied by the Server.
-client.tracker.trackAdPlacement(adPlacementIds.revive, 0, { trackId: "callback-track-id" });
-client.tracker.trackAdPlacement(adPlacementIds.revive, 0.018, "admob", { level: 3 });
+// 仅用于其他广告提供商已经确认的有效曝光/收入回调。
+client.tracker.track("ad_view", {
+  adPlacementId: adPlacementIds.rewarded_level_end,
+  revenue: 0.018,
+  network: "admob",
+});
 ```
+
+`ad_view` 只表示有效曝光；用户看了一部分后跳过但广告 SDK 已确认曝光有效，也应该上报。广告加载失败、未填充或展示前失败不报。币种在注册定义中指定，必须与回调金额一致；Maker / TapTap 的 trackId 回补链路注册 CNY。
 
 内购或付费订单使用 `trackPurchase`。有条件时它会上报带 `productId`、`revenue` 和 `currency` 的 `purchase`。国内游戏同样使用 `CNY`：
 

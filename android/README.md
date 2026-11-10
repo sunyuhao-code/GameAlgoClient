@@ -44,8 +44,12 @@ val adsEnabled = sdk.config().bool("ads.rewarded.enabled", true, "gameplay.json"
 
 sdk.tracker().trackLevelEnd(mapOf("level" to 3, "result" to "win"))
 sdk.tracker().trackMilestone("new_user", "进入第一关")
-// Registered placement: ID comes from CLI; payload can contain the callback trackId.
-sdk.tracker().trackAdPlacement(adPlacementId, 0.018, "admob", payload)
+// 仅在广告 SDK 确认的有效曝光/收入回调中上报；ID 来自本游戏 CLI 登记。
+sdk.tracker().track("ad_view", mapOf(
+    "adPlacementId" to adPlacementId,
+    "revenue" to 0.018,
+    "network" to "admob"
+))
 sdk.tracker().trackPurchase("starter_pack", 4.99, "CNY", mapOf())
 sdk.tracker().trackSessionEnd()
 sdk.tracker().flushAsync()
@@ -132,7 +136,7 @@ SDK 初始化从 `/v1/config` 获取当前普通事件额度，并把它作为�
 
 `userId` 始终是 GameAlgo 生成并持久化的匿名设备标识，用于现有实验分流和报表。游戏已经登录的业务用户可以在 `GameAlgoFetchConfigRequest` 中额外传入 `accountUserId`，已知注册时间时再传 `accountUserCreatedAt`；两者不会覆盖匿名 `userId`。context 保存完整账号身份，后续事件自动携带 `accountUserId`。
 
-`trackAdPlacement` 上报的是 `ad_view`，只用于广告 SDK 确认实际产生收入的有效曝光。用户看了一部分广告后跳过，但广告 SDK 已确认本次曝光有效并产生收入，也应该调用 `trackAdPlacement`；广告加载失败、未填充、播放失败，或广告 SDK 没有确认产生收入的展示，不要调用 `trackAdPlacement`。
+`ad_view` 只表示广告 SDK 确认的有效曝光/收入。同一次曝光只上报一次；payload 携带本游戏登记的 `adPlacementId`、真实 `revenue` 和可选 `network` / `trackId`。名称、类型和币种由服务端按登记定义补齐，币种必须与金额单位一致。用户看了一部分后跳过但已确认曝光有效，也应统计；加载失败、未填充或展示前失败不报曝光。
 
 国内游戏接入时，广告和付费事件的 `currency` 统一使用 `CNY`。不要默认使用 `USD`。
 

@@ -209,7 +209,7 @@ local enabled = GameAlgo.ConfigValue("ads.rewarded.enabled", true, "gameplay.jso
 
 旧版本保存的 JSON Lines 队列会自动迁移；所有事件块成功写入前保留旧队列，迁移中断仍可恢复。事件的 ID、session、context 和发生时间保持原值。
 
-`GameAlgo.TrackAdPlacement` 在广告事件入队后会立即 Flush。发送前，SDK 会把 inflight batch 和剩余队列中尚未落盘的变化写入独立事件块；下次启动自动恢复，按下述批次完成策略确认后才删除持久化副本。请求超过 15 秒没有终态回调时，watchdog 会释放请求、把 inflight batch 放回队首，并按退避间隔重试。迟到或重复回调由 request token 忽略；成功后 SDK 会连续发送，直到所有已有 context 的事件全部排空。事件入队时即固定 `sessionId` 和已有的 `contextId`；同一 session 刷新 context 不会重绑旧事件。
+广告播放封装在广告事件入队后会立即 Flush。发送前，SDK 会把 inflight batch 和剩余队列中尚未落盘的变化写入独立事件块；下次启动自动恢复，按下述批次完成策略确认后才删除持久化副本。请求超过 15 秒没有终态回调时，watchdog 会释放请求、把 inflight batch 放回队首，并按退避间隔重试。迟到或重复回调由 request token 忽略；成功后 SDK 会连续发送，直到所有已有 context 的事件全部排空。事件入队时即固定 `sessionId` 和已有的 `contextId`；同一 session 刷新 context 不会重绑旧事件。
 
 SDK 自动监听 Maker 的 `AppWillEnterBackground`、`AppTerminating`、`ExitRequested`，收到通知时生成标准 `session_end`，立即保存队列中尚未落盘的变化并触发 Flush。对应 `reason` 为 `app_background`、`app_terminating`、`exit_requested`，payload 同时记录 `lifecycleEvent`。该结束事件不占用普通事件额度，仍受队列容量上限约束。Maker 打开全屏广告也会触发后台通知，SDK 同样上报；同一会话后续再次退后台、退出或终止可以重复上报。不会自动切换 `sessionId`。
 
@@ -248,8 +248,6 @@ GameAlgo.TrackLevelEnd({
 
 GameAlgo.TrackMilestone("new_user", "进入第一关")
 
-GameAlgo.TrackAdPlacement(AD_PLACEMENTS.rewarded_level_end, 0.018, "admob")
-
 GameAlgo.TrackSessionEnd()
 GameAlgo.Flush()
 ```
@@ -259,26 +257,17 @@ GameAlgo.Flush()
 
 Lua SDK 为存量版本保留嵌套 JSON 的传输兼容，但新接入和新增字段一律使用上面的扁平 payload。需要描述多个属性时，把它们拆成稳定、含义明确的顶层字段，不要把业务对象或数组直接塞入事件。
 
-已通过 CLI 注册广告位时，优先用 `GameAlgo.TrackAdPlacement(adPlacementId, revenue, network?, payload?)`，不再传名称、广告类型和币种，由服务端补齐。第三个参数可直接传 payload；调用仍发送标准 `ad_view`，入队后立即触发 Flush。ID 必须是注册返回的 `gap_` 加 32 位小写十六进制字符，revenue 必须有限；非法输入返回 false，不入队。SDK 不查询广告位目录。
+### Maker 激励视频
 
-```lua
-GameAlgo.TrackAdPlacement(AD_PLACEMENTS.revive, 0, {
-    trackId = GameAlgo.ExtractAdTrackId(result),
-    round = round,
-})
-```
-
-新版底层曝光上报接口为 `GameAlgo.TrackAdPlacement`，已移除旧 `TrackAd`；Maker 激励广告另有下文的调用封装。已有游戏升级前先注册广告位并迁移调用；服务端仍兼容已经发布的旧 SDK。每次有效曝光只上报一次。
-
-`GameAlgo.TrackAdPlacement` 上报的是 `ad_view`，只用于广告 SDK 确认实际产生收入的有效曝光。用户看了一部分广告后跳过，但广告 SDK 已确认本次曝光有效并产生收入，也应该调用 `TrackAdPlacement`；广告加载失败、未填充、播放失败，或广告 SDK 没有确认产生收入的展示，不要调用 `TrackAdPlacement`。
+先通过 CLI 注册本游戏的广告位，将返回的 `gap_` ID 写入游戏点位常量。名称、广告类型和币种由服务端按登记定义补齐；业务 key/name 和其他游戏的 ID 不能代替登记 ID。
 
 TapTap Maker 的广告曝光和“是否获得奖励”分开处理。Lua SDK `2.1.3-lua` 起，优先使用 `GameAlgo.ShowRewardVideoAd(adPlacementId, callback?, payload?)` 封装现有 `sdk:ShowRewardVideoAd(callback)`；它只调用一次真实宿主接口，不修改全局 `sdk`，不增加虚构的展示、关闭或奖励生命周期。
 
 TapTap Maker / TapTap 小游戏接入时，广告和付费事件的 `currency` 统一使用 `CNY`。不要默认使用 `USD`。
 
-TapTap Maker 的广告回调 `result.extra` 中通常会包含内部广告 `trackId`。这是 GameAlgo 把 Maker 游戏埋点和内部广告收入数据串起来的关键字段。Maker 游戏上报 `ad_view` 时必须尽量把 `trackId` 放进 payload；广告收入可以先填 `0`，后续平台通过 `trackId` 回补真实收入。
+TapTap Maker 的广告回调 `result.extra` 中通常会包含内部广告 `trackId`。播放封装自动提取它并写入 `ad_view`，广告收入先填 `0`，后续平台通过 `trackId` 回补真实收入。游戏不用自行解析回调并补写广告事件。
 
-封装保留 Maker 的受理返回值，并将原始结果对象传给业务回调，每次请求最多传递一次。Maker 可能在返回 `false` 前同步调用失败回调；SDK 会等受理返回值确认后再执行同步回调，未受理请求不会记曝光。返回 `true` 仅表示受理，回调前不记曝光；已受理请求的首次结果回调统一提取真实 `trackId`，调用 `TrackAdPlacement(id, 0, "taptap", payload)` 并立即 Flush，再调用业务代码。不能根据 `success`、错误文案或缺少 `trackId` 过滤这次上报；缺少 ID 会记录 SDK 日志，且不会沿用传入 payload 的旧 Track ID。每次调用复制业务 payload，后续修改原 table 不会改变本次上报。
+封装保留 Maker 的受理返回值，并将原始结果对象传给业务回调，每次请求最多传递一次。Maker 可能在返回 `false` 前同步调用失败回调；SDK 会等受理返回值确认后再执行同步回调，未受理请求不会记曝光。返回 `true` 仅表示受理，回调前不记曝光；已受理请求的首次结果回调统一提取真实 `trackId`，以 revenue=0、network=taptap 将 `ad_view` 入队并立即 Flush，再调用业务代码。不能根据 `success`、错误文案或缺少 `trackId` 过滤这次上报；缺少 ID 会记录 SDK 日志，且不会沿用传入 payload 的旧 Track ID。每次调用复制业务 payload，后续修改原 table 不会改变本次上报。
 
 `success` 只用于游戏发奖。重复通知不会重复上报或重复调用业务回调；业务回调异常会记录日志，不回滚上报、不重试发奖。统计失败也不会阻断业务回调。无宿主、原生调用抛错或参数非法时返回 `false, error`；不制造失败结果，不为原生没有触发的回调补调用。请求被拒绝后到达的原始回调仍最多透传一次，不记曝光。封装不会重试广告请求或承诺广告一定产生回调。
 
@@ -290,7 +279,7 @@ local accepted, requestError = GameAlgo.ShowRewardVideoAd(
             RevivePlayer()
         end
         -- 使用游戏原有逻辑处理提前关闭、失败、UI/音频恢复。
-        -- 这里不再调用 TrackAdPlacement，封装已经负责上报。
+        -- 封装已经负责上报，不重复统计曝光。
     end,
     { round = round, wave = wave }
 )
@@ -301,20 +290,9 @@ if accepted == false then
 end
 ```
 
-该封装只适用于 Maker 当前激励视频与 trackId 回补链路，广告位注册为 `reward`、`CNY`。已有广告管理器不能切换调用入口时，保留 `TrackAdPlacement` 和 `ExtractAdTrackId`，自行确保真正的关闭通知只上报一次，且不把原生请求拒绝时的同步失败结果误当作关闭。不要同时使用封装和手工上报。
+该封装只适用于 Maker 当前激励视频与 trackId 回补链路，广告位注册为 `reward`、`CNY`。已有游戏将播放入口接到该封装，保留原来的奖励、UI 和音频收尾回调，不再为同一次曝光额外上报事件。
 
 SDK 日志用同一 `requestId` 关联受理结果、入队结果、是否带 trackId 及重复通知；`queued=true` 仍只是入队，接收验收结合 ACK/实时计数。通用边界已经由 SDK 契约测试覆盖，接入游戏只需核对广告位、实际播放、游戏奖励/收尾与本次事件接收，不需要反复添加探针覆盖所有通用分支。模拟宿主或手工调用回调只能用于离线测试，不能证明真实广告播放成功。
-
-仍需手工上报时，`ExtractAdTrackId(result)` 按顺序读取直接字段、extra JSON 和 msg/message JSON，只解析 ID，不决定是否发奖：
-
-```lua
--- 仅放在自有广告管理器已确认的实际广告关闭通知中。
-local trackId = GameAlgo.ExtractAdTrackId(result)
-GameAlgo.TrackAdPlacement(AD_PLACEMENTS.classic_revive, 0, {
-    trackId = trackId,
-    round = round,
-})
-```
 
 客户端 HTTP 请求由 `HttpTransport.lua` 异步执行，不依赖 update loop 轮询网络进度。SDK 会通过独立 `LuaScriptObject` 自行驱动定时 Flush、watchdog 和失败重试，开发者不需要自己开发定时 Flush，也不需要新增 Update 调用。Transport 会持有活动请求对象直到终态回调，创建、参数设置或 `Send` 的同步异常会转换成普通请求错误，同一请求只允许结算一次。
 
