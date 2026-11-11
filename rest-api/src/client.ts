@@ -132,6 +132,9 @@ export class GameAlgoRestClient {
       now: this.now,
       storage: this.storage,
       persistenceKey: `gamealgo:v1:event-queue:${baseCacheNamespace}:${gameKeyHash}:${userScope}`,
+      onAdIdentityState: (state, count) => {
+        try { this.log(`ad_view identity ${state}: count=${count}`); } catch { /* Diagnostics cannot block telemetry. */ }
+      },
     });
     const internalOptions = options as InternalClientOptions;
     if (internalOptions.autoStart !== false) {
@@ -310,6 +313,9 @@ export class GameAlgoRestClient {
         }),
       });
       this.tracker.bindSessionContext(sessionId, config.contextId);
+      if (this.platform === "web" && clean(config.contextId)) {
+        try { this.log("context ready"); } catch { /* Optional diagnostics. */ }
+      }
       if (sessionId !== this.tracker.currentSessionId()) return config;
       this.cachedConfig = {
         value: config,
@@ -407,13 +413,20 @@ export class GameAlgoRestClient {
       payload: normalizePayload(event.payload ?? {}),
     }));
 
-    return this.requestJson<EventBatchResponse>(this.url("/v1/events/batch"), {
+    const response = await this.requestJson<EventBatchResponse>(this.url("/v1/events/batch"), {
       method: "POST",
       headers: {
         "content-type": "application/json",
       },
       body: JSON.stringify({ events: normalizedEvents }),
     });
+    if (normalizedEvents.some(event => event.eventType === "ad_view")) {
+      const stored = (response as EventBatchResponse & { stored?: number }).stored;
+      try {
+        this.log(`ad_view upload ack: accepted=${response.accepted} stored=${typeof stored === "number" ? stored : "unknown"} rejected=${response.rejected?.length ?? 0}`);
+      } catch { /* A logger failure must not turn an HTTP ACK into a retry. */ }
+    }
+    return response;
   }
 
   private async reportSdkDiagnostic(diagnostic: Record<string, unknown>): Promise<void> {
@@ -534,21 +547,39 @@ export class GameAlgoRestClient {
   }
 
   private async initialize(options: RefreshOptions): Promise<void> {
-    const identity = await this.userIdentity(options.userId);
-    const userCreatedAt = clean(options.userCreatedAt) ?? identity.userCreatedAt;
-    this.logUserId(identity.userId);
-    this.tracker.identify(identity.userId, options.sessionId, userCreatedAt, clean(options.accountUserId) ?? this.accountUserId);
-    this.tracker.markSessionStarted();
-    await this.tracker.waitForRestore();
-    await this.loadPersistedSnapshot();
+    let stage = "identity";
     try {
-      await this.refresh({ ...options, userId: identity.userId, userCreatedAt, forceRefresh: true });
-    } catch (error) {
-      if (!this.snapshot.config) {
-        this.log(`config fetch failed: ${errorMessage(error)}`);
-        throw error;
+      const identityStartedAt = this.now();
+      if (this.platform === "web") {
+        try { this.log("identity restore started"); } catch { /* Optional diagnostics. */ }
       }
-      this.log(`config fetch failed, using cached snapshot: ${errorMessage(error)}`);
+      const identity = await this.userIdentity(options.userId);
+      const userCreatedAt = clean(options.userCreatedAt) ?? identity.userCreatedAt;
+      this.logUserId(identity.userId);
+      this.tracker.identify(identity.userId, options.sessionId, userCreatedAt, clean(options.accountUserId) ?? this.accountUserId);
+      if (this.platform === "web") {
+        try { this.log(`identity ready: elapsedMs=${Math.max(0, this.now() - identityStartedAt)}`); } catch { /* Optional diagnostics. */ }
+      }
+      this.tracker.markSessionStarted();
+      stage = "event-queue-restore";
+      await this.tracker.waitForRestore();
+      stage = "snapshot-restore";
+      await this.loadPersistedSnapshot();
+      try {
+        stage = "config";
+        await this.refresh({ ...options, userId: identity.userId, userCreatedAt, forceRefresh: true });
+      } catch (error) {
+        if (!this.snapshot.config) {
+          this.log(`config fetch failed: ${errorMessage(error)}`);
+          throw error;
+        }
+        this.log(`config fetch failed, using cached snapshot: ${errorMessage(error)}`);
+      }
+    } catch (error) {
+      if (this.platform === "web") {
+        try { this.log(`initialization failed: stage=${stage} errorType=${error instanceof Error ? error.name : typeof error}`); } catch { /* Optional diagnostics. */ }
+      }
+      throw error;
     }
   }
 
@@ -728,6 +759,11 @@ export class GameAlgoEventTracker {
   private inflightBatch: GameEvent[] = [];
   private readonly urgentEventIds = new Set<string>();
   private readonly urgentFlushes = new Map<string, Promise<EventBatchResponse[]>>();
+  // A real Web ad can close before asynchronous identity restoration finishes.
+  // Hold its immutable close envelope; never invent a temporary player ID.
+  private readonly pendingIdentityAds: Array<{ payload: JsonValue; options: TrackEventOptions }> = [];
+  private timersStopped = false;
+  private readonly onAdIdentityState?: (state: "buffered" | "released", count: number) => void;
   private restored = false;
   private flushTimer?: ReturnType<typeof setInterval>;
   private activeFlush?: Promise<EventBatchResponse[]>;
@@ -771,6 +807,7 @@ export class GameAlgoEventTracker {
     now: () => number;
     storage?: GameAlgoStorage;
     persistenceKey?: string;
+    onAdIdentityState?: (state: "buffered" | "released", count: number) => void;
   }) {
     this.uploadEvents = options.uploadEvents;
     this.reportDiagnostic = options.reportDiagnostic;
@@ -787,6 +824,7 @@ export class GameAlgoEventTracker {
     this.queueLimit = Math.max(options.queueLimit, this.maxBatchSize);
     this.persistOnEnqueue = options.persistOnEnqueue ?? false;
     this.now = options.now;
+    this.onAdIdentityState = options.onAdIdentityState;
     this.sessionStartMs = this.now();
     this.sessionDurationSampleAt = this.sessionStartMs;
     if (this.platform === "web") {
@@ -816,6 +854,13 @@ export class GameAlgoEventTracker {
     }
     if (clean(userCreatedAt)) this.userCreatedAt = userCreatedAt;
     if (clean(accountUserId)) this.accountUserId = accountUserId;
+    if (clean(this.userId)) {
+      const pending = this.pendingIdentityAds.splice(0);
+      if (pending.length) {
+        try { this.onAdIdentityState?.("released", pending.length); } catch { /* Optional diagnostics. */ }
+      }
+      for (const event of pending) this.track("ad_view", event.payload, event.options);
+    }
   }
 
   newSession(sessionId = randomId()): void {
@@ -958,7 +1003,23 @@ export class GameAlgoEventTracker {
 
   track(eventType: string, payload: JsonValue = {}, options: TrackEventOptions = {}): boolean {
     const userId = clean(options.userId ?? this.userId);
-    if (!userId) return false;
+    if (!userId) {
+      if (this.platform !== "web" || eventType !== "ad_view" || options.userId !== undefined) return false;
+      const timestamp = options.timestamp ?? new Date(this.now()).toISOString();
+      this.pendingIdentityAds.push({
+        payload: normalizePayload(payload),
+        options: {
+          ...options,
+          sessionId: clean(options.sessionId) ?? this.sessionId,
+          isDebug: options.isDebug ?? this.isDebug,
+          timestamp,
+          createdLocalAt: options.createdLocalAt ?? localTimestamp(Date.parse(timestamp)),
+        },
+      });
+      if (this.pendingIdentityAds.length > this.queueLimit) this.pendingIdentityAds.shift();
+      try { this.onAdIdentityState?.("buffered", this.pendingIdentityAds.length); } catch { /* Optional diagnostics. */ }
+      return true;
+    }
     const resolvedSessionId = clean(options.sessionId) ?? this.sessionId;
     const contextId = clean(options.contextId ?? (resolvedSessionId === this.sessionId ? this.contextId : undefined));
 
@@ -1369,6 +1430,7 @@ export class GameAlgoEventTracker {
   }
 
   close(): void {
+    this.timersStopped = true;
     if (this.sessionDurationTimer) {
       clearInterval(this.sessionDurationTimer);
       this.sessionDurationTimer = undefined;
@@ -1396,7 +1458,7 @@ export class GameAlgoEventTracker {
   }
 
   private startTimer(): void {
-    if (this.flushTimer || this.flushIntervalMs <= 0) return;
+    if (this.timersStopped || this.flushTimer || this.flushIntervalMs <= 0) return;
     this.flushTimer = setInterval(() => {
       void this.flush().catch(() => undefined);
     }, this.flushIntervalMs);

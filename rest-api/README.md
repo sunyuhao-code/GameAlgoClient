@@ -265,7 +265,7 @@ milestone
 client.tracker.trackMilestone("new_user", "进入第一关");
 ```
 
-广告变现使用标准 `ad_view`。Maker 激励视频使用 `GameAlgo.ShowRewardVideoAd`，TapTap H5 使用 `client.showRewardVideoAd`，由播放封装自动上报，游戏回调不重复统计。其他广告提供商在有效曝光/收入回调中上报本游戏已登记的 `adPlacementId`、真实 `revenue` 和可选 `network` / `trackId`，服务端补齐名称、类型和币种。
+广告变现使用标准 `ad_view`。Maker 激励视频使用 `GameAlgo.ShowRewardVideoAd`，TapTap H5 使用 `client.createAdSpace({ adUnitId }).show(...)`（旧 `client.showRewardVideoAd` 保留兼容），由播放封装自动上报，游戏回调不重复统计。其他广告提供商在有效曝光/收入回调中上报本游戏已登记的 `adPlacementId`、真实 `revenue` 和可选 `network` / `trackId`，服务端补齐名称、类型和币种。
 
 ```ts
 // 仅用于其他广告提供商已经确认的有效曝光/收入回调。

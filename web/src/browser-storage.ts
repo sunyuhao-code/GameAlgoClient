@@ -5,6 +5,8 @@ export type GameAlgoBrowserStorageOptions = {
   storeName?: string;
   indexedDB?: IDBFactory;
   localStorage?: Storage;
+  /** Optional diagnostics omit keys and stored values. */
+  logger?: ((message: string) => void) | false;
 };
 
 /**
@@ -18,21 +20,25 @@ export class GameAlgoBrowserStorage implements GameAlgoStorage {
   private readonly localStorage?: Storage;
   private readonly memory = new Map<string, string>();
   private databasePromise?: Promise<IDBDatabase>;
+  private readonly logger?: (message: string) => void;
+  private operationSequence = 0;
 
   constructor(options: GameAlgoBrowserStorageOptions = {}) {
     this.databaseName = options.databaseName ?? "gamealgo-sdk";
     this.storeName = options.storeName ?? "kv";
     this.indexedDB = options.indexedDB ?? globalThis.indexedDB;
     this.localStorage = options.localStorage ?? safeLocalStorage();
+    this.logger = typeof options.logger === "function" ? options.logger : undefined;
+    try { this.logger?.(`[GameAlgoSDK] storage capabilities indexedDB=${Boolean(this.indexedDB)} localStorage=${Boolean(this.localStorage)}`); } catch { /* Optional diagnostics. */ }
   }
 
   async getItem(key: string): Promise<string | undefined> {
-    return this.readItem(key, false);
+    return this.observe(`read ${storageCategory(key)}`, () => this.readItem(key, false));
   }
 
   /** @internal Queue commits cannot treat an in-memory fallback as durable. */
   async getItemDurably(key: string): Promise<string | undefined> {
-    return this.readItem(key, true);
+    return this.observe(`read-durable ${storageCategory(key)}`, () => this.readItem(key, true));
   }
 
   private async readItem(key: string, durable: boolean): Promise<string | undefined> {
@@ -69,12 +75,12 @@ export class GameAlgoBrowserStorage implements GameAlgoStorage {
   }
 
   async setItem(key: string, value: string): Promise<void> {
-    return this.writeItem(key, value, false);
+    return this.observe(`write ${storageCategory(key)}`, () => this.writeItem(key, value, false));
   }
 
   /** @internal Retain dirty chunks when both persistent stores are unavailable. */
   async setItemDurably(key: string, value: string): Promise<void> {
-    return this.writeItem(key, value, true);
+    return this.observe(`write-durable ${storageCategory(key)}`, () => this.writeItem(key, value, true));
   }
 
   private async writeItem(key: string, value: string, durable: boolean): Promise<void> {
@@ -108,12 +114,12 @@ export class GameAlgoBrowserStorage implements GameAlgoStorage {
   }
 
   async removeItem(key: string): Promise<void> {
-    return this.deleteItem(key, false);
+    return this.observe(`delete ${storageCategory(key)}`, () => this.deleteItem(key, false));
   }
 
   /** @internal Do not clean up chunks before their directory removal commits. */
   async removeItemDurably(key: string): Promise<void> {
-    return this.deleteItem(key, true);
+    return this.observe(`delete-durable ${storageCategory(key)}`, () => this.deleteItem(key, true));
   }
 
   private async deleteItem(key: string, durable: boolean): Promise<void> {
@@ -144,7 +150,7 @@ export class GameAlgoBrowserStorage implements GameAlgoStorage {
   private database(): Promise<IDBDatabase> {
     if (!this.indexedDB) return Promise.reject(new Error("IndexedDB is unavailable"));
     if (!this.databasePromise) {
-      this.databasePromise = new Promise((resolve, reject) => {
+      this.databasePromise = this.observe("indexeddb.open", () => new Promise<IDBDatabase>((resolve, reject) => {
         const request = this.indexedDB!.open(this.databaseName, 1);
         request.onupgradeneeded = () => {
           const database = request.result;
@@ -153,29 +159,68 @@ export class GameAlgoBrowserStorage implements GameAlgoStorage {
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error ?? new Error("Unable to open IndexedDB"));
         request.onblocked = () => reject(new Error("IndexedDB upgrade is blocked"));
-      });
+      }));
     }
     return this.databasePromise;
   }
 
   private async readIndexedDB(key: string): Promise<unknown> {
     const database = await this.database();
-    return await idbRequest(database.transaction(this.storeName, "readonly").objectStore(this.storeName).get(key));
+    return this.observe(`indexeddb.read ${storageCategory(key)}`, () => idbRequest(database.transaction(this.storeName, "readonly").objectStore(this.storeName).get(key)));
   }
 
   private async writeIndexedDB(key: string, value: string): Promise<void> {
     const database = await this.database();
-    const transaction = database.transaction(this.storeName, "readwrite");
-    transaction.objectStore(this.storeName).put(value, key);
-    await idbTransaction(transaction);
+    await this.observe(`indexeddb.write ${storageCategory(key)}`, async () => {
+      const transaction = database.transaction(this.storeName, "readwrite");
+      transaction.objectStore(this.storeName).put(value, key);
+      await idbTransaction(transaction);
+    });
   }
 
   private async deleteIndexedDB(key: string): Promise<void> {
     const database = await this.database();
-    const transaction = database.transaction(this.storeName, "readwrite");
-    transaction.objectStore(this.storeName).delete(key);
-    await idbTransaction(transaction);
+    await this.observe(`indexeddb.delete ${storageCategory(key)}`, async () => {
+      const transaction = database.transaction(this.storeName, "readwrite");
+      transaction.objectStore(this.storeName).delete(key);
+      await idbTransaction(transaction);
+    });
   }
+
+  private async observe<T>(stage: string, operation: () => T | Promise<T>): Promise<T> {
+    if (!this.logger) return operation();
+    const sequence = ++this.operationSequence;
+    const startedAt = Date.now();
+    const log = (status: string) => {
+      try { this.logger?.(`[GameAlgoSDK] storage op=${sequence} ${stage} ${status} elapsedMs=${Math.max(0, Date.now() - startedAt)}`); } catch { /* Diagnostics cannot alter storage. */ }
+    };
+    log("started");
+    const slowTimer = setTimeout(() => log("pending"), 3000);
+    slowTimer.unref?.();
+    try {
+      const result = await operation();
+      log(`complete resultType=${typeof result}`);
+      return result;
+    } catch (error) {
+      log(`failed errorType=${error instanceof Error ? error.name : typeof error}`);
+      throw error;
+    } finally {
+      clearTimeout(slowTimer);
+    }
+  }
+}
+
+function storageCategory(key: string): string {
+  if (key.startsWith("gamealgo:v1:identity:")) {
+    if (key.endsWith(":user-id")) return "identity.userId";
+    if (key.endsWith(":created-at")) return "identity.createdAt";
+    if (key.endsWith(":created-local-at")) return "identity.createdLocalAt";
+    return "identity";
+  }
+  if (key.startsWith("gamealgo_user_")) return "identity.legacy";
+  if (key.startsWith("gamealgo:v1:event-queue:")) return "event-queue";
+  if (key.startsWith("gamealgo:v1:snapshot:")) return "snapshot";
+  return "cache";
 }
 
 function safeLocalStorage(): Storage | undefined {

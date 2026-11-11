@@ -4,6 +4,42 @@ import { GameAlgoBrowserStorage } from "./browser-storage.ts";
 import { IncrementalEventQueue } from "../../rest-api/src/event-queue-store.ts";
 import type { GameEvent } from "../../rest-api/src/types.ts";
 
+test("storage diagnostics distinguish a pending database open without timing out or changing its result", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const logs: string[] = [];
+  const request = {} as IDBOpenDBRequest;
+  const get = {} as IDBRequest;
+  const key = "gamealgo:v1:identity:private-game-hash:user-id";
+  const storage = new GameAlgoBrowserStorage({
+    indexedDB: { open: () => request } as unknown as IDBFactory,
+    localStorage: { getItem: () => null } as unknown as Storage,
+    logger: line => logs.push(line),
+  });
+  let settled = false;
+  const read = storage.getItem(key).then(value => { settled = true; return value; });
+  t.mock.timers.tick(3000);
+  assert.equal(settled, false);
+  assert.ok(logs.some(line => /indexeddb.open pending/.test(line)));
+  Object.assign(request, { result: { transaction: () => ({ objectStore: () => ({ get: () => get }) }) } });
+  request.onsuccess?.({} as Event);
+  await Promise.resolve(); await Promise.resolve();
+  assert.ok(logs.some(line => /indexeddb.read identity.userId started/.test(line)));
+  Object.assign(get, { result: "private-real-user" });
+  get.onsuccess?.({} as Event);
+  assert.equal(await read, "private-real-user");
+  assert.ok(logs.some(line => /read identity.userId complete/.test(line)));
+  assert.ok(logs.every(line => !line.includes(key) && !line.includes("private-real-user") && !line.includes("private-game-hash")));
+});
+
+test("an optional diagnostic logger cannot break storage fallback", async () => {
+  const storage = new GameAlgoBrowserStorage({
+    indexedDB: {} as IDBFactory,
+    localStorage: { getItem: () => "existing-real-user" } as unknown as Storage,
+    logger() { throw new Error("logger failed"); },
+  });
+  assert.equal(await storage.getItem("identity"), "existing-real-user");
+});
+
 test("an unread primary cannot be replaced by an unmarked stale fallback queue", async () => {
   const local = { getItem: (key: string) => key === "queue" ? "stale" : null } as Storage;
   const value = new GameAlgoBrowserStorage({ indexedDB: {} as IDBFactory, localStorage: local });

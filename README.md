@@ -98,7 +98,7 @@ examples/   接入示例
 
 广告曝光使用标准 `ad_view` 事件，携带 CLI 返回的本游戏 `adPlacementId`、真实 `revenue` 和可选 `network`、`trackId` 等动态字段。名称、广告类型和币种由服务端按登记定义补齐，币种必须与实际收入单位一致。先登记点位再接入；服务端继续兼容已发布旧 SDK 的历史格式。
 
-Maker Lua `2.1.3-lua` 起提供 `GameAlgo.ShowRewardVideoAd(id, callback?, payload?)`，TapTap H5 Web `2.1.4` 起提供 `client.showRewardVideoAd(id, { adUnitId, onClose, onError }, payload?)`。这些封装调用真实宿主广告接口，统一处理 trackId、去重和曝光上报；游戏回调只处理奖励与收尾，不重复调用底层曝光接口。精确语义见各平台 README。
+Maker Lua `2.1.3-lua` 起提供 `GameAlgo.ShowRewardVideoAd(id, callback?, payload?)`，TapTap H5 Web `2.1.6` 起推荐 `const rewardAd = client.createAdSpace({ adUnitId })`，可选调用 `rewardAd.preload()`，播放时调用 `rewardAd.show(id, { onClose, onError }, payload?)`；不预加载也能直接播放。旧 `client.showRewardVideoAd` 保留兼容。这些封装调用真实宿主广告接口，统一处理 trackId、去重和曝光上报；游戏回调只处理奖励与收尾，不重复调用底层曝光接口。精确语义见各平台 README。
 
 Protocol v1 有五份客户端实现，都在本仓库：iOS / Android / Web / Lua / Godot。`protocol/openapi.yaml` 是唯一真相源，`protocol/fixtures/` 是跨实现的共同闸门。
 

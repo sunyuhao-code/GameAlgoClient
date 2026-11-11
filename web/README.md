@@ -99,12 +99,12 @@ does not produce an extra log.
 
 ### TapTap H5 rewarded ads
 
-Since `@gamealgo/web@2.1.4`, use the SDK wrapper for TapTap H5 rewarded ads:
+Since `@gamealgo/web@2.1.6`, use an ad-space handle for TapTap H5 rewarded ads:
 
 First inspect this game's existing ad integration. If it already has a real
 `adUnitId`, reuse its variable, configuration or lookup without calling MCP or
 asking the developer for it again. Route rewarded-ad playback through
-`showRewardVideoAd`, reusing that ID and the game reward/cleanup callbacks. The
+`client.createAdSpace({ adUnitId }).show(...)`, reusing that ID and the game reward/cleanup callbacks. The
 wrapper reports automatically; do not report the same exposure again in its `onClose`.
 
 Only for new ads or missing configuration, obtain `adUnitId` through the official
@@ -125,17 +125,24 @@ integration flow. Maker/UrhoX uses the Maker MCP's `get_ad_config` and Lua APIs;
 do not mix its tools, app context or IDs with this H5 flow.
 
 ```ts
-try {
-  await gameAlgo.showRewardVideoAd(adPlacementIds.revive, {
-    adUnitId: tapTapAdUnitId, // Existing game config, or H5 MCP value when absent.
-    onClose(result) {
-      if (result?.isEnded === true) revivePlayer();
-      // Keep game UI/audio cleanup here; do not report the same ad again.
-    },
-    onError(error) { showAdUnavailable(error); },
-  }, { level_no: currentLevel });
-} catch (error) {
-  showAdUnavailable(error);
+const rewardAd = gameAlgo.createAdSpace({ adUnitId: tapTapAdUnitId });
+
+// Optional: prepare when entering the relevant scene; do not block the game.
+rewardAd.preload().catch(error => console.warn("Ad preload failed", error));
+
+async function onReviveClick() {
+  try {
+    // Works without preload too: the SDK loads before showing when needed.
+    await rewardAd.show(adPlacementIds.revive, {
+      onClose(result) {
+        if (result?.isEnded === true) revivePlayer();
+        // Keep UI/audio cleanup here; do not report the same ad again.
+      },
+      onError(error) { showAdUnavailable(error); },
+    }, { level_no: currentLevel });
+  } catch (error) {
+    showAdUnavailable(error);
+  }
 }
 ```
 
@@ -143,26 +150,66 @@ Register the GameAlgo placement as `reward` / `CNY` first. Its `gap_` ID and the
 TapTap `adUnitId` are different IDs. This wrapper requires the TapTap H5 host;
 it does not intercept external ad instances or support unrelated ad providers.
 
-`showRewardVideoAd(id, options, payload?): Promise<void>` creates one native
-`tap.createRewardedVideoAd({adUnitId})` instance, attaches `onClose` / `onError`,
-then calls optional `load()` and `show()`. The Promise follows load/show calls;
-it does **not** wait for close or confirm completion, a reward, or ingestion.
-Native creation/load/show exceptions and rejections reject the Promise unchanged.
-Native `onError` is forwarded once; it creates no exposure or synthetic Promise
-rejection. Both callbacks are optional and receive all original arguments.
-The SDK neither invents lifecycle events nor grants rewards or retries ads.
+`client.createAdSpace({ adUnitId }): GameAlgoRewardAdSpace` returns a logical
+rewarded-ad handle. It snapshots the unit ID and returns the same handle for the
+same client/unit. Creation itself does not contact the host, load, show or report
+an ad. It currently supports TapTap H5 rewarded video only.
 
-On the first real `onClose`, the SDK extracts the original track ID from all
-callback arguments, reports `ad_view` with revenue `0` and network `taptap`,
-starts the urgent keepalive upload, then calls game code. Early close,
-`isEnded=false`, failure codes and a missing ID still report. A missing ID is
-logged through the optional SDK logger; a stale `payload.trackId` is never used.
-The payload is copied at request time. Each playback has its own duplicate guard;
-duplicate close callbacks neither report nor run game code again. A queued real
-close after a native error still counts. Callback and cleanup exceptions cannot
-undo reporting; a reporting exception does not block the game callback.
-The SDK releases its listeners and owned instance after close/failure and on
-`client.close()`, which also makes retained callbacks inert.
+`rewardAd.preload(): Promise<void>` is optional and needs no GameAlgo placement.
+It creates/reuses the native instance and resolves after native load success;
+concurrent loads are shared. It never calls show, invokes reward callbacks or
+reports `ad_view`. A native error rejects preload with the original value as its
+cause; native Promise rejections are preserved. Loading is bounded to 30 seconds;
+a timeout retires the instance and the next explicit request can try again.
+
+`rewardAd.show(adPlacementId, callbacks?, payload?): Promise<void>` can be called
+without preload. It loads if needed or joins an in-flight load; a ready instance
+calls native show in the caller's click stack without an intervening await.
+Its Promise follows load/show calls, does **not** wait for close, and does not
+confirm completion, a reward or ingestion. Native creation/load/show exceptions
+and rejections reject unchanged. Native `onError` is forwarded once, without an
+exposure or a synthetic Promise rejection. Both callbacks are optional and
+receive all original arguments. Only the game decides whether to grant rewards.
+
+The default native singleton is shared, including its playback lock across
+WebClients. Normal close keeps the instance and removes only this playback's
+listeners/context. Different GameAlgo placements can reuse one native unit.
+Changing native units is allowed only while idle; loading/playing conflicts
+reject as busy, without queuing another ad. An automatic native onLoad can ready
+the next playback; the SDK does not add background reload/retry loops. Hosts
+without reliable listener removal retire the instance instead of accumulating
+callbacks. `client.close()` releases ownership, cancels pending calls and makes
+that client's retained callbacks inert.
+
+On the first real `onClose` after show has been called, the SDK extracts the
+original track ID, reports `ad_view` with revenue `0` and network `taptap`, starts
+the urgent keepalive upload, then invokes game code. Early close, failure codes,
+`isEnded=false` and a missing ID still report. A stale `payload.trackId` is never
+used. The payload and callbacks belong to that playback, not to preload. Each
+playback ignores duplicate closes; recently reported track IDs also guard
+against old closes redelivered to a later listener. A queued real close after a
+native error retains its original context. Callback/cleanup exceptions cannot
+undo reporting, and a reporting exception cannot block the game callback.
+
+If a real ad closes before asynchronous identity restoration completes, its
+exposure waits in a bounded in-memory buffer. After the real identity and session
+context arrive, it uploads with the original close time, session and track ID;
+the SDK does not invent a temporary identity or block the game callback. This
+pre-identity buffer cannot survive page termination. Optional logger messages
+show `identity restore started`, `identity ready`, `ad_view identity buffered`,
+`ad_view identity released`, `context ready` and `ad_view upload ack`. Acceptance
+into the local buffer (`queued=true`) is distinct from a server upload ACK.
+
+For storage diagnosis only, pass `browserStorage: { logger: console.info }`
+(or a logger to an explicitly created `GameAlgoBrowserStorage`). It records
+operation stages, duration, result types and a pending notice after 3 seconds,
+without printing storage keys or values. These notices do not cancel operations
+or replace an existing identity. Storage diagnostics are off by default.
+
+`client.showRewardVideoAd(id, { adUnitId, onClose, onError }, payload?)` remains
+compatible and uses the same instance manager. `client.preloadRewardVideoAd({
+adUnitId })` is a direct preload shortcut. New integrations use the ad-space
+handle and do not run another native AdManager alongside it.
 
 Existing TapTap H5 rewarded-ad integrations should route playback through this
 wrapper, reusing the game's real ad unit ID and reward/cleanup callbacks.
