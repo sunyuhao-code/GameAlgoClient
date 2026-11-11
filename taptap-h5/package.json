@@ -1,0 +1,44 @@
+{
+  "name": "@gamealgo/taptap-h5",
+  "version": "2.1.8",
+  "description": "GameAlgo SDK for TapTap H5 minigames",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sunyuhao-code/GameAlgoClient.git",
+    "directory": "taptap-h5"
+  },
+  "homepage": "https://github.com/sunyuhao-code/GameAlgoClient/tree/main/taptap-h5#readme",
+  "bugs": {
+    "url": "https://github.com/sunyuhao-code/GameAlgoClient/issues"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/taptap-h5/src/index.d.ts",
+      "import": "./dist/taptap-h5/src/index.js"
+    }
+  },
+  "types": "./dist/taptap-h5/src/index.d.ts",
+  "files": [
+    "dist/",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "node ../scripts/build-taptap-h5.mjs",
+    "prepack": "npm run build && node ../scripts/check-web-package.mjs"
+  },
+  "dependencies": {
+    "@jitl/quickjs-wasmfile-release-sync": "^0.32.0",
+    "quickjs-emscripten-core": "^0.32.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "./dist/taptap-h5/src/index.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}

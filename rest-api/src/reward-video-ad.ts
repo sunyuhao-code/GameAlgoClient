@@ -1,7 +1,6 @@
-// TapTap's default rewarded ad is a host singleton, not a GameAlgo placement.
-// Share ownership and the playback lock even across WebClient instances.
+// Share native ad ownership and playback locks across clients of the same host.
 export type RewardVideoCallback = (...values: unknown[]) => void;
-export type TapRewardVideoAd = {
+export type NativeRewardVideoAd = {
   load?: () => unknown;
   show: () => unknown;
   onLoad?: (callback: RewardVideoCallback) => void;
@@ -12,7 +11,7 @@ export type TapRewardVideoAd = {
   offError?: (callback: RewardVideoCallback) => void;
   destroy?: () => void;
 };
-type TapRewardVideoHost = { createRewardedVideoAd: (options: { adUnitId: string }) => TapRewardVideoAd };
+export type RewardVideoHost = { createRewardedVideoAd: (options: { adUnitId: string }) => NativeRewardVideoAd };
 type LoadResult = { ok: true } | { ok: false; values: unknown[] };
 type LoadOperation = {
   promise: Promise<LoadResult>;
@@ -20,11 +19,11 @@ type LoadOperation = {
   reject: (error: unknown) => void;
   timer?: ReturnType<typeof setTimeout>;
 };
-const hostSlots = new WeakMap<TapRewardVideoHost, RewardVideoSlot>();
+const hostSlots = new WeakMap<RewardVideoHost, RewardVideoSlot>();
 const LOAD_TIMEOUT_MS = 30_000;
 
 export type RewardVideoPlayback = {
-  ad: TapRewardVideoAd;
+  ad: NativeRewardVideoAd;
   readonly ready: boolean;
   readonly cleaning: boolean;
   load: () => Promise<LoadResult>;
@@ -35,7 +34,7 @@ export type RewardVideoPlayback = {
 
 export function validateRewardVideoAdUnit(options: { adUnitId: string }): void {
   if (!options || typeof options.adUnitId !== "string" || !options.adUnitId.trim()) {
-    throw new Error("Invalid TapTap rewarded ad options");
+    throw new Error("Invalid Host rewarded ad options");
   }
 }
 
@@ -45,8 +44,10 @@ export class RewardVideoAdPool {
   private readonly waiting = new Set<(reason: Error) => void>();
   private readonly preparationTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly logger?: (message: string) => void;
+  private readonly hostProvider: () => RewardVideoHost | undefined;
 
-  constructor(logger?: (message: string) => void) {
+  constructor(hostProvider: () => RewardVideoHost | undefined, logger?: (message: string) => void) {
+    this.hostProvider = hostProvider;
     this.logger = logger;
   }
 
@@ -56,14 +57,14 @@ export class RewardVideoAdPool {
     const prepare = () => {
       this.preparationTimers.delete(adUnitId);
       if (this.closed) return;
-      const tap = (globalThis as { tap?: Partial<TapRewardVideoHost> }).tap;
+      const tap = this.hostProvider();
       if (typeof tap?.createRewardedVideoAd !== "function") {
         if (Date.now() < discoveryDeadline) schedule(250);
         return;
       }
-      // TapTap has one native slot. Background work never switches an idle
+      // Host has one native slot. Background work never switches an idle
       // unit away from another handle or interrupts its loading/playback.
-      const current = hostSlots.get(tap as TapRewardVideoHost);
+      const current = hostSlots.get(tap as RewardVideoHost);
       if (current && current.adUnitId !== adUnitId) return;
       try { this.acquire(adUnitId).prepare(); }
       catch { this.log("automatic preload failed"); }
@@ -82,7 +83,7 @@ export class RewardVideoAdPool {
 
   begin(adUnitId: string): RewardVideoPlayback {
     const slot = this.acquire(adUnitId);
-    if (slot.playback) throw new Error("TapTap rewarded ad is busy");
+    if (slot.playback) throw new Error("Host rewarded ad is busy");
     const playback: RewardVideoPlayback = {
       ad: slot.ad,
       get ready() { return slot.ready; },
@@ -138,13 +139,13 @@ export class RewardVideoAdPool {
 
   private acquire(adUnitId: string): RewardVideoSlot {
     if (this.closed) throw new Error("GameAlgo client is closed");
-    const tap = (globalThis as { tap?: Partial<TapRewardVideoHost> }).tap;
-    if (typeof tap?.createRewardedVideoAd !== "function") throw new Error("TapTap rewarded ads are unavailable in this host");
-    const host = tap as TapRewardVideoHost;
+    const tap = this.hostProvider();
+    if (typeof tap?.createRewardedVideoAd !== "function") throw new Error("Host rewarded ads are unavailable in this host");
+    const host = tap as RewardVideoHost;
     let slot = hostSlots.get(host);
     if (slot && slot.adUnitId !== adUnitId) {
-      if (slot.playback || slot.loading) throw new Error("TapTap rewarded ad is busy");
-      if (!slot.ad.destroy) throw new Error("TapTap host cannot switch rewarded ad units without destroy");
+      if (slot.playback || slot.loading) throw new Error("Host rewarded ad is busy");
+      if (!slot.ad.destroy) throw new Error("Host host cannot switch rewarded ad units without destroy");
       slot.destroy();
       slot = undefined;
     }
@@ -159,10 +160,10 @@ export class RewardVideoAdPool {
 }
 
 class RewardVideoSlot {
-  private readonly host: TapRewardVideoHost;
+  private readonly host: RewardVideoHost;
   readonly adUnitId: string;
   readonly owners = new Set<RewardVideoAdPool>();
-  readonly ad: TapRewardVideoAd;
+  readonly ad: NativeRewardVideoAd;
   ready = false;
   cleaning = false;
   loading?: LoadOperation;
@@ -185,13 +186,13 @@ class RewardVideoSlot {
     }
   };
 
-  constructor(host: TapRewardVideoHost, adUnitId: string) {
+  constructor(host: RewardVideoHost, adUnitId: string) {
     this.host = host;
     this.adUnitId = adUnitId;
     this.ad = host.createRewardedVideoAd({ adUnitId });
     try {
       if (typeof this.ad?.onClose !== "function" || typeof this.ad.show !== "function") {
-        throw new Error("Incomplete TapTap rewarded ad API");
+        throw new Error("Incomplete Host rewarded ad API");
       }
       this.ad.onLoad?.(this.onLoad);
       this.ad.onError?.(this.onError);
@@ -221,7 +222,7 @@ class RewardVideoSlot {
   }
 
   load(requireReady: boolean): Promise<LoadResult> {
-    if (this.disposed) return Promise.reject(new Error("TapTap rewarded ad instance was released"));
+    if (this.disposed) return Promise.reject(new Error("Host rewarded ad instance was released"));
     if (this.ready) return Promise.resolve({ ok: true });
     if (this.loading) return this.loading.promise;
     const operation: LoadOperation = {
@@ -242,13 +243,13 @@ class RewardVideoSlot {
         }, (error) => this.failLoad(operation, error));
       } else if (this.ready) this.finishLoad(operation, { ok: true });
       else if (!this.ad.onLoad) {
-        if (requireReady) this.failLoad(operation, new Error("TapTap host cannot confirm rewarded ad preload readiness"));
+        if (requireReady) this.failLoad(operation, new Error("Host host cannot confirm rewarded ad preload readiness"));
         else this.finishLoad(operation, { ok: true }); // Legacy hosts may only support show().
       }
       if (this.loading === operation) {
         operation.timer = setTimeout(() => {
           if (requireReady) for (const owner of this.owners) owner.log("automatic preload failed");
-          this.failLoad(operation, new Error("TapTap rewarded ad load timed out"));
+          this.failLoad(operation, new Error("Host rewarded ad load timed out"));
           this.destroy();
         }, LOAD_TIMEOUT_MS);
       }
@@ -273,7 +274,7 @@ class RewardVideoSlot {
     this.preparationTimer = undefined;
     this.cleaning = true;
     if (hostSlots.get(this.host) === this) hostSlots.delete(this.host);
-    if (this.loading) this.failLoad(this.loading, new Error("TapTap rewarded ad instance was released"));
+    if (this.loading) this.failLoad(this.loading, new Error("Host rewarded ad instance was released"));
     for (const owner of this.owners) owner.slots.delete(this);
     this.owners.clear();
     for (const release of [() => this.ad?.offLoad?.(this.onLoad), () => this.ad?.offError?.(this.onError), () => this.ad?.destroy?.()]) {

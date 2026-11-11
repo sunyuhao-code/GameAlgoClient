@@ -1,4 +1,5 @@
-import { GameAlgoWebClient } from "../../dist/web/src/index.js";
+import { GameAlgoTapTapH5Client } from "@gamealgo/taptap-h5";
+import { GameAlgoWebClient } from "@gamealgo/web";
 
 declare global {
   interface Window {
@@ -13,7 +14,8 @@ declare global {
 }
 
 async function run(): Promise<void> {
-  const client = GameAlgoWebClient.init({
+  if (GameAlgoTapTapH5Client !== GameAlgoWebClient) throw new Error("Compatibility entry loaded a different SDK");
+  const client = GameAlgoTapTapH5Client.init({
     baseUrl: location.origin,
     gameKey: "ga_live_browser_e2e",
     appVersion: "e2e",

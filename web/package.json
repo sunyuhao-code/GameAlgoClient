@@ -1,44 +1,31 @@
 {
   "name": "@gamealgo/web",
-  "version": "2.1.7",
-  "description": "GameAlgo SDK for H5 games and browser WebViews",
+  "version": "2.1.8",
+  "description": "Compatibility entry for the GameAlgo TapTap H5 SDK; new integrations use @gamealgo/taptap-h5",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/sunyuhao-code/GameAlgoClient.git",
     "directory": "web"
   },
-  "homepage": "https://github.com/sunyuhao-code/GameAlgoClient#readme",
+  "homepage": "https://github.com/sunyuhao-code/GameAlgoClient/tree/main/taptap-h5#readme",
   "bugs": {
     "url": "https://github.com/sunyuhao-code/GameAlgoClient/issues"
   },
   "type": "module",
   "exports": {
     ".": {
-      "types": "./dist/web/src/index.d.ts",
-      "import": "./dist/web/src/index.js"
+      "types": "./index.d.ts",
+      "import": "./index.js"
     }
   },
-  "types": "./dist/web/src/index.d.ts",
-  "files": [
-    "dist/",
-    "README.md"
-  ],
+  "types": "./index.d.ts",
+  "main": "./index.js",
+  "files": ["index.js", "index.d.ts", "README.md"],
+  "dependencies": {
+    "@gamealgo/taptap-h5": "2.1.8"
+  },
   "publishConfig": {
     "access": "public"
   },
-  "scripts": {
-    "build": "tsc -p tsconfig.json && node ../scripts/rewrite-web-worker-path.mjs",
-    "prepack": "npm run build && node ../scripts/check-web-package.mjs"
-  },
-  "dependencies": {
-    "@jitl/quickjs-wasmfile-release-sync": "^0.32.0",
-    "quickjs-emscripten-core": "^0.32.0"
-  },
-  "engines": {
-    "node": ">=18"
-  },
-  "main": "./dist/web/src/index.js",
-  "keywords": [],
-  "author": "",
   "license": "ISC"
 }

@@ -11,16 +11,25 @@
     "inlineSources": true,
     "strict": true,
     "skipLibCheck": true,
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "types": ["node"],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "node"
+    ],
     "rewriteRelativeImportExtensions": true
   },
   "include": [
     "src/**/*.ts",
-    "../rest-api/src/client.ts",
+    "../rest-api/src/core-client.ts",
     "../rest-api/src/dda.ts",
     "../rest-api/src/sha256.ts",
     "../rest-api/src/types.ts"
   ],
-  "exclude": ["src/**/*.test.ts", "../rest-api/src/**/*.test.ts"]
+  "exclude": [
+    "src/**/*.test.ts",
+    "../rest-api/src/**/*.test.ts"
+  ]
 }

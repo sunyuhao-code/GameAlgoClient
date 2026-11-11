@@ -1,6 +1,6 @@
 # GameAlgo Client
 
-GameAlgo Client 是公开客户端仓库，包含 iOS SDK、Android SDK、H5 / Web SDK、TapTap Maker / Lua SDK、Godot SDK、底层 TypeScript HTTP helper 和协议定义。CLI 在独立的 [GameAlgoCli 仓库](https://github.com/sunyuhao-code/GameAlgoCli)维护和发布。
+GameAlgo Client 是公开客户端仓库，包含 iOS SDK、Android SDK、微信小游戏 SDK、TapTap H5 SDK、TapTap Maker / Lua SDK、Godot SDK、底层 TypeScript HTTP helper 和协议定义。现有 H5 SDK 统一归为 TapTap H5；其他小游戏宿主使用独立 SDK，共享协议与底层核心逻辑。CLI 在独立的 [GameAlgoCli 仓库](https://github.com/sunyuhao-code/GameAlgoCli)维护和发布。
 
 产品能力、接入流程、埋点、实验、报表与优化方法由 GameAlgo Server 在线文档统一维护，不在本仓库保留副本。
 
@@ -40,7 +40,7 @@ gamealgo whoami --json
 确认目标游戏后，两种接入方式都继续读取计划：
 
 ```bash
-gamealgo integration get-plan --environment <domestic|overseas> --platform <ios|android|maker|web> --out gamealgo-integration-plan.json
+gamealgo integration get-plan --environment <domestic|overseas> --platform <ios|android|maker|web|wechat> --out gamealgo-integration-plan.json
 ```
 
 SDK 接入必须先执行 `integration get-plan`，并按返回的完整清单完成接入和真实运行验证。临时接入阶段直接读取该计划，不要求先读取需要正式管理权限的优化任务目录。不要依赖只读某一份 README 后自行推断其他平台规则。
@@ -59,7 +59,8 @@ gamealgo experiment run create --help
 
 - [iOS SDK](./ios/README.md)
 - [Android SDK](./android/README.md)
-- [H5 / Web SDK](./web/README.md)
+- [微信小游戏 SDK](./wechat/README.md)
+- [TapTap H5 SDK](./taptap-h5/README.md)
 - [TapTap Maker / Lua SDK](./lua/README.md)
 - [Godot SDK](./godot/README.md)
 - [底层 TypeScript HTTP helper](./rest-api/README.md)
@@ -78,14 +79,16 @@ Godot SDK 只支持 `ios` 和 `android` 两个导出目标，上报的 `platform
 
 Godot SDK 的埋点、归因、标识映射、自定义事件配额和 milestone 去重与其他 SDK 一致。
 
-目前 CLI 还没有 Godot 接入形态。`--platform` 的取值是上报平台（`ios|android|maker|web`），Godot 项目应按目标导出平台取接入计划，其中「安装 SDK」一节以 [`godot/README.md`](./godot/README.md) 为准。
+目前 CLI 还没有 Godot 接入形态。`--platform` 的取值是上报平台（`ios|android|maker|web|wechat`），Godot 项目应按目标导出平台取接入计划，其中「安装 SDK」一节以 [`godot/README.md`](./godot/README.md) 为准。
 
 ## 仓库结构
 
 ```text
 ios/        iOS Swift Package SDK
 android/    Android Java SDK core
-web/        H5 / Web 浏览器 SDK
+taptap-h5/  TapTap H5 SDK（@gamealgo/taptap-h5）
+web/        旧 @gamealgo/web 兼容入口
+wechat/     微信小游戏 SDK（@gamealgo/wechat）
 rest-api/   底层 TypeScript HTTP helper 和协议示例
 lua/        TapTap Maker / Lua SDK
 godot/      Godot 4 GDScript SDK
@@ -141,6 +144,10 @@ Android 模拟器／真机的 instrumentation 命令见 `android/README.md`；We
 
 Android AAR、Godot 发布包（`gamealgo-godot-<version>.zip`，含 iOS / Android 运行时二进制）和 Web npm 包由语义化版本 tag（`v1.2.3` 或 `1.2.3`）触发 `.github/workflows/release.yml` 构建，并附加到对应 GitHub Release。三个平台在各自的 runner 上并行构建，由同一个 `publish` job 统一发布。任一平台构建失败就不会发布，不会留下只有一部分产物的 Release。
 
-GitHub Release 成功后，独立的 `.github/workflows/publish.yml` 会仿照 GameAlgoCli 使用 `environment: npm` 和 OIDC trusted publishing 发布 `@gamealgo/web`。整仓 Release tag 与 Web npm 包各自独立版本；工作流读取 `web/package.json`，已发布的版本会安全跳过。npm 侧需要把 `sunyuhao-code/GameAlgoClient`、`publish.yml` 和 `npm` environment 配置为 package trusted publisher，不再需要 `NPM_TOKEN`。
+GitHub Release 成功后，独立的 `.github/workflows/publish.yml` 使用 `environment: npm` 和 OIDC trusted publishing，按顺序发布 `@gamealgo/taptap-h5`、`@gamealgo/web` 兼容入口和 `@gamealgo/wechat`。前两者版本一致，兼容包精确依赖同版本的 TapTap H5 包；微信包版本独立，已发布版本会安全跳过。整仓 Release tag 与 npm 包版本独立。三个 npm 包都需要把 `sunyuhao-code/GameAlgoClient`、`publish.yml` 和 `npm` environment 配置为 trusted publisher；新包首次创建时先完成 npm 侧初始化。
 
-仅更新 Web npm 包时，在 **Publish Web npm** 工作流上手动运行 `workflow_dispatch` 即可，无需创建整仓 Release tag 或重发其他平台产物。Maker / Lua SDK 从仓库源码同步，不依赖 npm 发布。
+仅更新 JavaScript npm 包时，在 **Publish JavaScript npm** 工作流上手动运行 `workflow_dispatch` 即可，无需创建整仓 Release tag 或重发原生平台产物。Maker / Lua SDK 从仓库源码同步，不依赖 npm 发布。
+
+`@gamealgo/web` 与 `GameAlgoWebClient` 保留兼容；新接入使用 `@gamealgo/taptap-h5` 的 `GameAlgoTapTapH5Client`。协议中的 `web` 继续表示 TapTap H5，历史数据不重写，操作系统继续由 `device.os` 表达。微信小游戏使用 `@gamealgo/wechat` 与 `platform=wechat`；首版支持原生采集、持久化、生命周期、广告封装和参数配置，不执行远端脚本。
+
+微信客户端的服务端联调要求及真机验证范围见 [对接说明](./wechat/SERVER_HANDOFF.md)。

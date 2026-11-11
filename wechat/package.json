@@ -1,0 +1,38 @@
+{
+  "name": "@gamealgo/wechat",
+  "version": "1.0.0",
+  "description": "GameAlgo SDK for WeChat minigames",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sunyuhao-code/GameAlgoClient.git",
+    "directory": "wechat"
+  },
+  "homepage": "https://github.com/sunyuhao-code/GameAlgoClient/tree/main/wechat#readme",
+  "bugs": {
+    "url": "https://github.com/sunyuhao-code/GameAlgoClient/issues"
+  },
+  "type": "module",
+  "main": "./dist/commonjs/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/types/wechat/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/wechat/src/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/commonjs/index.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "SERVER_HANDOFF.md"
+  ],
+  "scripts": {
+    "build": "node ../scripts/build-wechat.mjs",
+    "prepack": "npm run build"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "ISC"
+}

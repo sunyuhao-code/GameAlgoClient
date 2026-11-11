@@ -38,7 +38,7 @@ test("local simulator and transport integration entry points remain available", 
   assert.equal(scripts["check:godot:ios"], "node scripts/test-godot-ios-session.mjs");
   assert.equal(scripts["check:godot:http"], "python3 scripts/test-godot-http-timeout.py");
   for (const file of ["scripts/test-godot-ios-session.mjs", "scripts/test-godot-http-timeout.py",
-    "web/e2e/run-browser-test.mjs", "web/e2e/run-ios-webview-test.mjs"]) {
+    "taptap-h5/e2e/run-browser-test.mjs", "taptap-h5/e2e/run-ios-webview-test.mjs"]) {
     assert.ok(readFileSync(new URL(`../../${file}`, import.meta.url)).length > 0);
   }
 });

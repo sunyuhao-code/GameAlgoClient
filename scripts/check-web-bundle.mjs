@@ -15,14 +15,14 @@ await writeFile(join(fixture, "index.html"),
 // Keep both the client and the worker API reachable, as they are in a game.
 // Import the built package entry so its rewritten worker URL is tested too.
 await writeFile(join(fixture, "main.js"), `
-import { GameAlgoWebClient, GameAlgoWebScriptRuntime } from "@gamealgo/web";
-globalThis.__gameAlgoBundleProbe = { GameAlgoWebClient, GameAlgoWebScriptRuntime };
+import { GameAlgoTapTapH5Client, GameAlgoWebScriptRuntime } from "@gamealgo/taptap-h5";
+import { GameAlgoWebClient } from "@gamealgo/web";
+globalThis.__gameAlgoBundleProbe = { GameAlgoTapTapH5Client, GameAlgoWebClient, GameAlgoWebScriptRuntime };
 `);
 await build({
   configFile: false,
   root: fixture,
   logLevel: "error",
-  resolve: { alias: [{ find: /^@gamealgo\/web$/, replacement: join(root, "web/dist/web/src/index.js") }] },
   worker: { format: "es" },
   build: { outDir: output, emptyOutDir: true, sourcemap: false, minify: true },
 });

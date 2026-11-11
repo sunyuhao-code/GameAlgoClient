@@ -1,4 +1,4 @@
-import { GameAlgoRestClient } from "../../rest-api/src/client.ts";
+import { GameAlgoRestClient } from "../../rest-api/src/core-client.ts";
 import type {
   ConfigResponse,
   FetchConfigOptions,
@@ -10,9 +10,10 @@ import type {
 import { GameAlgoBrowserStorage, type GameAlgoBrowserStorageOptions } from "./browser-storage.ts";
 import { GameAlgoWebScriptRuntime } from "./script-runtime.ts";
 import { GameAlgoMatchmakingClient } from "./multiplayer.ts";
-import { RewardVideoAdPool, validateRewardVideoAdUnit, type RewardVideoCallback, type RewardVideoPlayback, type TapRewardVideoAd } from "./reward-video-ad.ts";
+import { RewardVideoManager } from "../../rest-api/src/reward-video-manager.ts";
+import type { RewardVideoHost } from "../../rest-api/src/reward-video-ad.ts";
 
-export const GAMEALGO_WEB_SDK_VERSION = "2.1.7";
+export const GAMEALGO_WEB_SDK_VERSION = "2.1.8";
 const WEB_KEEPALIVE_BODY_LIMIT_BYTES = 60 * 1024;
 const WEB_EVENT_BATCH_BODY_BUDGET_BYTES = 48 * 1024;
 const TAPDB_CONTEXT_LINK_EVENT = "gamealgo_context_link";
@@ -72,8 +73,9 @@ export type GameAlgoWebUrlAttributionOptions = {
 
 export type GameAlgoWebClientOptions = Omit<
   GameAlgoRestClientOptions,
-  "platform" | "scriptRuntime" | "scriptRuntimeBinaryPath" | "storage" | "sdkVersion"
+  "fetchImpl" | "platform" | "scriptRuntime" | "scriptRuntimeBinaryPath" | "storage" | "sdkVersion"
 > & {
+  fetchImpl?: typeof fetch;
   sdkVersion?: string;
   storage?: GameAlgoStorage;
   browserStorage?: GameAlgoBrowserStorageOptions;
@@ -85,7 +87,7 @@ export type GameAlgoWebClientOptions = Omit<
   multiplayerControllerUrl?: string;
 };
 
-/** Browser-native GameAlgo client. The telemetry platform is always `web`. */
+/** TapTap H5 client. The legacy wire platform `web` means TapTap H5. */
 export class GameAlgoWebClient extends GameAlgoRestClient {
   private readonly lifecycleTarget?: Pick<Window, "addEventListener" | "removeEventListener">;
   private readonly documentTarget?: Pick<Document, "addEventListener" | "removeEventListener" | "visibilityState">;
@@ -108,10 +110,15 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
   private tapDbContextLinkProperties?: TapDbEventOptions["properties"];
   private tapDbContextLinkTimer?: ReturnType<typeof setInterval>;
   private readonly webLogger?: (message: string) => void;
-  private readonly rewardVideoCleanups = new Set<() => void>();
-  private readonly rewardVideoAds = new RewardVideoAdPool((message) => this.webLogger?.(message));
-  private readonly rewardAdSpaces = new Map<string, GameAlgoRewardAdSpace>();
-  private rewardVideoSequence = 0;
+  private readonly rewardVideos = new RewardVideoManager({
+    host: () => (globalThis as { tap?: RewardVideoHost }).tap,
+    logger: message => this.webLogger?.(message),
+    closeId: values => values.map(extractAdTrackId).find(id => id !== undefined),
+    report: (id, payload, _values, trackId) => {
+      if (trackId) payload.trackId = trackId;
+      return this.tracker.trackAdPlacement(id, 0, "taptap", payload);
+    },
+  });
   readonly matchmaking: GameAlgoMatchmakingClient;
 
   constructor(options: GameAlgoWebClientOptions) {
@@ -194,176 +201,13 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
     return new GameAlgoWebClient(options);
   }
 
-  /** Bind a native ad unit and automatically prepare it without blocking startup. */
+  /** Bind a TapTap ad unit; the shared controller owns preload and playback. */
   createAdSpace(options: GameAlgoRewardAdSpaceOptions): GameAlgoRewardAdSpace {
-    if (this.closed) throw new Error("GameAlgo client is closed");
-    validateRewardVideoAdUnit(options);
-    const { adUnitId } = options;
-    let space = this.rewardAdSpaces.get(adUnitId);
-    if (!space) {
-      space = Object.freeze({
-        show: async (adPlacementId: string, callbacks: GameAlgoRewardVideoAdCallbacks = {}, payload: Record<string, JsonValue> = {}) => {
-          if (!callbacks || typeof callbacks !== "object" || Array.isArray(callbacks)) throw new Error("Invalid TapTap rewarded ad options");
-          return this.showRewardVideoAd(adPlacementId, { ...callbacks, adUnitId }, payload);
-        },
-      });
-      this.rewardAdSpaces.set(adUnitId, space);
-      this.rewardVideoAds.register(adUnitId);
-    }
-    return space;
+    return this.rewardVideos.createAdSpace(options);
   }
 
-  /** Compatibility shortcut; new integrations use createAdSpace(...).show(). */
-  async showRewardVideoAd(
-    adPlacementId: string,
-    options: GameAlgoRewardVideoAdOptions,
-    payload: Record<string, JsonValue> = {},
-  ): Promise<void> {
-    if (this.closed) throw new Error("GameAlgo client is closed");
-    if (typeof adPlacementId !== "string" || !/^gap_[a-f0-9]{32}$/.test(adPlacementId)) {
-      throw new Error("Invalid GameAlgo adPlacementId");
-    }
-    validateRewardVideoAdUnit(options);
-    if ((options.onClose !== undefined && typeof options.onClose !== "function")
-      || (options.onError !== undefined && typeof options.onError !== "function")) {
-      throw new Error("Invalid TapTap rewarded ad options");
-    }
-    if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Ad payload must be an object");
-    const snapshot = JSON.parse(JSON.stringify(payload)) as Record<string, JsonValue>;
-    delete snapshot.trackId;
-    const { adUnitId, onClose: gameOnClose, onError: gameOnError } = options;
-    const requestId = ++this.rewardVideoSequence;
-    const log = (message: string): void => {
-      try { this.webLogger?.(`[GameAlgoSDK] reward ad requestId=${requestId} ${message}`); } catch { /* Optional diagnostics. */ }
-    };
-    const invoke = (callback: ((...values: unknown[]) => unknown) | undefined, values: unknown[]): void => {
-      try {
-        void Promise.resolve(callback?.(...values)).catch(() => log("business callback failed"));
-      } catch { log("business callback failed"); }
-    };
-    let ad: TapRewardVideoAd | undefined;
-    let playback: RewardVideoPlayback | undefined;
-    let reported = false;
-    let failed = false;
-    let showStarted = false;
-    let showPending = false;
-    let pendingShowError: unknown[] | undefined;
-    let listenerVersion = 0;
-    const listeners: Array<{ close: RewardVideoCallback; error: RewardVideoCallback }> = [];
-    let released = false;
-    let cleaning = false;
-    const cleanup = (prepareNext = false): void => {
-      if (released) {
-        if (prepareNext) this.rewardVideoAds.register(adUnitId);
-        return;
-      }
-      released = true;
-      cleaning = true;
-      this.rewardVideoCleanups.delete(cleanup);
-      // Keep the native instance; only this playback's listeners/context end.
-      // Hosts without reliable listener removal fall back to retiring the instance.
-      let reusable = typeof ad?.offClose === "function" && (!ad.onError || typeof ad.offError === "function");
-      for (const listener of listeners) {
-        for (const release of [() => ad?.offClose?.(listener.close), () => ad?.offError?.(listener.error)]) {
-          try { release(); } catch { reusable = false; log("host cleanup failed"); }
-        }
-      }
-      playback?.finish(reusable, prepareNext);
-      cleaning = false;
-    };
-    const onClose: RewardVideoCallback = (...values) => {
-      if (this.closed || cleaning || playback?.cleaning || !showStarted) return;
-      if (reported) { log("duplicate close ignored"); return; }
-      let trackId: string | undefined;
-      try { trackId = values.map(extractAdTrackId).find((id) => id !== undefined); } catch { log("ad track ID parsing failed"); }
-      if (!playback?.acceptClose(trackId)) { log("stale close ignored"); return; }
-      reported = true;
-      let queued = false;
-      try {
-        if (trackId) snapshot.trackId = trackId;
-        queued = this.tracker.trackAdPlacement(adPlacementId, 0, "taptap", snapshot);
-      }
-      catch { log("ad_view enqueue failed"); }
-      log(`closed queued=${queued} hasTrackId=${trackId !== undefined}`);
-      cleanup(true);
-      invoke(gameOnClose as RewardVideoCallback | undefined, values);
-    };
-    const onError: RewardVideoCallback = (...values) => {
-      if (this.closed || cleaning || playback?.cleaning || reported || failed) return;
-      // A host may report the same unsuccessful show via onError and rejection.
-      // Delay the business error until that request either recovers or ends.
-      if (showPending) {
-        pendingShowError ??= values;
-        return;
-      }
-      failed = true;
-      log("native onError");
-      cleanup();
-      invoke(gameOnError, values);
-    };
-    const listen = (): void => {
-      const version = ++listenerVersion;
-      const listener = {
-        close: (...values: unknown[]) => { if (version === listenerVersion) onClose(...values); },
-        error: (...values: unknown[]) => { if (version === listenerVersion) onError(...values); },
-      };
-      listeners.push(listener);
-      ad!.onClose(listener.close);
-      if (!reported && !failed) ad!.onError?.(listener.error);
-    };
-    const finishShowRequest = (): void => {
-      showPending = false;
-      if (pendingShowError) onError(...pendingShowError);
-    };
-
-    try {
-      playback = this.rewardVideoAds.begin(adUnitId);
-      ad = playback.ad;
-      this.rewardVideoCleanups.add(cleanup);
-      if (typeof ad?.onClose !== "function" || typeof ad.show !== "function") throw new Error("Incomplete TapTap rewarded ad API");
-      listen();
-      if (!reported && !failed && !playback.ready) {
-        const loaded = await playback.load();
-        if (!loaded.ok && !reported && !failed) onError(...loaded.values);
-      }
-      if (this.closed) throw new Error("GameAlgo client is closed");
-      for (let attempt = 0; attempt < 2 && !reported && !failed; attempt++) {
-        playback.consume();
-        showStarted = true;
-        showPending = true;
-        pendingShowError = undefined;
-        try {
-          await ad.show();
-          finishShowRequest();
-          break;
-        } catch (error) {
-          showPending = false;
-          if (attempt === 1 || this.closed || reported || failed) {
-            finishShowRequest();
-            throw error;
-          }
-          log("show rejected; reloading for one retry");
-          // Keep the host lock while recovering, and invalidate callbacks retained
-          // by the failed attempt. Force a new load even if onLoad raced rejection.
-          showStarted = false;
-          listenerVersion++;
-          playback.consume();
-          const loaded = await playback.load();
-          if (!loaded.ok) onError(...loaded.values);
-          if (this.closed) throw new Error("GameAlgo client is closed");
-          if (!reported && !failed) {
-            listen();
-            log("reload ready; retrying show");
-          }
-        }
-      }
-    } catch (error) {
-      failed = true;
-      cleanup();
-      log("load/show rejected");
-      // Preserve the native Promise failure; do not manufacture an onError event.
-      throw error;
-    }
+  async showRewardVideoAd(adPlacementId: string, options: GameAlgoRewardVideoAdOptions, payload: Record<string, JsonValue> = {}): Promise<void> {
+    return this.rewardVideos.showRewardVideoAd(adPlacementId, options, payload);
   }
 
   /** Cumulative foreground milliseconds since initialization; NewSession does not reset it. */
@@ -487,9 +331,7 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
 
   close(): void {
     this.closed = true;
-    this.rewardVideoAds.close();
-    for (const cleanup of this.rewardVideoCleanups) cleanup();
-    this.rewardAdSpaces.clear();
+    this.rewardVideos.close();
     this.stopTapDbContextLinkDiscovery();
     this.tapDbContextLinkProperties = undefined;
     this.documentTarget?.removeEventListener("visibilitychange", this.onVisibilityChange);
@@ -781,3 +623,9 @@ export type {
   TrackEventOptions,
   UserAttributionResponse,
 } from "../../rest-api/src/types.ts";
+
+/** Preferred names for TapTap H5; legacy Web names remain aliases to the same implementation. */
+export { GameAlgoWebClient as GameAlgoTapTapH5Client };
+export type GameAlgoTapTapH5ClientOptions = GameAlgoWebClientOptions;
+export type GameAlgoTapTapH5UrlAttributionOptions = GameAlgoWebUrlAttributionOptions;
+export const GAMEALGO_TAPTAP_H5_SDK_VERSION = GAMEALGO_WEB_SDK_VERSION;

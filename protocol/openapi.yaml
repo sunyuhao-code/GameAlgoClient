@@ -313,7 +313,7 @@ components:
           minLength: 1
         platform:
           type: string
-          enum: [ios, android, maker, web]
+          enum: [ios, android, maker, web, wechat]
         sdkVersion:
           type: string
           minLength: 1
@@ -552,7 +552,7 @@ components:
           type: string
         platform:
           type: string
-          enum: [ios, android, maker, web]
+          enum: [ios, android, maker, web, wechat]
         provider:
           type: string
           example: adjust
@@ -607,7 +607,7 @@ components:
           minLength: 1
         platform:
           type: string
-          enum: [ios, android, maker, web]
+          enum: [ios, android, maker, web, wechat]
         identifierType:
           type: string
           enum: [adjust_adid, firebase_app_instance_id, gaid, idfa, idfv, oaid, caid]

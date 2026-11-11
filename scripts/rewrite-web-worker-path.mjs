@@ -2,7 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const repositoryRoot = resolve(import.meta.dirname, "..");
-const output = resolve(repositoryRoot, "web/dist/web/src/script-runtime.js");
+const output = resolve(repositoryRoot, "taptap-h5/dist/taptap-h5/src/script-runtime.js");
 const source = await readFile(output, "utf8");
 const rewritten = source.replaceAll('"./script-worker.ts"', '"./script-worker.js"');
 if (rewritten === source) {

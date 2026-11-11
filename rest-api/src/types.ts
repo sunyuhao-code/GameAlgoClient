@@ -1,6 +1,7 @@
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
-export type Platform = "ios" | "android" | "maker" | "web";
+/** `web` is the historical wire value for TapTap H5, not a generic minigame host. */
+export type Platform = "ios" | "android" | "maker" | "web" | "wechat";
 export type GameEnvironment = "test" | "live";
 
 export type ExperimentAssignment = {
@@ -156,7 +157,7 @@ export type GameAlgoRestClientOptions = {
   eventQueueLimit?: number;
   /** Persist every queued event immediately. Recommended for browser runtimes. */
   eventPersistOnEnqueue?: boolean;
-  fetchImpl?: typeof fetch;
+  fetchImpl?: GameAlgoFetch;
   now?: () => number;
   storage?: GameAlgoStorage;
   scriptRuntime?: GameAlgoScriptRuntime;
@@ -251,3 +252,19 @@ export type GameAlgoDDADecision = {
   assignment?: ExperimentAssignment;
   isFallback: boolean;
 };
+
+/** Minimal transport contract shared by browsers, Node and sandboxed minigames. */
+export type GameAlgoHttpRequest = {
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+  keepalive?: boolean;
+};
+export type GameAlgoHttpResponse = {
+  ok: boolean;
+  status: number;
+  headers: { get(name: string): string | null };
+  text(): Promise<string>;
+  json(): Promise<unknown>;
+};
+export type GameAlgoFetch = (url: string, init?: GameAlgoHttpRequest) => Promise<GameAlgoHttpResponse>;

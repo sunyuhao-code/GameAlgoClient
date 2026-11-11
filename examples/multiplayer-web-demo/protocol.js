@@ -1,4 +1,4 @@
-import { defineMultiplayerProtocol } from "../../web/dist/web/src/index.js";
+import { defineMultiplayerProtocol } from "../../taptap-h5/dist/taptap-h5/src/index.js";
 
 export const DemoProtocol = defineMultiplayerProtocol({
   id: "counter-duel",

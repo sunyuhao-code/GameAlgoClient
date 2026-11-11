@@ -1,4 +1,4 @@
-import { connectRoom, GameAlgoMatchmakingClient } from "../../web/dist/web/src/index.js";
+import { connectRoom, GameAlgoMatchmakingClient } from "../../taptap-h5/dist/taptap-h5/src/index.js";
 import { DemoProtocol } from "./protocol.js";
 
 const params = new URLSearchParams(location.search);

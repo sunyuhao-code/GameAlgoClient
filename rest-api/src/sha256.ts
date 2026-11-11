@@ -1,5 +1,7 @@
+import { encodeUtf8 } from "./utf8.ts";
+
 export function sha256HexSync(input: string): string {
-  const bytes = new TextEncoder().encode(input);
+  const bytes = encodeUtf8(input);
   const bitLength = bytes.length * 8;
   const paddedLength = Math.ceil((bytes.length + 9) / 64) * 64;
   const padded = new Uint8Array(paddedLength);

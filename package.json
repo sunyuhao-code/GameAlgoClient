@@ -6,20 +6,25 @@
   "type": "module",
   "scripts": {
     "build:runtime": "cargo build --locked --manifest-path runtime/rust/Cargo.toml --bin gamealgo-script-runtime",
-    "build:web": "tsc -p web/tsconfig.json && node scripts/rewrite-web-worker-path.mjs",
-    "check:web:pack": "npm pack --dry-run ./web && npm run check:web:bundle",
+    "build:web": "npm run build:taptap-h5",
+    "check:web:pack": "node scripts/check-h5-packages.mjs && npm run check:web:bundle",
     "check:web:bundle": "node scripts/check-web-bundle.mjs",
-    "check:web:e2e": "npm run build:web && node web/e2e/run-browser-test.mjs",
-    "check:web:multiplayer": "npm run build:web && node web/e2e/run-multiplayer-demo-test.mjs",
-    "check:web:webview": "npm run build:web && node web/e2e/run-ios-webview-test.mjs",
-    "check:web": "npm run build:web && node --test web/src/*.test.ts",
-    "check:core": "npm run build:runtime && npm run check:web && node --test rest-api/src/*.test.ts && npm run check:web:pack",
-    "check": "npm run build:runtime && npm run check:web && node --test rest-api/src/*.test.ts && npm run check:web:e2e && npm run check:web:webview && npm run check:web:pack",
+    "check:web:e2e": "npm run build:web && node taptap-h5/e2e/run-browser-test.mjs",
+    "check:web:multiplayer": "npm run build:web && node taptap-h5/e2e/run-multiplayer-demo-test.mjs",
+    "check:web:webview": "npm run build:web && node taptap-h5/e2e/run-ios-webview-test.mjs",
+    "check:web": "npm run check:taptap-h5",
+    "check:core": "npm run build:runtime && npm run check:web && node --test rest-api/src/*.test.ts && npm run check:web:pack && npm run check:wechat && npm run check:wechat:pack",
+    "check": "npm run build:runtime && npm run check:web && node --test rest-api/src/*.test.ts && npm run check:web:e2e && npm run check:web:webview && npm run check:web:pack && npm run check:wechat && npm run check:wechat:pack",
     "check:godot": "node scripts/run-godot-tests.mjs",
     "check:godot:core": "node scripts/run-godot-tests.mjs --core",
     "check:godot:http": "python3 scripts/test-godot-http-timeout.py",
     "check:godot:ios": "node scripts/test-godot-ios-session.mjs",
-    "build:godot-runtime": "node scripts/build-godot-runtime.mjs"
+    "build:godot-runtime": "node scripts/build-godot-runtime.mjs",
+    "build:taptap-h5": "node scripts/build-taptap-h5.mjs",
+    "check:taptap-h5": "npm run build:taptap-h5 && node --test taptap-h5/src/*.test.ts",
+    "build:wechat": "node scripts/build-wechat.mjs",
+    "check:wechat": "npm run build:wechat && node --test wechat/src/*.test.ts",
+    "check:wechat:pack": "node scripts/check-wechat-package.mjs"
   },
   "dependencies": {
     "yaml": "^2.8.1"
@@ -34,5 +39,10 @@
   },
   "engines": {
     "node": ">=24"
-  }
+  },
+  "workspaces": [
+    "taptap-h5",
+    "web",
+    "wechat"
+  ]
 }

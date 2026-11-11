@@ -75,7 +75,7 @@ test("Godot custom event quota matches the canonical client", () => {
   assert.equal(constant("QUOTA_PER_CONTEXT"), 5000);
   assert.equal(constant("QUOTA_DISTINCT_EVENT_TYPES"), 100);
 
-  const canonical = readFileSync(new URL("./client.ts", import.meta.url), "utf8");
+  const canonical = readFileSync(new URL("./core-client.ts", import.meta.url), "utf8");
   const start = canonical.indexOf("private consumeCustomEventQuota");
   assert.notEqual(start, -1, "consumeCustomEventQuota not found in the canonical client");
   const quota = canonical.slice(start, start + 1200);
@@ -89,7 +89,7 @@ test("Godot custom event quota matches the canonical client", () => {
 
 test("both clients exempt the same standard event types", () => {
   const godotList = gdscriptStringArray(godotSource("gamealgo_tracker.gd"), "STANDARD_EVENT_TYPES");
-  const canonical = readFileSync(new URL("./client.ts", import.meta.url), "utf8");
+  const canonical = readFileSync(new URL("./core-client.ts", import.meta.url), "utf8");
   const match = canonical.match(/const STANDARD_EVENT_TYPES = new Set\(\[([^\]]*)\]/);
   assert.ok(match, "STANDARD_EVENT_TYPES not found in the canonical client");
   const canonicalList = [...match[1].matchAll(/"([^"]*)"/g)].map((entry) => entry[1]);

@@ -109,6 +109,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.web-version.outputs.value }}
+      wechat_version: ${{ steps.web-version.outputs.wechat }}
     env:
       TZ: Asia/Shanghai
     steps:
@@ -121,31 +122,39 @@ jobs:
 
       - run: npm ci
 
-      - name: Resolve independent Web SDK version
+      - name: Resolve independent TapTap H5 SDK version
         id: web-version
         shell: bash
         run: |
-          package_version="$(node -p "require('./web/package.json').version")"
+          package_version="$(node -p "require('./taptap-h5/package.json').version")"
           if [[ ! "$package_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Invalid Web package version: $package_version" >&2
             exit 1
           fi
           echo "value=$package_version" >> "$GITHUB_OUTPUT"
+          wechat_version="$(node -p "require('./wechat/package.json').version")"
+          [[ "$wechat_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          echo "wechat=$wechat_version" >> "$GITHUB_OUTPUT"
 
-      - name: Run Web SDK contracts
+      - name: Run TapTap H5 SDK contracts
         run: |
           npm run check:web
           npm run check:web:pack
+          npm run check:wechat
+          npm run check:wechat:pack
 
-      - name: Prepare Web SDK package
+      - name: Prepare TapTap H5 and legacy Web packages
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p release
-          package="$(npm pack ./web --pack-destination release --ignore-scripts --json | node -e 'let data=""; process.stdin.on("data", chunk => data += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(data)[0].filename))')"
-          expected="gamealgo-web-${{ steps.web-version.outputs.value }}.tgz"
-          [[ "$package" == "$expected" ]] || { echo "unexpected Web package name: $package" >&2; exit 1; }
-          (cd release && sha256sum "$package" > "$package.sha256")
+          for package_directory in taptap-h5 web wechat; do
+            package="$(npm pack "./$package_directory" --pack-destination release --ignore-scripts --json | node -e 'let data=""; process.stdin.on("data", chunk => data += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(data)[0].filename))')"
+            package_version="$(node -p "require('./$package_directory/package.json').version")"
+            expected="gamealgo-$package_directory-$package_version.tgz"
+            [[ "$package" == "$expected" ]] || { echo "unexpected H5 package name: $package" >&2; exit 1; }
+            (cd release && sha256sum "$package" > "$package.sha256")
+          done
 
       - uses: actions/upload-artifact@v4
         with:
@@ -303,7 +312,8 @@ jobs:
           set -euo pipefail
           version="${{ needs.version.outputs.value }}"
           web_version="${{ needs.web.outputs.version }}"
-          for asset in "gamealgo-android-$version.aar" "gamealgo-godot-$version.zip" "gamealgo-web-$web_version.tgz"; do
+          wechat_version="${{ needs.web.outputs.wechat_version }}"
+          for asset in "gamealgo-android-$version.aar" "gamealgo-godot-$version.zip" "gamealgo-taptap-h5-$web_version.tgz" "gamealgo-web-$web_version.tgz" "gamealgo-wechat-$wechat_version.tgz"; do
             [[ -f "downloaded/$asset" ]] || { echo "missing release asset: $asset" >&2; exit 1; }
             [[ -f "downloaded/$asset.sha256" ]] || { echo "missing checksum: $asset.sha256" >&2; exit 1; }
           done
