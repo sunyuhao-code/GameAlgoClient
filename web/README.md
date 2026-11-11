@@ -99,7 +99,7 @@ does not produce an extra log.
 
 ### TapTap H5 rewarded ads
 
-Since `@gamealgo/web@2.1.6`, use an ad-space handle for TapTap H5 rewarded ads:
+Since `@gamealgo/web@2.1.7`, use an ad-space handle for TapTap H5 rewarded ads:
 
 First inspect this game's existing ad integration. If it already has a real
 `adUnitId`, reuse its variable, configuration or lookup without calling MCP or
@@ -125,14 +125,12 @@ integration flow. Maker/UrhoX uses the Maker MCP's `get_ad_config` and Lua APIs;
 do not mix its tools, app context or IDs with this H5 flow.
 
 ```ts
+// Bind the unit at game startup. The SDK automatically preloads it.
 const rewardAd = gameAlgo.createAdSpace({ adUnitId: tapTapAdUnitId });
-
-// Optional: prepare when entering the relevant scene; do not block the game.
-rewardAd.preload().catch(error => console.warn("Ad preload failed", error));
 
 async function onReviveClick() {
   try {
-    // Works without preload too: the SDK loads before showing when needed.
+    // Show on click. The SDK loads first if its automatic preparation is not ready.
     await rewardAd.show(adPlacementIds.revive, {
       onClose(result) {
         if (result?.isEnded === true) revivePlayer();
@@ -146,40 +144,45 @@ async function onReviveClick() {
 }
 ```
 
+GameAlgo automatically preloads after the ad-space is created and prepares the
+next ad after each real close, including early close. Developers do not call
+`preload()` or native `load()`. Automatic preparation never displays an ad,
+invokes reward callbacks or reports `ad_view`.
+
 Register the GameAlgo placement as `reward` / `CNY` first. Its `gap_` ID and the
 TapTap `adUnitId` are different IDs. This wrapper requires the TapTap H5 host;
 it does not intercept external ad instances or support unrelated ad providers.
 
-`client.createAdSpace({ adUnitId }): GameAlgoRewardAdSpace` returns a logical
-rewarded-ad handle. It snapshots the unit ID and returns the same handle for the
-same client/unit. Creation itself does not contact the host, load, show or report
-an ad. It currently supports TapTap H5 rewarded video only.
+`client.createAdSpace({ adUnitId }): GameAlgoRewardAdSpace` synchronously returns
+an ad handle and schedules automatic preparation without waiting for identity,
+config or network readiness. It snapshots the unit ID and returns the same handle
+for the same client/unit. It currently supports TapTap H5 rewarded video only.
 
-`rewardAd.preload(): Promise<void>` is optional and needs no GameAlgo placement.
-It creates/reuses the native instance and resolves after native load success;
-concurrent loads are shared. It never calls show, invokes reward callbacks or
-reports `ad_view`. A native error rejects preload with the original value as its
-cause; native Promise rejections are preserved. Loading is bounded to 30 seconds;
-a timeout retires the instance and the next explicit request can try again.
-
-`rewardAd.show(adPlacementId, callbacks?, payload?): Promise<void>` can be called
-without preload. It loads if needed or joins an in-flight load; a ready instance
-calls native show in the caller's click stack without an intervening await.
+`rewardAd.show(adPlacementId, callbacks?, payload?): Promise<void>` uses the
+prepared ad, joins an automatic load already in progress, or loads on demand
+after a previous failure. A ready instance calls native show in the caller's
+click stack without an intervening await.
 Its Promise follows load/show calls, does **not** wait for close, and does not
-confirm completion, a reward or ingestion. Native creation/load/show exceptions
-and rejections reject unchanged. Native `onError` is forwarded once, without an
-exposure or a synthetic Promise rejection. Both callbacks are optional and
+confirm completion, a reward or ingestion. If the first native show throws or
+rejects before a real close, the SDK reloads and retries show once. A recovered
+request does not invoke the business `onError`. Recovery keeps the playback lock;
+callbacks retained from the failed attempt cannot complete the retry. Creation,
+load and final show exceptions/rejections reject unchanged. A final native
+`onError` is forwarded once with its original arguments, without an exposure or
+a synthetic Promise rejection. An error after show has resolved, or a real close,
+never replays the ad. Both callbacks are optional and
 receive all original arguments. Only the game decides whether to grant rewards.
 
 The default native singleton is shared, including its playback lock across
 WebClients. Normal close keeps the instance and removes only this playback's
 listeners/context. Different GameAlgo placements can reuse one native unit.
 Changing native units is allowed only while idle; loading/playing conflicts
-reject as busy, without queuing another ad. An automatic native onLoad can ready
-the next playback; the SDK does not add background reload/retry loops. Hosts
+reject as busy, without queuing another ad. Automatic preparation keeps only the
+current native unit warm and never switches away from another handle. A native
+onLoad that already marked the next ad ready prevents a redundant SDK load. Hosts
 without reliable listener removal retire the instance instead of accumulating
-callbacks. `client.close()` releases ownership, cancels pending calls and makes
-that client's retained callbacks inert.
+callbacks. `client.close()` stops automatic preparation, releases ownership, cancels pending
+calls and makes that client's retained callbacks inert.
 
 On the first real `onClose` after show has been called, the SDK extracts the
 original track ID, reports `ad_view` with revenue `0` and network `taptap`, starts
@@ -207,9 +210,16 @@ without printing storage keys or values. These notices do not cancel operations
 or replace an existing identity. Storage diagnostics are off by default.
 
 `client.showRewardVideoAd(id, { adUnitId, onClose, onError }, payload?)` remains
-compatible and uses the same instance manager. `client.preloadRewardVideoAd({
-adUnitId })` is a direct preload shortcut. New integrations use the ad-space
-handle and do not run another native AdManager alongside it.
+compatible. Startup preparation requires binding the native unit through
+`createAdSpace`. Version 2.1.7 removes manual preload methods; remove those calls
+when upgrading from 2.1.6 and call `show()` for playback.
+
+Automatic preparation errors only use the optional SDK logger, without invoking
+business `onError`, reporting an exposure or starting an infinite background retry
+loop. A later `show()` can load on demand. Loading times out after 30 seconds and
+retires the slot so the next explicit show can try again. A late host bridge is
+discovered for up to 10 seconds after handle creation; show can still acquire it
+on demand afterward.
 
 Existing TapTap H5 rewarded-ad integrations should route playback through this
 wrapper, reusing the game's real ad unit ID and reward/cleanup callbacks.

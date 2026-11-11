@@ -175,6 +175,171 @@ test("native creation/load/show failures reject without synthetic callbacks or e
   }
 });
 
+test("a stale prepared ad reloads and retries once, ignoring the failed attempt's callbacks", async t => {
+  for (const failure of ["throw", "reject"] as const) {
+    await t.test(failure, async t => {
+      const h = await harness(t);
+      const space = h.client.createAdSpace({ adUnitId: "native-unit" });
+      await waitUntil(() => h.logs.some(line => line.includes("automatic preload ready")));
+      const native = h.ads[0];
+      const error = new Error("cached ad unavailable");
+      let shows = 0;
+      native.ad.show = () => {
+        native.calls.push("show");
+        if (++shows === 1) {
+          if (failure === "throw") throw error;
+          native.error(error, "first-attempt");
+          return Promise.reject(error);
+        }
+        return Promise.resolve();
+      };
+      let closes = 0;
+      const errors: unknown[][] = [];
+      const payload = { source: "supply" };
+      const showing = space.show(placement, { onClose() { closes++; }, onError: (...args) => { errors.push(args); } }, payload);
+      assert.equal(shows, 1, "a cached ad still starts in the click stack");
+      payload.source = "changed";
+      await showing;
+      assert.deepEqual(native.calls.filter(c => c === "load" || c === "show"), ["load", "show", "load", "show"]);
+      assert.equal(h.ads.length, 1, "recovery reuses the native object");
+      assert.deepEqual(errors, [], "a recovered request does not surface an intermediate business error");
+      native.closeCallbacks[0]({ trackId: "failed-attempt" });
+      await h.client.flush();
+      assert.equal(h.events().length, 0, "a retained callback from the failed show cannot finish the retry");
+      native.close({ isEnded: false, trackId: "retry-close" });
+      native.close({ isEnded: false, trackId: "retry-close" });
+      await h.client.flush();
+      assert.equal(closes, 1);
+      assert.equal(h.events().length, 1);
+      assert.equal(h.events()[0].payload?.source, "supply");
+      assert.equal(h.events()[0].payload?.trackId, "retry-close");
+      assert.equal(h.logs.filter(line => line.includes("reloading for one retry")).length, 1);
+    });
+  }
+});
+
+test("two unsuccessful shows preserve the final rejection and forward only its raw native error once", async t => {
+  const h = await harness(t);
+  const first = new Error("first show");
+  const final = new Error("second show");
+  const raw = { errCode: 1004, errMsg: "no ad" };
+  const create = h.host.createRewardedVideoAd;
+  let shows = 0;
+  h.host.createRewardedVideoAd = function(options) {
+    const ad = create.call(this, options);
+    ad.show = async () => {
+      h.ads[0].calls.push("show");
+      const error = ++shows === 1 ? first : final;
+      h.ads[0].error(shows === 1 ? first : raw, "native-detail");
+      h.ads[0].error(error, "duplicate-error");
+      throw error;
+    };
+    return ad;
+  };
+  const errors: unknown[][] = [];
+  await assert.rejects(h.client.showRewardVideoAd(placement, {
+    adUnitId: "native-unit", onError: (...args) => { errors.push(args); }, onClose() { assert.fail("failed shows must not complete"); },
+  }), error => error === final);
+  assert.equal(shows, 2);
+  assert.equal(h.ads[0].calls.filter(c => c === "load").length, 2);
+  assert.deepEqual(errors, [[raw, "native-detail"]]);
+  h.ads[0].error(first);
+  await h.client.flush();
+  assert.equal(errors.length, 1);
+  assert.equal(h.events().length, 0);
+});
+
+test("a recovery load failure ends the request without another show or retry loop", async t => {
+  for (const failure of ["reject", "event"] as const) {
+    await t.test(failure, async t => {
+      const h = await harness(t);
+      const error = new Error("reload failed");
+      const create = h.host.createRewardedVideoAd;
+      let loads = 0;
+      let shows = 0;
+      h.host.createRewardedVideoAd = function(options) {
+        const ad = create.call(this, options);
+        ad.load = async () => {
+          if (++loads === 1) return;
+          if (failure === "event") h.ads[0].error(error, "reload-detail");
+          else throw error;
+        };
+        ad.show = async () => { shows++; throw new Error("stale show"); };
+        return ad;
+      };
+      const errors: unknown[][] = [];
+      const showing = h.client.showRewardVideoAd(placement, { adUnitId: "native-unit", onError: (...args) => { errors.push(args); } });
+      if (failure === "reject") await assert.rejects(showing, e => e === error);
+      else await showing;
+      assert.equal(loads, 2);
+      assert.equal(shows, 1);
+      assert.deepEqual(errors, failure === "event" ? [[error, "reload-detail"]] : []);
+      await h.client.flush();
+      assert.equal(h.events().length, 0);
+    });
+  }
+});
+
+test("recovery keeps the shared host lock and client.close prevents the retry show", async t => {
+  for (const finish of ["resume", "close"] as const) {
+    await t.test(finish, async t => {
+      const h = await harness(t);
+      const other = h.makeClient();
+      t.after(() => other.close());
+      const pending = deferred();
+      const create = h.host.createRewardedVideoAd;
+      let loads = 0;
+      let shows = 0;
+      h.host.createRewardedVideoAd = function(options) {
+        const ad = create.call(this, options);
+        ad.load = () => ++loads === 1 ? Promise.resolve() : pending.promise;
+        ad.show = async () => { if (++shows === 1) throw new Error("stale ad"); };
+        return ad;
+      };
+      const showing = h.client.showRewardVideoAd(placement, { adUnitId: "native-unit" });
+      await waitUntil(() => loads === 2);
+      await assert.rejects(other.showRewardVideoAd(placement, { adUnitId: "native-unit" }), /busy/);
+      await assert.rejects(other.showRewardVideoAd(placement, { adUnitId: "other-unit" }), /busy/);
+      if (finish === "close") h.client.close();
+      pending.resolve();
+      if (finish === "close") {
+        await assert.rejects(showing, /client is closed/);
+        assert.equal(shows, 1);
+        assert.equal(h.ads[0].calls.filter(c => c === "destroy").length, 1);
+      } else {
+        await showing;
+        assert.equal(shows, 2);
+        h.ads[0].close({ trackId: "after-recovery" });
+      }
+    });
+  }
+});
+
+test("a real close followed by a rejected show is still reported once without reopening the ad", async t => {
+  const h = await harness(t);
+  const error = new Error("late show rejection");
+  const create = h.host.createRewardedVideoAd;
+  let shows = 0;
+  h.host.createRewardedVideoAd = function(options) {
+    const ad = create.call(this, options);
+    ad.show = async () => {
+      shows++;
+      h.ads[0].close({ isEnded: false, trackId: "already-closed" });
+      throw error;
+    };
+    return ad;
+  };
+  let closes = 0;
+  await assert.rejects(h.client.showRewardVideoAd(placement, {
+    adUnitId: "native-unit", onClose() { closes++; },
+  }), e => e === error);
+  await h.client.flush();
+  assert.equal(shows, 1);
+  assert.equal(closes, 1);
+  assert.equal(h.events().length, 1);
+  assert.equal(h.logs.some(line => line.includes("reloading for one retry")), false);
+});
+
 test("load error events skip show; cleanup-generated close never creates an exposure", async (t) => {
   const h = await harness(t);
   const create = h.host.createRewardedVideoAd;
@@ -245,6 +410,14 @@ test("invalid arguments and missing host reject before creating an ad", async (t
   await assert.rejects(h.client.showRewardVideoAd(placement, { adUnitId: "native-unit" }), /unavailable/);
 });
 
+async function waitUntil(condition: () => boolean): Promise<void> {
+  const deadline = Date.now() + 1000;
+  while (!condition()) {
+    if (Date.now() > deadline) assert.fail("automatic ad preparation did not reach the expected state");
+    await new Promise(resolve => setTimeout(resolve, 2));
+  }
+}
+
 function deferred() {
   let resolve!: () => void;
   let reject!: (error: unknown) => void;
@@ -252,7 +425,7 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-test("ad-space handles bind the unit once, are lazy, and can show without preload", async (t) => {
+test("ad-space handles return before automatic preparation and early clicks still load/show", async (t) => {
   const h = await harness(t);
   const options = { adUnitId: "native-unit" };
   const space = h.client.createAdSpace(options);
@@ -267,26 +440,25 @@ test("ad-space handles bind the unit once, are lazy, and can show without preloa
   assert.equal(h.events().length, 1);
 });
 
-test("preload prepares once without exposure; a ready show calls the host in the click stack", async (t) => {
+test("startup automatically prepares one ad without manual preload or exposure", async t => {
   const h = await harness(t);
   const space = h.client.createAdSpace({ adUnitId: "native-unit" });
-  await space.preload();
-  await space.preload();
-  await h.client.preloadRewardVideoAd({ adUnitId: "native-unit" });
+  assert.equal("preload" in space, false);
+  assert.equal("preloadRewardVideoAd" in h.client, false);
+  await waitUntil(() => h.logs.some(line => line.includes("automatic preload ready")));
   assert.equal(h.ads.length, 1);
   assert.equal(h.ads[0].calls.filter(c => c === "load").length, 1);
   assert.equal(h.ads[0].calls.includes("show"), false);
-  assert.equal(h.ads[0].calls.includes("onClose"), false, "preload has no playback callback or business placement");
-  await h.client.flush();
+  assert.equal(h.ads[0].calls.includes("onClose"), false);
   assert.equal(h.events().length, 0);
-  let closes = 0;
-  const showing = space.show(placement, { onClose() { closes++; } });
-  assert.equal(h.ads[0].calls.at(-1), "show", "do not await an already-ready ad before calling native show");
+  const showing = space.show(placement);
+  assert.equal(h.ads[0].calls.at(-1), "show", "a prepared ad is shown in the click stack");
   await showing;
-  h.ads[0].close({ trackId: "preloaded-space" });
-  assert.equal(closes, 1);
-  assert.equal(h.ads[0].calls.filter(c => c === "load").length, 1);
+  h.ads[0].close({ isEnded: false, trackId: "auto-first" });
+  await waitUntil(() => h.ads[0].calls.filter(c => c === "load").length === 2);
   assert.equal(h.ads[0].calls.includes("destroy"), false);
+  await h.client.flush();
+  assert.equal(h.events().length, 1, "preparing the next ad is not an exposure");
 });
 
 test("successive business placements reuse one ad and retained callbacks keep their original context", async (t) => {
@@ -310,43 +482,39 @@ test("successive business placements reuse one ad and retained callbacks keep th
   assert.deepEqual(h.events().map(e => [e.payload?.adPlacementId, e.payload?.level]), [[placement, 1], [second, 2]]);
 });
 
-test("concurrent preloads and a show share the pending native load", async (t) => {
+test("a click joins automatic preparation instead of issuing another native load", async t => {
   const h = await harness(t);
   const pending = deferred();
   const create = h.host.createRewardedVideoAd;
-  h.host.createRewardedVideoAd = function (options) {
+  h.host.createRewardedVideoAd = function(options) {
     const ad = create.call(this, options);
     ad.load = () => { h.ads[0].calls.push("load"); return pending.promise; };
     return ad;
   };
   const space = h.client.createAdSpace({ adUnitId: "native-unit" });
-  const first = space.preload();
-  const second = space.preload();
+  await waitUntil(() => h.ads[0]?.calls.includes("load") === true);
   const showing = space.show(placement);
-  assert.equal(h.ads.length, 1);
-  assert.deepEqual(h.ads[0].calls.filter(c => c === "load" || c === "show"), ["load"]);
   await assert.rejects(space.show(placement), /busy/);
-  pending.resolve();
-  await Promise.all([first, second, showing]);
-  assert.deepEqual(h.ads[0].calls.filter(c => c === "load" || c === "show"), ["load", "show"]);
-  h.ads[0].close({ trackId: "shared-load" });
+  assert.equal(h.ads[0].calls.filter(c => c === "load").length, 1);
+  assert.equal(h.ads[0].calls.includes("show"), false);
+  pending.resolve(); await showing;
+  assert.equal(h.ads[0].calls.filter(c => c === "show").length, 1);
+  h.ads[0].close({ trackId: "joined-automatic-load" });
 });
 
-test("active playback rejects preload and other unit switches without creating or destroying an ad", async (t) => {
+test("background preparation never steals another unit and explicit playback switches only while idle", async t => {
   const h = await harness(t);
   const first = h.client.createAdSpace({ adUnitId: "native-unit" });
   const second = h.client.createAdSpace({ adUnitId: "other-unit" });
+  await waitUntil(() => h.logs.some(line => line.includes("automatic preload ready")));
+  assert.deepEqual(h.createdUnits, ["native-unit"]);
   await first.show(placement);
-  await assert.rejects(first.preload(), /busy/);
-  await assert.rejects(second.preload(), /busy/);
   await assert.rejects(second.show(placement), /busy/);
-  assert.equal(h.ads.length, 1);
   assert.equal(h.ads[0].calls.includes("destroy"), false);
   h.ads[0].close({ trackId: "before-switch" });
-  await second.preload();
+  await second.show(placement);
   assert.deepEqual(h.createdUnits, ["native-unit", "other-unit"]);
   assert.equal(h.ads[0].calls.filter(c => c === "destroy").length, 1);
-  await second.show(placement);
   assert.equal(h.ads[1].calls.filter(c => c === "load").length, 1);
   h.ads[1].close({ trackId: "after-switch" });
 });
@@ -364,79 +532,74 @@ test("an idle host's automatic next-load notification is reused without another 
   h.ads[0].close({ trackId: "auto-second" });
 });
 
-test("preload rejection preserves the native error and the next explicit request retries the same instance", async (t) => {
+test("failed automatic preparation does not loop and the next click retries the same instance", async t => {
   const h = await harness(t);
-  const failure = new Error("no fill");
-  const create = h.host.createRewardedVideoAd;
   let loads = 0;
-  h.host.createRewardedVideoAd = function (options) {
+  const create = h.host.createRewardedVideoAd;
+  h.host.createRewardedVideoAd = function(options) {
     const ad = create.call(this, options);
-    ad.load = async () => { if (++loads === 1) throw failure; };
+    ad.load = async () => { if (++loads === 1) throw new Error("no fill"); };
     return ad;
   };
   const space = h.client.createAdSpace({ adUnitId: "native-unit" });
-  await assert.rejects(space.preload(), e => e === failure);
-  assert.equal(h.ads[0].calls.includes("show"), false);
-  assert.equal(h.ads[0].calls.includes("destroy"), false);
+  await waitUntil(() => h.logs.some(line => line.includes("automatic preload failed")));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(loads, 1);
+  assert.equal(h.events().length, 0);
   await space.show(placement);
-  assert.equal(h.ads.length, 1);
   assert.equal(loads, 2);
-  h.ads[0].close({ trackId: "after-preload-failure" });
+  assert.equal(h.ads.length, 1);
+  h.ads[0].close({ trackId: "after-automatic-failure" });
 });
 
-test("a native error during preload rejects without invoking game callbacks or producing exposure", async (t) => {
+test("native errors during automatic preparation produce neither business callbacks nor exposure", async t => {
   const h = await harness(t);
   const create = h.host.createRewardedVideoAd;
-  h.host.createRewardedVideoAd = function (options) {
+  h.host.createRewardedVideoAd = function(options) {
     const ad = create.call(this, options);
     ad.load = async () => { h.ads[0].error({ errCode: 1001 }); };
     return ad;
   };
-  await assert.rejects(h.client.createAdSpace({ adUnitId: "native-unit" }).preload(), /preload failed/);
-  await h.client.flush();
+  h.client.createAdSpace({ adUnitId: "native-unit" });
+  await waitUntil(() => h.logs.some(line => line.includes("automatic preload failed")));
   assert.equal(h.events().length, 0);
   assert.equal(h.ads[0].calls.includes("onClose"), false);
   assert.equal(h.ads[0].calls.includes("show"), false);
 });
 
-test("event-only native load waits for onLoad before resolving preload", async (t) => {
+test("event-only automatic preparation and a waiting click finish on native onLoad", async t => {
   const h = await harness(t);
   const create = h.host.createRewardedVideoAd;
-  h.host.createRewardedVideoAd = function (options) {
+  h.host.createRewardedVideoAd = function(options) {
     const ad = create.call(this, options);
     ad.load = (() => { h.ads[0].calls.push("load"); }) as typeof ad.load;
     return ad;
   };
-  let ready = false;
   const space = h.client.createAdSpace({ adUnitId: "native-unit" });
-  const loading = space.preload().then(() => { ready = true; });
-  await new Promise(setImmediate);
-  assert.equal(ready, false);
-  h.ads[0].loaded();
-  await loading;
-  await space.show(placement);
+  await waitUntil(() => h.ads[0]?.calls.includes("load") === true);
+  const showing = space.show(placement);
+  assert.equal(h.ads[0].calls.includes("show"), false);
+  h.ads[0].loaded(); await showing;
   assert.equal(h.ads[0].calls.filter(c => c === "load").length, 1);
-  h.ads[0].close({ trackId: "event-only" });
+  h.ads[0].close({ trackId: "event-only-auto" });
 });
 
-test("client.close cancels a pending preload promptly and invalidates logical handles", async (t) => {
+test("closing the client retires pending automatic preparation and prevents a later show", async t => {
   const h = await harness(t);
   const pending = deferred();
   const create = h.host.createRewardedVideoAd;
-  h.host.createRewardedVideoAd = function (options) {
+  h.host.createRewardedVideoAd = function(options) {
     const ad = create.call(this, options);
-    ad.load = () => pending.promise;
+    ad.load = () => { h.ads[0].calls.push("load"); return pending.promise; };
     return ad;
   };
   const space = h.client.createAdSpace({ adUnitId: "native-unit" });
-  const loading = space.preload();
-  h.client.close();
-  await assert.rejects(loading, /client is closed/);
+  await waitUntil(() => h.ads[0]?.calls.includes("load") === true);
+  h.client.close(); pending.resolve();
   assert.equal(h.ads[0].calls.filter(c => c === "destroy").length, 1);
   assert.throws(() => h.client.createAdSpace({ adUnitId: "native-unit" }), /client is closed/);
-  await assert.rejects(space.preload(), /client is closed/);
   await assert.rejects(space.show(placement), /client is closed/);
-  pending.resolve();
+  assert.equal(h.ads[0].calls.includes("show"), false);
 });
 
 test("multiple WebClients share the host lock and retain an instance while another client owns it", async (t) => {
@@ -446,8 +609,7 @@ test("multiple WebClients share the host lock and retain an instance while anoth
   assert.equal(await other.waitForReady(), true);
   const first = h.client.createAdSpace({ adUnitId: "native-unit" });
   const second = other.createAdSpace({ adUnitId: "native-unit" });
-  await first.preload();
-  await second.preload();
+  await waitUntil(() => h.logs.some(line => line.includes("automatic preload ready")));
   assert.equal(h.ads.length, 1);
   await first.show(placement);
   await assert.rejects(second.show(placement), /busy/);
@@ -478,10 +640,9 @@ test("hosts without offClose retire safely instead of accumulating playback list
   assert.equal(h.events().length, 2);
 });
 
-test("invalid ad-space/preload input fails before creating an ad", async (t) => {
+test("invalid ad-space input fails before creating an ad", async (t) => {
   const h = await harness(t);
   assert.throws(() => h.client.createAdSpace({ adUnitId: " " }), /options/);
-  await assert.rejects(h.client.preloadRewardVideoAd({ adUnitId: " " }), /options/);
   const space = h.client.createAdSpace({ adUnitId: "native-unit" });
   await assert.rejects(space.show(placement, null as never), /options/);
   await assert.rejects(space.show(placement, [] as never), /options/);
@@ -530,7 +691,8 @@ test("closing an active owner retires the host instance even when another client
   const other = h.makeClient();
   t.after(() => other.close());
   await other.waitForReady();
-  await other.createAdSpace({ adUnitId: "native-unit" }).preload();
+  other.createAdSpace({ adUnitId: "native-unit" });
+  await waitUntil(() => h.logs.some(line => line.includes("automatic preload ready")));
   await h.client.createAdSpace({ adUnitId: "native-unit" }).show(placement);
   h.client.close();
   assert.equal(h.ads[0].calls.filter(c => c === "destroy").length, 1);
@@ -542,28 +704,26 @@ test("closing an active owner retires the host instance even when another client
   assert.deepEqual(h.events().map(e => e.payload?.trackId), ["new-owner"]);
 });
 
-test("closing one preload owner does not cancel another owner's shared load", async (t) => {
+test("closing one owner preserves another owner's automatic preparation", async t => {
   const h = await harness(t);
-  const other = h.makeClient();
-  t.after(() => other.close());
-  await other.waitForReady();
+  const other = h.makeClient(); t.after(() => other.close()); await other.waitForReady();
   const pending = deferred();
   const create = h.host.createRewardedVideoAd;
-  h.host.createRewardedVideoAd = function (options) {
+  h.host.createRewardedVideoAd = function(options) {
     const ad = create.call(this, options);
-    ad.load = () => pending.promise;
+    ad.load = () => { h.ads[0].calls.push("load"); return pending.promise; };
     return ad;
   };
-  const first = h.client.createAdSpace({ adUnitId: "native-unit" }).preload();
-  const second = other.createAdSpace({ adUnitId: "native-unit" }).preload();
+  h.client.createAdSpace({ adUnitId: "native-unit" });
+  const space = other.createAdSpace({ adUnitId: "native-unit" });
+  await waitUntil(() => h.ads[0]?.calls.includes("load") === true);
   h.client.close();
-  await assert.rejects(first, /client is closed/);
   assert.equal(h.ads[0].calls.includes("destroy"), false);
   pending.resolve();
-  await second;
-  await other.createAdSpace({ adUnitId: "native-unit" }).show(placement);
+  await waitUntil(() => h.logs.some(line => line.includes("automatic preload ready")));
+  await space.show(placement);
   assert.equal(h.ads.length, 1);
-  h.ads[0].close({ trackId: "remaining-owner" });
+  h.ads[0].close({ trackId: "remaining-automatic-owner" });
 });
 
 test("a missing track ID remains reportable on every playback even if the host reuses its result object", async (t) => {
@@ -588,7 +748,7 @@ test("a timed-out load releases the slot and permits a later explicit retry", as
     return ad;
   };
   const space = h.client.createAdSpace({ adUnitId: "native-unit" });
-  const pending = assert.rejects(space.preload(), /load timed out/);
+  const pending = assert.rejects(space.show(placement), /load timed out/);
   t.mock.timers.tick(30_000);
   await pending;
   assert.equal(h.ads[0].calls.filter(c => c === "destroy").length, 1);
@@ -673,4 +833,65 @@ test("identity restoration failures report their stage without exposing stored v
   assert.ok(h.logs.some(line => line.includes("initialization failed: stage=identity errorType=TypeError")));
   assert.ok(h.logs.every(line => !line.includes("private-storage-detail")));
   assert.equal(h.events().length, 0);
+});
+
+test("each real close prepares the next ad once without replaying or creating another native object", async t => {
+  const h = await harness(t);
+  const space = h.client.createAdSpace({ adUnitId: "native-unit" });
+  await waitUntil(() => h.logs.some(line => line.includes("automatic preload ready")));
+  for (let i = 1; i <= 2; i++) {
+    const showing = space.show(placement);
+    assert.equal(h.ads[0].calls.at(-1), "show"); await showing;
+    const result = { isEnded: i === 2, trackId: `automatic-next-${i}` };
+    h.ads[0].close(result); h.ads[0].closeCallbacks[i-1](result);
+    await waitUntil(() => h.ads[0].calls.filter(c => c === "load").length === i+1);
+  }
+  await h.client.flush();
+  assert.equal(h.ads.length, 1);
+  assert.equal(h.ads[0].calls.filter(c => c === "show").length, 2);
+  assert.equal(h.ads[0].calls.filter(c => c === "load").length, 3);
+  assert.equal(h.events().length, 2);
+});
+
+test("closing before scheduled startup preparation never creates a native ad", async t => {
+  const h = await harness(t);
+  h.client.createAdSpace({ adUnitId: "native-unit" }); h.client.close();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(h.ads.length, 0);
+});
+
+test("late host injection is discovered for automatic preparation without a click", async t => {
+  const h = await harness(t);
+  const host = h.host;
+  Reflect.deleteProperty(globalThis, "tap");
+  h.client.createAdSpace({ adUnitId: "native-unit" });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(h.ads.length, 0);
+  Object.defineProperty(globalThis, "tap", {configurable:true,value:host});
+  await waitUntil(() => h.logs.some(line => line.includes("automatic preload ready")));
+  assert.equal(h.ads[0].calls.includes("show"), false);
+  assert.equal(h.events().length, 0);
+});
+
+test("automatic preparation timeout is logged once and does not retry until a click", async t => {
+  const h = await harness(t);
+  t.mock.timers.enable({apis:["setTimeout"]});
+  const create = h.host.createRewardedVideoAd;
+  h.host.createRewardedVideoAd = function(options) {
+    const ad = create.call(this, options);
+    if (h.ads.length === 1) ad.load = () => new Promise<void>(() => {});
+    return ad;
+  };
+  const space = h.client.createAdSpace({adUnitId:"native-unit"});
+  t.mock.timers.tick(0);
+  assert.equal(h.ads.length,1);
+  t.mock.timers.tick(30_000);
+  await Promise.resolve();
+  assert.equal(h.logs.filter(line=>line.includes("automatic preload failed")).length,1);
+  assert.equal(h.ads[0].calls.filter(c=>c==="destroy").length,1);
+  t.mock.timers.tick(60_000);
+  assert.equal(h.ads.length,1);
+  await space.show(placement);
+  assert.equal(h.ads.length,2);
+  h.ads[1].close({trackId:"after-automatic-timeout"});
 });

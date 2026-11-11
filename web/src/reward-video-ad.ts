@@ -18,8 +18,6 @@ type LoadOperation = {
   promise: Promise<LoadResult>;
   resolve: (value: LoadResult) => void;
   reject: (error: unknown) => void;
-  eventOnly: boolean;
-  errorValues?: unknown[];
   timer?: ReturnType<typeof setTimeout>;
 };
 const hostSlots = new WeakMap<TapRewardVideoHost, RewardVideoSlot>();
@@ -32,7 +30,7 @@ export type RewardVideoPlayback = {
   load: () => Promise<LoadResult>;
   acceptClose: (trackId: string | undefined) => boolean;
   consume: () => void;
-  finish: (reusable: boolean) => void;
+  finish: (reusable: boolean, prepareNext?: boolean) => void;
 };
 
 export function validateRewardVideoAdUnit(options: { adUnitId: string }): void {
@@ -45,18 +43,46 @@ export class RewardVideoAdPool {
   readonly slots = new Set<RewardVideoSlot>();
   private closed = false;
   private readonly waiting = new Set<(reason: Error) => void>();
+  private readonly preparationTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly logger?: (message: string) => void;
 
-  async preload(options: { adUnitId: string }): Promise<void> {
-    validateRewardVideoAdUnit(options);
-    const slot = this.acquire(options.adUnitId);
-    if (slot.playback || slot.loading?.errorValues) throw new Error("TapTap rewarded ad is busy");
-    const result = await this.wait(slot.load(true));
-    if (!result.ok) throw new Error("TapTap rewarded ad preload failed", { cause: result.values[0] });
+  constructor(logger?: (message: string) => void) {
+    this.logger = logger;
+  }
+
+  register(adUnitId: string): void {
+    if (this.closed || this.preparationTimers.has(adUnitId)) return;
+    const discoveryDeadline = Date.now() + 10_000;
+    const prepare = () => {
+      this.preparationTimers.delete(adUnitId);
+      if (this.closed) return;
+      const tap = (globalThis as { tap?: Partial<TapRewardVideoHost> }).tap;
+      if (typeof tap?.createRewardedVideoAd !== "function") {
+        if (Date.now() < discoveryDeadline) schedule(250);
+        return;
+      }
+      // TapTap has one native slot. Background work never switches an idle
+      // unit away from another handle or interrupts its loading/playback.
+      const current = hostSlots.get(tap as TapRewardVideoHost);
+      if (current && current.adUnitId !== adUnitId) return;
+      try { this.acquire(adUnitId).prepare(); }
+      catch { this.log("automatic preload failed"); }
+    };
+    const schedule = (delayMs: number) => {
+      const timer = setTimeout(prepare, delayMs);
+      timer.unref?.();
+      this.preparationTimers.set(adUnitId, timer);
+    };
+    schedule(0);
+  }
+
+  log(message: string): void {
+    try { this.logger?.(`[GameAlgoSDK] reward ad ${message}`); } catch { /* Optional diagnostics. */ }
   }
 
   begin(adUnitId: string): RewardVideoPlayback {
     const slot = this.acquire(adUnitId);
-    if (slot.playback || slot.loading?.errorValues) throw new Error("TapTap rewarded ad is busy");
+    if (slot.playback) throw new Error("TapTap rewarded ad is busy");
     const playback: RewardVideoPlayback = {
       ad: slot.ad,
       get ready() { return slot.ready; },
@@ -64,11 +90,15 @@ export class RewardVideoAdPool {
       load: () => this.wait(slot.load(false)),
       acceptClose: (trackId) => slot.acceptClose(trackId),
       consume: () => { slot.ready = false; },
-      finish: (reusable) => {
+      finish: (reusable, prepareNext = false) => {
         // Retained callbacks from an old playback cannot release a newer one.
         if (slot.playback?.lease !== playback) return;
         slot.playback = undefined;
-        if (!reusable) slot.destroy();
+        if (!reusable) {
+          const owners = [...slot.owners];
+          slot.destroy();
+          if (prepareNext) for (const owner of owners) owner.register(adUnitId);
+        } else if (prepareNext) slot.prepare();
       },
     };
     slot.playback = { owner: this, lease: playback };
@@ -78,6 +108,8 @@ export class RewardVideoAdPool {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    for (const timer of this.preparationTimers.values()) clearTimeout(timer);
+    this.preparationTimers.clear();
     for (const reject of this.waiting) reject(new Error("GameAlgo client is closed"));
     this.waiting.clear();
     for (const slot of [...this.slots]) {
@@ -136,20 +168,20 @@ class RewardVideoSlot {
   loading?: LoadOperation;
   playback?: { owner: RewardVideoAdPool; lease: RewardVideoPlayback };
   private disposed = false;
+  private preparationTimer?: ReturnType<typeof setTimeout>;
   private readonly reportedTracks = new Set<string>();
   private readonly onLoad: RewardVideoCallback = () => {
     if (this.disposed) return;
     this.ready = true;
     const loading = this.loading;
-    if (loading?.eventOnly) this.finishLoad(loading, { ok: true });
+    if (loading) this.finishLoad(loading, { ok: true });
   };
   private readonly onError: RewardVideoCallback = (...values) => {
     if (this.disposed) return;
     this.ready = false;
     const loading = this.loading;
     if (loading) {
-      loading.errorValues = values;
-      if (loading.eventOnly) this.finishLoad(loading, { ok: false, values });
+      this.finishLoad(loading, { ok: false, values });
     }
   };
 
@@ -169,12 +201,31 @@ class RewardVideoSlot {
     }
   }
 
+  prepare(): void {
+    if (this.disposed || this.playback || this.ready || this.loading || this.preparationTimer) return;
+    // Let the host's own post-close onLoad notification run first. Reuse a
+    // ready/in-flight slot instead of loading again or scheduling autoplay.
+    this.preparationTimer = setTimeout(() => {
+      this.preparationTimer = undefined;
+      if (this.disposed || this.owners.size === 0 || this.playback || this.ready || this.loading) return;
+      for (const owner of this.owners) owner.log("automatic preload started");
+      void this.load(true).then(result => {
+        if (this.disposed) return;
+        for (const owner of this.owners) owner.log(result.ok ? "automatic preload ready" : "automatic preload failed");
+      }).catch(() => {
+        if (this.disposed) return;
+        for (const owner of this.owners) owner.log("automatic preload failed");
+      });
+    }, 0);
+    this.preparationTimer.unref?.();
+  }
+
   load(requireReady: boolean): Promise<LoadResult> {
     if (this.disposed) return Promise.reject(new Error("TapTap rewarded ad instance was released"));
     if (this.ready) return Promise.resolve({ ok: true });
     if (this.loading) return this.loading.promise;
     const operation: LoadOperation = {
-      promise: undefined!, resolve: undefined!, reject: undefined!, eventOnly: false,
+      promise: undefined!, resolve: undefined!, reject: undefined!,
     };
     operation.promise = new Promise<LoadResult>((resolve, reject) => {
       operation.resolve = resolve;
@@ -186,19 +237,17 @@ class RewardVideoSlot {
       if (result && typeof (result as PromiseLike<unknown>).then === "function") {
         void Promise.resolve(result).then(() => {
           if (this.loading !== operation) return;
-          if (operation.errorValues) this.finishLoad(operation, { ok: false, values: operation.errorValues });
-          else {
-            this.ready = true;
-            this.finishLoad(operation, { ok: true });
-          }
+          this.ready = true;
+          this.finishLoad(operation, { ok: true });
         }, (error) => this.failLoad(operation, error));
-      } else if (operation.errorValues) this.finishLoad(operation, { ok: false, values: operation.errorValues });
-      else if (this.ready) this.finishLoad(operation, { ok: true });
-      else if (this.ad.onLoad) operation.eventOnly = true;
-      else if (requireReady) this.failLoad(operation, new Error("TapTap host cannot confirm rewarded ad preload readiness"));
-      else this.finishLoad(operation, { ok: true }); // Legacy hosts may only support show().
+      } else if (this.ready) this.finishLoad(operation, { ok: true });
+      else if (!this.ad.onLoad) {
+        if (requireReady) this.failLoad(operation, new Error("TapTap host cannot confirm rewarded ad preload readiness"));
+        else this.finishLoad(operation, { ok: true }); // Legacy hosts may only support show().
+      }
       if (this.loading === operation) {
         operation.timer = setTimeout(() => {
+          if (requireReady) for (const owner of this.owners) owner.log("automatic preload failed");
           this.failLoad(operation, new Error("TapTap rewarded ad load timed out"));
           this.destroy();
         }, LOAD_TIMEOUT_MS);
@@ -220,6 +269,8 @@ class RewardVideoSlot {
   destroy(): void {
     if (this.disposed) return;
     this.disposed = true;
+    clearTimeout(this.preparationTimer);
+    this.preparationTimer = undefined;
     this.cleaning = true;
     if (hostSlots.get(this.host) === this) hostSlots.delete(this.host);
     if (this.loading) this.failLoad(this.loading, new Error("TapTap rewarded ad instance was released"));
