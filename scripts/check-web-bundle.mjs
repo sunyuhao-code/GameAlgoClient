@@ -15,7 +15,7 @@ await writeFile(join(fixture, "index.html"),
 // Keep both the client and the worker API reachable, as they are in a game.
 // Import the built package entry so its rewritten worker URL is tested too.
 await writeFile(join(fixture, "main.js"), `
-import { GamePropelTapTapH5Client, GamePropelTapTapH5ScriptRuntime } from "@gamepropel/taptap-h5";
+import { GamePropelTapTapH5Client, GamePropelTapTapH5ScriptRuntime } from "@gamepropel/sdk-taptap-h5";
 import { GameAlgoWebClient } from "@gamealgo/web";
 globalThis.__gameAlgoBundleProbe = { GamePropelTapTapH5Client, GameAlgoWebClient, GamePropelTapTapH5ScriptRuntime };
 `);

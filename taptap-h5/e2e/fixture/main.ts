@@ -1,4 +1,4 @@
-import { GamePropelTapTapH5Client } from "@gamepropel/taptap-h5";
+import { GamePropelTapTapH5Client } from "@gamepropel/sdk-taptap-h5";
 import { GameAlgoWebClient } from "@gamealgo/web";
 
 declare global {

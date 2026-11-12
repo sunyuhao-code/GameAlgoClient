@@ -151,9 +151,8 @@ jobs:
           for package_directory in taptap-h5 web wechat; do
             package="$(npm pack "./$package_directory" --pack-destination release --ignore-scripts --json | node -e 'let data=""; process.stdin.on("data", chunk => data += chunk); process.stdin.on("end", () => { const result=JSON.parse(data); process.stdout.write((Array.isArray(result) ? result[0] : Object.values(result)[0]).filename); })')"
             package_version="$(node -p "require('./$package_directory/package.json').version")"
-            package_scope="gamepropel"
-            if [[ "$package_directory" == "web" ]]; then package_scope="gamealgo"; fi
-            expected="$package_scope-$package_directory-$package_version.tgz"
+            package_basename="$(node -p "require('./$package_directory/package.json').name.replace(/^@/, '').replace('/', '-')")"
+            expected="$package_basename-$package_version.tgz"
             [[ "$package" == "$expected" ]] || { echo "unexpected H5 package name: $package" >&2; exit 1; }
             (cd release && sha256sum "$package" > "$package.sha256")
           done
@@ -315,7 +314,7 @@ jobs:
           version="${{ needs.version.outputs.value }}"
           web_version="${{ needs.web.outputs.version }}"
           wechat_version="${{ needs.web.outputs.wechat_version }}"
-          for asset in "gamealgo-android-$version.aar" "gamealgo-godot-$version.zip" "gamepropel-taptap-h5-$web_version.tgz" "gamealgo-web-$web_version.tgz" "gamepropel-wechat-$wechat_version.tgz"; do
+          for asset in "gamealgo-android-$version.aar" "gamealgo-godot-$version.zip" "gamepropel-sdk-taptap-h5-$web_version.tgz" "gamealgo-web-$web_version.tgz" "gamepropel-sdk-wechat-$wechat_version.tgz"; do
             [[ -f "downloaded/$asset" ]] || { echo "missing release asset: $asset" >&2; exit 1; }
             [[ -f "downloaded/$asset.sha256" ]] || { echo "missing checksum: $asset.sha256" >&2; exit 1; }
           done

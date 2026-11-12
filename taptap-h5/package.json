@@ -1,6 +1,6 @@
 {
-  "name": "@gamepropel/taptap-h5",
-  "version": "2.1.8",
+  "name": "@gamepropel/sdk-taptap-h5",
+  "version": "2.1.8-rc.0",
   "description": "GamePropel SDK for TapTap H5 minigames",
   "repository": {
     "type": "git",

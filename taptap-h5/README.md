@@ -1,16 +1,16 @@
 # GamePropel TapTap H5 SDK
 
-GamePropel (formerly GameAlgo) SDK for **TapTap H5 minigames**, published as `@gamepropel/taptap-h5`.
+GamePropel (formerly GameAlgo) SDK for **TapTap H5 minigames**, published as `@gamepropel/sdk-taptap-h5`.
 Other minigame hosts, including WeChat, require their own host SDK; browser
 fallbacks are retained for local previews and compatible WebViews.
 
 Since 2.1.8, new integrations use `GamePropelTapTapH5Client` from
-`@gamepropel/taptap-h5`. The old `@gamealgo/web` package, `GameAlgoWebClient`,
+`@gamepropel/sdk-taptap-h5`. The old `@gamealgo/web` package, `GameAlgoWebClient`,
 and `GameAlgoTapTapH5Client` remain compatibility entries for the same runtime.
 Existing stored identities and event queues are reused.
 
 ```bash
-npm install @gamepropel/taptap-h5
+npm install @gamepropel/sdk-taptap-h5
 ```
 
 The SDK continues to report `platform=web`, the historical protocol value for
@@ -45,7 +45,7 @@ does not delay initialization, retry collection, or suppress events. This phase
 only records observations; it adds no server-side binding check or filtering.
 
 ```ts
-import { GamePropelTapTapH5Client } from "@gamepropel/taptap-h5";
+import { GamePropelTapTapH5Client } from "@gamepropel/sdk-taptap-h5";
 
 const gamePropel = GamePropelTapTapH5Client.init({
   baseUrl: "https://game-algo-sdk.dictapis.cn",
@@ -403,7 +403,7 @@ Define a static binary protocol once. Its field order and bounds produce the
 `protocolHash` used by matchmaking, so incompatible builds never share a room.
 
 ```ts
-import { connectRoom, defineMultiplayerProtocol, GamePropelTapTapH5Client } from "@gamepropel/taptap-h5";
+import { connectRoom, defineMultiplayerProtocol, GamePropelTapTapH5Client } from "@gamepropel/sdk-taptap-h5";
 
 const protocol = defineMultiplayerProtocol({
   id: "counter-duel",

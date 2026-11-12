@@ -83,13 +83,13 @@ try {
   const result = JSON.parse(stdout);
   const [packed] = Array.isArray(result) ? result : Object.values(result);
   assert.ok(!packed.files.some(file => /\.(?:wasm|node)$|rust-script-runtime|script-worker/.test(file.path)));
-  await writeFile(join(directory, "package.json"), JSON.stringify({ private: true, type: "module", dependencies: { "@gamepropel/wechat": `file:${join(directory, packed.filename)}` } }));
+  await writeFile(join(directory, "package.json"), JSON.stringify({ private: true, type: "module", dependencies: { "@gamepropel/sdk-wechat": `file:${join(directory, packed.filename)}` } }));
   await run("npm", ["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false"], { cwd: directory });
-  await writeFile(join(directory, "esm.mjs"), `import { GamePropelWechatClient, GameAlgoWechatClient, GAMEPROPEL_WECHAT_SDK_VERSION } from "@gamepropel/wechat"; if (typeof GamePropelWechatClient.init !== "function" || GamePropelWechatClient !== GameAlgoWechatClient || GAMEPROPEL_WECHAT_SDK_VERSION !== ${JSON.stringify(pkg.version)}) throw new Error("Invalid ESM package");`);
-  await writeFile(join(directory, "cjs.cjs"), `const sdk = require("@gamepropel/wechat"); if (typeof sdk.GamePropelWechatClient.init !== "function" || sdk.GamePropelWechatClient !== sdk.GameAlgoWechatClient) throw new Error("Invalid CJS package");`);
+  await writeFile(join(directory, "esm.mjs"), `import { GamePropelWechatClient, GameAlgoWechatClient, GAMEPROPEL_WECHAT_SDK_VERSION } from "@gamepropel/sdk-wechat"; if (typeof GamePropelWechatClient.init !== "function" || GamePropelWechatClient !== GameAlgoWechatClient || GAMEPROPEL_WECHAT_SDK_VERSION !== ${JSON.stringify(pkg.version)}) throw new Error("Invalid ESM package");`);
+  await writeFile(join(directory, "cjs.cjs"), `const sdk = require("@gamepropel/sdk-wechat"); if (typeof sdk.GamePropelWechatClient.init !== "function" || sdk.GamePropelWechatClient !== sdk.GameAlgoWechatClient) throw new Error("Invalid CJS package");`);
   await run(process.execPath, [join(directory, "esm.mjs")]);
   await run(process.execPath, [join(directory, "cjs.cjs")]);
-  await writeFile(join(directory, "types.mts"), `import { GamePropelWechatClient, GameAlgoWechatClient, type GamePropelWechatClientOptions } from "@gamepropel/wechat"; declare const options: GamePropelWechatClientOptions; const sdk: GameAlgoWechatClient = GamePropelWechatClient.init(options); sdk.getForegroundTimeMs(); sdk.flush(); sdk.createAdSpace({adUnitId:"type-only"}).show("type-only");`);
+  await writeFile(join(directory, "types.mts"), `import { GamePropelWechatClient, GameAlgoWechatClient, type GamePropelWechatClientOptions } from "@gamepropel/sdk-wechat"; declare const options: GamePropelWechatClientOptions; const sdk: GameAlgoWechatClient = GamePropelWechatClient.init(options); sdk.getForegroundTimeMs(); sdk.flush(); sdk.createAdSpace({adUnitId:"type-only"}).show("type-only");`);
   await run(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "--noEmit", "--strict", "--skipLibCheck", "--lib", "ES2022", "--target", "ES2022", "--module", "NodeNext", join(directory, "types.mts")]);
   console.log(`WeChat package passed: version=${pkg.version}, standalone CJS=${Buffer.byteLength(source)} bytes (gzip=${gzipSync(source).length}), restricted JS host, real HTTP, ESM/CJS install, and types`);
 } finally {

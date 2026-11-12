@@ -29,7 +29,7 @@ try {
   await run("npm", ["install", "--prefer-offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false"], { cwd: directory });
   await writeFile(join(directory, "smoke.mjs"), `
 import assert from "node:assert/strict";
-import * as current from "@gamepropel/taptap-h5";
+import * as current from "@gamepropel/sdk-taptap-h5";
 import * as legacy from "@gamealgo/web";
 assert.deepEqual(Object.keys(current), Object.keys(legacy));
 for (const key of Object.keys(current)) assert.equal(current[key], legacy[key], key);
@@ -83,7 +83,7 @@ try {
 `);
   await run(process.execPath, [join(directory, "smoke.mjs")], { cwd: directory });
   await writeFile(join(directory, "types.mts"), `
-import { GamePropelTapTapH5Client, type GamePropelTapTapH5ClientOptions } from "@gamepropel/taptap-h5";
+import { GamePropelTapTapH5Client, type GamePropelTapTapH5ClientOptions } from "@gamepropel/sdk-taptap-h5";
 import { GameAlgoWebClient, type GameAlgoWebClientOptions } from "@gamealgo/web";
 declare const options: GamePropelTapTapH5ClientOptions;
 const oldOptions: GameAlgoWebClientOptions = options;
@@ -93,7 +93,7 @@ current.createAdSpace({ adUnitId: "type-check-only" });
 legacy.getForegroundTimeMs();
 `);
   await run(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "--noEmit", "--strict", "--skipLibCheck", "--target", "ES2022", "--module", "NodeNext", join(directory, "types.mts")], { cwd: directory });
-  const canonical = JSON.parse(await readFile(join(directory, "node_modules/@gamepropel/taptap-h5/package.json"), "utf8"));
+  const canonical = JSON.parse(await readFile(join(directory, "node_modules/@gamepropel/sdk-taptap-h5/package.json"), "utf8"));
   console.log(`TapTap H5 tarball compatibility passed: version=${canonical.version}, both package entries, identity, pending-event recovery, wire platform, and TypeScript exports`);
 } finally {
   await rm(directory, { recursive: true, force: true });

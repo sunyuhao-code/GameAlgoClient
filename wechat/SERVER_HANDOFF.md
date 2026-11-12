@@ -1,6 +1,6 @@
 # GamePropel 微信小游戏 SDK 服务端对接
 
-客户端：`@gamepropel/wechat@1.0.0`，入口 `GamePropelWechatClient`（保留 `GameAlgoWechatClient` 别名）。正式 SDK 固定发送
+客户端：`@gamepropel/sdk-wechat@1.0.0`，入口 `GamePropelWechatClient`（保留 `GameAlgoWechatClient` 别名）。正式 SDK 固定发送
 `platform=wechat`，网络使用 `wx.request`，不需要业务服务器转发，也不使用浏览器
 `fetch`、Worker、QuickJS 或 WebAssembly。TapTap H5 继续使用 `platform=web`。
 

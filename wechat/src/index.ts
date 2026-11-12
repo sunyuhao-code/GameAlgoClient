@@ -5,7 +5,7 @@ import { getWechatHost, type WechatHost, type WechatNetworkStatus } from "./host
 import { GameAlgoWechatStorage } from "./storage.ts";
 import { GameAlgoWechatTransport } from "./transport.ts";
 
-export const GAMEALGO_WECHAT_SDK_VERSION = "1.0.0";
+export const GAMEALGO_WECHAT_SDK_VERSION = "1.0.0-rc.0";
 export const GAMEALGO_WECHAT_CAPABILITIES = Object.freeze({ config: true, parameterExperiments: true, remoteScripts: false, multiplayer: false });
 
 export type GameAlgoWechatClientOptions = Omit<GameAlgoRestClientOptions,
@@ -62,7 +62,7 @@ export class GameAlgoWechatClient extends GameAlgoRestClient {
       sdkVersion: GAMEALGO_WECHAT_SDK_VERSION,
       storage,
       fetchImpl: transport.fetch,
-      scriptRuntime: { execute() { throw new Error("WeChat SDK 1.0.0 does not support remote scripts; use parameter experiments or local defaults"); } },
+      scriptRuntime: { execute() { throw new Error(`WeChat SDK ${GAMEALGO_WECHAT_SDK_VERSION} does not support remote scripts; use parameter experiments or local defaults`); } },
       eventFlushIntervalMs: options.eventFlushIntervalMs ?? 5_000,
       eventMaxBatchSize: Math.min(options.eventMaxBatchSize ?? 20, 20),
       eventMaxBatchBytes: Math.min(options.eventMaxBatchBytes ?? 48 * 1024, 48 * 1024),

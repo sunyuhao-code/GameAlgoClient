@@ -88,9 +88,9 @@ Godot SDK 的埋点、归因、标识映射、自定义事件配额和 milestone
 ```text
 ios/        iOS Swift Package SDK
 android/    Android Java SDK core
-taptap-h5/  TapTap H5 SDK（@gamepropel/taptap-h5）
+taptap-h5/  TapTap H5 SDK（@gamepropel/sdk-taptap-h5）
 web/        旧 @gamealgo/web 兼容入口
-wechat/     微信小游戏 SDK（@gamepropel/wechat）
+wechat/     微信小游戏 SDK（@gamepropel/sdk-wechat）
 rest-api/   底层 TypeScript HTTP helper 和协议示例
 lua/        TapTap Maker / Lua SDK
 godot/      Godot 4 GDScript SDK
@@ -146,10 +146,12 @@ Android 模拟器／真机的 instrumentation 命令见 `android/README.md`；We
 
 Android AAR、Godot 发布包（`gamealgo-godot-<version>.zip`，含 iOS / Android 运行时二进制）和 Web npm 包由语义化版本 tag（`v1.2.3` 或 `1.2.3`）触发 `.github/workflows/release.yml` 构建，并附加到对应 GitHub Release。三个平台在各自的 runner 上并行构建，由同一个 `publish` job 统一发布。任一平台构建失败就不会发布，不会留下只有一部分产物的 Release。
 
-GitHub Release 成功后，独立的 `.github/workflows/publish.yml` 使用 `environment: npm` 和 OIDC trusted publishing，按顺序发布 `@gamepropel/taptap-h5`、`@gamepropel/wechat` 和 `@gamealgo/web` 兼容入口。TapTap H5 与旧 Web 兼容包版本一致，兼容包精确依赖同版本的 TapTap H5 包；微信包版本独立，已发布版本会安全跳过。整仓 Release tag 与 npm 包版本独立。三个 npm 包都需要把 `sunyuhao-code/GameAlgoClient`、`publish.yml` 和 `npm` environment 配置为 trusted publisher；新包首次创建时先完成 npm 侧初始化。
+GitHub Release 成功后，独立的 `.github/workflows/publish.yml` 使用 `environment: npm` 和 OIDC trusted publishing，按顺序发布 `@gamepropel/sdk-taptap-h5`、`@gamepropel/sdk-wechat` 和 `@gamealgo/web` 兼容入口。TapTap H5 与旧 Web 兼容包版本一致，兼容包精确依赖同版本的 TapTap H5 包；微信包版本独立，已发布版本会安全跳过。整仓 Release tag 与 npm 包版本独立。三个 npm 包都需要把 `sunyuhao-code/GameAlgoClient`、`publish.yml` 和 `npm` environment 配置为 trusted publisher；新包首次创建时先完成 npm 侧初始化。
 
 仅更新 JavaScript npm 包时，在 **Publish JavaScript npm** 工作流上手动运行 `workflow_dispatch` 即可，无需创建整仓 Release tag 或重发原生平台产物。Maker / Lua SDK 从仓库源码同步，不依赖 npm 发布。
 
-`@gamealgo/web` 与 `GameAlgoWebClient` 保留兼容；新接入使用 `@gamepropel/taptap-h5` 的 `GamePropelTapTapH5Client`。协议中的 `web` 继续表示 TapTap H5，历史数据不重写，操作系统继续由 `device.os` 表达。微信小游戏使用 `@gamepropel/wechat` 的 `GamePropelWechatClient` 与 `platform=wechat`；首版支持原生采集、持久化、生命周期、广告封装和参数配置，不执行远端脚本。
+新 npm 包先由组织 owner 在本机正式发布可安装的候选版（例如 `-rc.0`，使用 `--tag next`），再配置 trusted publisher，并在两天内由 CI 发布正式版验证连接。保留候选版作为包身份和发布记录；不要把删除新包的唯一暂存版作为初始化步骤，这会连同占位包一起撤销并触发 npm 的 24 小时冷却期。
+
+`@gamealgo/web` 与 `GameAlgoWebClient` 保留兼容；新接入使用 `@gamepropel/sdk-taptap-h5` 的 `GamePropelTapTapH5Client`。协议中的 `web` 继续表示 TapTap H5，历史数据不重写，操作系统继续由 `device.os` 表达。微信小游戏使用 `@gamepropel/sdk-wechat` 的 `GamePropelWechatClient` 与 `platform=wechat`；首版支持原生采集、持久化、生命周期、广告封装和参数配置，不执行远端脚本。
 
 微信客户端的服务端联调要求及真机验证范围见 [对接说明](./wechat/SERVER_HANDOFF.md)。

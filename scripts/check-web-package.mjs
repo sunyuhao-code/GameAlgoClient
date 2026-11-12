@@ -7,7 +7,7 @@ const packageJson = JSON.parse(await readFile(resolve(root, "taptap-h5/package.j
 const sdk = await import(`${pathToFileURL(resolve(root, "taptap-h5/dist/taptap-h5/src/index.js"))}?check=${Date.now()}`);
 const compatibilityPackage = JSON.parse(await readFile(resolve(root, "web/package.json"), "utf8"));
 
-if (packageJson.name !== "@gamepropel/taptap-h5"
+if (packageJson.name !== "@gamepropel/sdk-taptap-h5"
   || compatibilityPackage.name !== "@gamealgo/web"
   || compatibilityPackage.version !== packageJson.version
   || compatibilityPackage.dependencies?.[packageJson.name] !== packageJson.version) {

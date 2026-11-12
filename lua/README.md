@@ -57,7 +57,7 @@ Lua SDK 会自动上报 `platform=maker`，接入代码不需要也不能选择�
 
 每次拉配置时，SDK 优先调用 `GetNativePlatform()`，失败或无法识别时再尝试 `GetPlatform()`，在 `device.os` 中填入 `ios`、`android`、`windows`、`macos`、`linux` 或 `harmonyos`。无法识别时省略此字段。Maker 的 `GetOSVersion()` 在 iPhone 上也可能返回 macOS/Darwin 描述，因此 SDK 不自动采集版本；游戏可以在 `device.osVersion` 中显式传入可信版本。`device` 的显式字段优先于自动检测，SDK 不修改传入的表。
 
-Maker / Lua SDK 不提供匹配、Lobby、房间连接或实时状态同步；需要这些能力的 TapTap H5 游戏请使用 [`@gamepropel/taptap-h5`](../taptap-h5/README.md)。
+Maker / Lua SDK 不提供匹配、Lobby、房间连接或实时状态同步；需要这些能力的 TapTap H5 游戏请使用 [`@gamepropel/sdk-taptap-h5`](../taptap-h5/README.md)。
 
 `ga_live_xxx` 只是示例占位。实际接入必须通过 CLI 取得真实 `ga_live_*`。首次 Maker 接入可用真实小游戏 ID 领取临时接入凭据；已有游戏优先复用有效绑定，需要正式管理时再走 TapTap 授权或使用管理 Key。具体流程以 [Server SDK 接入文档](https://game-algo-admin.dictapis.cn/dashboard/docs/index.html?topic=sdk-integration)为准；`ga_org_*`、`ga_admin_*`、`ga_setup_*` 只给 CLI 使用，不放入客户端。
 

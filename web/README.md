@@ -1,11 +1,11 @@
 # GamePropel TapTap H5 SDK — compatibility package
 
 `@gamealgo/web` is the legacy package name for the **TapTap H5 SDK**.
-New integrations use [`@gamepropel/taptap-h5`](https://www.npmjs.com/package/@gamepropel/taptap-h5).
+New integrations use [`@gamepropel/sdk-taptap-h5`](https://www.npmjs.com/package/@gamepropel/sdk-taptap-h5).
 It is not a generic SDK for WeChat or other minigame hosts.
 
 ```ts
-import { GamePropelTapTapH5Client } from "@gamepropel/taptap-h5";
+import { GamePropelTapTapH5Client } from "@gamepropel/sdk-taptap-h5";
 
 const gamePropel = GamePropelTapTapH5Client.init({
   baseUrl: "https://game-algo-sdk.dictapis.cn",

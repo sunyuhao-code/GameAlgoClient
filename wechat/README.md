@@ -1,6 +1,6 @@
 # GamePropel WeChat Minigame SDK
 
-`@gamepropel/wechat` is the native **WeChat minigame** adapter for GamePropel
+`@gamepropel/sdk-wechat` is the native **WeChat minigame** adapter for GamePropel
 (formerly GameAlgo). It uses `wx.request`,
 native local storage, `wx.onHide/onShow` and rewarded-video APIs. It fixes
 `platform=wechat`; iOS/Android/desktop are separate `device.os` values.
@@ -17,7 +17,7 @@ retain their historical names.
 ## Install and initialize
 
 ```bash
-npm install @gamepropel/wechat
+npm install @gamepropel/sdk-wechat
 ```
 
 Use the engine's npm integration or WeChat Developer Tools' Build npm step.

@@ -1,6 +1,6 @@
 {
-  "name": "@gamepropel/wechat",
-  "version": "1.0.0",
+  "name": "@gamepropel/sdk-wechat",
+  "version": "1.0.0-rc.0",
   "description": "GamePropel SDK for WeChat minigames",
   "repository": {
     "type": "git",
