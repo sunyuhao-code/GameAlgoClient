@@ -1,6 +1,6 @@
 {
   "name": "@gamealgo/web",
-  "version": "2.1.8-rc.0",
+  "version": "2.1.8",
   "description": "Compatibility entry for the GamePropel TapTap H5 SDK; new integrations use @gamepropel/sdk-taptap-h5",
   "repository": {
     "type": "git",
@@ -26,7 +26,7 @@
     "README.md"
   ],
   "dependencies": {
-    "@gamepropel/sdk-taptap-h5": "2.1.8-rc.0"
+    "@gamepropel/sdk-taptap-h5": "2.1.8"
   },
   "publishConfig": {
     "access": "public"

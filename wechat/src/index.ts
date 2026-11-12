@@ -5,7 +5,7 @@ import { getWechatHost, type WechatHost, type WechatNetworkStatus } from "./host
 import { GameAlgoWechatStorage } from "./storage.ts";
 import { GameAlgoWechatTransport } from "./transport.ts";
 
-export const GAMEALGO_WECHAT_SDK_VERSION = "1.0.0-rc.0";
+export const GAMEALGO_WECHAT_SDK_VERSION = "1.0.0";
 export const GAMEALGO_WECHAT_CAPABILITIES = Object.freeze({ config: true, parameterExperiments: true, remoteScripts: false, multiplayer: false });
 
 export type GameAlgoWechatClientOptions = Omit<GameAlgoRestClientOptions,
