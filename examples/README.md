@@ -1,4 +1,6 @@
-# GameAlgo 客户端示例
+# GamePropel 客户端示例
+
+GamePropel 原名 GameAlgo，现有 `GameAlgo*` API、模块名和安装路径继续兼容。
 
 这里集中说明仓库内可以直接运行或发布的客户端示例。示例只能使用公开 SDK API 和 `/v1/*` 接口。
 

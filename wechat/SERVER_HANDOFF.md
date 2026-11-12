@@ -1,8 +1,10 @@
-# 微信小游戏 SDK 服务端对接
+# GamePropel 微信小游戏 SDK 服务端对接
 
-客户端：`@gamealgo/wechat@1.0.0`，入口 `GameAlgoWechatClient`。正式 SDK 固定发送
+客户端：`@gamepropel/wechat@1.0.0`，入口 `GamePropelWechatClient`（保留 `GameAlgoWechatClient` 别名）。正式 SDK 固定发送
 `platform=wechat`，网络使用 `wx.request`，不需要业务服务器转发，也不使用浏览器
 `fetch`、Worker、QuickJS 或 WebAssembly。TapTap H5 继续使用 `platform=web`。
+
+品牌由 GameAlgo 更名为 GamePropel；新 npm 包使用 `@gamepropel` 命名空间。服务端及 CLI 的 SDK 下载配置和接入示例应同步使用新包名。现有 API 域名、鉴权请求头、Key 格式、协议字段及客户端存储标识继续沿用。
 
 ## 需要服务端接通的部分
 

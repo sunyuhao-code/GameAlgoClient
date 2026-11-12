@@ -1,6 +1,8 @@
-# GameAlgo TypeScript HTTP Helper
+# GamePropel TypeScript HTTP Helper
 
-这是供官方 SDK 复用及自定义受控运行时使用的底层 HTTP helper。TapTap H5 游戏应直接使用 [`@gamealgo/taptap-h5`](../taptap-h5/README.md)，不要把 HTTP 传输方式当作平台类型。
+GamePropel 原名 GameAlgo，现有 `GameAlgo*` API、模块名和安装路径继续兼容。
+
+这是供官方 SDK 复用及自定义受控运行时使用的底层 HTTP helper。TapTap H5 游戏应直接使用 [`@gamepropel/taptap-h5`](../taptap-h5/README.md)，不要把 HTTP 传输方式当作平台类型。
 
 REST 请求和 SDK 使用同一套 Protocol v1 接口。
 

@@ -199,3 +199,12 @@ export { GameAlgoWechatTransport } from "./transport.ts";
 export type { WechatHost } from "./host.ts";
 export type { RewardAdSpace as GameAlgoWechatRewardAdSpace, RewardAdSpaceOptions as GameAlgoWechatRewardAdSpaceOptions, RewardVideoAdCallbacks as GameAlgoWechatRewardVideoAdCallbacks, RewardVideoCloseResult as GameAlgoWechatRewardVideoCloseResult } from "../../rest-api/src/reward-video-manager.ts";
 export type { ConfigResponse, EventPayload, EventBatchResponse, JsonValue, TrackEventOptions, GameAlgoExecutionResult, GameAlgoUserIdentity } from "../../rest-api/src/types.ts";
+
+/** Brand aliases use the same implementation, identity and durable queue. */
+export { GameAlgoWechatClient as GamePropelWechatClient };
+export { GameAlgoWechatStorage as GamePropelWechatStorage } from "./storage.ts";
+export { GameAlgoWechatTransport as GamePropelWechatTransport } from "./transport.ts";
+export type GamePropelWechatClientOptions = GameAlgoWechatClientOptions;
+export const initGamePropelWechat = initGameAlgoWechat;
+export const GAMEPROPEL_WECHAT_SDK_VERSION = GAMEALGO_WECHAT_SDK_VERSION;
+export const GAMEPROPEL_WECHAT_CAPABILITIES = GAMEALGO_WECHAT_CAPABILITIES;

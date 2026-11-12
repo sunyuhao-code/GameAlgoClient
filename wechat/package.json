@@ -1,7 +1,7 @@
 {
-  "name": "@gamealgo/wechat",
+  "name": "@gamepropel/wechat",
   "version": "1.0.0",
-  "description": "GameAlgo SDK for WeChat minigames",
+  "description": "GamePropel SDK for WeChat minigames",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/sunyuhao-code/GameAlgoClient.git",

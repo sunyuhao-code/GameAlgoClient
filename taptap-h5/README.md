@@ -1,16 +1,16 @@
-# GameAlgo TapTap H5 SDK
+# GamePropel TapTap H5 SDK
 
-SDK for **TapTap H5 minigames**, published as `@gamealgo/taptap-h5`.
+GamePropel (formerly GameAlgo) SDK for **TapTap H5 minigames**, published as `@gamepropel/taptap-h5`.
 Other minigame hosts, including WeChat, require their own host SDK; browser
 fallbacks are retained for local previews and compatible WebViews.
 
-Since 2.1.8, new integrations use `GameAlgoTapTapH5Client` from
-`@gamealgo/taptap-h5`. The old `@gamealgo/web` package and `GameAlgoWebClient`
-name remain compatibility entries for the same implementation, not a second
-runtime. Existing stored identities and event queues are reused.
+Since 2.1.8, new integrations use `GamePropelTapTapH5Client` from
+`@gamepropel/taptap-h5`. The old `@gamealgo/web` package, `GameAlgoWebClient`,
+and `GameAlgoTapTapH5Client` remain compatibility entries for the same runtime.
+Existing stored identities and event queues are reused.
 
 ```bash
-npm install @gamealgo/taptap-h5
+npm install @gamepropel/taptap-h5
 ```
 
 The SDK continues to report `platform=web`, the historical protocol value for
@@ -45,9 +45,9 @@ does not delay initialization, retry collection, or suppress events. This phase
 only records observations; it adds no server-side binding check or filtering.
 
 ```ts
-import { GameAlgoTapTapH5Client } from "@gamealgo/taptap-h5";
+import { GamePropelTapTapH5Client } from "@gamepropel/taptap-h5";
 
-const gameAlgo = GameAlgoTapTapH5Client.init({
+const gamePropel = GamePropelTapTapH5Client.init({
   baseUrl: "https://game-algo-sdk.dictapis.cn",
   gameKey: "ga_live_xxx",
   appVersion: "1.0.0",
@@ -56,12 +56,12 @@ const gameAlgo = GameAlgoTapTapH5Client.init({
 });
 
 // Do not block first paint on this. Local defaults remain available.
-await gameAlgo.waitForReady(1500);
+await gamePropel.waitForReady(1500);
 
-gameAlgo.tracker.trackLevelStart({ levelId: "level_1" });
-gameAlgo.tracker.trackMilestone("new_user", "进入第一关");
+gamePropel.tracker.trackLevelStart({ levelId: "level_1" });
+gamePropel.tracker.trackMilestone("new_user", "进入第一关");
 
-const decision = await gameAlgo.executor("level_dda").execute({ level: 12 });
+const decision = await gamePropel.executor("level_dda").execute({ level: 12 });
 ```
 
 ### TapDB identity linking in TapTap
@@ -141,7 +141,7 @@ do not mix its tools, app context or IDs with this H5 flow.
 
 ```ts
 // Bind the unit at game startup. The SDK automatically preloads it.
-const rewardAd = gameAlgo.createAdSpace({ adUnitId: tapTapAdUnitId });
+const rewardAd = gamePropel.createAdSpace({ adUnitId: tapTapAdUnitId });
 
 async function onReviveClick() {
   try {
@@ -303,12 +303,12 @@ or event-store writes, and a pending ad request cannot block a session end.
 Ordinary batches exclude critical events already being uploaded. Failed requests
 remain queued with their original event ID and occurrence time, and persisted
 queues include ordinary in-flight rows until acknowledgement. Successful enqueue
-does not mean server delivery; use `await gameAlgo.flush()` to await critical
+does not mean server delivery; use `await gamePropel.flush()` to await critical
 uploads and their queue persistence when the page can remain active.
 
 ### Explicit session changes
 
-Explicit `gameAlgo.tracker.newSession()` closes an unfinished old session with
+Explicit `gamePropel.tracker.newSession()` closes an unfinished old session with
 `reason=new_session`, preserving its user/session/context and ending its duration
 at the switch. It schedules persistence and immediately starts critical upload,
 without waiting for the network before switching. A session already ended by the
@@ -375,14 +375,14 @@ URL attribution is opt-in. It sends only an allow-list of campaign parameters
 and the referrer host; it never uploads the full URL or full referrer.
 
 ```ts
-const gameAlgo = GameAlgoTapTapH5Client.init({
+const gamePropel = GamePropelTapTapH5Client.init({
   baseUrl: "https://game-algo-sdk.dictapis.cn",
   gameKey: "ga_live_xxx",
   autoUrlAttribution: true,
 });
 
 // Or call this after consent with a custom allow-list.
-await gameAlgo.syncUrlAttribution({
+await gamePropel.syncUrlAttribution({
   parameterNames: ["utm_source", "utm_campaign", "partner_click_id"],
 });
 ```
@@ -403,7 +403,7 @@ Define a static binary protocol once. Its field order and bounds produce the
 `protocolHash` used by matchmaking, so incompatible builds never share a room.
 
 ```ts
-import { connectRoom, defineMultiplayerProtocol, GameAlgoTapTapH5Client } from "@gamealgo/taptap-h5";
+import { connectRoom, defineMultiplayerProtocol, GamePropelTapTapH5Client } from "@gamepropel/taptap-h5";
 
 const protocol = defineMultiplayerProtocol({
   id: "counter-duel",
@@ -415,13 +415,13 @@ const protocol = defineMultiplayerProtocol({
   input: { taps: "u8" },
 });
 
-const gameAlgo = GameAlgoTapTapH5Client.init({
+const gamePropel = GamePropelTapTapH5Client.init({
   baseUrl: "https://game-algo-sdk.dictapis.cn",
   gameKey: "ga_live_xxx",
 });
 
 async function startMatch() {
-  const match = gameAlgo.matchmaking.join({
+  const match = gamePropel.matchmaking.join({
     queueId: "casual_1v1",
     protocolHash: protocol.hash,
     canHost: true,
@@ -450,18 +450,18 @@ leader-controlled start, direct custom rooms, and whole-party matchmaking.
 Lobby queues do not accept the automatic `join()` API.
 
 ```ts
-const page = await gameAlgo.matchmaking.listLobbies({
+const page = await gamePropel.matchmaking.listLobbies({
   queueId: "custom_duel",
   protocolHash: protocol.hash,
   limit: 20,
 });
 
 const lobby = page.items.length > 0
-  ? gameAlgo.matchmaking.joinLobby({
+  ? gamePropel.matchmaking.joinLobby({
       lobbyId: page.items[0].lobbyId,
       protocolHash: protocol.hash,
     })
-  : gameAlgo.matchmaking.createLobby({
+  : gamePropel.matchmaking.createLobby({
       queueId: "custom_duel",
       protocolHash: protocol.hash,
       visibility: "public",
@@ -539,7 +539,7 @@ and is not classified as retryable; the UI may let the player explicitly join
 again or choose another queue.
 
 Telemetry still uses the general 5-second batching interval. Explicitly call
-`await gameAlgo.flush()` after a match result or another diagnostic boundary
+`await gamePropel.flush()` after a match result or another diagnostic boundary
 that needs to be visible immediately.
 
 Run `npm run check:web:multiplayer` for a real two-page Chrome E2E, or see

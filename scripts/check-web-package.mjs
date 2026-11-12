@@ -7,13 +7,18 @@ const packageJson = JSON.parse(await readFile(resolve(root, "taptap-h5/package.j
 const sdk = await import(`${pathToFileURL(resolve(root, "taptap-h5/dist/taptap-h5/src/index.js"))}?check=${Date.now()}`);
 const compatibilityPackage = JSON.parse(await readFile(resolve(root, "web/package.json"), "utf8"));
 
-if (packageJson.name !== "@gamealgo/taptap-h5"
+if (packageJson.name !== "@gamepropel/taptap-h5"
   || compatibilityPackage.name !== "@gamealgo/web"
   || compatibilityPackage.version !== packageJson.version
   || compatibilityPackage.dependencies?.[packageJson.name] !== packageJson.version) {
   throw new Error("TapTap H5 and legacy Web packages must publish matching, pinned versions");
 }
 if (sdk.GameAlgoTapTapH5Client !== sdk.GameAlgoWebClient
+  || sdk.GamePropelTapTapH5Client !== sdk.GameAlgoWebClient
+  || sdk.GamePropelBrowserStorage !== sdk.GameAlgoBrowserStorage
+  || sdk.GamePropelTapTapH5ScriptRuntime !== sdk.GameAlgoWebScriptRuntime
+  || sdk.initGamePropelTapTapH5 !== sdk.initGameAlgoWeb
+  || sdk.GAMEPROPEL_TAPTAP_H5_SDK_VERSION !== sdk.GAMEALGO_WEB_SDK_VERSION
   || sdk.GAMEALGO_TAPTAP_H5_SDK_VERSION !== sdk.GAMEALGO_WEB_SDK_VERSION) {
   throw new Error("TapTap H5 and legacy Web exports must share one implementation");
 }

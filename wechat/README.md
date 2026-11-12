@@ -1,6 +1,7 @@
-# GameAlgo WeChat Minigame SDK
+# GamePropel WeChat Minigame SDK
 
-`@gamealgo/wechat` is the native **WeChat minigame** adapter. It uses `wx.request`,
+`@gamepropel/wechat` is the native **WeChat minigame** adapter for GamePropel
+(formerly GameAlgo). It uses `wx.request`,
 native local storage, `wx.onHide/onShow` and rewarded-video APIs. It fixes
 `platform=wechat`; iOS/Android/desktop are separate `device.os` values.
 
@@ -9,21 +10,25 @@ configuration files in JSON and parameter-based A/B experiments. It does not
 execute remote JavaScript/WASM, provide multiplayer or retrieve individual ad
 revenue. The TapTap H5 package is a different SDK.
 
+The `GameAlgoWechatClient`, `initGameAlgoWechat`, and `GAMEALGO_WECHAT_*` names
+remain aliases for existing integrations. Storage keys and the wire protocol
+retain their historical names.
+
 ## Install and initialize
 
 ```bash
-npm install @gamealgo/wechat
+npm install @gamepropel/wechat
 ```
 
 Use the engine's npm integration or WeChat Developer Tools' Build npm step.
 The package has ESM and CommonJS entries and no runtime dependencies.
 For a plain JavaScript project, copy `dist/commonjs/index.js` from the built
-package into the game as `libs/gamealgo-wechat.js`; that one file is standalone:
+package into the game as `libs/gamepropel-wechat.js`; that one file is standalone:
 
 ```js
-const { GameAlgoWechatClient } = require('./libs/gamealgo-wechat.js');
+const { GamePropelWechatClient } = require('./libs/gamepropel-wechat.js');
 
-const gameAlgo = GameAlgoWechatClient.init({
+const gamePropel = GamePropelWechatClient.init({
   baseUrl: 'https://game-algo-sdk.dictapis.cn',
   gameKey: 'ga_live_your_game_key',
   appVersion: '1.0.0',
@@ -32,14 +37,14 @@ const gameAlgo = GameAlgoWechatClient.init({
 });
 
 // Do not block the first screen. Failed config uses local defaults/cached data.
-void gameAlgo.waitForReady(1500);
+void gamePropel.waitForReady(1500);
 
 function startLevel(levelId) {
-  gameAlgo.tracker.trackLevelStart({ level_id: levelId });
+  gamePropel.tracker.trackLevelStart({ level_id: levelId });
 }
 
 function difficulty() {
-  return gameAlgo.executor('difficulty').number('difficulty', 1);
+  return gamePropel.executor('difficulty').number('difficulty', 1);
 }
 ```
 
@@ -67,13 +72,13 @@ On hide, including a fullscreen-ad hide, the SDK generates a `session_end`
 snapshot and attempts upload. On show it keeps the same session, resumes
 sampling, refreshes config and retries uploads. Repeated show callbacks do not
 create sessions. Only initialization or explicit
-`gameAlgo.tracker.newSession()` creates a new session; explicit rotation closes
+`gamePropel.tracker.newSession()` creates a new session; explicit rotation closes
 the old session using its original context.
 
 Time uses in-memory one-second sampling and never catches up a suspended
 interval. Hide/show control visibility; hide captures a short tail. Background
 time is excluded and suspended/hidden ad time may be omitted. No storage or
-network runs in the sampling callback. Read `gameAlgo.getForegroundTimeMs()`
+network runs in the sampling callback. Read `gamePropel.getForegroundTimeMs()`
 twice and subtract to measure foreground elapsed time. This lifetime counter
 survives session rotation; session snapshots use the counter since that session
 started. Multiple snapshots of one session use the maximum duration, not a sum.
@@ -93,7 +98,7 @@ the registered GameAlgo `gap_*` placement ID. TapTap IDs and MCP ad tools do not
 apply. Register the GameAlgo reward placement/currency before reporting.
 
 ```js
-const reviveAd = gameAlgo.createAdSpace({ adUnitId: existingWechatAdUnitId });
+const reviveAd = gamePropel.createAdSpace({ adUnitId: existingWechatAdUnitId });
 
 async function reviveClicked() {
   try {
@@ -132,7 +137,7 @@ do not report that same exposure through both paths.
 `refresh()` preloads JSON files by default. `preloadConfigFiles: false` disables
 it; a string array selects names. Remote strategy scripts are not preloaded or
 executed. Their executor returns no result until supported; gameplay must use
-local defaults. `GAMEALGO_WECHAT_CAPABILITIES` exposes this limit. Arbitrary
+local defaults. `GAMEPROPEL_WECHAT_CAPABILITIES` exposes this limit. Arbitrary
 `eval`, `new Function`, browser Workers and native Node processes are not used.
 
 Optional device APIs are best-effort. Runtime AppID is observed only from

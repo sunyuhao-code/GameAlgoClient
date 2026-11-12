@@ -629,3 +629,12 @@ export { GameAlgoWebClient as GameAlgoTapTapH5Client };
 export type GameAlgoTapTapH5ClientOptions = GameAlgoWebClientOptions;
 export type GameAlgoTapTapH5UrlAttributionOptions = GameAlgoWebUrlAttributionOptions;
 export const GAMEALGO_TAPTAP_H5_SDK_VERSION = GAMEALGO_WEB_SDK_VERSION;
+
+/** GamePropel is the current brand; aliases preserve one runtime and storage namespace. */
+export { GameAlgoWebClient as GamePropelTapTapH5Client };
+export { GameAlgoBrowserStorage as GamePropelBrowserStorage } from "./browser-storage.ts";
+export { GameAlgoWebScriptRuntime as GamePropelTapTapH5ScriptRuntime } from "./script-runtime.ts";
+export type GamePropelTapTapH5ClientOptions = GameAlgoWebClientOptions;
+export type GamePropelTapTapH5UrlAttributionOptions = GameAlgoWebUrlAttributionOptions;
+export const initGamePropelTapTapH5 = initGameAlgoWeb;
+export const GAMEPROPEL_TAPTAP_H5_SDK_VERSION = GAMEALGO_TAPTAP_H5_SDK_VERSION;

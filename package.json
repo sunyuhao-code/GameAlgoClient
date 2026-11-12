@@ -1,8 +1,8 @@
 {
-  "name": "gamealgo-client-sdk",
+  "name": "gamepropel-client-sdk",
   "version": "0.0.0",
   "private": true,
-  "description": "GameAlgo client SDK development workspace",
+  "description": "GamePropel client SDK development workspace",
   "type": "module",
   "scripts": {
     "build:runtime": "cargo build --locked --manifest-path runtime/rust/Cargo.toml --bin gamealgo-script-runtime",

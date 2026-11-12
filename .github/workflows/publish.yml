@@ -41,12 +41,13 @@ jobs:
       - run: npm run check:wechat
       - run: npm run check:wechat:pack
 
-      - name: Publish TapTap H5, legacy Web and WeChat packages
+      - name: Publish GamePropel packages and the legacy Web entry
         shell: bash
         run: |
           set -euo pipefail
-          # Publish the implementation before its exact-version compatibility entry.
-          for package_directory in taptap-h5 web wechat; do
+          # Publish both new packages before the legacy entry, which uses its
+          # existing trusted publisher in the old npm organization.
+          for package_directory in taptap-h5 wechat web; do
             package_name="$(node -p "require('./$package_directory/package.json').name")"
             package_version="$(node -p "require('./$package_directory/package.json').version")"
             if npm view "$package_name@$package_version" version >/dev/null 2>&1; then

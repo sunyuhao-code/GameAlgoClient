@@ -1,4 +1,6 @@
-# GameAlgo Godot SDK
+# GamePropel Godot SDK
+
+GamePropel 原名 GameAlgo，现有 `GameAlgo*` API、模块名和安装路径继续兼容。
 
 这是符合 Protocol v1 的 Godot 4 SDK。配置、实验和归因仍由 GDScript 直接访问 GameAlgo HTTPS API；事件队列与 `/v1/events/batch` 上传使用包内的跨平台原生 GDExtension，使 Android/iOS 停止 Godot 帧循环后仍能完成 ACK。
 

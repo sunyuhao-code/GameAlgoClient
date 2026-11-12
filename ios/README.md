@@ -1,4 +1,6 @@
-# GameAlgo iOS SDK
+# GamePropel iOS SDK
+
+GamePropel 原名 GameAlgo，现有 `GameAlgo*` API、模块名和安装路径继续兼容。
 
 这是符合 Protocol v1 的 Swift Package SDK。
 

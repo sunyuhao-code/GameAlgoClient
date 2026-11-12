@@ -1,7 +1,7 @@
 {
   "name": "@gamealgo/web",
   "version": "2.1.8",
-  "description": "Compatibility entry for the GameAlgo TapTap H5 SDK; new integrations use @gamealgo/taptap-h5",
+  "description": "Compatibility entry for the GamePropel TapTap H5 SDK; new integrations use @gamepropel/taptap-h5",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/sunyuhao-code/GameAlgoClient.git",
@@ -20,9 +20,13 @@
   },
   "types": "./index.d.ts",
   "main": "./index.js",
-  "files": ["index.js", "index.d.ts", "README.md"],
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "README.md"
+  ],
   "dependencies": {
-    "@gamealgo/taptap-h5": "2.1.8"
+    "@gamepropel/taptap-h5": "2.1.8"
   },
   "publishConfig": {
     "access": "public"

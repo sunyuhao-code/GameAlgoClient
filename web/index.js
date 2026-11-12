@@ -1,1 +1,1 @@
-export * from "@gamealgo/taptap-h5";
+export * from "@gamepropel/taptap-h5";

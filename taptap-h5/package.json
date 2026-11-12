@@ -1,7 +1,7 @@
 {
-  "name": "@gamealgo/taptap-h5",
+  "name": "@gamepropel/taptap-h5",
   "version": "2.1.8",
-  "description": "GameAlgo SDK for TapTap H5 minigames",
+  "description": "GamePropel SDK for TapTap H5 minigames",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/sunyuhao-code/GameAlgoClient.git",
