@@ -80,7 +80,8 @@ try {
   assert.ok(requests.flatMap(request => request.body.events ?? []).some(event => event.eventType === "session_end"));
 
   const { stdout } = await run("npm", ["pack", "./wechat", "--ignore-scripts", "--pack-destination", directory, "--json"], { cwd: root });
-  const [packed] = JSON.parse(stdout);
+  const result = JSON.parse(stdout);
+  const [packed] = Array.isArray(result) ? result : Object.values(result);
   assert.ok(!packed.files.some(file => /\.(?:wasm|node)$|rust-script-runtime|script-worker/.test(file.path)));
   await writeFile(join(directory, "package.json"), JSON.stringify({ private: true, type: "module", dependencies: { "@gamepropel/wechat": `file:${join(directory, packed.filename)}` } }));
   await run("npm", ["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false"], { cwd: directory });

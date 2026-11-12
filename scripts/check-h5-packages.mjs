@@ -14,7 +14,9 @@ try {
   const dependencies = {};
   for (const name of ["taptap-h5", "web"]) {
     const { stdout } = await run("npm", ["pack", `./${name}`, "--ignore-scripts", "--json", "--pack-destination", directory], { cwd: root });
-    const [packed] = JSON.parse(stdout);
+    const result = JSON.parse(stdout);
+    // npm 12 keys JSON results by package name; npm 11 returns an array.
+    const [packed] = Array.isArray(result) ? result : Object.values(result);
     dependencies[packed.name] = `file:${join(directory, packed.filename)}`;
     if (name === "web") {
       assert.ok(packed.unpackedSize < 16 * 1024, "The compatibility package must not contain a second SDK runtime");

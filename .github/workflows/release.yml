@@ -149,7 +149,7 @@ jobs:
           set -euo pipefail
           mkdir -p release
           for package_directory in taptap-h5 web wechat; do
-            package="$(npm pack "./$package_directory" --pack-destination release --ignore-scripts --json | node -e 'let data=""; process.stdin.on("data", chunk => data += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(data)[0].filename))')"
+            package="$(npm pack "./$package_directory" --pack-destination release --ignore-scripts --json | node -e 'let data=""; process.stdin.on("data", chunk => data += chunk); process.stdin.on("end", () => { const result=JSON.parse(data); process.stdout.write((Array.isArray(result) ? result[0] : Object.values(result)[0]).filename); })')"
             package_version="$(node -p "require('./$package_directory/package.json').version")"
             package_scope="gamepropel"
             if [[ "$package_directory" == "web" ]]; then package_scope="gamealgo"; fi
