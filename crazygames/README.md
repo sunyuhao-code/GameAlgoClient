@@ -47,6 +47,7 @@ ID. Register separate GamePropel placements with the correct static ad type.
 
 ```ts
 const revive = gamePropel.createAdSpace({ adType: "rewarded" });
+pauseGameAndMute(); // Also block gameplay while the ad request is pending.
 try {
   await revive.show(yourRegisteredRewardPlacementId, {
     onStarted() { pauseGameAndMute(); },
@@ -55,6 +56,7 @@ try {
   });
 } catch (error) {
   // Handles unavailable ads, native rejections, busy slots and timeouts.
+  resumeGameAndAudio(); // Also handles validation or a busy video slot.
   // Ensure the game can continue without a rewarded ad.
 }
 

@@ -140,7 +140,7 @@ jobs:
           [[ "$crazygames_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           echo "crazygames=$crazygames_version" >> "$GITHUB_OUTPUT"
 
-      - name: Run TapTap H5 SDK contracts
+      - name: Run JavaScript SDK contracts
         run: |
           npm run check:web
           npm run check:web:pack
@@ -149,7 +149,7 @@ jobs:
           npm run check:crazygames
           npm run check:crazygames:pack
 
-      - name: Prepare TapTap H5 and legacy Web packages
+      - name: Prepare JavaScript SDK packages
         shell: bash
         run: |
           set -euo pipefail
@@ -159,7 +159,7 @@ jobs:
             package_version="$(node -p "require('./$package_directory/package.json').version")"
             package_basename="$(node -p "require('./$package_directory/package.json').name.replace(/^@/, '').replace('/', '-')")"
             expected="$package_basename-$package_version.tgz"
-            [[ "$package" == "$expected" ]] || { echo "unexpected H5 package name: $package" >&2; exit 1; }
+            [[ "$package" == "$expected" ]] || { echo "unexpected JavaScript package name: $package" >&2; exit 1; }
             (cd release && sha256sum "$package" > "$package.sha256")
           done
 

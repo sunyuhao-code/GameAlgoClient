@@ -1,6 +1,6 @@
 {
   "name": "@gamepropel/sdk-crazygames",
-  "version": "1.0.0-rc.0",
+  "version": "1.0.0",
   "description": "GamePropel SDK for CrazyGames HTML5 v3",
   "repository": {
     "type": "git",

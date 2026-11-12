@@ -5,7 +5,7 @@ import { getCrazyGamesHost, type CrazyGamesHost, type CrazyGamesAdType } from ".
 import { GamePropelCrazyGamesStorage, type GamePropelCrazyGamesStorageOptions } from "./storage.ts";
 import { CrazyGamesTransport } from "./transport.ts";
 
-export const GAMEPROPEL_CRAZYGAMES_SDK_VERSION = "1.0.0-rc.0";
+export const GAMEPROPEL_CRAZYGAMES_SDK_VERSION = "1.0.0";
 export const GAMEPROPEL_CRAZYGAMES_CAPABILITIES = Object.freeze({
   config: true, parameterExperiments: true, remoteScripts: false, multiplayer: false,
   rewardedAds: true, midgameAds: true, impressionRevenue: false,

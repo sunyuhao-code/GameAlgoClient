@@ -147,7 +147,7 @@ Android 模拟器／真机的 instrumentation 命令见 `android/README.md`；We
 
 Android AAR、Godot 发布包（`gamealgo-godot-<version>.zip`，含 iOS / Android 运行时二进制）和 Web npm 包由语义化版本 tag（`v1.2.3` 或 `1.2.3`）触发 `.github/workflows/release.yml` 构建，并附加到对应 GitHub Release。三个平台在各自的 runner 上并行构建，由同一个 `publish` job 统一发布。任一平台构建失败就不会发布，不会留下只有一部分产物的 Release。
 
-GitHub Release 成功后，独立的 `.github/workflows/publish.yml` 使用 `environment: npm` 和 OIDC trusted publishing，按顺序发布 `@gamepropel/sdk-taptap-h5`、`@gamepropel/sdk-wechat`、`@gamepropel/sdk-crazygames` 和 `@gamealgo/web` 兼容入口。TapTap H5 与旧 Web 兼容包版本一致，兼容包精确依赖同版本的 TapTap H5 包；微信包版本独立，已发布版本会安全跳过。整仓 Release tag 与 npm 包版本独立。四个 npm 包都需要把 `sunyuhao-code/GameAlgoClient`、`publish.yml` 和 `npm` environment 配置为 trusted publisher；新包首次创建时先完成 npm 侧初始化。
+GitHub Release 成功后，独立的 `.github/workflows/publish.yml` 使用 `environment: npm` 和 OIDC trusted publishing，按顺序发布 `@gamepropel/sdk-taptap-h5`、`@gamepropel/sdk-wechat`、`@gamepropel/sdk-crazygames` 和 `@gamealgo/web` 兼容入口。TapTap H5 与旧 Web 兼容包版本一致，兼容包精确依赖同版本的 TapTap H5 包；微信和 CrazyGames 包版本独立，已发布版本会安全跳过。整仓 Release tag 与 npm 包版本独立。四个 npm 包都需要把 `sunyuhao-code/GameAlgoClient`、`publish.yml` 和 `npm` environment 配置为 trusted publisher；新包首次创建时先完成 npm 侧初始化。
 
 仅更新 JavaScript npm 包时，在 **Publish JavaScript npm** 工作流上手动运行 `workflow_dispatch` 即可，无需创建整仓 Release tag 或重发原生平台产物。Maker / Lua SDK 从仓库源码同步，不依赖 npm 发布。
 
