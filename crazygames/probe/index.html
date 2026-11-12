@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>GamePropel CrazyGames 本地探针</title>
+  <style>
+    body{font:16px/1.5 system-ui,sans-serif;max-width:1000px;margin:28px auto;padding:0 20px;background:#f5f7fb;color:#18233b}
+    button{font:inherit;background:#2357dc;color:white;border:0;border-radius:7px;padding:10px 18px;margin:5px;cursor:pointer}
+    pre{white-space:pre-wrap;overflow-wrap:anywhere;background:white;padding:16px;border:1px solid #dde3ef;border-radius:8px}
+    .notice{color:#5c6475} #status{font-weight:600}
+  </style>
+  <script src="/official-sdk.js"></script>
+</head>
+<body>
+  <h1>GamePropel · CrazyGames 本地探针</h1>
+  <p class="notice">官方 v3 SDK 的 localhost 模式。GamePropel 请求仅发本机模拟服务；广告为模拟覆盖层，收益不可用。</p>
+  <p id="status">正在初始化…</p><p id="clock"></p>
+  <div>
+    <button id="level">关卡事件</button><button id="rewarded">激励广告</button><button id="midgame">插屏广告</button>
+    <button id="snapshot">session_end 快照</button><button id="newSession">主动新 session</button>
+    <button id="offline">模拟上报失败：关</button><button id="reload">重新加载</button><button id="clear">清除页面日志</button>
+  </div>
+  <h2>验证日志</h2><pre id="logs"></pre>
+  <script type="module" src="/probe.js"></script>
+</body></html>

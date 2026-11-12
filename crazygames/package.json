@@ -1,0 +1,36 @@
+{
+  "name": "@gamepropel/sdk-crazygames",
+  "version": "1.0.0-rc.0",
+  "description": "GamePropel SDK for CrazyGames HTML5 v3",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sunyuhao-code/GameAlgoClient.git",
+    "directory": "crazygames"
+  },
+  "homepage": "https://github.com/sunyuhao-code/GameAlgoClient/tree/main/crazygames#readme",
+  "type": "module",
+  "main": "./dist/commonjs/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/types/crazygames/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/crazygames/src/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/commonjs/index.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "SERVER_HANDOFF.md",
+    "VALIDATION.md"
+  ],
+  "scripts": {
+    "build": "node ../scripts/build-crazygames.mjs",
+    "prepack": "npm run build"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "ISC"
+}

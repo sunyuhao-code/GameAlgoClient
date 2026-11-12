@@ -322,7 +322,7 @@ export class GameAlgoRestClient {
         }),
       });
       this.tracker.bindSessionContext(sessionId, config.contextId);
-      if ((this.platform === "web" || this.platform === "wechat") && clean(config.contextId)) {
+      if (isBrowserHost(this.platform) && clean(config.contextId)) {
         try { this.log("context ready"); } catch { /* Optional diagnostics. */ }
       }
       if (sessionId !== this.tracker.currentSessionId()) return config;
@@ -559,14 +559,14 @@ export class GameAlgoRestClient {
     let stage = "identity";
     try {
       const identityStartedAt = this.now();
-      if ((this.platform === "web" || this.platform === "wechat")) {
+      if (isBrowserHost(this.platform)) {
         try { this.log("identity restore started"); } catch { /* Optional diagnostics. */ }
       }
       const identity = await this.userIdentity(options.userId);
       const userCreatedAt = clean(options.userCreatedAt) ?? identity.userCreatedAt;
       this.logUserId(identity.userId);
       this.tracker.identify(identity.userId, options.sessionId, userCreatedAt, clean(options.accountUserId) ?? this.accountUserId);
-      if ((this.platform === "web" || this.platform === "wechat")) {
+      if (isBrowserHost(this.platform)) {
         try { this.log(`identity ready: elapsedMs=${Math.max(0, this.now() - identityStartedAt)}`); } catch { /* Optional diagnostics. */ }
       }
       this.tracker.markSessionStarted();
@@ -585,7 +585,7 @@ export class GameAlgoRestClient {
         this.log(`config fetch failed, using cached snapshot: ${errorMessage(error)}`);
       }
     } catch (error) {
-      if ((this.platform === "web" || this.platform === "wechat")) {
+      if (isBrowserHost(this.platform)) {
         try { this.log(`initialization failed: stage=${stage} errorType=${error instanceof Error ? error.name : typeof error}`); } catch { /* Optional diagnostics. */ }
       }
       throw error;
@@ -827,7 +827,7 @@ export class GameAlgoEventTracker {
     this.onAdIdentityState = options.onAdIdentityState;
     this.sessionStartMs = this.now();
     this.sessionDurationSampleAt = this.sessionStartMs;
-    if ((this.platform === "web" || this.platform === "wechat")) {
+    if (isBrowserHost(this.platform)) {
       this.sessionDurationTimer = setInterval(() => this.sampleSessionDuration(), 1000);
       this.sessionDurationTimer.unref?.();
     }
@@ -892,7 +892,7 @@ export class GameAlgoEventTracker {
     this.resetSessionDuration(endedAt);
     this.hasPersistedQueue = true;
     void this.persistPendingQueue().catch(() => undefined);
-    if ((this.platform === "web" || this.platform === "wechat")) void this.flushUrgent().catch(() => undefined);
+    if (isBrowserHost(this.platform)) void this.flushUrgent().catch(() => undefined);
     void this.flush().catch(() => undefined);
   }
 
@@ -923,7 +923,7 @@ export class GameAlgoEventTracker {
     this.queue = this.queue.map(bind);
     this.rememberBoundMilestones(resolved);
     if (this.hasPersistedQueue) void this.persistPendingQueue().catch(() => undefined);
-    if ((this.platform === "web" || this.platform === "wechat")) void this.flushUrgent().catch(() => undefined);
+    if (isBrowserHost(this.platform)) void this.flushUrgent().catch(() => undefined);
     if ([...this.retryBatch, ...this.queue].some((event) => event.sessionId === sessionId && event.eventType === "session_end")) {
       void this.flush().catch(() => undefined);
     }
@@ -975,11 +975,11 @@ export class GameAlgoEventTracker {
 
   /** @internal Lifecycle callbacks can observe a boundary, but never gate future samples. */
   observeSessionDurationVisibility(): void {
-    if ((this.platform === "web" || this.platform === "wechat")) this.sampleSessionDuration();
+    if (isBrowserHost(this.platform)) this.sampleSessionDuration();
   }
 
   private resetSessionDuration(now: number): void {
-    if ((this.platform === "web" || this.platform === "wechat")) this.sampleSessionDuration(now);
+    if (isBrowserHost(this.platform)) this.sampleSessionDuration(now);
     this.sessionForegroundStartMs = this.getForegroundTimeMs();
   }
 
@@ -996,7 +996,7 @@ export class GameAlgoEventTracker {
   }
 
   private sessionDuration(now: number): number {
-    if ((this.platform !== "web" && this.platform !== "wechat")) return Math.max(0, now - (this.sessionStartMs ?? now));
+    if (!isBrowserHost(this.platform)) return Math.max(0, now - (this.sessionStartMs ?? now));
     this.sampleSessionDuration(now);
     return this.getForegroundTimeMs() - this.sessionForegroundStartMs;
   }
@@ -1004,7 +1004,7 @@ export class GameAlgoEventTracker {
   track(eventType: string, payload: JsonValue = {}, options: TrackEventOptions = {}): boolean {
     const userId = clean(options.userId ?? this.userId);
     if (!userId) {
-      if ((this.platform !== "web" && this.platform !== "wechat") || eventType !== "ad_view" || options.userId !== undefined) return false;
+      if (!isBrowserHost(this.platform) || eventType !== "ad_view" || options.userId !== undefined) return false;
       const timestamp = options.timestamp ?? new Date(this.now()).toISOString();
       this.pendingIdentityAds.push({
         payload: normalizePayload(payload),
@@ -1047,9 +1047,9 @@ export class GameAlgoEventTracker {
       payload: normalizedPayload,
     });
     if (milestone?.key) this.rememberMilestone(milestone.key, milestone.durable);
-    if ((this.platform === "web" || this.platform === "wechat") && eventType === "ad_view") {
+    if (isBrowserHost(this.platform) && eventType === "ad_view") {
       void this.flushUrgent().then(() => this.flush()).catch(() => undefined);
-    } else if ((this.platform === "web" || this.platform === "wechat") && eventType === "session_end") {
+    } else if (isBrowserHost(this.platform) && eventType === "session_end") {
       void this.flushUrgent().catch(() => undefined);
     }
     return true;
@@ -1267,7 +1267,7 @@ export class GameAlgoEventTracker {
       accountUserId: this.accountUserId, payload: normalizePayload(merged),
     }, true);
     if (!this.persistOnEnqueue) void this.persistPendingQueue().catch(() => undefined);
-    if ((this.platform === "web" || this.platform === "wechat")) void this.flushUrgent().catch(() => undefined);
+    if (isBrowserHost(this.platform)) void this.flushUrgent().catch(() => undefined);
     return true;
   }
 
@@ -2015,4 +2015,9 @@ function readPath(source: JsonValue, path: string): JsonValue | undefined {
     if (current === undefined) return undefined;
   }
   return current;
+}
+
+/** Hosts that share durable browser queues, urgent delivery and sampled time. */
+function isBrowserHost(platform: Platform): boolean {
+  return platform === "web" || platform === "wechat" || platform === "crazygames";
 }

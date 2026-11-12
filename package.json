@@ -13,8 +13,8 @@
     "check:web:multiplayer": "npm run build:web && node taptap-h5/e2e/run-multiplayer-demo-test.mjs",
     "check:web:webview": "npm run build:web && node taptap-h5/e2e/run-ios-webview-test.mjs",
     "check:web": "npm run check:taptap-h5",
-    "check:core": "npm run build:runtime && npm run check:web && node --test rest-api/src/*.test.ts && npm run check:web:pack && npm run check:wechat && npm run check:wechat:pack",
-    "check": "npm run build:runtime && npm run check:web && node --test rest-api/src/*.test.ts && npm run check:web:e2e && npm run check:web:webview && npm run check:web:pack && npm run check:wechat && npm run check:wechat:pack",
+    "check:core": "npm run build:runtime && npm run check:web && node --test rest-api/src/*.test.ts && npm run check:web:pack && npm run check:wechat && npm run check:wechat:pack && npm run check:crazygames && npm run check:crazygames:pack",
+    "check": "npm run build:runtime && npm run check:web && node --test rest-api/src/*.test.ts && npm run check:web:e2e && npm run check:web:webview && npm run check:web:pack && npm run check:wechat && npm run check:wechat:pack && npm run check:crazygames && npm run check:crazygames:pack",
     "check:godot": "node scripts/run-godot-tests.mjs",
     "check:godot:core": "node scripts/run-godot-tests.mjs --core",
     "check:godot:http": "python3 scripts/test-godot-http-timeout.py",
@@ -24,7 +24,11 @@
     "check:taptap-h5": "npm run build:taptap-h5 && node --test taptap-h5/src/*.test.ts",
     "build:wechat": "node scripts/build-wechat.mjs",
     "check:wechat": "npm run build:wechat && node --test wechat/src/*.test.ts",
-    "check:wechat:pack": "node scripts/check-wechat-package.mjs"
+    "check:wechat:pack": "node scripts/check-wechat-package.mjs",
+    "build:crazygames": "node scripts/build-crazygames.mjs",
+    "check:crazygames": "npm run build:crazygames && node --test crazygames/src/*.test.ts",
+    "check:crazygames:pack": "node scripts/check-crazygames-package.mjs",
+    "check:crazygames:probe": "node crazygames/probe/serve.mjs"
   },
   "dependencies": {
     "yaml": "^2.8.1"
@@ -43,6 +47,7 @@
   "workspaces": [
     "taptap-h5",
     "web",
-    "wechat"
+    "wechat",
+    "crazygames"
   ]
 }
