@@ -22,7 +22,9 @@ try {
     }
   }
   await writeFile(join(directory, "package.json"), JSON.stringify({ private: true, type: "module", dependencies }));
-  await run("npm", ["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false"], { cwd: directory });
+  // npm ci can cache dependency tarballs without caching the registry metadata
+  // needed to resolve this isolated package's semver dependencies on a new runner.
+  await run("npm", ["install", "--prefer-offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false"], { cwd: directory });
   await writeFile(join(directory, "smoke.mjs"), `
 import assert from "node:assert/strict";
 import * as current from "@gamealgo/taptap-h5";
