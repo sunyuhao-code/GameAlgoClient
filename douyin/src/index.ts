@@ -6,7 +6,7 @@ import { getDouyinHost, type DouyinHost, type DouyinNetworkStatus } from "./host
 import { GamePropelDouyinStorage } from "./storage.ts";
 import { GamePropelDouyinTransport } from "./transport.ts";
 
-export const GAMEPROPEL_DOUYIN_SDK_VERSION = "1.0.0-rc.0";
+export const GAMEPROPEL_DOUYIN_SDK_VERSION = "1.0.0";
 export const GAMEPROPEL_DOUYIN_CAPABILITIES = Object.freeze({ config: true, parameterExperiments: true, remoteScripts: false, multiplayer: false, rewardedAds: true, interstitialAds: false, impressionRevenue: false });
 
 export type GamePropelDouyinClientOptions = Omit<GameAlgoRestClientOptions,
