@@ -111,6 +111,7 @@ jobs:
       version: ${{ steps.web-version.outputs.value }}
       wechat_version: ${{ steps.web-version.outputs.wechat }}
       crazygames_version: ${{ steps.web-version.outputs.crazygames }}
+      douyin_version: ${{ steps.web-version.outputs.douyin }}
     env:
       TZ: Asia/Shanghai
     steps:
@@ -139,6 +140,9 @@ jobs:
           crazygames_version="$(node -p "require('./crazygames/package.json').version")"
           [[ "$crazygames_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           echo "crazygames=$crazygames_version" >> "$GITHUB_OUTPUT"
+          douyin_version="$(node -p "require('./douyin/package.json').version")"
+          [[ "$douyin_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          echo "douyin=$douyin_version" >> "$GITHUB_OUTPUT"
 
       - name: Run JavaScript SDK contracts
         run: |
@@ -148,13 +152,15 @@ jobs:
           npm run check:wechat:pack
           npm run check:crazygames
           npm run check:crazygames:pack
+          npm run check:douyin
+          npm run check:douyin:pack
 
       - name: Prepare JavaScript SDK packages
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p release
-          for package_directory in taptap-h5 web wechat crazygames; do
+          for package_directory in taptap-h5 web wechat crazygames douyin; do
             package="$(npm pack "./$package_directory" --pack-destination release --ignore-scripts --json | node -e 'let data=""; process.stdin.on("data", chunk => data += chunk); process.stdin.on("end", () => { const result=JSON.parse(data); process.stdout.write((Array.isArray(result) ? result[0] : Object.values(result)[0]).filename); })')"
             package_version="$(node -p "require('./$package_directory/package.json').version")"
             package_basename="$(node -p "require('./$package_directory/package.json').name.replace(/^@/, '').replace('/', '-')")"
@@ -321,7 +327,8 @@ jobs:
           web_version="${{ needs.web.outputs.version }}"
           wechat_version="${{ needs.web.outputs.wechat_version }}"
           crazygames_version="${{ needs.web.outputs.crazygames_version }}"
-          for asset in "gamealgo-android-$version.aar" "gamealgo-godot-$version.zip" "gamepropel-sdk-taptap-h5-$web_version.tgz" "gamealgo-web-$web_version.tgz" "gamepropel-sdk-wechat-$wechat_version.tgz" "gamepropel-sdk-crazygames-$crazygames_version.tgz"; do
+          douyin_version="${{ needs.web.outputs.douyin_version }}"
+          for asset in "gamealgo-android-$version.aar" "gamealgo-godot-$version.zip" "gamepropel-sdk-taptap-h5-$web_version.tgz" "gamealgo-web-$web_version.tgz" "gamepropel-sdk-wechat-$wechat_version.tgz" "gamepropel-sdk-crazygames-$crazygames_version.tgz" "gamepropel-sdk-douyin-$douyin_version.tgz"; do
             [[ -f "downloaded/$asset" ]] || { echo "missing release asset: $asset" >&2; exit 1; }
             [[ -f "downloaded/$asset.sha256" ]] || { echo "missing checksum: $asset.sha256" >&2; exit 1; }
           done

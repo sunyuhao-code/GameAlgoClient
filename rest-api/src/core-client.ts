@@ -2019,5 +2019,5 @@ function readPath(source: JsonValue, path: string): JsonValue | undefined {
 
 /** Hosts that share durable browser queues, urgent delivery and sampled time. */
 function isBrowserHost(platform: Platform): boolean {
-  return platform === "web" || platform === "wechat" || platform === "crazygames";
+  return platform === "web" || platform === "wechat" || platform === "crazygames" || platform === "douyin";
 }

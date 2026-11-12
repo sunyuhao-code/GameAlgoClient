@@ -1,0 +1,39 @@
+{
+  "name": "@gamepropel/sdk-douyin",
+  "version": "1.0.0-rc.0",
+  "description": "GamePropel SDK for Douyin minigames",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sunyuhao-code/GameAlgoClient.git",
+    "directory": "douyin"
+  },
+  "homepage": "https://github.com/sunyuhao-code/GameAlgoClient/tree/main/douyin#readme",
+  "bugs": {
+    "url": "https://github.com/sunyuhao-code/GameAlgoClient/issues"
+  },
+  "type": "module",
+  "main": "./dist/commonjs/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/types/douyin/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/douyin/src/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/commonjs/index.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "SERVER_HANDOFF.md",
+    "VALIDATION.md"
+  ],
+  "scripts": {
+    "build": "node ../scripts/build-douyin.mjs",
+    "prepack": "npm run build"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "ISC"
+}

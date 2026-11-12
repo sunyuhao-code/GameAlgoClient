@@ -44,13 +44,16 @@ jobs:
       - run: npm run check:crazygames
       - run: npm run check:crazygames:pack
 
+      - run: npm run check:douyin
+      - run: npm run check:douyin:pack
+
       - name: Publish GamePropel packages and the legacy Web entry
         shell: bash
         run: |
           set -euo pipefail
           # Publish the independent host packages before the legacy entry, which uses its
           # existing trusted publisher in the old npm organization.
-          for package_directory in taptap-h5 wechat crazygames web; do
+          for package_directory in taptap-h5 wechat crazygames douyin web; do
             package_name="$(node -p "require('./$package_directory/package.json').name")"
             package_version="$(node -p "require('./$package_directory/package.json').version")"
             if npm view "$package_name@$package_version" version >/dev/null 2>&1; then

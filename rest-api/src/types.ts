@@ -1,7 +1,7 @@
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
 /** `web` is the historical wire value for TapTap H5, not a generic minigame host. */
-export type Platform = "ios" | "android" | "maker" | "web" | "wechat" | "crazygames";
+export type Platform = "ios" | "android" | "maker" | "web" | "wechat" | "crazygames" | "douyin";
 export type GameEnvironment = "test" | "live";
 
 export type ExperimentAssignment = {
