@@ -91,7 +91,38 @@ gaq_*.json
 
 SDK 从 `GameAlgo.Init` 开始设置一个固定 10 秒的初始化看门狗。10 秒内拿到有效 `contextId` 就取消检查；届时仍未成功，则只通过独立的 `/v1/diagnostics/init` 接口上报一条 `initialization_timeout`，本次 Init 不重复上报，也不补发恢复事件。该接口不依赖 `contextId`，不会生成虚假 Context 或计入 DAU。显式配置 `autoFetch=false` 时不会启动看门狗。
 
+### 服务端控制双通道（2.1.4-lua）
+
+新鲜成功的 `/v1/config` 响应支持独立下发 `gamealgoReportingEnabled` 和
+`tapdbReportingEnabled`。支持仅 GameAlgo、仅 TapDB、双报、双关。字段缺失或
+类型异常时，保持 GameAlgo 开启、TapDB 关闭；旧服务端兼容现有行为。
+
+全部埋点及 SDK 诊断在统一出口分流，现有 Track、广告、生命周期 API 不变。
+配置请求、配置文件和脚本下载继续直连。Maker 当前没有 H5 的归因/标识符绑定
+公开方法；已有的上报路径均受此开关约束。游戏自行调用的 TapDB 不受 SDK 控制。
+
+TapDB 使用已验证的 `sdk:LogEvent(name, properties)`，不附加回调参数。
+`gamealgo_event` 携带完整原事件；`gamealgo_request` 携带诊断等独立请求。
+完整 JSON 在同一条宿主事件内按 UTF-8 边界拆成不超过 240 字节的属性，保留
+原 eventId、时间、Context、session 和 payload，不携带 HTTP 鉴权头或 SDK Key。
+
+仅 TapDB 时，宿主缺失、抛错或返回非 `true` 不会清队列，也不会偷偷改走直连；
+事件继续持久化，并使用现有 1～30 秒退避重试。双报时 TapDB 失败不阻塞直连，
+直连失败重试也不会重复已记住的宿主调用。两路都关时跳过并清除队列，不积压到
+重新开启后补报。开关不能撤回已发出的请求。重启后的至少一次重放仍使用原事件 ID，
+DW 需据此去重。
+
+`Flush` 结果中 `accepted` 保留直连服务端接收数；`skipped` 表示跳过直连的事件数，
+`tapdbAttempted` 表示本次宿主调用数。TapDB 宿主受理不代表最终落库。
+新鲜配置才更新运行开关；本地缓存不会开启 TapDB。无新增逐帧队列/宿主扫描，
+也不为双通道额外维护一套磁盘队列。
+
+字段格式、DW 解码和验证范围见[双通道协议](../protocol/taptap-telemetry-routing.md)。
+
 ### TapDB 身份关联
+
+新版本中，显式关闭 `tapdbReportingEnabled` 也会关闭该身份关联；未下发新字段时，
+保留下面的旧开关行为。
 
 TapDB 身份关联默认关闭。仅在本次 `GameAlgo.Init` 取得新鲜、有效的 `/v1/config` 响应，且 `tapdbContextLinkEnabled` 为布尔值 `true` 时，SDK 才通过 Maker 宿主的 `sdk:LogEvent(name, properties)` 尝试上报一次 `gamealgo_context_link`，用于 DW 关联 GameAlgo Context 与 TapDB 身份。游戏无需另行调用，也不要自行补报该事件。
 

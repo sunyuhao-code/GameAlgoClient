@@ -82,5 +82,6 @@ jobs:
       - run: lua lua/tests/GameAlgoAdPlacementTest.lua
       - run: lua lua/tests/GameAlgoRuntimeIdentityTest.lua
       - run: lua lua/tests/GameAlgoTapDBContextLinkTest.lua
+      - run: lua lua/tests/GameAlgoTelemetryRoutingTest.lua
       - run: lua lua/tests/GameAlgoFlushRecoveryTest.lua
       - run: lua lua/tests/MakerAutoStorageFirstRunTest.lua

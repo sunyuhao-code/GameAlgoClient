@@ -32,6 +32,9 @@ export type ConfigResponse = {
   serverTime: string;
   /** Absent/false disables Maker/H5 TapDB identity linking; never restored as startup permission. */
   tapdbContextLinkEnabled?: boolean;
+  /** Live TapTap Maker/H5 controls. Missing/invalid values preserve direct reporting and disable TapDB mirroring. */
+  gamealgoReportingEnabled?: boolean;
+  tapdbReportingEnabled?: boolean;
   eventQuota?: EventQuotaConfig;
   experiments: ExperimentAssignment[];
   configFiles: ConfigFileRef[];
@@ -91,6 +94,9 @@ export type EventBatchResponse = {
   ok: boolean;
   accepted: number;
   rejected?: EventBatchRejection[];
+  /** Local routing receipt, not a server acknowledgement. */
+  skipped?: number;
+  tapdbAttempted?: number;
 };
 
 export type EventBatchRejection = {
@@ -122,6 +128,8 @@ export type UserAttributionResponse = {
   ok: boolean;
   accepted: number;
   attributionHash: string;
+  skipped?: number;
+  tapdbAttempted?: number;
 };
 
 export type ContextIdentifierType = "adjust_adid" | "firebase_app_instance_id" | "gaid" | "idfa" | "idfv" | "oaid" | "caid";
@@ -130,6 +138,8 @@ export type ContextIdentifierResponse = {
   ok: boolean;
   accepted: number;
   identifierHash: string;
+  skipped?: number;
+  tapdbAttempted?: number;
 };
 
 export type GameAlgoRestClientOptions = {

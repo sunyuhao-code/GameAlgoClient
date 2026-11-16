@@ -253,6 +253,12 @@ export class GameAlgoRestClient {
   /** Platform hook for a fresh server context, with the identity that created it. */
   protected onConfigReady(_config: ConfigResponse, _identity: { userId: string; sessionId: string; isDebug: boolean }): void {}
 
+  /** Apply live delivery controls before binding a context can start an urgent upload. */
+  protected onConfigReceived(_config: ConfigResponse, _identity: { userId: string; sessionId: string; isDebug: boolean }): void {}
+
+  /** A second delivery channel may still need data already acknowledged by HTTP. */
+  protected useAttributionAckCache(): boolean { return true; }
+
   async fetchConfig(options: FetchConfigOptions = {}): Promise<ConfigResponse> {
     const identity = await this.userIdentity(options.userId);
     const userCreatedAt = clean(options.userCreatedAt) ?? identity.userCreatedAt;
@@ -321,6 +327,9 @@ export class GameAlgoRestClient {
           isDebug,
         }),
       });
+      if (sessionId === this.tracker.currentSessionId()) {
+        this.onConfigReceived(config, { userId: identity.userId, sessionId, isDebug });
+      }
       this.tracker.bindSessionContext(sessionId, config.contextId);
       if (isBrowserHost(this.platform) && clean(config.contextId)) {
         try { this.log("context ready"); } catch { /* Optional diagnostics. */ }
@@ -432,7 +441,8 @@ export class GameAlgoRestClient {
     if (normalizedEvents.some(event => event.eventType === "ad_view")) {
       const stored = (response as EventBatchResponse & { stored?: number }).stored;
       try {
-        this.log(`ad_view upload ack: accepted=${response.accepted} stored=${typeof stored === "number" ? stored : "unknown"} rejected=${response.rejected?.length ?? 0}`);
+        if (response.skipped) this.log(`ad_view direct upload skipped: count=${response.skipped} tapdbAttempted=${response.tapdbAttempted ?? 0}`);
+        else this.log(`ad_view upload ack: accepted=${response.accepted} stored=${typeof stored === "number" ? stored : "unknown"} rejected=${response.rejected?.length ?? 0}`);
       } catch { /* A logger failure must not turn an HTTP ACK into a retry. */ }
     }
     return response;
@@ -462,7 +472,7 @@ export class GameAlgoRestClient {
       attributedAt: attributedAt ?? "",
     }));
     const ackKey = `${this.attributionAckCacheKey}:${provider}`;
-    if (attributionHash && await this.storage?.getItem(ackKey) === attributionHash) {
+    if (this.useAttributionAckCache() && attributionHash && await this.storage?.getItem(ackKey) === attributionHash) {
       this.log(`attribution already synced: provider=${provider}`);
       return { ok: true, accepted: 0, attributionHash };
     }
@@ -485,7 +495,7 @@ export class GameAlgoRestClient {
         attributionHash,
       }),
     });
-    if (response.attributionHash) {
+    if (response.attributionHash && !response.skipped) {
       await this.storage?.setItem(ackKey, response.attributionHash);
     }
     this.log(`attribution synced: provider=${provider}, accepted=${response.accepted}`);
@@ -698,7 +708,7 @@ export class GameAlgoRestClient {
     return response.json() as Promise<T>;
   }
 
-  private async request(url: string, init: GameAlgoHttpRequest): Promise<GameAlgoHttpResponse> {
+  protected async request(url: string, init: GameAlgoHttpRequest): Promise<GameAlgoHttpResponse> {
     const response = await this.fetchImpl(url, {
       ...init,
       headers: { ...init.headers, "X-GameAlgo-Key": this.gameKey },

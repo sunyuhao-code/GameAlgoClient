@@ -359,6 +359,18 @@ components:
         serverTime:
           type: string
           format: date-time
+        gamealgoReportingEnabled:
+          type: boolean
+          description: Live Maker/TapTap H5 telemetry HTTP switch. Absent or malformed values retain direct reporting. Configuration/file/script requests are unaffected.
+          default: true
+        tapdbReportingEnabled:
+          type: boolean
+          description: Live Maker/TapTap H5 TapDB telemetry switch. Only boolean true in a fresh successful config response enables it. Explicit false also disables the legacy identity link.
+          default: false
+        tapdbContextLinkEnabled:
+          type: boolean
+          description: Legacy best-effort TapDB identity link, vetoed by explicit tapdbReportingEnabled false. This does not enable general telemetry mirroring.
+          default: false
         eventQuota:
           $ref: "#/components/schemas/EventQuotaConfig"
         experiments:

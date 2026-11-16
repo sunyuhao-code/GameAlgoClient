@@ -28,7 +28,7 @@ local MakerAutoStorage = requireSdkModule("MakerAutoStorage")
 local GameAlgo = {}
 local unpackArgs = table.unpack or unpack
 
-local SDK_VERSION = "2.1.3-lua"
+local SDK_VERSION = "2.1.4-lua"
 local DEFAULT_BASE_URL = "https://game-algo-sdk.dictapis.cn"
 local DEFAULT_FLUSH_INTERVAL_MS = 5000
 local DEFAULT_FLUSH_TIMEOUT_MS = 15000
@@ -116,6 +116,14 @@ local state_ = {
     tapDbContextLinkProperties = nil,
     tapDbContextLinkNextCheckAtMs = 0,
     tapDbContextLinkDiscoveryUntilMs = 0,
+    gamealgoReportingEnabled = true,
+    tapdbReportingEnabled = false,
+    tapdbReportingExplicitlyDisabled = false,
+    tapdbAttemptedKeys = {},
+    tapdbAttemptedRing = {},
+    tapdbAttemptedNext = 1,
+    pendingFlushSkipped = 0,
+    pendingFlushTapdbAttempted = 0,
     customEventCounts = {},
     ordinaryEventCounts = {},
     eventQuota = nil,
@@ -402,8 +410,115 @@ local function ensureAccountIdentity(explicitAccountUserId, explicitCreatedAt)
     end
 end
 
+local TELEMETRY_PATHS = {
+    ["/v1/events/batch"] = true, ["/v1/attribution"] = true,
+    ["/v1/context-identifiers"] = true, ["/v1/diagnostics/sdk"] = true,
+    ["/v1/diagnostics/init"] = true,
+}
+
+-- Keep each native property below 256 bytes without splitting a UTF-8 codepoint.
+local function tapdbParts(value)
+    local parts, first = {}, 1
+    while first <= #value do
+        local last = math.min(#value, first + 239)
+        while last < #value do
+            local nextByte = value:byte(last + 1)
+            if nextByte < 128 or nextByte >= 192 then break end
+            last = last - 1
+        end
+        table.insert(parts, value:sub(first, last))
+        first = last + 1
+    end
+    if #parts == 0 then parts[1] = "" end
+    return parts
+end
+
+local function tapdbEnvelope(envelope, event)
+    local parts = tapdbParts(cjson.encode(envelope))
+    local properties = {
+        gamealgo_envelope_version = "1", gamealgo_part_count = tostring(#parts),
+        gamealgo_event_id = tapdbParts(tostring(event.eventId or ""))[1],
+        gamealgo_event_type = tapdbParts(tostring(event.eventType or ""))[1],
+        gamealgo_context_id = tapdbParts(tostring(event.contextId or ""))[1],
+        gamealgo_device_id = tapdbParts(tostring(event.userId or ""))[1],
+        gamealgo_session_id = tapdbParts(tostring(event.sessionId or ""))[1],
+        gamealgo_is_debug = event.isDebug == true,
+    }
+    for index, part in ipairs(parts) do properties["gamealgo_part_" .. tostring(index - 1)] = part end
+    return properties
+end
+
+local function forwardTapdbTelemetry(path, body)
+    if not state_.tapdbReportingEnabled then return 0 end
+    local found, host, logEvent = pcall(function()
+        local value = sdk
+        if value == nil then return nil end
+        return value, value.LogEvent
+    end)
+    if not found or type(logEvent) ~= "function" then return 0, false end
+    local count, generation, allAccepted = 0, state_.lifecycleGeneration, true
+    local function forward(name, key, envelope, event)
+        if generation ~= state_.lifecycleGeneration or not state_.tapdbReportingEnabled then allAccepted = false; return end
+        local previousStatus = state_.tapdbAttemptedKeys[key]
+        if previousStatus and (previousStatus.state ~= "failed" or state_.gamealgoReportingEnabled) then
+            if previousStatus.state ~= "accepted" then allAccepted = false end
+            return
+        end
+        local encoded, properties = pcall(tapdbEnvelope, envelope, event)
+        if not encoded then allAccepted = false; log("TapDB telemetry encode failed"); return end
+        -- Bounded, in-memory retry guard. No per-frame scan or extra disk writes.
+        local slot = state_.tapdbAttemptedNext
+        local previous = state_.tapdbAttemptedRing[slot]
+        if previous and state_.tapdbAttemptedKeys[previous] and state_.tapdbAttemptedKeys[previous].slot == slot then
+            state_.tapdbAttemptedKeys[previous] = nil
+        end
+        state_.tapdbAttemptedRing[slot] = key
+        local entry = { state = "pending", slot = slot }
+        state_.tapdbAttemptedKeys[key] = entry
+        state_.tapdbAttemptedNext = slot % math.max(1000, state_.maxQueueSize * 2) + 1
+        count = count + 1
+        -- Exactly the verified Maker signature, without an extra callback.
+        local ok, accepted = pcall(logEvent, host, name, properties)
+        if generation ~= state_.lifecycleGeneration then allAccepted = false; return end
+        if ok and accepted == true then entry.state = "accepted"
+        else entry.state = "failed"; allAccepted = false; log("TapDB telemetry handoff failed") end
+    end
+    if path == "/v1/events/batch" then
+        for _, event in ipairs(body.events or {}) do
+            forward("gamealgo_event", "event:" .. tostring(event.eventId),
+                { schemaVersion = 1, path = path, event = event }, event)
+        end
+    else
+        local requestId = Sha256.hex(cjson.encode({ path = path, body = body }))
+        forward("gamealgo_request", "request:" .. requestId,
+            { schemaVersion = 1, path = path, requestId = requestId, body = body },
+            { eventId = body.diagnosticId or requestId, eventType = path, contextId = body.contextId,
+                userId = body.userId, sessionId = body.sessionId, isDebug = body.isDebug })
+    end
+    return count, allAccepted
+end
+
 local function httpRequest(method, path, bodyTable, callback)
     callback = callback or function() end
+    if method == "POST" and TELEMETRY_PATHS[path] then
+        local generation = state_.lifecycleGeneration
+        local attempted, allAccepted = forwardTapdbTelemetry(path, bodyTable or {})
+        if generation ~= state_.lifecycleGeneration then
+            safeCallback(callback, "SDK reinitialized during telemetry handoff", nil, { status = 0 })
+            return nil
+        end
+        if not state_.gamealgoReportingEnabled then
+            if state_.tapdbReportingEnabled and not allAccepted then
+                safeCallback(callback, "TapDB telemetry handoff failed", nil, { status = 0, localOnly = true })
+                return nil
+            end
+            local receipt = { ok = true, accepted = 0,
+                skipped = path == "/v1/events/batch" and #(bodyTable.events or {}) or 1,
+                tapdbAttempted = attempted }
+            safeCallback(callback, nil, receipt, { status = 200, localOnly = true })
+            return nil
+        end
+    end
     local headers = {
         ["Content-Type"] = "application/json",
     }
@@ -503,7 +618,7 @@ local function tryTapDbContextLink()
 end
 
 local function reportTapDbContextLink(config, requestBody)
-    if config.tapdbContextLinkEnabled ~= true then
+    if config.tapdbContextLinkEnabled ~= true or state_.tapdbReportingExplicitlyDisabled then
         state_.tapDbContextLinkProperties = nil
         state_.tapDbContextLinkNextCheckAtMs = 0
         state_.tapDbContextLinkDiscoveryUntilMs = 0
@@ -1254,6 +1369,14 @@ function GameAlgo.Init(options)
     state_.tapDbContextLinkProperties = nil
     state_.tapDbContextLinkNextCheckAtMs = 0
     state_.tapDbContextLinkDiscoveryUntilMs = 0
+    state_.gamealgoReportingEnabled = true
+    state_.tapdbReportingEnabled = false
+    state_.tapdbReportingExplicitlyDisabled = false
+    state_.tapdbAttemptedKeys = {}
+    state_.tapdbAttemptedRing = {}
+    state_.tapdbAttemptedNext = 1
+    state_.pendingFlushSkipped = 0
+    state_.pendingFlushTapdbAttempted = 0
     -- Read the stable Maker account id before any asynchronous clientCloud:Get.
     -- It remains available for diagnostics even when cloud-backed storage stalls.
     state_.prefetchedMakerUserId = options.accountUserId or resolveMakerUserId()
@@ -1419,6 +1542,10 @@ performConfigFetchAttempt = function()
             state_.config = config
             state_.eventQuota = normalizeEventQuota(config)
             state_.contextId = contextId
+            state_.gamealgoReportingEnabled = config.gamealgoReportingEnabled ~= false
+            state_.tapdbReportingEnabled = config.tapdbReportingEnabled == true
+            state_.tapdbReportingExplicitlyDisabled = config.tapdbReportingEnabled ~= nil
+                and not state_.tapdbReportingEnabled
         end
         mergeCustomEventCountBucket("pending:" .. tostring(requestBody.sessionId), "context:" .. contextId)
         mergeOrdinaryEventCountBucket("pending:" .. tostring(requestBody.sessionId), "context:" .. contextId)
@@ -1868,19 +1995,24 @@ local function failActiveFlush(active, error, cancel)
     state_.pendingFlushAccepted = 0
     state_.pendingFlushRejected = 0
     state_.queuePersistenceActive = true
+    state_.pendingFlushSkipped = 0
+    state_.pendingFlushTapdbAttempted = 0
     persistEventQueue()
     flushAutomaticStorage()
     log("flush failed: " .. tostring(error))
     completeFlushCallbacks(error, nil)
 end
 
-local function validateFlushResult(result, batchSize)
+local function validateFlushResult(result, batchSize, localOnly)
     if type(result) ~= "table" then return nil, "invalid flush response" end
     if result.ok == false then return nil, tostring(result.error or "flush rejected") end
     local accepted = tonumber(result.accepted)
     if accepted == nil then return nil, "flush response missing accepted count" end
     if accepted < 0 or accepted > batchSize or accepted % 1 ~= 0 then
         return nil, "invalid flush accepted count: " .. tostring(result.accepted)
+    end
+    if localOnly and accepted == 0 and result.skipped == batchSize then
+        return 0, nil, {}, batchSize, tonumber(result.tapdbAttempted) or 0
     end
 
     -- A positive count proves the batch reached event processing. Prefer
@@ -1914,7 +2046,7 @@ local function validateFlushResult(result, batchSize)
     return accepted, nil, rejected
 end
 
-local function finishActiveFlush(lifecycleGeneration, sequence, error, result)
+local function finishActiveFlush(lifecycleGeneration, sequence, error, result, localOnly)
     local active = state_.activeFlush
     if not active
         or active.lifecycleGeneration ~= lifecycleGeneration
@@ -1926,7 +2058,7 @@ local function finishActiveFlush(lifecycleGeneration, sequence, error, result)
         failActiveFlush(active, error, false)
         return
     end
-    local accepted, resultError, rejected = validateFlushResult(result, #active.batch)
+    local accepted, resultError, rejected, skipped, tapdbAttempted = validateFlushResult(result, #active.batch, localOnly)
     if resultError then
         failActiveFlush(active, resultError, false)
         return
@@ -1939,12 +2071,14 @@ local function finishActiveFlush(lifecycleGeneration, sequence, error, result)
     state_.consecutiveFlushFailures = 0
     state_.pendingFlushAccepted = state_.pendingFlushAccepted + accepted
     state_.pendingFlushRejected = state_.pendingFlushRejected + #rejected
+    state_.pendingFlushSkipped = state_.pendingFlushSkipped + (skipped or 0)
+    state_.pendingFlushTapdbAttempted = state_.pendingFlushTapdbAttempted + (tapdbAttempted or 0)
     state_.eventQueueStorage:Remove(active.batch)
     state_.queuePersistenceDirty = true
     persistEventQueue()
     flushAutomaticStorage()
     log("flush ok: accepted=" .. tostring(accepted) .. ", rejected=" .. tostring(#rejected)
-        .. ", notAccepted=" .. tostring(#active.batch - accepted))
+        .. ", skipped=" .. tostring(skipped or 0) .. ", notAccepted=" .. tostring(#active.batch - accepted - (skipped or 0)))
     for _, row in ipairs(rejected) do
         log("flush event rejected: index=" .. tostring(row.index)
             .. ", eventId=" .. tostring(row.eventId)
@@ -1958,14 +2092,20 @@ local function finishActiveFlush(lifecycleGeneration, sequence, error, result)
 
     local totalAccepted = state_.pendingFlushAccepted
     local totalRejected = state_.pendingFlushRejected
+    local totalSkipped = state_.pendingFlushSkipped
+    local totalTapdbAttempted = state_.pendingFlushTapdbAttempted
     state_.pendingFlushAccepted = 0
     state_.pendingFlushRejected = 0
+    state_.pendingFlushSkipped = 0
+    state_.pendingFlushTapdbAttempted = 0
     state_.nextAutoFlushAtMs = nil
     if outstandingEventCount() == 0 then state_.queuePersistenceActive = false end
     completeFlushCallbacks(nil, {
         ok = true,
         accepted = totalAccepted,
         rejectedCount = totalRejected,
+        skipped = totalSkipped,
+        tapdbAttempted = totalTapdbAttempted,
     })
 end
 
@@ -1996,8 +2136,8 @@ startFlush = function(force)
     flushAutomaticStorage()
 
     local handle = httpRequest("POST", "/v1/events/batch", { events = batch },
-        function(error, result)
-            finishActiveFlush(active.lifecycleGeneration, active.sequence, error, result)
+        function(error, result, response)
+            finishActiveFlush(active.lifecycleGeneration, active.sequence, error, result, response and response.localOnly == true)
         end)
     if state_.activeFlush == active then active.handle = handle end
     return true

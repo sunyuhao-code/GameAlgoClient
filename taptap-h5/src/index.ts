@@ -4,6 +4,8 @@ import type {
   FetchConfigOptions,
   GameAlgoRestClientOptions,
   GameAlgoStorage,
+  GameAlgoHttpRequest,
+  GameAlgoHttpResponse,
   JsonValue,
   UserAttributionResponse,
 } from "../../rest-api/src/types.ts";
@@ -12,15 +14,16 @@ import { GameAlgoWebScriptRuntime } from "./script-runtime.ts";
 import { GameAlgoMatchmakingClient } from "./multiplayer.ts";
 import { RewardVideoManager } from "../../rest-api/src/reward-video-manager.ts";
 import type { RewardVideoHost } from "../../rest-api/src/reward-video-ad.ts";
+import { TapTapTelemetryRouter, telemetryPath, type TapDbProperties } from "./telemetry-routing.ts";
 
-export const GAMEALGO_WEB_SDK_VERSION = "2.1.8";
+export const GAMEALGO_WEB_SDK_VERSION = "2.1.9";
 const WEB_KEEPALIVE_BODY_LIMIT_BYTES = 60 * 1024;
 const WEB_EVENT_BATCH_BODY_BUDGET_BYTES = 48 * 1024;
 const TAPDB_CONTEXT_LINK_EVENT = "gamealgo_context_link";
 const RUNTIME_IDENTITY_FIELDS = ["runtimeMiniappId", "runtimeProjectId", "runtimeAppId", "runtimeIdentitySource"] as const;
 type TapDbEventOptions = {
   name: string;
-  properties: Record<string, string | boolean>;
+  properties: TapDbProperties;
   success: (result: unknown) => void;
   fail: (result: unknown) => void;
   complete: (result: unknown) => void;
@@ -110,6 +113,8 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
   private tapDbContextLinkProperties?: TapDbEventOptions["properties"];
   private tapDbContextLinkTimer?: ReturnType<typeof setInterval>;
   private readonly webLogger?: (message: string) => void;
+  private readonly telemetryRouter = new TapTapTelemetryRouter((name, properties) => this.sendTapDbTelemetry(name, properties));
+  private readonly tapDbTelemetryCancels = new Set<() => void>();
   private readonly rewardVideos = new RewardVideoManager({
     host: () => (globalThis as { tap?: RewardVideoHost }).tap,
     logger: message => this.webLogger?.(message),
@@ -232,9 +237,70 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
     };
   }
 
+  protected override onConfigReceived(config: ConfigResponse, identity: { userId: string; sessionId: string; isDebug: boolean }): void {
+    if (this.closed || identity.sessionId !== this.tracker.currentSessionId()
+      || typeof config.contextId !== "string" || !config.contextId.trim()) return;
+    this.telemetryRouter.configure(config, identity);
+  }
+
+  protected override useAttributionAckCache(): boolean { return !this.telemetryRouter.tapdbEnabled; }
+
+  protected override async request(url: string, init: GameAlgoHttpRequest): Promise<GameAlgoHttpResponse> {
+    const path = telemetryPath(url, init.method);
+    if (!path) return super.request(url, init);
+    const body = JSON.parse(init.body ?? "{}") as Record<string, unknown>;
+    const forwarding = this.telemetryRouter.forward(path, body);
+    if (this.telemetryRouter.gamealgoEnabled) {
+      void forwarding.catch(() => undefined);
+      return super.request(url, init);
+    }
+    const attempted = await forwarding;
+    const receipt = this.telemetryRouter.localReceipt(path, body, attempted);
+    const content = JSON.stringify(receipt);
+    return { ok: true, status: 200, headers: { get: () => null },
+      json: async () => receipt, text: async () => content };
+  }
+
+  private sendTapDbTelemetry(name: string, properties: TapDbProperties): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      let tap: { logEvent?: (options: TapDbEventOptions) => unknown } | undefined;
+      let report: ((options: TapDbEventOptions) => unknown) | undefined;
+      try {
+        tap = (globalThis as { tap?: typeof tap }).tap;
+        report = tap?.logEvent;
+      } catch { reject(new Error("TapDB bridge is unavailable")); return; }
+      if (typeof report !== "function") { reject(new Error("TapDB bridge is unavailable")); return; }
+      let settled = false;
+      const timer = setTimeout(() => finish(false), 15000);
+      timer.unref?.();
+      const cancel = () => finish(false);
+      const finish = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.tapDbTelemetryCancels.delete(cancel);
+        if (ok) resolve();
+        else {
+          reject(new Error("TapDB telemetry handoff failed"));
+          if (!this.closed) { try { this.webLogger?.("[GameAlgoSDK] TapDB telemetry handoff failed"); } catch { /* Optional diagnostics. */ } }
+        }
+      };
+      const onResult = (result: unknown) => {
+        try { finish(!!result && typeof result === "object" && "errno" in result && result.errno === 0); }
+        catch { finish(false); }
+      };
+      this.tapDbTelemetryCancels.add(cancel);
+      try {
+        const result = report.call(tap, { name, properties, success: onResult, fail: () => finish(false), complete: onResult });
+        void Promise.resolve(result).then(value => { if (value === false) finish(false); }, () => finish(false));
+      } catch { finish(false); }
+      // Only host acceptance is confirmed; it is not a TapDB storage acknowledgement.
+    });
+  }
+
   protected override onConfigReady(config: ConfigResponse, identity: { userId: string; sessionId: string; isDebug: boolean }): void {
     if (this.closed || identity.sessionId !== this.tracker.currentSessionId()) return;
-    if (config.tapdbContextLinkEnabled !== true) {
+    if (config.tapdbContextLinkEnabled !== true || this.telemetryRouter.tapdbExplicitlyDisabled) {
       this.stopTapDbContextLinkDiscovery();
       this.tapDbContextLinkProperties = undefined;
       return;
@@ -331,6 +397,8 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
 
   close(): void {
     this.closed = true;
+    this.telemetryRouter.close();
+    for (const cancel of this.tapDbTelemetryCancels) cancel();
     this.rewardVideos.close();
     this.stopTapDbContextLinkDiscovery();
     this.tapDbContextLinkProperties = undefined;
