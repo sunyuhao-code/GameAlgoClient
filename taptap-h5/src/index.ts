@@ -6,6 +6,7 @@ import type {
   GameAlgoStorage,
   GameAlgoHttpRequest,
   GameAlgoHttpResponse,
+  GameEvent,
   JsonValue,
   UserAttributionResponse,
 } from "../../rest-api/src/types.ts";
@@ -243,19 +244,34 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
     this.telemetryRouter.configure(config, identity);
   }
 
-  protected override useAttributionAckCache(): boolean { return !this.telemetryRouter.tapdbEnabled; }
+  protected override useAttributionAckCache(): boolean { return !this.telemetryRouter.enabled("tapdb"); }
 
   protected override async request(url: string, init: GameAlgoHttpRequest): Promise<GameAlgoHttpResponse> {
     const path = telemetryPath(url, init.method);
     if (!path) return super.request(url, init);
     const body = JSON.parse(init.body ?? "{}") as Record<string, unknown>;
+    const directBody = this.telemetryRouter.directBody(path, body);
     const forwarding = this.telemetryRouter.forward(path, body);
-    if (this.telemetryRouter.gamealgoEnabled) {
-      void forwarding.catch(() => undefined);
-      return super.request(url, init);
+    // Attach immediately: the native callback can fail while HTTP is still pending.
+    void forwarding.catch(() => undefined);
+    let result: Record<string, unknown> | undefined;
+    if (directBody) {
+      const subset = path === "/v1/events/batch"
+        && (directBody.events as GameEvent[]).length !== (body.events as GameEvent[]).length;
+      const response = await super.request(url, subset ? { ...init, body: JSON.stringify(directBody) } : init);
+      if (!subset) return response;
+      const events = directBody.events as GameEvent[];
+      result = await response.json() as Record<string, unknown>;
+      this.telemetryRouter.acknowledge(events, result);
+      if (Array.isArray(result.rejected)) result.rejected = result.rejected
+        .filter(row => row && typeof row === "object" && !Array.isArray(row))
+        .slice(0, events.length - Number(result.accepted)).map(row => ({ ...row,
+        index: (body.events as GameEvent[]).indexOf(events[row.index]) }));
     }
     const attempted = await forwarding;
-    const receipt = this.telemetryRouter.localReceipt(path, body, attempted);
+    const receipt = result ? { ...result,
+      skipped: (body.events as GameEvent[]).length - (directBody!.events as GameEvent[]).length,
+      tapdbAttempted: attempted } : this.telemetryRouter.localReceipt(path, body, attempted);
     const content = JSON.stringify(receipt);
     return { ok: true, status: 200, headers: { get: () => null },
       json: async () => receipt, text: async () => content };
@@ -300,7 +316,7 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
 
   protected override onConfigReady(config: ConfigResponse, identity: { userId: string; sessionId: string; isDebug: boolean }): void {
     if (this.closed || identity.sessionId !== this.tracker.currentSessionId()) return;
-    if (config.tapdbContextLinkEnabled !== true || this.telemetryRouter.tapdbExplicitlyDisabled) {
+    if (config.tapdbContextLinkEnabled !== true || !this.telemetryRouter.enabled("tapdb")) {
       this.stopTapDbContextLinkDiscovery();
       this.tapDbContextLinkProperties = undefined;
       return;

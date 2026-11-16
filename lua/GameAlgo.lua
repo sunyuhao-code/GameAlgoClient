@@ -116,9 +116,13 @@ local state_ = {
     tapDbContextLinkProperties = nil,
     tapDbContextLinkNextCheckAtMs = 0,
     tapDbContextLinkDiscoveryUntilMs = 0,
-    gamealgoReportingEnabled = true,
-    tapdbReportingEnabled = false,
-    tapdbReportingExplicitlyDisabled = false,
+    gamealgoStandardReportingEnabled = true,
+    gamealgoCustomReportingEnabled = true,
+    tapdbStandardReportingEnabled = false,
+    tapdbCustomReportingEnabled = false,
+    directCompleted = {},
+    directCompletedRing = {},
+    directCompletedNext = 1,
     tapdbAttemptedKeys = {},
     tapdbAttemptedRing = {},
     tapdbAttemptedNext = 1,
@@ -448,24 +452,56 @@ local function tapdbEnvelope(envelope, event)
     return properties
 end
 
+local function telemetryEnabled(channel, event)
+    local standard = not event or STANDARD_EVENT_TYPES[event.eventType]
+        or event.eventType == "experiment_exposure" or event.eventType == "experiment_execution"
+    if channel == "gamealgo" then
+        return (standard and state_.gamealgoStandardReportingEnabled
+            or not standard and state_.gamealgoCustomReportingEnabled)
+    end
+    return (standard and state_.tapdbStandardReportingEnabled
+        or not standard and state_.tapdbCustomReportingEnabled)
+end
+
+local function directEventKey(event)
+    return tostring(event.isDebug == true) .. ":" .. tostring(event.eventId)
+end
+
+local function rememberDirectEvents(events)
+    for _, event in ipairs(events) do
+        local key, slot = directEventKey(event), state_.directCompletedNext
+        local previous = state_.directCompletedRing[slot]
+        if previous and state_.directCompleted[previous] == slot then state_.directCompleted[previous] = nil end
+        state_.directCompletedRing[slot] = key
+        state_.directCompleted[key] = slot
+        state_.directCompletedNext = slot % math.max(1000, state_.maxQueueSize * 2) + 1
+    end
+end
+
 local function forwardTapdbTelemetry(path, body)
-    if not state_.tapdbReportingEnabled then return 0 end
+    if not state_.tapdbStandardReportingEnabled and not state_.tapdbCustomReportingEnabled then return 0, true end
     local found, host, logEvent = pcall(function()
         local value = sdk
         if value == nil then return nil end
         return value, value.LogEvent
     end)
-    if not found or type(logEvent) ~= "function" then return 0, false end
+    local available = found and type(logEvent) == "function"
     local count, generation, allAccepted = 0, state_.lifecycleGeneration, true
     local function forward(name, key, envelope, event)
-        if generation ~= state_.lifecycleGeneration or not state_.tapdbReportingEnabled then allAccepted = false; return end
+        local categoryEvent = path == "/v1/events/batch" and event or nil
+        if not telemetryEnabled("tapdb", categoryEvent) then return end
+        local required = not telemetryEnabled("gamealgo", categoryEvent)
+        if generation ~= state_.lifecycleGeneration or not available then
+            if required then allAccepted = false end
+            return
+        end
         local previousStatus = state_.tapdbAttemptedKeys[key]
-        if previousStatus and (previousStatus.state ~= "failed" or state_.gamealgoReportingEnabled) then
-            if previousStatus.state ~= "accepted" then allAccepted = false end
+        if previousStatus and (previousStatus.state ~= "failed" or not required) then
+            if required and previousStatus.state ~= "accepted" then allAccepted = false end
             return
         end
         local encoded, properties = pcall(tapdbEnvelope, envelope, event)
-        if not encoded then allAccepted = false; log("TapDB telemetry encode failed"); return end
+        if not encoded then if required then allAccepted = false end; log("TapDB telemetry encode failed"); return end
         -- Bounded, in-memory retry guard. No per-frame scan or extra disk writes.
         local slot = state_.tapdbAttemptedNext
         local previous = state_.tapdbAttemptedRing[slot]
@@ -481,7 +517,7 @@ local function forwardTapdbTelemetry(path, body)
         local ok, accepted = pcall(logEvent, host, name, properties)
         if generation ~= state_.lifecycleGeneration then allAccepted = false; return end
         if ok and accepted == true then entry.state = "accepted"
-        else entry.state = "failed"; allAccepted = false; log("TapDB telemetry handoff failed") end
+        else entry.state = "failed"; if required then allAccepted = false end; log("TapDB telemetry handoff failed") end
     end
     if path == "/v1/events/batch" then
         for _, event in ipairs(body.events or {}) do
@@ -502,21 +538,63 @@ local function httpRequest(method, path, bodyTable, callback)
     callback = callback or function() end
     if method == "POST" and TELEMETRY_PATHS[path] then
         local generation = state_.lifecycleGeneration
-        local attempted, allAccepted = forwardTapdbTelemetry(path, bodyTable or {})
+        local originalBody, directEvents, directIndices = bodyTable or {}, nil, {}
+        local direct = telemetryEnabled("gamealgo")
+        if path == "/v1/events/batch" then
+            directEvents = {}
+            for index, event in ipairs(originalBody.events or {}) do
+                if telemetryEnabled("gamealgo", event) and not state_.directCompleted[directEventKey(event)] then
+                    table.insert(directEvents, event)
+                    table.insert(directIndices, index - 1)
+                end
+            end
+            direct = #directEvents > 0
+        end
+        local attempted, allAccepted = forwardTapdbTelemetry(path, originalBody)
         if generation ~= state_.lifecycleGeneration then
             safeCallback(callback, "SDK reinitialized during telemetry handoff", nil, { status = 0 })
             return nil
         end
-        if not state_.gamealgoReportingEnabled then
-            if state_.tapdbReportingEnabled and not allAccepted then
+        if not direct then
+            if allAccepted == false then
                 safeCallback(callback, "TapDB telemetry handoff failed", nil, { status = 0, localOnly = true })
                 return nil
             end
-            local receipt = { ok = true, accepted = 0,
-                skipped = path == "/v1/events/batch" and #(bodyTable.events or {}) or 1,
-                tapdbAttempted = attempted }
-            safeCallback(callback, nil, receipt, { status = 200, localOnly = true })
+            safeCallback(callback, nil, { ok = true, accepted = 0,
+                skipped = path == "/v1/events/batch" and #(originalBody.events or {}) or 1,
+                tapdbAttempted = attempted }, { status = 200, localOnly = true })
             return nil
+        end
+        if directEvents and #directEvents < #originalBody.events then
+            bodyTable = {}
+            for key, value in pairs(originalBody) do bodyTable[key] = value end
+            bodyTable.events = directEvents
+            local originalCallback = callback
+            callback = function(error, result, response)
+                if generation ~= state_.lifecycleGeneration then return end
+                if error then safeCallback(originalCallback, error, nil, response); return end
+                local accepted = type(result) == "table" and tonumber(result.accepted) or nil
+                local rejected = type(result) == "table" and result.rejected or nil
+                local valid = accepted and accepted >= 0 and accepted <= #directEvents and accepted % 1 == 0
+                    and result.ok ~= false and response and tonumber(response.status) == 200
+                if valid and accepted == 0 then
+                    valid = type(rejected) == "table" and #rejected == #directEvents
+                    if valid then for _, row in ipairs(rejected) do if type(row) ~= "table" then valid = false; break end end end
+                end
+                if not valid then safeCallback(originalCallback, "invalid telemetry batch acknowledgement", nil, response); return end
+                rememberDirectEvents(directEvents)
+                if not allAccepted then safeCallback(originalCallback, "TapDB telemetry handoff failed", nil, response); return end
+                -- Native rejection indices refer to the filtered subset, so restore the caller's batch indices.
+                if type(rejected) == "table" then
+                    for _, row in ipairs(rejected) do
+                        if type(row) == "table" and type(row.index) == "number" then row.index = directIndices[row.index + 1] end
+                    end
+                end
+                result.skipped = #originalBody.events - #directEvents
+                result.tapdbAttempted = attempted
+                response.localOnly = true
+                safeCallback(originalCallback, nil, result, response)
+            end
         end
     end
     local headers = {
@@ -618,7 +696,7 @@ local function tryTapDbContextLink()
 end
 
 local function reportTapDbContextLink(config, requestBody)
-    if config.tapdbContextLinkEnabled ~= true or state_.tapdbReportingExplicitlyDisabled then
+    if config.tapdbContextLinkEnabled ~= true or not state_.tapdbStandardReportingEnabled then
         state_.tapDbContextLinkProperties = nil
         state_.tapDbContextLinkNextCheckAtMs = 0
         state_.tapDbContextLinkDiscoveryUntilMs = 0
@@ -1369,9 +1447,13 @@ function GameAlgo.Init(options)
     state_.tapDbContextLinkProperties = nil
     state_.tapDbContextLinkNextCheckAtMs = 0
     state_.tapDbContextLinkDiscoveryUntilMs = 0
-    state_.gamealgoReportingEnabled = true
-    state_.tapdbReportingEnabled = false
-    state_.tapdbReportingExplicitlyDisabled = false
+    state_.gamealgoStandardReportingEnabled = true
+    state_.gamealgoCustomReportingEnabled = true
+    state_.tapdbStandardReportingEnabled = false
+    state_.tapdbCustomReportingEnabled = false
+    state_.directCompleted = {}
+    state_.directCompletedRing = {}
+    state_.directCompletedNext = 1
     state_.tapdbAttemptedKeys = {}
     state_.tapdbAttemptedRing = {}
     state_.tapdbAttemptedNext = 1
@@ -1542,10 +1624,10 @@ performConfigFetchAttempt = function()
             state_.config = config
             state_.eventQuota = normalizeEventQuota(config)
             state_.contextId = contextId
-            state_.gamealgoReportingEnabled = config.gamealgoReportingEnabled ~= false
-            state_.tapdbReportingEnabled = config.tapdbReportingEnabled == true
-            state_.tapdbReportingExplicitlyDisabled = config.tapdbReportingEnabled ~= nil
-                and not state_.tapdbReportingEnabled
+            state_.gamealgoStandardReportingEnabled = config.gamealgoStandardReportingEnabled ~= false
+            state_.gamealgoCustomReportingEnabled = config.gamealgoCustomReportingEnabled ~= false
+            state_.tapdbStandardReportingEnabled = config.tapdbStandardReportingEnabled == true
+            state_.tapdbCustomReportingEnabled = config.tapdbCustomReportingEnabled == true
         end
         mergeCustomEventCountBucket("pending:" .. tostring(requestBody.sessionId), "context:" .. contextId)
         mergeOrdinaryEventCountBucket("pending:" .. tostring(requestBody.sessionId), "context:" .. contextId)
@@ -2011,9 +2093,14 @@ local function validateFlushResult(result, batchSize, localOnly)
     if accepted < 0 or accepted > batchSize or accepted % 1 ~= 0 then
         return nil, "invalid flush accepted count: " .. tostring(result.accepted)
     end
-    if localOnly and accepted == 0 and result.skipped == batchSize then
-        return 0, nil, {}, batchSize, tonumber(result.tapdbAttempted) or 0
+    local skipped = localOnly and tonumber(result.skipped) or 0
+    skipped = skipped or 0
+    if skipped < 0 or skipped > batchSize or skipped % 1 ~= 0 then return nil, "invalid local routing receipt" end
+    if localOnly and accepted == 0 and skipped == batchSize then
+        return 0, nil, {}, skipped, tonumber(result.tapdbAttempted) or 0
     end
+    local directBatchSize = batchSize - skipped
+    if accepted > directBatchSize then return nil, "invalid routed accepted count" end
 
     -- A positive count proves the batch reached event processing. Prefer
     -- progress over replaying the whole batch; rejection details are advisory.
@@ -2021,12 +2108,12 @@ local function validateFlushResult(result, batchSize, localOnly)
         local rows = {}
         if type(result.rejected) == "table" then
             for _, row in ipairs(result.rejected) do
-                if type(row) == "table" and #rows < batchSize - accepted then
+                if type(row) == "table" and #rows < directBatchSize - accepted then
                     table.insert(rows, row)
                 end
             end
         end
-        return accepted, nil, rows
+        return accepted, nil, rows, skipped, tonumber(result.tapdbAttempted) or 0
     end
 
     local rejected = result.rejected
@@ -2038,12 +2125,12 @@ local function validateFlushResult(result, batchSize, localOnly)
         end
     end
 
-    if accepted + #rejected ~= batchSize then
+    if accepted + #rejected ~= directBatchSize then
         return nil, "partial flush acceptance: accepted=" .. tostring(accepted)
             .. ", rejected=" .. tostring(#rejected)
             .. ", sent=" .. tostring(batchSize)
     end
-    return accepted, nil, rejected
+    return accepted, nil, rejected, skipped, tonumber(result.tapdbAttempted) or 0
 end
 
 local function finishActiveFlush(lifecycleGeneration, sequence, error, result, localOnly)

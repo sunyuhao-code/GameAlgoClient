@@ -75,7 +75,7 @@ local function harness()
             configFiles = {},
             experiments = {},
         }
-        flags = flags or { tapdbContextLinkEnabled = true }
+        flags = flags or { tapdbContextLinkEnabled = true, tapdbStandardReportingEnabled = true }
         for key, value in pairs(flags) do config[key] = value end
         h.pending[index].callback(nil, { status = 200, body = cjson.encode(config) })
     end

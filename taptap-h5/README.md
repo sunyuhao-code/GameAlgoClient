@@ -69,10 +69,17 @@ const decision = await gamePropel.executor("level_dda").execute({ level: 12 });
 A fresh `/v1/config` response can independently control all SDK telemetry:
 
 ```json
-{ "gamealgoReportingEnabled": true, "tapdbReportingEnabled": false }
+{
+  "gamealgoStandardReportingEnabled": true,
+  "gamealgoCustomReportingEnabled": true,
+  "tapdbStandardReportingEnabled": false,
+  "tapdbCustomReportingEnabled": false
+}
 ```
 
-Both channels may be enabled, either one enabled, or both disabled. Missing or
+Each category independently supports direct-only, TapDB-only, both or neither; there is no master switch.
+Standard includes SDK built-in/experiment events, attribution, identifier links and diagnostics.
+Custom includes game business events. Mixed batches are split per event without changing their IDs. Missing or
 malformed values retain direct GameAlgo reporting and disable TapDB mirroring.
 Cached snapshots cannot authorize TapDB at startup. Controls apply before a new
 Context binds pending urgent events, independently of snapshot persistence.
@@ -97,7 +104,8 @@ handoff may replay with the same event ID, so DW ingestion must deduplicate it.
 Both-off mode drains queued rows without reporting them or replaying them later.
 Disabling a channel cannot undo requests already started.
 
-Local receipts carry `accepted: 0`, `skipped` (direct rows bypassed), and
+Pure local receipts carry `accepted: 0`; mixed receipts count only the current HTTP subset.
+`skipped` counts direct rows bypassed, alongside
 `tapdbAttempted`; these are not HTTP server acknowledgements. Attribution's direct
 ACK cache is not populated by these receipts. Full wire format, server controls
 and device-validation requirements: [telemetry routing contract](https://github.com/sunyuhao-code/GameAlgoClient/blob/main/protocol/taptap-telemetry-routing.md).
@@ -112,8 +120,8 @@ A later successful disabled response clears pending linking and stops discovery;
 this takes effect before snapshot persistence, even if browser storage is slow or fails.
 re-enabling does not reset the once-per-client guard. Calls already made to the
 host cannot be undone. This controls only GameAlgo's automatic identity link,
-not the game's own TapDB calls or GameAlgo telemetry. An explicit false or malformed
-`tapdbReportingEnabled` also vetoes this legacy link. Older SDKs must be upgraded
+not the game's own TapDB calls or GameAlgo telemetry.
+`tapdbStandardReportingEnabled` must also be true for this legacy link. Older SDKs must be upgraded
 to honor this server switch.
 
 On the first enabled server config response, each

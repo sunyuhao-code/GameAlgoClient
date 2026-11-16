@@ -3,6 +3,9 @@ import { sha256HexSync } from "../../rest-api/src/sha256.ts";
 
 export type TapDbProperties = Record<string, string | boolean>;
 const REPORT_PATHS = new Set(["/v1/events/batch", "/v1/attribution", "/v1/context-identifiers", "/v1/diagnostics/sdk", "/v1/diagnostics/init"]);
+// Custom TrackEvent names have an underscore prefix; unknown raw Track names are custom too.
+const STANDARD_EVENTS = new Set(["session_end", "level_start", "level_end", "ad_view", "purchase", "milestone", "experiment_exposure", "experiment_execution"]);
+const eventKey = (event: Partial<GameEvent>): string => `${event.isDebug === true}:${event.eventId}`;
 
 /** Only telemetry is routed. Config, files, scripts and multiplayer remain direct. */
 export function telemetryPath(url: string, method?: string): string | undefined {
@@ -44,9 +47,12 @@ export function tapDbEnvelope(envelope: Record<string, unknown>, event: Partial<
 
 /** Native TapDB owns delivery after handoff. Never replay failed host calls in a hot loop. */
 export class TapTapTelemetryRouter {
-  gamealgoEnabled = true;
-  tapdbEnabled = false;
-  tapdbExplicitlyDisabled = false;
+  private closed = false;
+  private gamealgoStandard = true;
+  private gamealgoCustom = true;
+  private tapdbStandard = false;
+  private tapdbCustom = false;
+  private readonly directCompleted = new Set<string>();
   private readonly attempted = new Map<string, { promise: Promise<void>; state: "pending" | "accepted" | "failed" }>();
   private readonly limit: number;
   private identity: { userId?: string; sessionId?: string; isDebug?: boolean } = {};
@@ -58,13 +64,41 @@ export class TapTapTelemetryRouter {
 
   configure(config: ConfigResponse, identity: { userId: string; sessionId: string; isDebug: boolean }): void {
     this.identity = { ...identity };
-    this.gamealgoEnabled = config.gamealgoReportingEnabled !== false;
-    this.tapdbEnabled = config.tapdbReportingEnabled === true;
-    this.tapdbExplicitlyDisabled = config.tapdbReportingEnabled !== undefined && !this.tapdbEnabled;
+    this.gamealgoStandard = config.gamealgoStandardReportingEnabled !== false;
+    this.gamealgoCustom = config.gamealgoCustomReportingEnabled !== false;
+    this.tapdbStandard = config.tapdbStandardReportingEnabled === true;
+    this.tapdbCustom = config.tapdbCustomReportingEnabled === true;
+  }
+
+  enabled(channel: "gamealgo" | "tapdb", event?: Partial<GameEvent>): boolean {
+    const standard = !event || STANDARD_EVENTS.has(event.eventType ?? "");
+    return channel === "gamealgo"
+      ? (standard ? this.gamealgoStandard : this.gamealgoCustom)
+      : !this.closed && (standard ? this.tapdbStandard : this.tapdbCustom);
+  }
+
+  directBody(path: string, body: Record<string, unknown>): Record<string, unknown> | undefined {
+    if (path !== "/v1/events/batch") return this.enabled("gamealgo") ? body : undefined;
+    const events = (body.events as GameEvent[]).filter(event => this.enabled("gamealgo", event) && !this.directCompleted.has(eventKey(event)));
+    return events.length ? { ...body, events } : undefined;
+  }
+
+  /** Only retain terminal HTTP acknowledgements; the existing durable queue owns retries. */
+  acknowledge(events: GameEvent[], result: Record<string, unknown>): void {
+    const accepted = result.accepted;
+    if (result.ok === false || !Number.isInteger(accepted) || Number(accepted) < 0 || Number(accepted) > events.length
+      || (accepted === 0 && (!Array.isArray(result.rejected) || result.rejected.length !== events.length
+        || result.rejected.some(row => !row || typeof row !== "object" || Array.isArray(row))))) {
+      throw new Error("invalid telemetry batch acknowledgement");
+    }
+    for (const event of events) {
+      this.directCompleted.add(eventKey(event));
+      if (this.directCompleted.size > this.limit) this.directCompleted.delete(this.directCompleted.values().next().value!);
+    }
   }
 
   async forward(path: string, body: Record<string, unknown>): Promise<number> {
-    if (!this.tapdbEnabled) return 0;
+    if (this.closed || (!this.tapdbStandard && !this.tapdbCustom)) return 0;
     let count = 0;
     const confirmations: Promise<void>[] = [];
     const events = path === "/v1/events/batch" ? body.events as GameEvent[] : undefined;
@@ -76,10 +110,15 @@ export class TapTapTelemetryRouter {
           envelope: { schemaVersion: 1, path, requestId, body } }];
       })();
     for (const record of records) {
-      if (!this.tapdbEnabled) break;
+      if (this.closed) break;
+      const event = events ? record.event : undefined;
+      if (!this.enabled("tapdb", event)) continue;
+      const required = !this.enabled("gamealgo", event);
       const previous = this.attempted.get(record.key);
-      if (previous && (previous.state !== "failed" || this.gamealgoEnabled)) {
-        confirmations.push(previous.promise); continue;
+      if (previous && (previous.state !== "failed" || !required)) {
+        if (required) confirmations.push(previous.promise);
+        else void previous.promise.catch(() => undefined);
+        continue;
       }
       // Construct before recording so serialization failures remain observable.
       const properties = tapDbEnvelope(record.envelope, record.event);
@@ -90,7 +129,8 @@ export class TapTapTelemetryRouter {
         for (const [key, value] of this.attempted) if (value.state !== "pending") { this.attempted.delete(key); break; }
       }
       count++;
-      confirmations.push(entry.promise);
+      if (required) confirmations.push(entry.promise);
+      else void entry.promise.catch(() => undefined);
       void this.send(record.name, properties).then(() => { entry.state = "accepted"; resolve(); }, error => { entry.state = "failed"; reject(error); });
     }
     await Promise.all(confirmations);
@@ -104,5 +144,5 @@ export class TapTapTelemetryRouter {
       ...(typeof body.identifierHash === "string" ? { identifierHash: body.identifierHash } : {}) };
   }
 
-  close(): void { this.tapdbEnabled = false; this.attempted.clear(); }
+  close(): void { this.closed = true; this.attempted.clear(); this.directCompleted.clear(); }
 }

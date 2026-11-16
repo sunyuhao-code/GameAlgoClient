@@ -13,7 +13,7 @@ type LinkEvent = {
 };
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
-const configResponse = (contextId: unknown, flags: Record<string, unknown> = { tapdbContextLinkEnabled: true }) => Response.json({
+const configResponse = (contextId: unknown, flags: Record<string, unknown> = { tapdbContextLinkEnabled: true, tapdbStandardReportingEnabled: true }) => Response.json({
   contextId, gameId: "web-test", environment: "live", configVersion: "1",
   ttlSeconds: 60, serverTime: new Date().toISOString(), experiments: [], configFiles: [],
   eventQuota: { mode: "enforce", policyVersion: 1, ordinaryEventLimit: 1, quotaDate: "2026-10-27", resetAt: "2026-10-28T00:00:00Z", exemptEventTypes: ["session_end"] },
@@ -174,12 +174,13 @@ test("H5 initialization sends one flat TapDB identity link using the verified ob
   await h.client.fetchConfig({ forceRefresh: true });
   h.client.tracker.newSession("second-session");
   await h.client.fetchConfig({ forceRefresh: true });
-  assert.equal(calls.length, 1, "cache hits, refreshes and session changes must not repeat the event");
+  assert.equal(calls.filter(call => call.name === "gamealgo_context_link").length, 1, "cache hits, refreshes and session changes must not repeat the link");
   const next = harness(t, { storage: h.storage, isDebug: true });
   assert.equal(await next.client.waitForReady(), true);
-  assert.equal(calls.length, 2, "new client initialization may report again");
-  assert.equal(calls[1].properties.gamealgo_device_id, request.userId);
-  assert.equal(calls[1].properties.gamealgo_is_debug, true);
+  const links = calls.filter(call => call.name === "gamealgo_context_link");
+  assert.equal(links.length, 2, "new client initialization may report again");
+  assert.equal(links[1].properties.gamealgo_device_id, request.userId);
+  assert.equal(links[1].properties.gamealgo_is_debug, true);
 });
 
 test("failed or invalid config responses do not consume the first valid link", async (t) => {

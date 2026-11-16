@@ -32,9 +32,11 @@ export type ConfigResponse = {
   serverTime: string;
   /** Absent/false disables Maker/H5 TapDB identity linking; never restored as startup permission. */
   tapdbContextLinkEnabled?: boolean;
-  /** Live TapTap Maker/H5 controls. Missing/invalid values preserve direct reporting and disable TapDB mirroring. */
-  gamealgoReportingEnabled?: boolean;
-  tapdbReportingEnabled?: boolean;
+  /** Four independent live Maker/H5 gates. GameAlgo defaults on; TapDB requires explicit true. */
+  gamealgoStandardReportingEnabled?: boolean;
+  gamealgoCustomReportingEnabled?: boolean;
+  tapdbStandardReportingEnabled?: boolean;
+  tapdbCustomReportingEnabled?: boolean;
   eventQuota?: EventQuotaConfig;
   experiments: ExperimentAssignment[];
   configFiles: ConfigFileRef[];

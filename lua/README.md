@@ -93,9 +93,12 @@ SDK 从 `GameAlgo.Init` 开始设置一个固定 10 秒的初始化看门狗。1
 
 ### 服务端控制双通道（2.1.4-lua）
 
-新鲜成功的 `/v1/config` 响应支持独立下发 `gamealgoReportingEnabled` 和
-`tapdbReportingEnabled`。支持仅 GameAlgo、仅 TapDB、双报、双关。字段缺失或
-类型异常时，保持 GameAlgo 开启、TapDB 关闭；旧服务端兼容现有行为。
+新鲜成功的 `/v1/config` 响应下发 4 个独立开关，不设总开关：
+`gamealgoStandardReportingEnabled`、`gamealgoCustomReportingEnabled` 默认开，
+`tapdbStandardReportingEnabled`、`tapdbCustomReportingEnabled` 默认关。
+GameAlgo 仅明确 false 关闭，TapDB 仅明确 true 开启；旧服务端保持直连。
+标准类包括内置事件、实验事件、归因、ID 关联和诊断；自定义类是游戏业务事件。
+每类可仅 GameAlgo、仅 TapDB、双报或双关，同批事件按分类分流。
 
 全部埋点及 SDK 诊断在统一出口分流，现有 Track、广告、生命周期 API 不变。
 配置请求、配置文件和脚本下载继续直连。Maker 当前没有 H5 的归因/标识符绑定
@@ -121,8 +124,7 @@ DW 需据此去重。
 
 ### TapDB 身份关联
 
-新版本中，显式关闭 `tapdbReportingEnabled` 也会关闭该身份关联；未下发新字段时，
-保留下面的旧开关行为。
+新版本中，该身份关联同时要求 `tapdbStandardReportingEnabled=true` 和下面的旧开关开启。
 
 TapDB 身份关联默认关闭。仅在本次 `GameAlgo.Init` 取得新鲜、有效的 `/v1/config` 响应，且 `tapdbContextLinkEnabled` 为布尔值 `true` 时，SDK 才通过 Maker 宿主的 `sdk:LogEvent(name, properties)` 尝试上报一次 `gamealgo_context_link`，用于 DW 关联 GameAlgo Context 与 TapDB 身份。游戏无需另行调用，也不要自行补报该事件。
 
