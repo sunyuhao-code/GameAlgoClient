@@ -91,6 +91,36 @@ test("an offline snapshot stays usable while a fresh session context recovers au
   assert.equal(f.events[0].contextId, "ctx-fresh");
 });
 
+test("restored ordinary events automatically flush without new gameplay events", async t => {
+  for (const format of ["chunks", "legacy"]) for (const incremental of [true, false]) {
+    await t.test(`${format}, persistOnEnqueue=${incremental}`, async t => {
+      t.mock.timers.enable({ apis: ["setInterval"] });
+      const first = fixture(t);
+      await first.client.waitForReady();
+      first.control.events = () => { throw new TypeError("offline"); };
+      first.client.tracker.trackLevelEnd({ level_id: "restored-level" });
+      await assert.rejects(first.client.flush(), /offline/);
+      const original = first.pending()[0];
+      first.client.close();
+      if (format === "legacy") {
+        const rootKey = [...first.values.keys()].find(key => key.includes(":event-queue:") && !key.endsWith(":milestones"))!;
+        first.values.set(rootKey, JSON.stringify(original));
+      }
+
+      const next = fixture(t, { eventFlushIntervalMs: 5000, eventPersistOnEnqueue: incremental }, first.values);
+      await next.client.waitForReady();
+      await turn();
+      assert.equal(next.events.length, 0);
+      t.mock.timers.tick(4999); await turn();
+      assert.equal(next.events.length, 0);
+      t.mock.timers.tick(1); await turn();
+      assert.equal(next.events.length, 1, "restoring a queue arms the normal flush timer");
+      assert.deepEqual(next.events[0], original, "replay keeps the original event, Session and Context");
+      assert.equal(next.pending().length, 0, "successful acknowledgement clears durable data");
+    });
+  }
+});
+
 test("invalid Context responses retry; authorization errors do not", async t => {
   for (const mode of ["invalid", "unauthorized", "forbidden"]) await t.test(mode, async t => {
     t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });

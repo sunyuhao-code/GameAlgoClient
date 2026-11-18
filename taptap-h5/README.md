@@ -4,6 +4,10 @@ GamePropel (formerly GameAlgo) SDK for **TapTap H5 minigames**, published as `@g
 Other minigame hosts, including WeChat, require their own host SDK; browser
 fallbacks are retained for local previews and compatible WebViews.
 
+Version 2.1.11 resumes periodic uploads after restoring a persisted queue, even
+when the game has not produced a new event or called `flush()`. Restored events
+retain their original IDs, Session and Context.
+
 Version 2.1.10 keeps configuration across foreground restoration, recovers failed
 initial requests, retains early lifecycle snapshots, and validates timed event
 requests and acknowledgements. The existing ad wrapper also records elapsed

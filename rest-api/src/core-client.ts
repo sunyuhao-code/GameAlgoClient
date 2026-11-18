@@ -1531,6 +1531,7 @@ export class GameAlgoEventTracker {
       const existingIds = new Set([...this.retryBatch, ...this.inflightBatch, ...this.queue].map(event => event.eventId));
       this.retryBatch = [...restored.filter(event => !existingIds.has(event.eventId)), ...this.retryBatch];
       this.hasPersistedQueue = restored.length > 0;
+      if (restored.length > 0) this.startTimer();
       return;
     }
     try {
@@ -1540,6 +1541,7 @@ export class GameAlgoEventTracker {
         const existingIds = new Set([...this.retryBatch, ...this.inflightBatch, ...this.queue].map(event => event.eventId));
         this.retryBatch = [...restored.filter(event => !existingIds.has(event.eventId)), ...this.retryBatch];
         this.hasPersistedQueue = restored.length > 0;
+        if (restored.length > 0) this.startTimer();
         return;
       }
       const restored = raw
@@ -1551,6 +1553,7 @@ export class GameAlgoEventTracker {
       const existingIds = new Set([...this.retryBatch, ...this.inflightBatch, ...this.queue].map((event) => event.eventId));
       this.retryBatch = [...restored.filter((event) => !existingIds.has(event.eventId)), ...this.retryBatch];
       this.hasPersistedQueue = restored.length > 0;
+      if (restored.length > 0) this.startTimer();
     } catch {
       await this.storage.removeItem?.(this.persistenceKey);
     }
