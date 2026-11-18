@@ -35,7 +35,7 @@
         <footer class="actionbar">
           <button id="connectButton" type="button">Connect SDK</button>
           <button id="startButton" type="button" disabled>Start Level</button>
-          <button id="adButton" type="button" disabled>Reward Ad</button>
+          <button id="adButton" type="button" disabled>Simulate Ad (Debug)</button>
           <button id="purchaseButton" type="button" disabled>Purchase</button>
           <button id="sessionEndButton" type="button" disabled>Session End</button>
           <button id="flushButton" type="button" disabled>Flush</button>
@@ -52,6 +52,10 @@
           <label>
             <span>Game Key</span>
             <input id="gameKeyInput" type="password" autocomplete="off" spellcheck="false" />
+          </label>
+          <label>
+            <span>Registered GamePropel Ad Placement ID</span>
+            <input id="adPlacementIdInput" placeholder="gap_… returned by this game's registration" maxlength="36" autocomplete="off" spellcheck="false" />
           </label>
           <label>
             <span>User ID</span>

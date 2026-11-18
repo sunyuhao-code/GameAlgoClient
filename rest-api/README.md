@@ -267,18 +267,55 @@ milestone
 client.tracker.trackMilestone("new_user", "进入第一关");
 ```
 
-广告变现使用标准 `ad_view`。Maker 激励视频使用 `GameAlgo.ShowRewardVideoAd`，TapTap H5 使用 `client.createAdSpace({ adUnitId }).show(...)`（旧 `client.showRewardVideoAd` 保留兼容），由播放封装自动上报，游戏回调不重复统计。其他广告提供商在有效曝光/收入回调中上报本游戏已登记的 `adPlacementId`、真实 `revenue` 和可选 `network` / `trackId`，服务端补齐名称、类型和币种。
+### 广告：先登记点位，再引用 ID
 
-```ts
-// 仅用于其他广告提供商已经确认的有效曝光/收入回调。
-client.tracker.track("ad_view", {
-  adPlacementId: adPlacementIds.rewarded_level_end,
-  revenue: 0.018,
-  network: "admob",
-});
+REST 直连和其他 SDK 使用同一套广告位登记流程。接入阶段先用已绑定目标游戏的管理端 CLI 读取广告位目录，按实际游戏编辑[定义模板](./examples/ad-placements.json)，保留已有点位的业务 key、名称和状态，再校验并提交。以下命令从本仓库根目录执行：
+
+```bash
+gamepropel whoami --json
+gamepropel ad-placements list --json
+gamepropel ad-placements validate rest-api/examples/ad-placements.json --json
+gamepropel ad-placements apply rest-api/examples/ad-placements.json --out ad-placement-ids.json --json
 ```
 
+CLI 返回并保存 `{gameId, ids: {rewarded_level_end: "gap_…"}}`。确认 `gameId` 是当前游戏，把本批 ID 按 key 合入游戏常量，不覆盖其他已登记点位。映射可以随游戏发布；运行时只引用登记返回的 ID，不自行拼造 ID，也不在每次曝光时登记。业务 key、名称和广告宿主的 `adUnitId` 都不能代替 `adPlacementId`。登记使用管理凭据，游戏运行时继续只使用 `ga_live_*`。
+
+广告变现使用标准 `ad_view`。Maker 激励视频使用 `GameAlgo.ShowRewardVideoAd`，TapTap H5 使用 `client.createAdSpace({ adUnitId }).show(...)`，由播放封装自动上报，游戏回调不重复统计。其他广告提供商在有效曝光/收入回调中调用 helper 的 `trackAdPlacement`：
+
+```ts
+// adPlacementIds 来自当前游戏登记返回的 ids 映射。
+// 仅用于广告提供商已经确认的有效曝光/收入回调。
+client.tracker.trackAdPlacement(
+  adPlacementIds.rewarded_level_end,
+  paidEvent.revenue,
+  paidEvent.network,
+  { trackId: paidEvent.trackId },
+);
+```
+
+helper 校验 ID 格式和有限数值收入，静态字段 `placement/adType/currency` 由登记定义统一提供，并保护本次调用的 ID 和收入。ID 是否已登记且属于本游戏由服务端核对。返回 `true` 表示入队成功，仍需正常 flush 和服务端 ACK。
+
+直接调用 `POST /v1/events/batch` 时同样使用登记后的 ID。以下 `gap_*` 仅示意结构，实际值必须取自当前游戏的 CLI 返回；事件外层沿用第 4 节的身份、context 和时间字段：
+
+```json
+{
+  "eventType": "ad_view",
+  "payload": {
+    "adPlacementId": "gap_0123456789abcdef0123456789abcdef",
+    "revenue": 0.018,
+    "network": "admob",
+    "trackId": "广告提供商本次曝光的原始标识"
+  }
+}
+```
+
+名称、广告类型和币种在登记时提交；携带有效 ID 时，服务端在写入前按定义补齐 `placement/adType/currency`。每次曝光仅传 ID、真实收入和其他动态事实，不重复维护静态字段。原始 HTTP 传输不自动执行登记。
+
+查库失败返回 HTTP 503 `ad_placement_unavailable`；ID 未登记或属于其他游戏时返回 HTTP 503 `ad_placement_unresolved`。此时该批未被确认接收，核对绑定和登记后沿用原 eventId 重试。
+
 `ad_view` 只表示有效曝光；用户看了一部分后跳过但广告 SDK 已确认曝光有效，也应该上报。广告加载失败、未填充或展示前失败不报。币种在注册定义中指定，必须与回调金额一致；Maker / TapTap 的 trackId 回补链路注册 CNY。
+
+### 内购和自定义事件
 
 内购或付费订单使用 `trackPurchase`。有条件时它会上报带 `productId`、`revenue` 和 `currency` 的 `purchase`。国内游戏同样使用 `CNY`：
 
@@ -316,6 +353,7 @@ SDK 初始化从 `/v1/config` 获取当前普通事件额度，并把它作为�
 | 404 | `not_found` |
 | 429 | `rate_limited` |
 | 500 | `server_error` |
+| 503 | `ad_placement_unavailable` / `ad_placement_unresolved` |
 
 ## 8. 接入检查清单
 
@@ -325,7 +363,7 @@ SDK 初始化从 `/v1/config` 获取当前普通事件额度，并把它作为�
 - 配置文件可以拉取并缓存。
 - 会话结束时会上报带时长的 `session_end`。
 - 有关卡的游戏会上报 `level_start` 和 `level_end`。
-- 有广告的游戏会上报带 `placement`、`adType`、`revenue` 和 `currency` 的 `ad_view`。
+- 有广告的游戏已先登记本游戏广告位并保存返回的 `gap_*` ID；曝光通过 `trackAdPlacement` 或等价 REST payload 引用 `adPlacementId`，携带真实 `revenue` 和可选 `network/trackId`，静态名称、类型、币种由服务端补齐。
 - QA 包设置 `isDebug=true`。
 - 客户端运行时只使用 `ga_live_*`。QA/测试环境如需区分，可以创建单独命名的 Client Game Key，并设置 `isDebug=true`。
 

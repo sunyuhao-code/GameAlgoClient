@@ -37,3 +37,32 @@ test("OpenAPI exposes immutable scripts and every shared request contract", () =
     assert.ok(document.components.schemas[schema], `missing OpenAPI schema ${schema}`);
   }
 });
+
+test("OpenAPI ad batches require the registered placement contract shared by SDKs", () => {
+  const document = YAML.parse(readFileSync(new URL("../../protocol/openapi.yaml", import.meta.url), "utf8"));
+  const schemas = document.components.schemas;
+  const payloadSchema = schemas.AdViewPayload;
+  const shared = fixture("ad-placement-event.json");
+  const upload = document.paths["/v1/events/batch"].post;
+  const event = upload.requestBody.content["application/json"].examples.registeredAdView.value.events[0];
+
+  assert.deepEqual(event.payload, shared.expectedPayload);
+  assert.equal(event.eventType, "ad_view");
+  assert.equal(event.isDebug, true);
+  for (const field of schemas.GameEvent.required) assert.ok(Object.hasOwn(event, field), field);
+  assert.deepEqual(payloadSchema.required, ["adPlacementId", "revenue"]);
+  assert.equal(payloadSchema.properties.revenue.type, "number");
+  const idSchema = payloadSchema.properties.adPlacementId;
+  const validId = (id: string) => id.length >= idSchema.minLength && id.length <= idSchema.maxLength && new RegExp(idSchema.pattern).test(id);
+  assert.ok(validId(event.payload.adPlacementId));
+  for (const id of shared.invalidIds as string[]) assert.equal(validId(id), false, JSON.stringify(id));
+  assert.equal(schemas.RegisteredAdViewEvent.allOf[0].$ref, "#/components/schemas/GameEvent");
+  assert.equal(schemas.RegisteredAdViewEvent.allOf[1].properties.eventType.const, "ad_view");
+  assert.equal(schemas.RegisteredAdViewEvent.allOf[1].properties.payload.$ref, "#/components/schemas/AdViewPayload");
+  assert.equal(schemas.EventBatchRequest.properties.events.items.$ref, "#/components/schemas/GameEvent");
+  const adRule = schemas.GameEvent.allOf.find(rule => rule.if?.properties?.eventType?.const === "ad_view");
+  assert.ok(adRule, "every batch ad_view must use the registered placement payload");
+  assert.deepEqual(adRule.if.required, ["eventType"]);
+  assert.equal(adRule.then.properties.payload.$ref, "#/components/schemas/AdViewPayload");
+  assert.equal(upload.responses["503"].$ref, "#/components/responses/AdPlacementUnavailable");
+});

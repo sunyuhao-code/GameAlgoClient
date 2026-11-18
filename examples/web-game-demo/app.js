@@ -8,6 +8,7 @@ const STORAGE_PREFIX = "gamealgo.webDemo.";
 const elements = {
   baseUrlInput: document.getElementById("baseUrlInput"),
   gameKeyInput: document.getElementById("gameKeyInput"),
+  adPlacementIdInput: document.getElementById("adPlacementIdInput"),
   userIdInput: document.getElementById("userIdInput"),
   timezoneInput: document.getElementById("timezoneInput"),
   connectionText: document.getElementById("connectionText"),
@@ -30,6 +31,7 @@ const elements = {
 const state = {
   baseUrl: localStorage.getItem(`${STORAGE_PREFIX}baseUrl`) || "https://game-algo-sdk.dictapis.cn",
   gameKey: localStorage.getItem(`${STORAGE_PREFIX}gameKey`) || "",
+  adPlacementId: localStorage.getItem(`${STORAGE_PREFIX}adPlacementId`) || "",
   userId: localStorage.getItem(`${STORAGE_PREFIX}userId`) || `web-demo-user-${crypto.randomUUID()}`,
   userCreatedAt: localStorage.getItem(`${STORAGE_PREFIX}userCreatedAt`) || new Date().toISOString(),
   sessionId: `web-demo-session-${crypto.randomUUID()}`,
@@ -54,6 +56,7 @@ const state = {
 function init() {
   elements.baseUrlInput.value = state.baseUrl;
   elements.gameKeyInput.value = state.gameKey;
+  elements.adPlacementIdInput.value = state.adPlacementId;
   elements.userIdInput.value = state.userId;
   elements.timezoneInput.value = state.timezone;
   localStorage.setItem(`${STORAGE_PREFIX}userId`, state.userId);
@@ -63,6 +66,11 @@ function init() {
   render();
 
   elements.connectButton.addEventListener("click", () => connectSdk());
+  elements.adPlacementIdInput.addEventListener("input", () => {
+    state.adPlacementId = elements.adPlacementIdInput.value.trim();
+    localStorage.setItem(`${STORAGE_PREFIX}adPlacementId`, state.adPlacementId);
+    render();
+  });
   elements.startButton.addEventListener("click", () => startLevel());
   elements.adButton.addEventListener("click", () => rewardAd());
   elements.purchaseButton.addEventListener("click", () => purchasePack());
@@ -116,6 +124,7 @@ async function connectSdk() {
         platform: "web",
         sdkVersion: SDK_VERSION,
         appVersion: APP_VERSION,
+        isDebug: true,
         timezone: state.timezone,
         device: {
           demo: "web-game-demo",
@@ -241,15 +250,18 @@ function endLevel(success, reason) {
 
 async function rewardAd() {
   if (!state.contextId || state.sessionEnded) return;
+  if (!validAdPlacementId(state.adPlacementId)) {
+    logEvent("ad_view", "Configure the gap_* ID returned by this game's placement registration first");
+    return;
+  }
+  // This demo has no ad provider. The fixed amount is a Debug-only fixture.
   queueEvent("ad_view", {
-    placement: "rewarded_after_level",
-    adType: "reward",
+    adPlacementId: state.adPlacementId,
     revenue: 0.018,
-    currency: "CNY",
     network: "demo_network",
     levelNo: state.levelNo,
   });
-  logEvent("ad_view", "rewarded_after_level");
+  logEvent("ad_view", `Debug simulated exposure ${state.adPlacementId}`);
   await flushEvents();
 }
 
@@ -289,6 +301,7 @@ function queueEvent(eventType, payload) {
     userId: state.userId,
     sessionId: state.sessionId,
     eventType,
+    isDebug: true,
     timestamp: new Date().toISOString(),
     payload,
   });
@@ -362,7 +375,7 @@ function render() {
   elements.userCreatedAtText.textContent = state.userCreatedAt || "-";
 
   elements.startButton.disabled = !state.contextId || state.running || state.sessionEnded;
-  elements.adButton.disabled = !state.contextId || state.sessionEnded;
+  elements.adButton.disabled = !state.contextId || state.sessionEnded || !validAdPlacementId(state.adPlacementId);
   elements.purchaseButton.disabled = !state.contextId || state.sessionEnded;
   elements.sessionEndButton.disabled = !state.contextId || state.sessionEnded;
   elements.flushButton.disabled = !state.contextId || !state.eventQueue.length;
@@ -417,6 +430,10 @@ function normalizeBaseUrl(value) {
 
 function shortId(value) {
   return value ? `${value.slice(0, 8)}...` : "-";
+}
+
+function validAdPlacementId(value) {
+  return value.length === 36 && /^gap_[a-f0-9]{32}$/.test(value);
 }
 
 function escapeHtml(value) {

@@ -54,6 +54,12 @@ curl -s -X POST "https://gamealgo.example.com/v1/events/batch" \
   }'
 ```
 
+## 广告曝光的 REST 接入
+
+先按 [REST 广告位登记流程](../rest-api/README.md#广告先登记点位再引用-id)注册当前游戏的广告位，取得 CLI 返回的 `gap_*` ID，再把它作为标准 `ad_view` 的 `payload.adPlacementId` 上报，同时携带真实 `revenue` 和可选 `network/trackId`。名称、广告类型和币种由服务端按登记定义补齐。点位业务 key、名称或广告平台 adUnitId 都不能代替这个 ID。
+
+使用 TypeScript helper 时调用 `client.tracker.trackAdPlacement(id, revenue, network?, payload?)`；直接 HTTP 调用时使用同样的 payload。完整协议及失败重试见上述文档。Web Demo 的按钮仅发送 Debug 模拟曝光，不加载真实广告。
+
 ## DDA 策略模板
 
 `level-dda.js` 和 `level-dda.lua` 是同一套策略的 JavaScript / Lua 实现。模板把最近行为按 variant config 中的 `behaviorWeights` 折算为每关摩擦分，只输出 `increase`、`keep`、`decrease` 三个稳定动作。游戏必须提供 Adapter，把动作映射为安全的游戏参数。

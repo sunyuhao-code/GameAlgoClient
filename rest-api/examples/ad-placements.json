@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "placements": [
+    {
+      "key": "rewarded_level_end",
+      "name": "关卡结算激励广告",
+      "adType": "reward",
+      "currency": "CNY",
+      "status": "active"
+    }
+  ]
+}

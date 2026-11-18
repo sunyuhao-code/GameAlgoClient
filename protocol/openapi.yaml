@@ -70,6 +70,12 @@ paths:
   /v1/events/batch:
     post:
       summary: Upload game events in batches.
+      description: >
+        New ad_view integrations first register this game's placements through
+        the management CLI, then send the returned adPlacementId and per-view
+        revenue. Registration is not performed by this endpoint. The server
+        resolves placement name, adType and currency from the authenticated
+        game's registry before storing the event.
       operationId: uploadEvents
       requestBody:
         required: true
@@ -77,6 +83,24 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/EventBatchRequest"
+            examples:
+              registeredAdView:
+                summary: Debug exposure referencing a placement registered for this game; IDs are illustrative.
+                value:
+                  events:
+                    - eventId: "00000000-0000-0000-0000-000000000002"
+                      contextId: ctx-001
+                      userId: user-001
+                      sessionId: session-001
+                      eventType: ad_view
+                      isDebug: true
+                      timestamp: "2026-11-18T10:00:00Z"
+                      payload:
+                        adPlacementId: gap_0123456789abcdef0123456789abcdef
+                        revenue: 0.125
+                        network: max
+                        trackId: track-123
+                        level: 7
       responses:
         "200":
           description: Accepted event count.
@@ -92,6 +116,8 @@ paths:
           $ref: "#/components/responses/InvalidGameKey"
         "429":
           $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/AdPlacementUnavailable"
         "500":
           $ref: "#/components/responses/ServerError"
 
@@ -246,6 +272,16 @@ components:
             $ref: "#/components/schemas/ErrorResponse"
     ServerError:
       description: Server error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    AdPlacementUnavailable:
+      description: >
+        ad_placement_unavailable means placement lookup failed.
+        ad_placement_unresolved means the ID could not be resolved for this game.
+        The batch was not acknowledged or stored. Verify
+        registration/binding for an unresolved ID; retry using the same event IDs.
       content:
         application/json:
           schema:
@@ -506,6 +542,9 @@ components:
 
     GameEvent:
       type: object
+      description: >
+        Common envelope for all events. ad_view requires a registered placement
+        ID and per-view revenue, as specified by AdViewPayload.
       required:
         - eventId
         - contextId
@@ -539,11 +578,60 @@ components:
         payload:
           type: object
           description: >
-            Flat event payload captured as raw event properties. The platform
-            stores this JSON without interpreting it at ingestion time; report
-            definitions decide which payload fields become dimensions or metrics.
+            Flat event properties. For ad_view with a registered adPlacementId,
+            the server adds or overrides placement, adType and currency from
+            this game's placement definition before storage; revenue is not
+            converted. Other business fields are stored for report definitions.
           additionalProperties:
             $ref: "#/components/schemas/EventPayloadValue"
+      allOf:
+        - if:
+            required: [eventType]
+            properties:
+              eventType:
+                const: ad_view
+          then:
+            properties:
+              payload:
+                $ref: "#/components/schemas/AdViewPayload"
+
+    RegisteredAdViewEvent:
+      description: ad_view contract; use this game's CLI registration result as the placement ID.
+      allOf:
+        - $ref: "#/components/schemas/GameEvent"
+        - type: object
+          properties:
+            eventType:
+              const: ad_view
+            payload:
+              $ref: "#/components/schemas/AdViewPayload"
+
+    AdViewPayload:
+      type: object
+      description: >
+        Register the placement during integration, not during each exposure.
+        Use the returned stable ID from the authenticated game, never a business
+        key/name, host adUnitId or another game's ID. The server supplies static
+        placement name, adType and currency. Additional properties are per-view
+        dynamic facts.
+      required: [adPlacementId, revenue]
+      properties:
+        adPlacementId:
+          type: string
+          minLength: 36
+          maxLength: 36
+          pattern: "^gap_[a-f0-9]{32}$"
+          description: Stable placement ID returned by this game's management registration.
+        revenue:
+          type: number
+          description: Actual per-view revenue in the registered currency; no automatic currency conversion.
+        network:
+          type: string
+        trackId:
+          type: string
+          description: Original per-exposure identifier from the ad provider, when available.
+      additionalProperties:
+        $ref: "#/components/schemas/EventPayloadValue"
 
     EventPayloadValue:
       oneOf:
