@@ -1,0 +1,8 @@
+Native~/iOS/.build/
+Native~/iOS/.swiftpm/
+Native~/Android/.gradle/
+Native~/Android/build/
+Native~/Android/probe/build/
+Tests~/bin/
+Tests~/obj/
+build/

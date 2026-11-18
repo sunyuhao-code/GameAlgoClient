@@ -1,0 +1,5 @@
+<linker>
+  <assembly fullname="GamePropel">
+    <type fullname="GamePropel.BridgeDispatcher" preserve="all" />
+  </assembly>
+</linker>

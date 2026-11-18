@@ -1,0 +1,73 @@
+name: Unity bindings
+"on":
+  workflow_dispatch:
+  pull_request:
+    paths: ["unity/**", "ios/Sources/**", "android/src/**", "runtime/rust/**", ".github/workflows/unity.yml"]
+  push:
+    branches: ["main"]
+    paths: ["unity/**", "ios/Sources/**", "android/src/**", "runtime/rust/**", ".github/workflows/unity.yml"]
+permissions:
+  contents: read
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test JNI handle serialization and script runtime
+        run: cargo test --manifest-path runtime/rust/Cargo.toml --lib
+  managed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Compile and test managed Editor/Android/iOS branches
+        run: |
+          for platform in UNITY_EDITOR UNITY_ANDROID UNITY_IOS; do
+            dotnet run --project unity/Tests~/GamePropel.ManagedTests.csproj -p:DefineConstants="$platform"
+          done
+  swift:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Test native Swift bridge
+        run: swift test --package-path unity/Native~/iOS
+  java:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          java-version: "17"
+          distribution: temurin
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: "platforms;android-35"
+      - name: Compile JNI bridge against native public API
+        run: |
+          mkdir -p /tmp/gamepropel-unity-java
+          javac -source 8 -target 8 -cp "$ANDROID_HOME/platforms/android-35/android.jar" \
+            -d /tmp/gamepropel-unity-java \
+            android/src/main/java/com/gamealgo/sdk/*.java \
+            android/src/android/java/com/gamealgo/sdk/*.java \
+            unity/Native~/Android/src/main/java/com/gamepropel/unity/*.java \
+            unity/Native~/Android/src/test/java/com/gamealgo/sdk/*.java
+          java -cp /tmp/gamepropel-unity-java com.gamealgo.sdk.GameAlgoJsonIntegerTest
+  package:
+    needs: [rust, managed, swift, java]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Package validated native artifacts for Unity Package Manager
+        run: |
+          python3 unity/Tools~/package.py
+          (cd unity/build && sha256sum com.gamepropel.sdk-*.tgz > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gamepropel-unity-upm
+          path: |
+            unity/build/com.gamepropel.sdk-*.tgz
+            unity/build/SHA256SUMS
+          if-no-files-found: error

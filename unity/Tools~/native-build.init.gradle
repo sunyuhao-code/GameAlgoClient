@@ -1,0 +1,5 @@
+// Isolate Unity packaging from other work in the shared native SDK checkout.
+allprojects {
+    def output = System.getProperty("gamepropel.unity.buildRoot")
+    if (output) layout.buildDirectory.set(new File(output, project == rootProject ? "android" : project.name))
+}

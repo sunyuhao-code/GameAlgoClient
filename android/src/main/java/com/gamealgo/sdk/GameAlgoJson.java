@@ -403,7 +403,10 @@ final class GameAlgoJson {
 
             String value = input.substring(start, index);
             try {
-                return decimal ? Double.parseDouble(value) : Long.parseLong(value);
+                // A numeric conditional promotes long to double before boxing,
+                // corrupting integers above 2^53 (including native handles).
+                if (decimal) return Double.parseDouble(value);
+                return Long.parseLong(value);
             } catch (NumberFormatException error) {
                 throw new GameAlgoException("Invalid JSON number", error);
             }

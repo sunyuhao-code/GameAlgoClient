@@ -268,6 +268,22 @@ fn prepare_response(script: &str) -> PrepareResponse {
     }
 }
 
+// JNI jlong/Java Long are signed. Android's tagged native heap pointers can
+// have bit 63 set; retain their bits without emitting an unparseable u64 JSON
+// number. nativeExecutePrepared/nativeRelease cast the signed bits back to a
+// pointer. The C/Swift prepare response remains unchanged.
+#[cfg(any(target_os = "android", test))]
+fn android_prepare_response(response: PrepareResponse) -> Value {
+    match response {
+        PrepareResponse::Ok { handle } => {
+            serde_json::json!({ "status": "ok", "handle": handle as i64 })
+        }
+        PrepareResponse::Error { message } => {
+            serde_json::json!({ "status": "error", "message": message })
+        }
+    }
+}
+
 fn execute_prepared_response(
     handle: *mut GameAlgoRuntimeHandle,
     input_json: &str,
@@ -446,7 +462,7 @@ pub extern "system" fn Java_com_gamealgo_sdk_RustGameAlgoScriptRuntime_nativePre
     };
     java_string(
         &env,
-        &serde_json::to_value(prepare_response(&script)).unwrap(),
+        &android_prepare_response(prepare_response(&script)),
     )
 }
 
@@ -509,6 +525,29 @@ mod tests {
     use serde_json::json;
 
     const FIXTURE_SCRIPT: &str = include_str!("../../../protocol/fixtures/script-fixture.js");
+
+    #[test]
+    fn android_tagged_handles_round_trip_through_signed_java_longs() {
+        for handle in [
+            1,
+            i64::MAX as u64,
+            1_u64 << 63,
+            12970367428706837328,
+            u64::MAX,
+        ] {
+            let response = android_prepare_response(PrepareResponse::Ok { handle });
+            let encoded = serde_json::to_string(&response).unwrap();
+            let decoded: Value = serde_json::from_str(&encoded).unwrap();
+            let java_long = decoded["handle"].as_i64().expect("must fit Java Long");
+            assert_eq!(java_long as u64, handle);
+        }
+        // Non-JNI consumers continue to receive the original unsigned form.
+        assert_eq!(
+            serde_json::to_value(PrepareResponse::Ok { handle: u64::MAX }).unwrap()["handle"]
+                .as_u64(),
+            Some(u64::MAX)
+        );
+    }
 
     #[test]
     fn executes_shared_fixture_deterministically() {

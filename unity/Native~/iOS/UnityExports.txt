@@ -1,0 +1,5 @@
+_GPUnity_Initialize
+_GPUnity_Read
+_GPUnity_Send
+_GPUnity_Free
+_GPUnity_GetForegroundTimeMs

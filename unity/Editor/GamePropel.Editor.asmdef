@@ -1,0 +1,6 @@
+{
+  "name": "GamePropel.Editor",
+  "references": ["GamePropel"],
+  "includePlatforms": ["Editor"],
+  "autoReferenced": true
+}

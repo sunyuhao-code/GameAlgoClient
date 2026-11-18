@@ -1,0 +1,3 @@
+-keep class com.gamepropel.unity.GamePropelUnityBridge { public static *; }
+-keep interface com.gamepropel.unity.GamePropelCallback { *; }
+-keep class com.gamealgo.sdk.RustGameAlgoScriptRuntime { *; }

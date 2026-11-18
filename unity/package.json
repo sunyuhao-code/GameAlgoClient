@@ -1,0 +1,10 @@
+{
+  "name": "com.gamepropel.sdk",
+  "version": "1.0.0",
+  "displayName": "GamePropel",
+  "description": "GamePropel for Unity Android and iOS, backed by the native SDKs.",
+  "unity": "2022.3",
+  "dependencies": {},
+  "samples": [{ "displayName": "Getting Started", "description": "Initialization, configuration and native event tracking.", "path": "Samples~/GettingStarted" }],
+  "author": { "name": "GamePropel" }
+}
