@@ -14,6 +14,7 @@ type ManagerOptions = {
   host: () => RewardVideoHost | undefined;
   logger?: (message: string) => void;
   closeId?: (values: unknown[]) => string | undefined;
+  elapsed?: { source: string; now: () => number };
   report: (placementId: string, payload: Record<string, JsonValue>, values: unknown[], closeId: string | undefined) => boolean;
 };
 
@@ -68,6 +69,10 @@ export class RewardVideoManager {
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Ad payload must be an object");
     const snapshot = JSON.parse(JSON.stringify(payload)) as Record<string, JsonValue>;
     delete snapshot.trackId;
+    if (this.options.elapsed) {
+      delete snapshot.adElapsedMs;
+      delete snapshot.adElapsedSource;
+    }
     const { adUnitId, onClose: gameOnClose, onError: gameOnError } = options;
     const requestId = ++this.rewardVideoSequence;
     const log = (message: string): void => {
@@ -83,6 +88,13 @@ export class RewardVideoManager {
     let reported = false;
     let failed = false;
     let showStarted = false;
+    let showStartedAt: number | undefined;
+    const elapsedTime = (): number | undefined => {
+      try {
+        const value = this.options.elapsed?.now();
+        return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+      } catch { return undefined; }
+    };
     let showPending = false;
     let pendingShowError: unknown[] | undefined;
     let listenerVersion = 0;
@@ -111,10 +123,18 @@ export class RewardVideoManager {
     const onClose: RewardVideoCallback = (...values) => {
       if (this.closed || cleaning || playback?.cleaning || !showStarted) return;
       if (reported) { log("duplicate close ignored"); return; }
+      const closedAt = elapsedTime();
       let trackId: string | undefined;
       try { trackId = this.options.closeId?.(values); } catch { log("ad track ID parsing failed"); }
       if (!playback?.acceptClose(trackId)) { log("stale close ignored"); return; }
       reported = true;
+      if (showStartedAt !== undefined && closedAt !== undefined) {
+        const elapsedMs = Math.round(closedAt - showStartedAt);
+        if (Number.isSafeInteger(elapsedMs) && elapsedMs >= 0) {
+          snapshot.adElapsedMs = elapsedMs;
+          snapshot.adElapsedSource = this.options.elapsed!.source;
+        }
+      }
       let queued = false;
       try {
         if (trackId) snapshot.trackId = trackId;
@@ -170,6 +190,7 @@ export class RewardVideoManager {
         showPending = true;
         pendingShowError = undefined;
         try {
+          showStartedAt = elapsedTime();
           await ad.show();
           finishShowRequest();
           break;

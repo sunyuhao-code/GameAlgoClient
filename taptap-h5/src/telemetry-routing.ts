@@ -85,6 +85,9 @@ export class TapTapTelemetryRouter {
 
   /** Only retain terminal HTTP acknowledgements; the existing durable queue owns retries. */
   acknowledge(events: GameEvent[], result: Record<string, unknown>): void {
+    if (!result || typeof result !== "object" || Array.isArray(result)) {
+      throw new Error("invalid telemetry batch acknowledgement");
+    }
     const accepted = result.accepted;
     if (result.ok === false || !Number.isInteger(accepted) || Number(accepted) < 0 || Number(accepted) > events.length
       || (accepted === 0 && (!Array.isArray(result.rejected) || result.rejected.length !== events.length

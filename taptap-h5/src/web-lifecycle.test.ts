@@ -178,6 +178,7 @@ test("H5 samples running time in memory, freezes hidden time and resets only on 
   h.client.tracker.newSession("next-running-session");
   await h.client.flush();
   assert.equal(h.events()[2].payload?.sessionDurationMs, 3000, "rotation uses the same sampled duration");
+  await h.client.fetchConfig();
   page.show();
   await tick();
   advance(250);
@@ -425,7 +426,7 @@ test("H5 context readiness immediately sends an ad buffered in the current sessi
   assert.equal(h.events()[1].sessionId, h.client.tracker.currentSessionId());
 });
 
-test("H5 foreground restoration preserves the session and accumulated running duration across repeated hides", async (t) => {
+test("H5 foreground restoration preserves session, context and duration without refreshing expired config", async (t) => {
   const page = browser(t);
   let now = 10_000;
   const h = harness(t, { now: () => now });
@@ -444,24 +445,24 @@ test("H5 foreground restoration preserves the session and accumulated running du
   page.hide();
   await h.client.flush();
   assert.equal(h.events().length, 1);
+  now = 75_000; // The config TTL has expired while the page was hidden.
   page.show();
   assert.equal(h.client.tracker.currentSessionId(), oldSession);
   page.pageshow();
   await tick();
   assert.equal(h.client.tracker.currentSessionId(), oldSession);
-  assert.equal(h.contexts.length, 2);
-  assert.ok(h.contexts.every(context => context.sessionId === oldSession), "context refresh must not create a session");
-  now = 13_500;
+  assert.equal(h.contexts.length, 1, "restoring the page must not fetch config, even after its TTL");
+  now = 76_000;
   page.hide();
   await h.client.flush();
   assert.equal(h.events().length, 2);
   assert.equal(h.events()[1].sessionId, oldSession);
-  assert.equal(h.events()[1].contextId, "ctx-2");
+  assert.equal(h.events()[1].contextId, "ctx-1");
   assert.equal(h.events()[1].payload?.sessionDurationMs, 2000, "foreground restoration continues the accumulated duration");
   assert.notEqual(h.events()[1].eventId, end.eventId, "a later background generates a distinct end event");
 });
 
-test("an explicit session switch after hidden is not rotated again by the stale pageshow state", async (t) => {
+test("an explicit session switch after hidden waits for an explicit config request", async (t) => {
   const page = browser(t);
   let now = 1000;
   const h = harness(t, { now: () => now });
@@ -481,10 +482,19 @@ test("an explicit session switch after hidden is not rotated again by the stale 
   assert.equal(ends[0].payload?.sessionDurationMs, 1000);
   assert.equal(ends[1].payload?.reason, "new_session");
   assert.equal(ends[1].payload?.sessionDurationMs, 1000, "rotation does not add hidden wall time");
-  assert.equal(h.contexts.at(-1)?.sessionId, "explicit-new", "resume still obtains the explicit session's context");
+  assert.equal(h.contexts.length, 1, "resume must not fetch config for an explicitly switched session either");
   h.client.tracker.trackLevelStart();
   await h.client.flush();
-  assert.equal(h.events().at(-1)?.contextId, h.contexts.at(-1)?.contextId);
+  const pending = h.pending().find(event => event.eventType === "level_start");
+  assert.equal(pending?.sessionId, "explicit-new");
+  assert.equal(pending?.contextId, "", "the new session cannot inherit the old context");
+  assert.equal(h.events().length, 2, "unbound new-session events wait for their own context");
+  await h.client.fetchConfig({ forceRefresh: true });
+  await h.client.flush();
+  assert.equal(h.contexts.length, 2, "a developer-requested refresh still works");
+  assert.equal(h.contexts[1].sessionId, "explicit-new");
+  assert.equal(h.events().at(-1)?.eventId, pending?.eventId);
+  assert.equal(h.events().at(-1)?.contextId, "ctx-2");
 });
 
 test("H5 fullscreen ad hides upload session snapshots and revenue without rotating the session", async (t) => {
@@ -511,12 +521,13 @@ test("H5 fullscreen ad hides upload session snapshots and revenue without rotati
   page.pageshow();
   await h.client.flush();
   assert.equal(h.client.tracker.currentSessionId(), session);
-  assert.equal(h.contexts.length, 2);
+  assert.equal(h.contexts.length, 1, "ad return keeps the existing config and context");
   page.hide();
   await h.client.flush();
   const ends = h.events().filter(event => event.eventType === "session_end");
   assert.equal(ends.length, 2);
   assert.ok(ends.every(event => event.sessionId === session));
+  assert.ok(h.events().every(event => event.contextId === "ctx-1"));
 });
 
 test("Tap lock-screen callback jitter while hidden preserves the session and pending end", async (t) => {
@@ -540,7 +551,7 @@ test("Tap lock-screen callback jitter while hidden preserves the session and pen
   tap.show();
   await tick();
   assert.equal(h.client.tracker.currentSessionId(), session);
-  assert.equal(h.contexts.length, 2);
+  assert.equal(h.contexts.length, 1, "unlocking must not request another context");
   assert.deepEqual(tap.listeners(), { hide: 1, show: 1 }, "page events must not duplicate host subscriptions");
   now = 6000;
   tap.hide();
@@ -548,6 +559,7 @@ test("Tap lock-screen callback jitter while hidden preserves the session and pen
   assert.equal(h.events().length, 2);
   assert.equal(h.events()[1].payload?.sessionDurationMs, 2000);
   assert.equal(h.events()[1].sessionId, session);
+  assert.equal(h.events()[1].contextId, "ctx-1");
   h.client.close();
   assert.deepEqual(tap.listeners(), { hide: 0, show: 0 });
 });

@@ -76,11 +76,12 @@ for _, gamealgo in ipairs({ false, true }) do
         local types = { "level_start", "level_end", "session_end", "ad_view", "purchase", "milestone", "_custom", "experiment_exposure" }
         local text = string.rep("中🙂a", 200)
         for _, eventType in ipairs(types) do assert(h.client.Track(eventType, { text = text, value = 0, flag = false })) end
+        local pending = h.client.Snapshot().queuedEvents
         local result, error = h.flush()
         assert(error == nil, tostring(error))
         assert(#h.events() == (gamealgo and #types or 0))
         assert(#h.calls == (tapdb and #types or 0))
-        if not gamealgo then assert(result.accepted == 0 and result.skipped == #types) end
+        if not gamealgo then assert(result.accepted == 0 and result.skipped == pending) end
         if tapdb then
             for index, call in ipairs(h.calls) do
                 local envelope = decode(call)
@@ -95,6 +96,33 @@ for _, gamealgo in ipairs({ false, true }) do
         h.flush()
         assert(#h.calls == (tapdb and #types or 0), "acknowledged/skipped queues must drain")
     end
+end
+
+-- Both critical paths use the same independent category switches and
+-- receipts while an unrelated native custom-event request is still in flight.
+for _, criticalType in ipairs({ "session_end", "ad_view" }) do
+for _, gamealgo in ipairs({ false, true }) do
+    for _, tapdb in ipairs({ false, true }) do
+        local h = fixture({ gamealgoStandardReportingEnabled = gamealgo,
+            gamealgoCustomReportingEnabled = true, tapdbStandardReportingEnabled = tapdb,
+            tapdbCustomReportingEnabled = false })
+        h.holdBatch = true
+        assert(h.client.Track("_busy_ordinary", {}))
+        h.flush()
+        assert(#h.events() == 1)
+        assert(h.client.Track(criticalType, { reason = "business_exit" }))
+        h.flush()
+        assert(#h.events() == (gamealgo and 2 or 1), "only the native-enabled end bypasses the held ACK")
+        assert(#h.calls == (tapdb and 1 or 0), "only the TapDB-enabled end is handed to the bridge")
+        if gamealgo then
+            h.pending[2](nil, { status = 200, body = cjson.encode({ ok = true, accepted = 1 }) })
+        end
+        h.pending[1](nil, { status = 200, body = cjson.encode({ ok = true, accepted = 1 }) })
+        assert(h.client.Snapshot().queuedEvents == 0)
+        assert(#h.events() == (gamealgo and 2 or 1), "ordinary drain must reuse the end receipt")
+        assert(#h.calls == (tapdb and 1 or 0), "ordinary drain must not repeat TapDB delivery")
+    end
+end
 end
 
 -- Missing/malformed values keep compatibility, and the new off switch vetoes old identity linking.

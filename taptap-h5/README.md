@@ -4,6 +4,11 @@ GamePropel (formerly GameAlgo) SDK for **TapTap H5 minigames**, published as `@g
 Other minigame hosts, including WeChat, require their own host SDK; browser
 fallbacks are retained for local previews and compatible WebViews.
 
+Version 2.1.10 keeps configuration across foreground restoration, recovers failed
+initial requests, retains early lifecycle snapshots, and validates timed event
+requests and acknowledgements. The existing ad wrapper also records elapsed
+playback-flow time. Public calling APIs remain unchanged.
+
 Since 2.1.8, new integrations use `GamePropelTapTapH5Client` from
 `@gamepropel/sdk-taptap-h5`. The old `@gamealgo/web` package, `GameAlgoWebClient`,
 and `GameAlgoTapTapH5Client` remain compatibility entries for the same runtime.
@@ -256,6 +261,23 @@ against old closes redelivered to a later listener. A queued real close after a
 native error retains its original context. Callback/cleanup exceptions cannot
 undo reporting, and a reporting exception cannot block the game callback.
 
+The playback wrapper also adds `payload.adElapsedMs` (nonnegative integer
+milliseconds) and `payload.adElapsedSource="show_call_to_close"`. Measurement
+starts immediately before the native `show()` call that leads to this close,
+excluding SDK preload and any earlier failed attempt/reload. It ends at the
+first accepted native close, before parsing/reporting/cleanup or game callbacks;
+queueing, identity hydration and upload retries do not extend it. Each playback
+starts a new measurement. This is elapsed playback-flow time and may include
+host presentation delay or background stays; it is not a precise visible-ad
+duration. The default clock is monotonic `performance.now()`, with `Date.now()`
+as fallback; an explicit client `now` override is respected.
+
+Only boundary clock reads are added, without another event or timer. Stale
+caller-supplied elapsed fields are replaced; invalid or backwards clock readings
+omit both fields without suppressing a real close. Manual `trackAdPlacement()`
+has no native start boundary and does not infer elapsed time. Other host SDKs
+sharing the playback manager do not automatically enable this TapTap metric.
+
 If a real ad closes before asynchronous identity restoration completes, its
 exposure waits in a bounded in-memory buffer. After the real identity and session
 context arrive, it uploads with the original close time, session and track ID;
@@ -329,8 +351,22 @@ When TapTap sends `tap.onHide`, or the document becomes hidden, the SDK records
 a `session_end` snapshot and starts uploading it immediately. `pagehide` is a
 fallback. Repeated hide notifications during the same hidden period are coalesced.
 When the page becomes visible again (including back-forward cache restoration),
-the SDK retains the current session ID and accumulated duration, refreshes its context,
-and preloads current config files. A later hide can report another `session_end`
+the SDK retains the current session ID, context, configuration and accumulated
+duration. Returning from the background, lock screen or an ad does not request
+configuration or preload files, even when the cached config TTL has expired.
+Configuration is fetched during initialization or when the game explicitly calls
+`fetchConfig()`; TTL expiry alone does not schedule a request.
+An initial request that fails temporarily retries with the same session after
+1, 2, 4, 8, 16 and then at most 30 seconds between attempts. Configuration
+requests have a 12-second deadline covering both headers and body. Network
+failures, timeouts, invalid configuration bodies, HTTP 408/425/429 and 5xx are
+retryable; other HTTP errors such as 401/403 are not. Closing the client or
+switching sessions stops pending retries. A successful explicit fetch also
+finishes recovery. A failed config-file preload does not refetch configuration.
+Cached configuration remains readable while the new session waits for its own
+Context; queued events bind when recovery succeeds. A usable cached snapshot
+can still make `waitForReady()` return true during this recovery.
+A later hide can report another `session_end`
 for that same session. `sessionDurationMs` accumulates running time with an in-memory
 one-second sampler. Each observation adds at most one second; suspended intervals
 are not caught up. Every sample reads current document visibility; hidden observations
@@ -352,6 +388,12 @@ remain queued with their original event ID and occurrence time, and persisted
 queues include ordinary in-flight rows until acknowledgement. Successful enqueue
 does not mean server delivery; use `await gamePropel.flush()` to await critical
 uploads and their queue persistence when the page can remain active.
+Direct event requests have a 15-second deadline covering response bodies too.
+Timeouts and malformed/incomplete batch acknowledgements retain events with
+their original IDs for retry. A positive valid `accepted` count completes a
+batch, matching Maker's progress policy; `accepted=0` requires an explicit
+rejection for every submitted event. Intentional server-controlled local skips
+and confirmed TapDB-only handoffs retain their existing completion behavior.
 
 ### Explicit session changes
 
@@ -364,6 +406,9 @@ snapshots leave the session open, so an explicit switch after an ad/background
 reports its accumulated running duration through the switch. Unbound old events
 remain queued for their own context and cannot inherit the new session's context.
 This explicit boundary also applies when automatic lifecycle handling is disabled.
+After `tracker.newSession()`, explicitly call `await gamePropel.fetchConfig()` to
+obtain that session's context. Events queued before it arrives stay with the new
+session and upload once bound; a foreground callback does not fetch it implicitly.
 
 ### Fullscreen ads inside an App WebView
 
@@ -381,6 +426,13 @@ game callbacks. It checks for late host injection during the first 10 seconds an
 on page/load events; ordinary browsers keep using DOM lifecycle listeners.
 `close()` unregisters host listeners when the matching `offHide/offShow` methods
 exist, and retained callbacks become inert if the host lacks those methods.
+
+If a hide arrives before anonymous identity restoration finishes, the SDK holds
+its end snapshot in memory with the original occurrence time, session and
+sampled duration. Repeated notifications for that hidden period are coalesced.
+Once identity and a matching Context are available, the snapshot is persisted
+and uploaded. It never borrows another session's Context. Process destruction
+before identity restoration or durable persistence can still lose this snapshot.
 
 This is best-effort delivery within the current visit, not a guarantee that
 JavaScript runs after native suspension or process death, or that an asynchronous

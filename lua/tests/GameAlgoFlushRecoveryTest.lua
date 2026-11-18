@@ -40,6 +40,13 @@ local function equal(actual, expected, message)
         .. ": expected=" .. tostring(expected) .. ", actual=" .. tostring(actual))
 end
 
+local function sameEvent(actual, expected)
+    equal(type(actual), type(expected))
+    if type(actual) ~= "table" then equal(actual, expected); return end
+    for key, value in pairs(expected) do sameEvent(actual[key], value) end
+    for key in pairs(actual) do assert(expected[key] ~= nil, "unexpected event field: " .. tostring(key)) end
+end
+
 local function makeSdk(eventHandler, options)
     options = options or {}
     testSequence = testSequence + 1
@@ -205,7 +212,7 @@ do
     harness.sdk.Flush(nil)
     equal(localWrites, savedWrites + 2, "explicit Flush saves immediately without waiting five seconds")
     equal(#savedEventsFromFiles(files, sessionId), 3)
-    equal(harness.requests(), 1)
+    equal(harness.requests(), 2, "an explicit end snapshot bypasses the busy ordinary request")
     for _ = 1, 20 do harness.sdk.Update() end
     equal(localWrites, savedWrites + 2, "unchanged queues must not be written again")
 end
@@ -636,17 +643,139 @@ do
     busy.setTime(1700)
     frames(receivers[#receivers], 1.7)
     receivers[#receivers].AppWillEnterBackground()
-    equal(busy.requests(), 1, "background coalesces with active HTTP request")
+    equal(busy.requests(), 2, "background starts its end request before the ordinary ACK")
     local saved = persistedEvents(busySession)
     equal(#saved, 2, "active batch and new background end are both durable")
     equal(saved[2].eventType, "session_end")
     equal(saved[2].payload.sessionDurationMs, 1700)
     success(firstCallback, 1)
-    equal(busy.requests(), 2, "background end flushes when the earlier request completes")
-    equal(busy.sdk.Snapshot().queuedEvents, 1, "failed background upload remains queued")
-    equal(persistedEvents(busySession)[1].eventId, attemptedEnd.eventId)
+    equal(busy.requests(), 3, "failed immediate end retries through the ordinary queue after its ACK")
+    equal(busy.sdk.Snapshot().queuedEvents, 0, "the durable retry is acknowledged")
     busy.sdk.Flush(nil)
     equal(busy.sdk.Snapshot().queuedEvents, 0)
+
+    -- A successful immediate end must reach transport while the ordinary ACK
+    -- is still withheld. The Will/Did pair shares one durable snapshot.
+    local heldMain, heldEnd, deliveredEnd = nil, nil, nil
+    local immediate = makeSdk(function(_, callback, batch, requestCount)
+        if requestCount == 1 then heldMain = callback
+        elseif requestCount == 2 then
+            equal(#batch, 1)
+            equal(batch[1].eventType, "session_end")
+            heldEnd, deliveredEnd = callback, batch[1]
+        else error("acknowledged immediate end must not be sent again") end
+        return { request = "held" }
+    end)
+    local immediateSession = immediate.sdk.Snapshot().sessionId
+    assert(immediate.sdk.Track("beads_leave", { reason = "background" }))
+    immediate.sdk.Flush(nil)
+    local immediateHandlers = receivers[#receivers]
+    immediateHandlers.AppWillEnterBackground()
+    immediateHandlers.AppDidEnterBackground()
+    equal(immediate.requests(), 2, "end must not wait for the ordinary callback")
+    equal(#persistedEvents(immediateSession), 2, "Will/Did must not add another snapshot")
+    local writesAtSend = localWrites
+    success(heldEnd, 1)
+    equal(localWrites, writesAtSend, "priority receipt does not add another storage write")
+    success(heldMain, 1)
+    equal(immediate.requests(), 2, "ordinary drain reuses the priority receipt")
+    equal(immediate.sdk.Snapshot().queuedEvents, 0)
+    equal(#persistedEvents(immediateSession), 0)
+    -- A Did-only notification on a subsequent running visit remains effective.
+    frames(immediateHandlers, 1)
+    local didSent = {}
+    local did = makeSdk(function(_, callback, batch)
+        for _, event in ipairs(batch) do table.insert(didSent, event) end
+        success(callback, #batch)
+    end)
+    local didHandlers = receivers[#receivers]
+    didHandlers.AppWillEnterBackground()
+    didHandlers.AppDidEnterBackground()
+    frames(didHandlers, 1)
+    didHandlers.AppDidEnterBackground()
+    equal(#didSent, 2, "Did-only fallback must survive missing foreground notifications")
+    equal(didSent[2].payload.lifecycleEvent, "AppDidEnterBackground")
+    equal(didSent[2].payload.sessionDurationMs, 1000)
+
+    -- Repeated notifications cannot create an unbounded set of side requests.
+    local boundedCallbacks, boundedBatches = {}, {}
+    local bounded = makeSdk(function(_, callback, batch)
+        table.insert(boundedCallbacks, callback)
+        table.insert(boundedBatches, batch)
+        return { request = "held" }
+    end)
+    assert(bounded.sdk.TrackEvent("ordinary", {}))
+    bounded.sdk.Flush(nil)
+    local boundedHandlers = receivers[#receivers]
+    boundedHandlers.AppWillEnterBackground()
+    boundedHandlers.AppTerminating()
+    boundedHandlers.ExitRequested()
+    equal(bounded.requests(), 2, "at most one side request may be active")
+    success(boundedCallbacks[2], 1)
+    equal(bounded.requests(), 3, "the newest pending end can use the released side slot")
+    equal(boundedBatches[3][1].payload.lifecycleEvent, "ExitRequested")
+    local beforeTimeout = bounded.cancels()
+    bounded.setTime(20000)
+    bounded.sdk.Update()
+    equal(bounded.cancels(), beforeTimeout + 2, "both stalled request handles recover")
+    bounded.sdk.Flush(nil)
+    local retryRequest = bounded.requests()
+    success(boundedCallbacks[2], 1)
+    success(boundedCallbacks[3], 1)
+    equal(bounded.requests(), retryRequest, "late side callbacks cannot restart work")
+    success(boundedCallbacks[retryRequest], #boundedBatches[retryRequest])
+    equal(bounded.sdk.Snapshot().queuedEvents, 0)
+
+    local staleCallbacks = {}
+    local reinitialized = makeSdk(function(_, callback)
+        table.insert(staleCallbacks, callback)
+        return { request = "held" }
+    end)
+    assert(reinitialized.sdk.TrackEvent("old", {}))
+    reinitialized.sdk.Flush(nil)
+    receivers[#receivers].AppWillEnterBackground()
+    equal(#staleCallbacks, 2)
+    reinitialized.sdk.Init({ gameKey = "ga_live_end_reinitialized", userId = "new-end-user",
+        sessionId = "new-end-session", autoFetch = false, preloadConfigFiles = false,
+        transport = { Request = function() error("unexpected new-session request") end },
+        nowMs = function() return 0 end, logger = function() end })
+    equal(reinitialized.cancels(), 2, "Init cancels both old transport handles")
+    assert(reinitialized.sdk.TrackEvent("new", {}))
+    success(staleCallbacks[1], 1)
+    success(staleCallbacks[2], 1)
+    equal(reinitialized.sdk.Snapshot().sessionId, "new-end-session")
+    equal(reinitialized.sdk.Snapshot().queuedEvents, 1, "stale priority ACK cannot alter the new session")
+
+    -- Cold-start recovery keeps the snapshot durable even if the side request
+    -- reaches the server but its Lua callback never runs before destruction.
+    local previousFileSystem = fileSystem
+    fileSystem = { FileExists = function(_, name) return files[name] ~= nil end }
+    local probeOptions = { gameKey = "ga_live_lifecycle_delivery_recovery", userId = "lifecycle-delivery-user" }
+    local beforeDestruction = {}
+    local exiting = makeSdk(function(_, _, batch)
+        table.insert(beforeDestruction, batch)
+        return { request = "callback-suspended" }
+    end, probeOptions)
+    local oldSession = exiting.sdk.Snapshot().sessionId
+    assert(exiting.sdk.Track("beads_leave", { reason = "background" }))
+    exiting.sdk.Flush(nil)
+    receivers[#receivers].AppWillEnterBackground()
+    equal(exiting.requests(), 2)
+    equal(beforeDestruction[2][1].eventType, "session_end")
+    local checkpoint = persistedEvents(oldSession)
+    equal(#checkpoint, 2)
+    local restored = {}
+    local reopened = makeSdk(function(_, callback, batch)
+        for _, event in ipairs(batch) do table.insert(restored, event) end
+        success(callback, #batch)
+    end, probeOptions)
+    reopened.sdk.Flush(nil)
+    equal(#restored, 2)
+    equal(restored[2].eventId, beforeDestruction[2][1].eventId)
+    equal(restored[2].contextId, beforeDestruction[2][1].contextId)
+    equal(restored[2].sessionId, oldSession)
+    equal(restored[2].timestamp, beforeDestruction[2][1].timestamp)
+    fileSystem = previousFileSystem
 
     local cloudRead = nil
     clientCloud = {
@@ -711,7 +840,7 @@ do
         equal(#savedEvents(original.sessionId), 1, "tail has not reached the periodic persistence boundary")
         local finished = false
         harness.sdk.Flush(function() finished = true end)
-        equal(harness.requests(), 1, "exit Flush cannot start a parallel request")
+        equal(harness.requests(), 2, "exit Flush independently sends only the critical end snapshot")
         equal(finished, false, "inflight flush callback is not completed prematurely")
         local saved = savedEvents(original.sessionId)
         equal(#saved, 4, "exit Flush synchronously persists the inflight batch and every tail event")
@@ -725,7 +854,7 @@ do
         if acknowledgeFirst then
             success(held[1].callback, #held[1].batch)
             expectedStart = 2
-            equal(harness.requests(), 2, "ACK starts the held tail request")
+            equal(harness.requests(), 3, "ACK starts the remaining ordinary tail request")
             equal(#savedEvents(original.sessionId), 3, "ACK only removes the first batch from disk")
             success(held[1].callback, #held[1].batch) -- stale duplicate ACK
             equal(#savedEvents(original.sessionId), 3, "stale ACK cannot erase the persisted tail")
@@ -824,10 +953,19 @@ end
 -- must not truncate a larger, already durable queue from an older SDK.
 do
     local harness = makeSdk(function() return { request = "held" } end)
-    for sequence = 1, 500 do
+    for sequence = 1, 492 do
         assert(harness.sdk.TrackLevelEnd({ level_attempt_id = "bounded-" .. sequence, result = "quit" }))
     end
     local accepted, error = harness.sdk.TrackLevelEnd({ result = "quit" })
+    equal(accepted, false)
+    assert(tostring(error):find("limit=492", 1, true))
+    equal(harness.sdk.Snapshot().queuedEvents, 492)
+    for sequence = 1, 7 do
+        assert(harness.sdk.Track("ad_view", { sequence = sequence }))
+    end
+    equal(harness.sdk.Track("ad_view", {}), false, "ads preserve the last session-end slot")
+    assert(harness.sdk.TrackSessionEnd({ reason = "full-queue-exit" }))
+    local accepted, error = harness.sdk.TrackSessionEnd({ reason = "overflow-exit" })
     equal(accepted, false)
     equal(error, "event queue is full (max=500)")
     equal(harness.sdk.Snapshot().queuedEvents, 500)
@@ -1011,10 +1149,11 @@ do
     })
     assert(harness.sdk.TrackEvent("queue_cap", { sequence = 1 }))
     harness.sdk.Flush(nil)
-    for sequence = 2, 10 do assert(harness.sdk.TrackEvent("queue_cap", { sequence = sequence })) end
-    local tracked, queueError = harness.sdk.TrackEvent("queue_cap", { sequence = 11 })
+    for sequence = 2, 9 do assert(harness.sdk.TrackEvent("queue_cap", { sequence = sequence })) end
+    local tracked, queueError = harness.sdk.TrackEvent("queue_cap", { sequence = 10 })
     equal(tracked, false, "queue cap rejects excess events")
     assert(tostring(queueError):find("queue is full", 1, true), tostring(queueError))
+    assert(harness.sdk.TrackSessionEnd({ reason = "reserved-exit" }))
     equal(harness.sdk.Snapshot().queuedEvents, 10, "queue cap includes inflight events")
 end
 
@@ -1057,6 +1196,185 @@ do
     retained.errorCallback(retained, 500, "late error")
     equal(callbackCount, 1, "transport settles duplicate callbacks once")
     equal(HttpTransport.Diagnostics().activeRequests, 0, "settled request is released")
+end
+
+-- Ads and ends bypass the ordinary lane independently, while each queue row
+-- remains durable and cannot enter two native requests at the same time.
+do
+    local previousFileSystem = fileSystem
+    fileSystem = { FileExists = function(_, name) return files[name] ~= nil end }
+    for _, adFirst in ipairs({ false, true }) do
+        local held, batches = {}, {}
+        local h = makeSdk(function(_, callback, batch)
+            table.insert(held, callback); table.insert(batches, batch)
+            return { request = "held" }
+        end)
+        assert(h.sdk.TrackLevelEnd({ level = 1 })); h.sdk.Flush()
+        assert(h.sdk.TrackAdPlacement("gap_0123456789abcdef0123456789abcdef", 0))
+        equal(h.requests(), 2, "ad bypasses an existing native upload immediately")
+        equal(batches[2][1].eventType, "ad_view")
+        local session = batches[1][1].sessionId
+        equal(#savedEventsFromFiles(files, session), 2, "both lanes are durable before their ACKs")
+        local completed = false
+        h.sdk.Flush(function(error) assert(not error); completed = true end)
+        if adFirst then
+            local before = localWrites
+            success(held[2], 1)
+            equal(localWrites, before, "priority ACK only records an in-memory receipt")
+            equal(completed, false)
+            success(held[1], 1)
+        else
+            success(held[1], 1)
+            equal(h.requests(), 2, "ordinary drain excludes the active ad")
+            equal(#savedEventsFromFiles(files, session), 1, "pending ad survives the ordinary ACK")
+            equal(completed, false)
+            success(held[2], 1)
+        end
+        equal(h.requests(), 2, "cleanup reuses the ad receipt without another native upload")
+        equal(h.sdk.Snapshot().queuedEvents, 0)
+        equal(#savedEventsFromFiles(files, session), 0)
+        equal(completed, true)
+    end
+
+    local held, batches = {}, {}
+    local h = makeSdk(function(_, callback, batch)
+        table.insert(held, callback); table.insert(batches, batch)
+        return { request = "held" }
+    end)
+    assert(h.sdk.TrackLevelEnd()); h.sdk.Flush()
+    assert(h.sdk.Track("ad_view", { trackId = "direct-track" }))
+    assert(h.sdk.TrackSessionEnd({ reason = "exit-during-ad-upload" })); h.sdk.Flush()
+    equal(h.requests(), 3, "ordinary, ad and end have separate bounded lanes")
+    equal(batches[3][1].eventType, "session_end")
+    success(held[1], 1)
+    equal(h.requests(), 3, "ordinary ACK cannot resend either pending critical event")
+    success(held[3], 1)
+    equal(h.sdk.Snapshot().queuedEvents, 1)
+    success(held[2], 1)
+    equal(h.requests(), 3)
+    equal(h.sdk.Snapshot().queuedEvents, 0)
+    fileSystem = previousFileSystem
+end
+
+-- A burst uses at most one ad side request, bounded batches, and no duplicate
+-- native upload after successful receipts become available to ordinary cleanup.
+do
+    local held, batches = {}, {}
+    local h = makeSdk(function(_, callback, batch)
+        table.insert(held, callback); table.insert(batches, batch)
+        return { request = "held" }
+    end)
+    assert(h.sdk.TrackLevelEnd()); h.sdk.Flush()
+    for n = 1, 51 do assert(h.sdk.Track("ad_view", { n = n })) end
+    equal(h.requests(), 2, "new ads wait behind the active ad lane")
+    local writes = localWrites
+    for _ = 1, 1000 do h.sdk.Update() end
+    equal(h.requests(), 2); equal(localWrites, writes, "idle frames do not resave critical rows")
+    local ids, index = {}, 2
+    while held[index] do
+        assert(#batches[index] <= 20, "priority batches stay bounded")
+        for _, event in ipairs(batches[index]) do
+            assert(not ids[event.eventId], "each ad is handed to native HTTP once")
+            ids[event.eventId] = true
+        end
+        success(held[index], #batches[index]); index = index + 1
+    end
+    equal(h.requests(), 5, "51 ads use one immediate request plus three bounded follow-ups")
+    success(held[1], 1)
+    equal(h.requests(), 5)
+    equal(h.sdk.Snapshot().queuedEvents, 0)
+end
+
+-- Failure and watchdog recovery preserve the original immutable event, without
+-- a synchronous retry loop or a stale callback clearing the replacement batch.
+do
+    for _, mode in ipairs({ "failure", "invalid-ack", "timeout" }) do
+        local held, batches = {}, {}
+        local h = makeSdk(function(_, callback, batch)
+            table.insert(held, callback); table.insert(batches, batch)
+            return { request = "held" }
+        end)
+        assert(h.sdk.TrackLevelEnd()); h.sdk.Flush()
+        assert(h.sdk.Track("ad_view", { trackId = "retry-original" }))
+        local original = batches[2][1]
+        success(held[1], 1)
+        if mode == "failure" then held[2]("offline", nil)
+        elseif mode == "invalid-ack" then success(held[2], 0)
+        else h.setTime(15000); h.sdk.Update(); equal(h.cancels(), 1) end
+        equal(h.requests(), 2, "failed priority upload never loops synchronously")
+        local retryAt = mode == "timeout" and 16000 or 1000
+        h.setTime(retryAt - 1); h.sdk.Update(); equal(h.requests(), 2)
+        h.setTime(retryAt); h.sdk.Update(); equal(h.requests(), 3)
+        sameEvent(batches[3][1], original)
+        success(held[2], 1)
+        equal(h.sdk.Snapshot().queuedEvents, 1, "stale side ACK cannot remove an active retry")
+        success(held[3], 1)
+        equal(h.sdk.Snapshot().queuedEvents, 0)
+    end
+end
+
+-- Destruction before either ACK retains both original envelopes on disk. Init
+-- also cancels all three lanes and fences callbacks from the previous lifetime.
+do
+    local previousFileSystem = fileSystem
+    fileSystem = { FileExists = function(_, name) return files[name] ~= nil end }
+    local options = { gameKey = "ga_live_ad_restart_probe", userId = "ad-restart-user" }
+    local sent = {}
+    local first = makeSdk(function(_, _, batch)
+        for _, event in ipairs(batch) do table.insert(sent, event) end
+        return { request = "destroyed" }
+    end, options)
+    assert(first.sdk.TrackLevelEnd()); first.sdk.Flush()
+    assert(first.sdk.Track("ad_view", { trackId = "saved-ad" }))
+    local restored = {}
+    local next = makeSdk(function(_, callback, batch)
+        for _, event in ipairs(batch) do table.insert(restored, event) end
+        success(callback, #batch)
+    end, options)
+    next.sdk.Flush()
+    equal(#restored, 2)
+    for n = 1, 2 do sameEvent(restored[n], sent[n]) end
+
+    local held = {}
+    local h = makeSdk(function(_, callback) table.insert(held, callback); return { request = "stale" } end)
+    assert(h.sdk.TrackLevelEnd()); h.sdk.Flush()
+    assert(h.sdk.Track("ad_view", {}))
+    assert(h.sdk.TrackSessionEnd()); h.sdk.Flush()
+    equal(#held, 3)
+    h.sdk.Init({ gameKey = "ga_live_ad_reinitialized", userId = "fresh-user", sessionId = "fresh-session",
+        autoFetch = false, transport = { Request = function() error("unexpected request") end }, logger = function() end })
+    equal(h.cancels(), 3)
+    assert(h.sdk.TrackLevelStart())
+    for _, callback in ipairs(held) do success(callback, 1) end
+    equal(h.sdk.Snapshot().queuedEvents, 1)
+    equal(h.sdk.Snapshot().sessionId, "fresh-session")
+    fileSystem = previousFileSystem
+end
+
+-- Admission reserves apply before storage restoration too. Once restoration
+-- finishes, all accepted pending rows still fit and an exit owns the final slot.
+do
+    local previousFileSystem, previousCloud, previousNode = fileSystem, clientCloud, Node
+    fileSystem = nil
+    Node = function() return { CreateScriptObject = function()
+        return { SubscribeToEvent = function() end }
+    end } end
+    local read
+    clientCloud = { Get = function(_, _, callbacks) read = callbacks end,
+        Set = function(_, _, _, callbacks) callbacks.ok() end }
+    local h = makeSdk(function() error("unbound events cannot reach native HTTP") end, { skipConfig = true })
+    assert(read)
+    for n = 1, 492 do assert(h.sdk.TrackLevelEnd({ n = n })) end
+    equal(h.sdk.TrackLevelEnd(), false)
+    for n = 1, 7 do assert(h.sdk.Track("ad_view", { n = n })) end
+    equal(h.sdk.Track("ad_view", {}), false)
+    assert(h.sdk.TrackSessionEnd())
+    equal(h.sdk.Snapshot().pendingEvents, 500)
+    read.ok({}); h.sdk.Flush()
+    equal(h.sdk.Snapshot().pendingEvents, 0)
+    equal(h.sdk.Snapshot().queuedEvents, 500)
+    equal(h.sdk.TrackSessionEnd(), false, "the hard cap still applies to critical events")
+    fileSystem, clientCloud, Node = previousFileSystem, previousCloud, previousNode
 end
 
 print("Lua SDK flush recovery tests passed")

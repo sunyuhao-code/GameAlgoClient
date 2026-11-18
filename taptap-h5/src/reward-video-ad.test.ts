@@ -112,7 +112,10 @@ test("TapTap wrapper preserves raw close arguments, reports once before game log
   assert.deepEqual(h.events()[0].payload, {
     source: "revive", detail: '{"level":2}', trackId: "  original+/=  ",
     adPlacementId: placement, revenue: 0, network: "taptap",
+    adElapsedMs: h.events()[0].payload?.adElapsedMs, adElapsedSource: "show_call_to_close",
   });
+  assert.ok(Number.isSafeInteger(h.events()[0].payload?.adElapsedMs));
+  assert.ok(Number(h.events()[0].payload?.adElapsedMs) >= 0);
   assert.equal(h.events()[0].contextId, "ctx-ad");
   assert.equal(h.requests.find((r) => r.events.some((e) => e.eventType === "ad_view"))?.keepalive, true);
   assert.equal(h.ads[0].calls.filter((c) => c === "destroy").length, 0, "normal close preserves the reusable native ad");
@@ -894,4 +897,125 @@ test("automatic preparation timeout is logged once and does not retry until a cl
   await space.show(placement);
   assert.equal(h.ads.length,2);
   h.ads[1].close({trackId:"after-automatic-timeout"});
+});
+
+async function timedHarness(t: TestContext) {
+  const h = await harness(t);
+  h.client.close();
+  const clock = { now: 1000 };
+  const client = h.makeClient({ now: () => clock.now });
+  t.after(() => client.close());
+  assert.equal(await client.waitForReady(), true);
+  return { ...h, client, clock };
+}
+
+test("TapTap ad elapsed excludes preload and business work, overrides stale fields and reports once", async t => {
+  const h = await timedHarness(t);
+  const create = h.host.createRewardedVideoAd;
+  h.host.createRewardedVideoAd = function(options) {
+    const ad = create.call(this, options);
+    ad.load = async () => { h.clock.now += 5000; };
+    return ad;
+  };
+  const space = h.client.createAdSpace({ adUnitId: "timed-unit" });
+  const payload = { adElapsedMs: 999999, adElapsedSource: "stale", source: "revive" };
+  await space.show(placement, { onClose() { h.clock.now += 90_000; } }, payload);
+  h.clock.now += 6250;
+  h.ads[0].close({ isEnded: false, trackId: "timed-close" });
+  h.ads[0].closeCallbacks[0]({ isEnded: true, trackId: "duplicate" });
+  await h.client.flush();
+  assert.equal(h.events().length, 1);
+  assert.equal(h.events()[0].payload?.adElapsedMs, 6250);
+  assert.equal(h.events()[0].payload?.adElapsedSource, "show_call_to_close");
+  assert.equal(h.events()[0].payload?.trackId, "timed-close");
+  assert.deepEqual(payload, { adElapsedMs: 999999, adElapsedSource: "stale", source: "revive" });
+});
+
+test("TapTap ad elapsed restarts at the successful native show attempt after reload", async t => {
+  const h = await timedHarness(t);
+  let attempts = 0;
+  const create = h.host.createRewardedVideoAd;
+  h.host.createRewardedVideoAd = function(options) {
+    const ad = create.call(this, options);
+    ad.load = async () => { h.clock.now += 3000; };
+    ad.show = async () => {
+      if (++attempts === 1) { h.clock.now += 1000; throw new Error("stale ad"); }
+    };
+    return ad;
+  };
+  const space = h.client.createAdSpace({ adUnitId: "retry-timed-unit" });
+  await space.show(placement);
+  assert.equal(attempts, 2);
+  h.clock.now += 2000;
+  h.ads[0].close({ trackId: "retry-timed-close" });
+  await h.client.flush();
+  assert.equal(h.events()[0].payload?.adElapsedMs, 2000, "failed attempt and recovery load are excluded");
+});
+
+test("TapTap synchronous close freezes elapsed time before native show returns", async t => {
+  const h = await timedHarness(t);
+  const create = h.host.createRewardedVideoAd;
+  h.host.createRewardedVideoAd = function(options) {
+    const ad = create.call(this, options);
+    ad.show = async () => {
+      h.clock.now += 250;
+      h.ads[0].close({ trackId: "sync-timed-close" });
+      h.clock.now += 10_000;
+    };
+    return ad;
+  };
+  const space = h.client.createAdSpace({ adUnitId: "sync-timed-unit" });
+  await space.show(placement); await h.client.flush();
+  assert.equal(h.events()[0].payload?.adElapsedMs, 250);
+});
+
+test("TapTap reused ad playbacks each start a new elapsed measurement", async t => {
+  const h = await timedHarness(t);
+  const space = h.client.createAdSpace({ adUnitId: "reused-timed-unit" });
+  for (const elapsed of [1200, 3456]) {
+    await space.show(placement);
+    h.clock.now += elapsed;
+    h.ads[0].close({ trackId: `reused-${elapsed}` });
+    await h.client.flush();
+  }
+  assert.deepEqual(h.events().map(event => event.payload?.adElapsedMs), [1200, 3456]);
+});
+
+test("TapTap elapsed time is frozen at close before deferred identity hydration", async t => {
+  const h = await harness(t);
+  const identity = deferred();
+  let now = 1000;
+  const client = h.makeClient({ now: () => now, storage: {
+    async getItem() { await identity.promise; return undefined; }, setItem() {}, removeItem() {},
+  } });
+  t.after(() => client.close());
+  await client.createAdSpace({ adUnitId: "cold-timed-unit" }).show(placement);
+  now = 6200; h.ads[0].close({ trackId: "cold-timed-close" });
+  now = 100_000; identity.resolve();
+  await client.waitForReady(); await client.flush();
+  assert.equal(h.events()[0].payload?.adElapsedMs, 5200);
+});
+
+test("TapTap clock rollback omits elapsed fields without suppressing a real close", async t => {
+  const h = await timedHarness(t);
+  const space = h.client.createAdSpace({ adUnitId: "rollback-timed-unit" });
+  h.clock.now = 10_000;
+  await space.show(placement, {}, { adElapsedMs: 999, adElapsedSource: "stale" });
+  h.clock.now = 9000; h.ads[0].close({ trackId: "rollback-close" });
+  await h.client.flush();
+  assert.equal(h.events().length, 1);
+  assert.equal(h.events()[0].payload?.adElapsedMs, undefined);
+  assert.equal(h.events()[0].payload?.adElapsedSource, undefined);
+});
+
+test("TapTap a broken optional elapsed clock cannot break native close reporting", async t => {
+  const h = await harness(t);
+  t.mock.method(globalThis.performance, "now", () => { throw new Error("clock unavailable"); });
+  await h.client.createAdSpace({ adUnitId: "bad-clock-unit" }).show(placement, {}, {
+    adElapsedMs: 999, adElapsedSource: "stale",
+  });
+  h.ads[0].close({ trackId: "bad-clock-close" });
+  await h.client.flush();
+  assert.equal(h.events().length, 1);
+  assert.equal(h.events()[0].payload?.adElapsedMs, undefined);
 });

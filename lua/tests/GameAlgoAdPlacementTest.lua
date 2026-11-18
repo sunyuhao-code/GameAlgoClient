@@ -160,4 +160,74 @@ assert(GameAlgo.ShowRewardVideoAd(id, function(result) assert(result == syncResu
 assert(called == 1, "tracking failures do not stop the game's callback")
 GameAlgo.TrackAdPlacement = originalTrack
 
+-- The Maker wrapper measures the native request/result flow, with no timer or
+-- foreground-clock dependency. Callback/transport latency cannot inflate it.
+do
+    local now, mode = 1000, "valid"
+    local timed = dofile("lua/GameAlgo.lua")
+    timed.Init({ gameKey = "ga_live_timed_ad_fixture", userId = "timed-ad-user", sessionId = "timed-ad-session",
+        transport = transport, autoFetch = false, preloadConfigFiles = false, logger = function() end,
+        nowMs = function()
+            if mode == "throw" then error("clock unavailable") end
+            if mode == "nan" then return 0/0 end
+            if mode == "inf" then return math.huge end
+            return now
+        end })
+    timed.FetchConfig(function(error) assert(not error) end)
+    local resultCallback
+    sdk = { ShowRewardVideoAd = function(_, callback) resultCallback = callback; return true end }
+    local payload = { adElapsedMs = 999999, adElapsedSource = "stale", source = "revive" }
+    local count = adCount()
+    assert(timed.ShowRewardVideoAd(id, function() now = now + 90000 end, payload))
+    now = 18234
+    resultCallback({ success = false, trackId = "timed-maker-close" })
+    resultCallback({ success = true, trackId = "duplicate-maker-close" })
+    assert(adCount() == count + 1)
+    local event = eventRequests[#eventRequests].events[1]
+    assert(event.payload.adElapsedMs == 17234)
+    assert(event.payload.adElapsedSource == "request_to_result")
+    assert(payload.adElapsedMs == 999999 and payload.adElapsedSource == "stale")
+
+    sdk.ShowRewardVideoAd = function(_, callback)
+        now = now + 250; callback(syncResult)
+        now = now + 10000 -- Work after the callback, before native acceptance returns.
+        return true
+    end
+    assert(timed.ShowRewardVideoAd(id))
+    assert(eventRequests[#eventRequests].events[1].payload.adElapsedMs == 250)
+
+    for _, clockMode in ipairs({ "rollback", "throw", "nan", "inf" }) do
+        now, mode = 10000, "valid"
+        sdk.ShowRewardVideoAd = function(_, callback) resultCallback = callback; return true end
+        assert(timed.ShowRewardVideoAd(id, nil, payload))
+        if clockMode == "rollback" then now = 9000 else mode = clockMode end
+        local before = adCount(); resultCallback(syncResult)
+        assert(adCount() == before + 1, "invalid clocks must not suppress native results")
+        local body = eventRequests[#eventRequests].events[1].payload
+        assert(body.adElapsedMs == nil and body.adElapsedSource == nil)
+    end
+    mode = "valid"
+    assert(timed.TrackAdPlacement(id, 0))
+    assert(eventRequests[#eventRequests].events[1].payload.adElapsedMs == nil,
+        "manual tracking has no native request boundary to measure")
+
+    local originalRequest, failedEvent = transport.Request, nil
+    transport.Request = function(options, callback)
+        if options.url:match("/v1/events/batch$") and not failedEvent then
+            failedEvent = cjson.decode(options.body).events[1]
+            callback("offline", nil)
+        else return originalRequest(options, callback) end
+    end
+    now = 200000
+    sdk.ShowRewardVideoAd = function(_, callback) resultCallback = callback; return true end
+    assert(timed.ShowRewardVideoAd(id))
+    now = 205000; resultCallback(syncResult)
+    assert(failedEvent.payload.adElapsedMs == 5000)
+    now = 999000; timed.Flush()
+    local replayed = eventRequests[#eventRequests].events[1]
+    assert(replayed.eventId == failedEvent.eventId and replayed.timestamp == failedEvent.timestamp)
+    assert(replayed.payload.adElapsedMs == 5000 and replayed.payload.adElapsedSource == "request_to_result")
+    transport.Request = originalRequest
+end
+
 print("Lua registered ad placements and Maker reward ad wrapper contracts passed")

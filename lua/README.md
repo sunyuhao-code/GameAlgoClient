@@ -1,5 +1,7 @@
 # GamePropel TapTap Maker / 小游戏 Lua SDK
 
+当前版本：`2.1.5-lua`。广告与结束事件使用独立优先通道，队列预留关键事件名额；广告播放封装会在原 `ad_view` 中附带流程耗时。公开调用接口不变。
+
 GamePropel 原名 GameAlgo，现有 `GameAlgo*` API、模块名和安装路径继续兼容。
 
 TapTap Maker 客户端支持直接访问 GameAlgo HTTPS API。接入时把以下文件放入客户端脚本，不需要开启多人模式，也不需要部署服务端代理：
@@ -116,7 +118,7 @@ TapDB 使用已验证的 `sdk:LogEvent(name, properties)`，不附加回调参�
 DW 需据此去重。
 
 `Flush` 结果中 `accepted` 保留直连服务端接收数；`skipped` 表示跳过直连的事件数，
-`tapdbAttempted` 表示本次宿主调用数。TapDB 宿主受理不代表最终落库。
+`tapdbAttempted` 表示本次宿主调用数。已被优先请求确认的结束快照在后续普通批次中复用回执，计入 `skipped`。TapDB 宿主受理不代表最终落库。
 新鲜配置才更新运行开关；本地缓存不会开启 TapDB。无新增逐帧队列/宿主扫描，
 也不为双通道额外维护一套磁盘队列。
 
@@ -238,25 +240,33 @@ local enabled = GameAlgo.ConfigValue("ads.rewarded.enabled", true, "gameplay.jso
 
 事件会先进入队列。如果配置还没准备好，`Flush` 会等待拿到 `contextId` 后再上传。普通事件默认每 5 秒批量 Flush；队列达到一个 batch 时也会立即发送。SDK 在 `Init` 内部创建独立的 Maker `LuaScriptObject` Update 接收器，用它驱动定时 Flush、15 秒请求 watchdog 和失败后的退避重试；接入方不需要自己开发定时器，也不需要修改游戏 Update 或周期调用 `GameAlgo.Update()` / `GameAlgo.Flush()`。`Flush()` 仍可用于广告关闭、会话结束、进入后台等希望立即提交的边界。自定义运行时如果不提供 Maker 事件系统，后续的 Track/Flush 仍会检查批量阈值和超时并尝试自愈，也可在测试中手动调用 `GameAlgo.Update()`。
 
-主动调用 `Flush()` 时，即使上一批 HTTP 尚未完成或事件还没有 context，也会在返回前把 inflight batch 和剩余队列一起写入本地自动存储，并触发自动存储 Flush；不会等下一帧、定时器或上一批回调才保存退出时追加的事件。已有请求继续串行发送；写入本地不代表上传成功，callback 沿用原有上传结果／错误语义。
+主动调用 `Flush()` 时，即使上一批 HTTP 尚未完成或事件还没有 context，也会在返回前把 inflight batch 和剩余队列一起写入本地自动存储，并触发自动存储 Flush；不会等下一帧、定时器或上一批回调才保存退出时追加的事件。普通批次保持串行发送。
+
+已有 context 的 `session_end` 若被普通在途请求或积压批次挡住，SDK 会在保存后立即发起最多一条额外请求，只携带最新结束快照，避免退后台后一直等待普通请求的 Lua 回调。自动生命周期、手动 `TrackSessionEnd` 后的 Flush 和 `NewSession` 共用这一路径。广告另有独立优先通道，每次最多 20 条、最多一条在途请求；广告不会等待普通请求，也不会阻塞结束快照。三个通道合计最多三条在途事件请求，均沿用四个服务端通道开关。
+
+普通批次避开仍在优先通道发送的事件。优先请求不移走持久化队列中的事件；失败、超时或运行环境销毁后仍可用原 eventId/session/context/timestamp 重试。成功回执先保存在内存，供普通队列清理时复用，不额外写盘。并发或重启时可能出现同 eventId 的至少一次重放，由接收端去重。写入本地或发起请求不代表上传成功，callback 沿用原有上传结果／错误语义。优先通道不新增逐帧队列扫描：只在新事件、Flush 或请求完成等边界检查队列，在途 watchdog 每帧只检查固定数量的请求状态。
 
 在途请求或失败积压期间，新增变化的定时补存间隔同样为 5 秒；累计 100 个事件变化也会提前保存。发送前、上传确认后、主动 Flush 和生命周期边界仍立即保存对应变化；没有变化不写盘。
 
 旧版本保存的 JSON Lines 队列会自动迁移；所有事件块成功写入前保留旧队列，迁移中断仍可恢复。事件的 ID、session、context 和发生时间保持原值。
 
-广告播放封装在广告事件入队后会立即 Flush。发送前，SDK 会把 inflight batch 和剩余队列中尚未落盘的变化写入独立事件块；下次启动自动恢复，按下述批次完成策略确认后才删除持久化副本。请求超过 15 秒没有终态回调时，watchdog 会释放请求、把 inflight batch 放回队首，并按退避间隔重试。迟到或重复回调由 request token 忽略；成功后 SDK 会连续发送，直到所有已有 context 的事件全部排空。事件入队时即固定 `sessionId` 和已有的 `contextId`；同一 session 刷新 context 不会重绑旧事件。
+广告播放封装、`TrackAdPlacement` 和直接 `Track("ad_view", payload)` 均在广告事件入队后立即 Flush。发送前，SDK 会把 inflight batch 和剩余队列中尚未落盘的变化写入独立事件块；下次启动自动恢复，按下述批次完成策略确认后才删除持久化副本。请求超过 15 秒没有终态回调时，watchdog 会释放请求，保留原事件，并按退避间隔重试。迟到或重复回调由 request token 忽略；成功后 SDK 会连续发送，直到所有已有 context 的事件全部排空。事件入队时即固定 `sessionId` 和已有的 `contextId`；同一 session 刷新 context 不会重绑旧事件。
 
-SDK 自动监听 Maker 的 `AppWillEnterBackground`、`AppTerminating`、`ExitRequested`，收到通知时生成标准 `session_end`，立即保存队列中尚未落盘的变化并触发 Flush。对应 `reason` 为 `app_background`、`app_terminating`、`exit_requested`，payload 同时记录 `lifecycleEvent`。该结束事件不占用普通事件额度，仍受队列容量上限约束。Maker 打开全屏广告也会触发后台通知，SDK 同样上报；同一会话后续再次退后台、退出或终止可以重复上报。不会自动切换 `sessionId`。
+SDK 自动监听 Maker 的 `AppWillEnterBackground`、`AppDidEnterBackground`、`AppTerminating`、`ExitRequested`，收到通知时生成标准 `session_end`，立即保存队列中尚未落盘的变化并触发 Flush。连续的 Will/Did 后台通知合并为一次快照；恢复 Update 后，后续单独的 Did 通知仍可兜底，不依赖前台回调重启计时。对应 `reason` 为 `app_background`、`app_terminating`、`exit_requested`，payload 同时记录 `lifecycleEvent`。该结束事件不占用普通事件额度，仍受队列容量上限约束。Maker 打开全屏广告也会触发后台通知，SDK 同样上报；同一会话后续再次退后台、退出或终止可以重复上报。不会自动切换 `sessionId`。
 
 默认 `sessionDurationMs` 为当前会话累计的引擎运行时长：在已有的 Update 接收器中直接累加有效的 `TimeStep × 1000`，以整数毫秒生成快照。计时不维护依赖生命周期通知恢复的暂停标记；引擎在后台或全屏广告期间停止 Update 时不补算墙钟间隔。累计值只在 `Init` 或切换到不同 session 时归零，刷新 context、生命周期快照和相同 ID 的 `NewSession` 不清零。每帧计时只更新内存，不触发额外写盘或上报。自定义运行时没有 Maker Update / TimeStep 时不会凭墙钟推算游玩时长；`TrackSessionEnd` 显式提供的时长仍保留。
 
 生命周期上报是会话时长快照，不作为游戏显式结束会话的标记；广告后继续游戏再调用 `NewSession`，仍会为旧会话生成截至切换时的结束事件。监听使用 SDK 自己的 `LuaScriptObject`，不会替换游戏的 Update 或生命周期回调。初始化存储尚未就绪时先暂存通知时刻的事件，存储就绪后保存，取得 context 后 Flush。直接杀进程而没有宿主通知时无法新建结束事件；已成功保存的队列会在下次启动恢复。
 
+原生 Android 模拟器上的受控 Lua/HTTP/File 对照验证见 [Android 结束事件探针](tests/android/README.md)。它验证 SDK 的请求和恢复时序，TapTap/Maker 真正宿主的生命周期及原生回调行为仍需单独验收。
+
 `GameAlgo.NewSession(sessionId, callback)` 自动为尚未结束的旧会话入队 `reason=new_session` 的 `session_end`，保留旧用户、session 和 context，时长截止切换；主动保存队列变化并立即触发 Flush，再取新会话配置，无需游戏先调用 `TrackSessionEnd()`。上传失败留队重试，不阻止本地切换；旧会话已手动结束时不再补报或延长时长，相同 ID 为无操作。初始化存储尚未就绪或队列全在途、无法接纳结束事件时，返回 `nil, error` 并回调错误，保留旧会话。
 
 未绑定的旧事件不再随切换丢弃。重叠的配置请求按各自原会话排队，响应只绑定其原会话事件；旧响应不会发布为新会话的配置。已绑定事件可先发送，不被未绑定旧事件阻塞。
 
-队列默认最多保留 500 个事件，包含 inflight batch；达到上限时新的 Track 调用会返回 `false, "event queue is full ..."`，避免断网或宿主异常造成无界内存增长。可通过 `maxQueueSize` 显式调整；升级时已有的更大队列不会被截断，会继续发送，积压未降到上限以下前不接纳新事件。payload 会在入队前做快照和 JSON 可序列化校验，非法结构不会污染整个发送队列。
+队列默认最多保留 500 个事件，包含所有在途请求仍持有的事件，优先通道不另加队列容量。默认剩余 8 个位置时停止接纳普通事件，交给 `ad_view`、`session_end` 使用；最后 1 个位置专留 `session_end`。因此普通事件在总积压达到 492 条时返回 `false, "event queue is full ..."`，广告在 499 条时返回 false，结束事件仍可进入第 500 个位置。初始化完成前的暂存事件采用相同规则。只拒绝新事件，不腾挪或丢弃旧事件；关键事件也受总上限约束。
+
+可通过 `maxQueueSize` 显式调整；预留量为总容量的十分之一向下取整、最多 8 个，容量小于 10 时不预留。升级时已有的更大队列不会被截断，会继续发送，积压未降到对应接纳阈值以下前不接纳新事件。payload 会在入队前做快照和 JSON 可序列化校验，非法结构不会污染整个发送队列。
 
 事件上传采用不阻塞优先策略：有效成功响应中只要 `accepted > 0`，整批就出队，不再要求 `accepted + rejected.length` 等于发送数。其余未接收或未说明结果的事件不重试，允许丢弃；`accepted` 仍报告服务端实际接收数，不把整批出队算作全部接收成功。`rejected` 明细仅作日志和 `rejectedCount` 诊断，缺失或格式错误不会阻塞已有接收的批次。`accepted = 0` 时，只有整批都有明确的拒绝记录才出队；否则保留重试。网络错误、请求失败、无法解析的响应或非法接收数仍保留重试。日志中的 `notAccepted` 包含明确拒绝及未说明结果的事件。
 
@@ -326,6 +336,10 @@ end
 ```
 
 该封装只适用于 Maker 当前激励视频与 trackId 回补链路，广告位注册为 `reward`、`CNY`。已有游戏将播放入口接到该封装，保留原来的奖励、UI 和音频收尾回调，不再为同一次曝光额外上报事件。
+
+使用 `ShowRewardVideoAd` 时，原来的 `ad_view.payload` 自动增加 `adElapsedMs`（非负整数毫秒）和 `adElapsedSource="request_to_result"`，记录调用原生广告请求到首次原生结果回调的流程耗时。它可能包含等待、加载、播放和后台停留，不等同于精确曝光时长；SDK 不使用会在广告期间暂停的前台计时器。时间在回调入口固定，不包含后续业务回调、排队或重试耗时。只在开始和结果处读时钟，不新增事件、定时器或写盘周期。默认时钟精度取决于宿主，回退到 `os.time` 时只有秒级精度，字段单位仍为毫秒。
+
+自动封装会覆盖调用方传入的同名旧字段；时钟异常或倒退时省略两个字段，照常处理真实结果。拒绝或没有回调的请求不补造曝光。纯手动 `TrackAdPlacement` 没有开始边界，不自动推算时长；已有调用接口、trackId、曝光次数和奖励语义保持原样。
 
 SDK 日志用同一 `requestId` 关联受理结果、入队结果、是否带 trackId 及重复通知；`queued=true` 仍只是入队，接收验收结合 ACK/实时计数。通用边界已经由 SDK 契约测试覆盖，接入游戏只需核对广告位、实际播放、游戏奖励/收尾与本次事件接收，不需要反复添加探针覆盖所有通用分支。模拟宿主或手工调用回调只能用于离线测试，不能证明真实广告播放成功。
 

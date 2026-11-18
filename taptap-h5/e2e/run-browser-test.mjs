@@ -38,7 +38,7 @@ try {
   assert.equal(second?.error, undefined);
   assert.equal(second?.userId, first?.userId);
 
-  assert.ok(server.configRequests.length >= 4, "initial and pageshow contexts should refresh across two loads");
+  assert.equal(server.configRequests.length, 2, "only initialization fetches config across two loads; pageshow keeps it");
   assert.ok(server.configRequests.every((request) => request.platform === "web"));
   const eventTypes = server.eventBatches.flatMap((batch) => batch.events ?? []).map((event) => event.eventType);
   assert.ok(eventTypes.includes("milestone"));

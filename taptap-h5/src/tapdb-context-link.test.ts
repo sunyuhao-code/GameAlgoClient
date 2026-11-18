@@ -191,7 +191,7 @@ test("failed or invalid config responses do not consume the first valid link", a
   await assert.rejects(h.client.fetchConfig());
   for (const contextId of [undefined, null, "", "  ", 123]) {
     h.control.config = () => configResponse(contextId);
-    await h.client.fetchConfig({ forceRefresh: true });
+    await assert.rejects(h.client.fetchConfig({ forceRefresh: true }), /Invalid config response/);
     assert.equal(calls.length, 0);
   }
   h.control.config = () => configResponse("ctx-recovered");

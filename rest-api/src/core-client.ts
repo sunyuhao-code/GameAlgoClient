@@ -259,6 +259,9 @@ export class GameAlgoRestClient {
   /** A second delivery channel may still need data already acknowledged by HTTP. */
   protected useAttributionAckCache(): boolean { return true; }
 
+  /** Hosts may recover a failed initial request without refreshing on resume. */
+  protected recoverInitialConfig(_error: unknown, _options: RefreshOptions): Promise<void> | undefined { return undefined; }
+
   async fetchConfig(options: FetchConfigOptions = {}): Promise<ConfigResponse> {
     const identity = await this.userIdentity(options.userId);
     const userCreatedAt = clean(options.userCreatedAt) ?? identity.userCreatedAt;
@@ -584,15 +587,23 @@ export class GameAlgoRestClient {
       await this.tracker.waitForRestore();
       stage = "snapshot-restore";
       await this.loadPersistedSnapshot();
+      const refreshOptions = { ...options, userId: identity.userId, userCreatedAt,
+        sessionId: this.tracker.currentSessionId(), forceRefresh: true };
       try {
         stage = "config";
-        await this.refresh({ ...options, userId: identity.userId, userCreatedAt, forceRefresh: true });
+        await this.refresh(refreshOptions);
       } catch (error) {
+        const recovery = this.recoverInitialConfig(error, refreshOptions);
         if (!this.snapshot.config) {
-          this.log(`config fetch failed: ${errorMessage(error)}`);
-          throw error;
+          if (recovery) await recovery;
+          else {
+            this.log(`config fetch failed: ${errorMessage(error)}`);
+            throw error;
+          }
+        } else {
+          this.log(`config fetch failed, using cached snapshot: ${errorMessage(error)}`);
+          void recovery?.catch(() => undefined);
         }
-        this.log(`config fetch failed, using cached snapshot: ${errorMessage(error)}`);
       }
     } catch (error) {
       if (isBrowserHost(this.platform)) {
@@ -772,6 +783,7 @@ export class GameAlgoEventTracker {
   // A real Web ad can close before asynchronous identity restoration finishes.
   // Hold its immutable close envelope; never invent a temporary player ID.
   private readonly pendingIdentityAds: Array<{ payload: JsonValue; options: TrackEventOptions }> = [];
+  private readonly pendingIdentitySessionEnds: Array<Omit<GameEvent, "userId">> = [];
   private timersStopped = false;
   private readonly onAdIdentityState?: (state: "buffered" | "released", count: number) => void;
   private restored = false;
@@ -785,6 +797,7 @@ export class GameAlgoEventTracker {
   private sessionDurationVisible?: () => boolean;
   private sessionDurationWasVisible = true;
   private sessionHasEnd = false;
+  private sessionHasSnapshot = false;
   private consecutiveFailures = 0;
   private hasPersistedQueue = false;
   private queueRestorePending = false;
@@ -859,6 +872,7 @@ export class GameAlgoEventTracker {
     if (clean(sessionId) && sessionId !== this.sessionId) {
       this.sessionId = sessionId!;
       this.sessionHasEnd = false;
+      this.sessionHasSnapshot = false;
       this.sessionStartMs = this.now();
       this.resetSessionDuration(this.sessionStartMs);
     }
@@ -870,6 +884,9 @@ export class GameAlgoEventTracker {
         try { this.onAdIdentityState?.("released", pending.length); } catch { /* Optional diagnostics. */ }
       }
       for (const event of pending) this.track("ad_view", event.payload, event.options);
+      const ends = this.pendingIdentitySessionEnds.splice(0);
+      for (const event of ends) this.enqueueSessionEndSnapshot({ ...event, userId: this.userId!,
+        accountUserId: event.accountUserId ?? this.accountUserId });
     }
   }
 
@@ -892,6 +909,7 @@ export class GameAlgoEventTracker {
     }
     this.sessionId = sessionId;
     this.sessionHasEnd = false;
+    this.sessionHasSnapshot = false;
     this.ordinaryCounts.delete(`pending:${previousSessionId}`);
     this.diagnosticKeys.clear();
     this.diagnosticCount = 0;
@@ -968,6 +986,8 @@ export class GameAlgoEventTracker {
   }
 
   markSessionStarted(): void {
+    // An early lifecycle snapshot already exposed this session's clock origin.
+    if (isBrowserHost(this.platform) && this.sessionHasSnapshot) return;
     this.sessionStartMs = this.now();
     this.resetSessionDuration(this.sessionStartMs);
   }
@@ -1265,20 +1285,29 @@ export class GameAlgoEventTracker {
   /** SDK lifecycle snapshot: retain the live session and bypass gameplay quotas. */
   trackSessionEndSnapshot(payload: JsonValue = {}): boolean {
     const userId = clean(this.userId);
-    if (!userId) return false;
+    if (!userId && !isBrowserHost(this.platform)) return false;
     const occurredAt = this.now();
     const merged = objectPayload(payload);
     merged.sessionDurationMs = this.sessionDuration(occurredAt);
-    this.hasPersistedQueue = true;
-    this.enqueue({
-      eventId: randomId(), contextId: this.contextId ?? "", userId,
+    this.sessionHasSnapshot = true;
+    const event = {
+      eventId: randomId(), contextId: this.contextId ?? "",
       sessionId: this.sessionId, eventType: "session_end", isDebug: this.isDebug,
       timestamp: new Date(occurredAt).toISOString(), createdLocalAt: localTimestamp(occurredAt),
       accountUserId: this.accountUserId, payload: normalizePayload(merged),
-    }, true);
+    };
+    if (!userId) {
+      this.pendingIdentitySessionEnds.push(event);
+      if (this.pendingIdentitySessionEnds.length > this.queueLimit) this.pendingIdentitySessionEnds.shift();
+    } else this.enqueueSessionEndSnapshot({ ...event, userId });
+    return true;
+  }
+
+  private enqueueSessionEndSnapshot(event: GameEvent): void {
+    this.hasPersistedQueue = true;
+    this.enqueue(event, true);
     if (!this.persistOnEnqueue) void this.persistPendingQueue().catch(() => undefined);
     if (isBrowserHost(this.platform)) void this.flushUrgent().catch(() => undefined);
-    return true;
   }
 
   trackLevelStart(payload: JsonValue = {}): boolean {

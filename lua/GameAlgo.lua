@@ -28,11 +28,13 @@ local MakerAutoStorage = requireSdkModule("MakerAutoStorage")
 local GameAlgo = {}
 local unpackArgs = table.unpack or unpack
 
-local SDK_VERSION = "2.1.4-lua"
+local SDK_VERSION = "2.1.5-lua"
 local DEFAULT_BASE_URL = "https://game-algo-sdk.dictapis.cn"
 local DEFAULT_FLUSH_INTERVAL_MS = 5000
 local DEFAULT_FLUSH_TIMEOUT_MS = 15000
 local DEFAULT_MAX_QUEUE_SIZE = 500
+local MAX_CRITICAL_QUEUE_RESERVE = 8
+local MAX_AD_PRIORITY_BATCH_SIZE = 20
 local DEFAULT_MAX_PENDING_FLUSH_CALLBACKS = 1000
 local QUEUE_PERSIST_INTERVAL_MS = DEFAULT_FLUSH_INTERVAL_MS
 local QUEUE_PERSIST_EVENT_COUNT = 100
@@ -78,6 +80,12 @@ local state_ = {
     eventQueueStorage = nil,
     flushing = false,
     activeFlush = nil,
+    activeEndFlush = nil,
+    activeAdFlush = nil,
+    pendingEndSnapshot = nil,
+    pendingAdFlush = false,
+    adPriorityHandled = {},
+    backgroundWillSnapshotPending = false,
     flushSequence = 0,
     lifecycleGeneration = 0,
     flushRequested = false,
@@ -1051,7 +1059,9 @@ local function chunkEvents()
     local batch = {}
     local remaining = {}
     for _, event in ipairs(state_.queue) do
-        if #batch < state_.maxBatchSize and event.contextId and event.contextId ~= "" then
+        local criticalInFlight = (state_.activeEndFlush and state_.activeEndFlush.event.eventId == event.eventId)
+            or (state_.activeAdFlush and state_.activeAdFlush.ids[event.eventId])
+        if not criticalInFlight and #batch < state_.maxBatchSize and event.contextId and event.contextId ~= "" then
             table.insert(batch, event)
         else
             table.insert(remaining, event)
@@ -1065,6 +1075,22 @@ end
 local function outstandingEventCount()
     local activeCount = state_.activeFlush and #state_.activeFlush.batch or 0
     return activeCount + #state_.queue
+end
+
+local function queueAdmissionError(eventType, count)
+    local maximum = state_.maxQueueSize
+    if count >= maximum then return "event queue is full (max=" .. tostring(maximum) .. ")" end
+    -- Preserve a small exit slot even when ads fill the shared critical reserve.
+    -- Tiny custom queues keep their existing capacity; default 500 reserves 8.
+    local reserve = math.min(MAX_CRITICAL_QUEUE_RESERVE, math.floor(maximum / 10))
+    local limit = maximum
+    if eventType == "ad_view" and reserve > 0 then limit = maximum - 1
+    elseif eventType ~= "session_end" then limit = maximum - reserve end
+    if count >= limit then
+        return "event queue is full for " .. tostring(eventType)
+            .. " (limit=" .. tostring(limit) .. ", max=" .. tostring(maximum) .. ")"
+    end
+    return nil
 end
 
 local function armAutoFlush()
@@ -1103,6 +1129,7 @@ local function restoreEventQueue()
     local restored = 0
     for _, event in ipairs(state_.eventQueueStorage:Events()) do
         table.insert(state_.queue, event)
+        if event.eventType == "ad_view" then state_.pendingAdFlush = true end
         if event.contextId and event.contextId ~= "" then state_.flushableEvents = state_.flushableEvents + 1 end
         restored = restored + 1
     end
@@ -1122,6 +1149,7 @@ local function bindQueuedEvents(contextId, sessionId)
             event.contextId = contextId
             state_.flushableEvents = state_.flushableEvents + 1
             state_.eventQueueStorage:Upsert(event)
+            if event.eventType == "ad_view" then state_.pendingAdFlush = true end
             changed = true
         end
     end
@@ -1151,10 +1179,11 @@ local function rememberBoundMilestones(contextId)
 end
 
 local function enqueueTrack(eventType, payload, timestamp, createdLocalAt, sessionEndSnapshot)
-    if outstandingEventCount() >= state_.maxQueueSize then
+    local admissionError = queueAdmissionError(eventType, outstandingEventCount())
+    if admissionError then
         state_.queuePersistenceActive = true
         persistEventQueue()
-        return false, "event queue is full (max=" .. tostring(state_.maxQueueSize) .. ")"
+        return false, admissionError
     end
     local payloadCopy, payloadError = preparePayload(payload)
     if payloadError then return false, payloadError end
@@ -1178,6 +1207,8 @@ local function enqueueTrack(eventType, payload, timestamp, createdLocalAt, sessi
     if #state_.queue >= state_.maxBatchSize and state_.flushableEvents > 0 then state_.flushRequested = true end
     state_.eventQueueStorage:Upsert(event)
     if eventType == "session_end" and not sessionEndSnapshot then state_.sessionHasEnd = true end
+    if eventType == "session_end" then state_.pendingEndSnapshot = event end
+    if eventType == "ad_view" then state_.pendingAdFlush = true end
     scheduleEventQueuePersistence()
     return true, nil
 end
@@ -1192,8 +1223,17 @@ local function flushAutomaticStorage()
     if not ok then log("automatic storage flush failed: " .. tostring(flushError)) end
 end
 
+local sendEndSnapshot
+local sendAdBatch
+
 local function handleLifecycleSessionEnd(eventName, reason)
     if not state_.sessionId or not state_.sessionStartMs then return end
+    -- A normal Will/Did pair needs one snapshot. Update clears this marker so
+    -- a later Did-only background still works without foreground notifications.
+    if eventName == "AppDidEnterBackground" and state_.backgroundWillSnapshotPending then
+        state_.backgroundWillSnapshotPending = false
+        return
+    end
     local occurredAt = clockMs()
     local payload = {
         reason = reason,
@@ -1201,7 +1241,7 @@ local function handleLifecycleSessionEnd(eventName, reason)
         sessionDurationMs = GameAlgo.GetForegroundTimeMs() - state_.sessionForegroundStartMs,
     }
     if not state_.storageReady then
-        if #state_.pendingTracks >= state_.maxQueueSize then
+        if queueAdmissionError("session_end", #state_.pendingTracks) then
             log("lifecycle session_end not queued: pending event queue is full")
             return
         end
@@ -1214,6 +1254,7 @@ local function handleLifecycleSessionEnd(eventName, reason)
             sessionId = state_.sessionId,
             sessionEndSnapshot = true,
         })
+        state_.backgroundWillSnapshotPending = eventName == "AppWillEnterBackground"
         state_.lifecycleFlushPending = true
         return
     end
@@ -1223,6 +1264,7 @@ local function handleLifecycleSessionEnd(eventName, reason)
     -- NewSession must still be able to report a newer duration for this session.
     local tracked, error = enqueueTrack("session_end", payload, nil, nil, true)
     if not tracked then log("lifecycle session_end not queued: " .. tostring(error)) end
+    if tracked then state_.backgroundWillSnapshotPending = eventName == "AppWillEnterBackground" end
     state_.queuePersistenceActive = true
     persistEventQueue()
     flushAutomaticStorage()
@@ -1261,6 +1303,7 @@ local function ensureAutomaticUpdateDriver()
         state_.internalUpdateSubscribed = true
         for eventName, reason in pairs({
             AppWillEnterBackground = "app_background",
+            AppDidEnterBackground = "app_background",
             AppTerminating = "app_terminating",
             ExitRequested = "exit_requested",
         }) do
@@ -1347,12 +1390,18 @@ function GameAlgo.Init(options)
         error("options.storage is not supported; TapTap Maker storage is managed automatically by the Lua SDK")
     end
     local previousActive = state_.activeFlush
+    local previousEnd = state_.activeEndFlush
+    local previousAd = state_.activeAdFlush
     local previousConfigRequestHandle = state_.configFetchRequestHandle
     local previousTransport = state_.transport
     state_.activeFlush = nil
+    state_.activeEndFlush = nil
+    state_.activeAdFlush = nil
     state_.flushing = false
     state_.lifecycleGeneration = state_.lifecycleGeneration + 1
     if previousActive then cancelTransportRequest(previousTransport, previousActive.handle) end
+    if previousEnd then cancelTransportRequest(previousTransport, previousEnd.handle) end
+    if previousAd then cancelTransportRequest(previousTransport, previousAd.handle) end
     if previousConfigRequestHandle then cancelTransportRequest(previousTransport, previousConfigRequestHandle) end
     if state_.scheduler and type(state_.scheduler.Shutdown) == "function" then
         state_.scheduler:Shutdown()
@@ -1407,6 +1456,10 @@ function GameAlgo.Init(options)
     state_.eventQueueStorage = nil
     state_.pendingTracks = {}
     state_.lifecycleFlushPending = false
+    state_.pendingEndSnapshot = nil
+    state_.pendingAdFlush = false
+    state_.adPriorityHandled = {}
+    state_.backgroundWillSnapshotPending = false
     state_.customEventCounts = {}
     state_.ordinaryEventCounts = {}
     state_.eventQuota = nil
@@ -1794,8 +1847,8 @@ function GameAlgo.Track(eventType, payload)
         return false, payloadError
     end
     if not state_.storageReady then
-        if #state_.pendingTracks >= state_.maxQueueSize then
-            local queueError = "pending event queue is full (max=" .. tostring(state_.maxQueueSize) .. ")"
+        local queueError = queueAdmissionError(eventType, #state_.pendingTracks)
+        if queueError then
             log("event rejected: " .. tostring(eventType) .. " " .. queueError)
             return false, queueError
         end
@@ -1833,8 +1886,8 @@ function GameAlgo.Track(eventType, payload)
         return true
     end
     ensureIdentity()
-    if outstandingEventCount() >= state_.maxQueueSize then
-        local queueError = "event queue is full (max=" .. tostring(state_.maxQueueSize) .. ")"
+    local queueError = queueAdmissionError(eventType, outstandingEventCount())
+    if queueError then
         log("event rejected: " .. tostring(eventType) .. " " .. queueError)
         return false, queueError
     end
@@ -1861,7 +1914,9 @@ function GameAlgo.Track(eventType, payload)
         return false, trackError
     end
     rememberMilestone(key, durable)
-    if state_.contextId and state_.contextId ~= ""
+    if eventType == "ad_view" then
+        GameAlgo.Flush(nil)
+    elseif state_.contextId and state_.contextId ~= ""
         and not state_.activeFlush
         and (#state_.queue >= state_.maxBatchSize
             or (state_.nextAutoFlushAtMs and clockMs() >= state_.nextAutoFlushAtMs)) then
@@ -1938,7 +1993,6 @@ function GameAlgo.TrackAdPlacement(adPlacementId, revenue, network, payload)
     merged.revenue = revenue
     if network and network ~= "" then merged.network = network end
     local tracked = GameAlgo.Track("ad_view", merged)
-    if tracked then GameAlgo.Flush(nil) end
     return tracked
 end
 
@@ -1954,10 +2008,22 @@ function GameAlgo.ShowRewardVideoAd(adPlacementId, callback, payload)
     end
     local snapshot, payloadError = preparePayload(payload)
     if payloadError then return false, payloadError end
+    snapshot.adElapsedMs, snapshot.adElapsedSource = nil, nil
+
+    local adClock = state_.clock or nowMs
+    local function elapsedTime()
+        local ok, value = pcall(adClock)
+        value = ok and tonumber(value) or nil
+        if type(value) == "number" and value == value and value > -math.huge and value < math.huge then
+            return math.floor(value)
+        end
+        return nil
+    end
 
     local requestId = randomId("ga_ad")
     local returned, accepted, received, delivered = false, nil, false, false
     local firstResult
+    local requestedAt, resultAt
     local function deliver()
         if delivered or not received then return end
         delivered = true
@@ -1966,6 +2032,13 @@ function GameAlgo.ShowRewardVideoAd(adPlacementId, callback, payload)
             local ok, queued = pcall(function()
                 trackId = GameAlgo.ExtractAdTrackId(firstResult)
                 snapshot.trackId = trackId -- Never reuse a caller's stale Track ID.
+                if requestedAt and resultAt then
+                    local elapsed = resultAt - requestedAt
+                    if elapsed >= 0 and elapsed <= 9007199254740991 then
+                        snapshot.adElapsedMs = elapsed
+                        snapshot.adElapsedSource = "request_to_result"
+                    end
+                end
                 return GameAlgo.TrackAdPlacement(adPlacementId, 0, "taptap", snapshot)
             end)
             log("reward ad result: requestId=" .. requestId
@@ -1981,6 +2054,7 @@ function GameAlgo.ShowRewardVideoAd(adPlacementId, callback, payload)
             log("reward ad duplicate callback ignored: requestId=" .. requestId)
             return
         end
+        resultAt = elapsedTime()
         received, firstResult = true, result
         if returned then deliver() end
     end
@@ -1990,6 +2064,7 @@ function GameAlgo.ShowRewardVideoAd(adPlacementId, callback, payload)
         if not host or type(host.ShowRewardVideoAd) ~= "function" then
             error("Maker ShowRewardVideoAd is unavailable", 0)
         end
+        requestedAt = elapsedTime()
         return host:ShowRewardVideoAd(onResult)
     end)
     accepted = ok and value or false
@@ -2028,7 +2103,9 @@ function GameAlgo.TrackSessionEnd(payload)
 end
 
 local function hasFlushableEvents()
-    return state_.flushableEvents > 0
+    local held = (state_.activeEndFlush and 1 or 0)
+        + (state_.activeAdFlush and #state_.activeAdFlush.batch or 0)
+    return state_.flushableEvents > held
 end
 
 local function prependBatch(batch)
@@ -2133,6 +2210,126 @@ local function validateFlushResult(result, batchSize, localOnly)
     return accepted, nil, rejected, skipped, tonumber(result.tapdbAttempted) or 0
 end
 
+local function resumeAfterCritical(error)
+    if state_.activeFlush then return end
+    if error then
+        state_.flushRequested = true
+        state_.retryFlushAtMs = state_.retryFlushAtMs or (clockMs() + retryDelayMs(1))
+    else
+        startFlush(false)
+        sendEndSnapshot()
+        sendAdBatch()
+    end
+end
+
+local function finishEndFlush(active, error, result, localOnly)
+    if state_.activeEndFlush ~= active or active.generation ~= state_.lifecycleGeneration then return end
+    state_.activeEndFlush = nil
+    if not error then
+        local accepted, receiptError = validateFlushResult(result, 1, localOnly)
+        error = receiptError
+        if accepted and accepted > 0 then
+            -- The durable queue still owns this event. Its normal flush can
+            -- reuse the existing routing receipt instead of sending it again.
+            rememberDirectEvents({ active.event })
+        end
+    end
+    if error then log("session end immediate send failed; durable retry retained: " .. tostring(error))
+    else log("session end immediate send acknowledged") end
+    sendEndSnapshot()
+    resumeAfterCritical(error)
+end
+
+local function recoverTimedOutEndFlush(currentTime)
+    local active = state_.activeEndFlush
+    if not active or currentTime - active.startedAtMs < state_.flushTimeoutMs then return end
+    state_.activeEndFlush = nil
+    cancelRequest(active.handle)
+    log("session end immediate send timed out; durable retry retained")
+    sendEndSnapshot()
+    resumeAfterCritical("timeout")
+end
+
+sendEndSnapshot = function()
+    local event = state_.pendingEndSnapshot
+    if not event or not event.contextId or event.contextId == "" or not state_.storageReady then return end
+    local ordinary = state_.activeFlush
+    if not ordinary then return end
+    for _, sent in ipairs(ordinary.batch) do
+        if sent.eventId == event.eventId then
+            state_.pendingEndSnapshot = nil
+            return -- Already handed to HTTP; no extra request is needed.
+        end
+    end
+    if state_.activeEndFlush then return end
+    -- Only one additional request is allowed. Keep the event in the ordinary
+    -- durable queue: failures, suspension and cold starts retain its original
+    -- ID, Context, Session and timestamp without changing ordinary ACK handling.
+    local active = { event = event, generation = state_.lifecycleGeneration,
+        startedAtMs = clockMs(), handle = nil }
+    state_.pendingEndSnapshot = nil
+    state_.activeEndFlush = active
+    local handle = httpRequest("POST", "/v1/events/batch", { events = { event } },
+        function(error, result, response)
+            finishEndFlush(active, error, result, response and response.localOnly == true)
+        end)
+    if state_.activeEndFlush == active then active.handle = handle end
+end
+
+local function finishAdFlush(active, error, result, localOnly)
+    if state_.activeAdFlush ~= active or active.generation ~= state_.lifecycleGeneration then return end
+    state_.activeAdFlush = nil
+    if not error then
+        local accepted, receiptError = validateFlushResult(result, #active.batch, localOnly)
+        error = receiptError
+        if accepted and accepted > 0 then rememberDirectEvents(active.batch) end
+    end
+    if error then
+        log("ad immediate send failed; durable retry retained: " .. tostring(error))
+    else
+        for _, event in ipairs(active.batch) do state_.adPriorityHandled[event.eventId] = true end
+        log("ad immediate send acknowledged")
+        state_.pendingAdFlush = true
+        sendAdBatch()
+    end
+    resumeAfterCritical(error)
+end
+
+local function recoverTimedOutAdFlush(currentTime)
+    local active = state_.activeAdFlush
+    if not active or currentTime - active.startedAtMs < state_.flushTimeoutMs then return end
+    state_.activeAdFlush = nil
+    cancelRequest(active.handle)
+    log("ad immediate send timed out; durable retry retained")
+    resumeAfterCritical("timeout")
+end
+
+sendAdBatch = function()
+    if not state_.storageReady or not state_.activeFlush or state_.activeAdFlush
+        or not state_.pendingAdFlush then return end
+    state_.pendingAdFlush = false
+    local batch, ids = {}, {}
+    for _, event in ipairs(state_.queue) do
+        if event.eventType == "ad_view" and event.contextId and event.contextId ~= ""
+            and not state_.adPriorityHandled[event.eventId]
+            and not state_.directCompleted[directEventKey(event)] then
+            table.insert(batch, event)
+            ids[event.eventId] = true
+            if #batch >= math.min(MAX_AD_PRIORITY_BATCH_SIZE, state_.maxBatchSize) then break end
+        end
+    end
+    if #batch == 0 then return end
+    -- The queue and its durable chunks retain ownership until ordinary cleanup.
+    local active = { batch = batch, ids = ids, generation = state_.lifecycleGeneration,
+        startedAtMs = clockMs(), handle = nil }
+    state_.activeAdFlush = active
+    local handle = httpRequest("POST", "/v1/events/batch", { events = batch },
+        function(error, result, response)
+            finishAdFlush(active, error, result, response and response.localOnly == true)
+        end)
+    if state_.activeAdFlush == active then active.handle = handle end
+end
+
 local function finishActiveFlush(lifecycleGeneration, sequence, error, result, localOnly)
     local active = state_.activeFlush
     if not active
@@ -2160,6 +2357,15 @@ local function finishActiveFlush(lifecycleGeneration, sequence, error, result, l
     state_.pendingFlushRejected = state_.pendingFlushRejected + #rejected
     state_.pendingFlushSkipped = state_.pendingFlushSkipped + (skipped or 0)
     state_.pendingFlushTapdbAttempted = state_.pendingFlushTapdbAttempted + (tapdbAttempted or 0)
+    for _, event in ipairs(active.batch) do state_.adPriorityHandled[event.eventId] = nil end
+    if state_.pendingEndSnapshot then
+        for _, event in ipairs(active.batch) do
+            if event.eventId == state_.pendingEndSnapshot.eventId then
+                state_.pendingEndSnapshot = nil
+                break
+            end
+        end
+    end
     state_.eventQueueStorage:Remove(active.batch)
     state_.queuePersistenceDirty = true
     persistEventQueue()
@@ -2174,8 +2380,11 @@ local function finishActiveFlush(lifecycleGeneration, sequence, error, result, l
 
     if hasFlushableEvents() then
         startFlush(false)
+        sendEndSnapshot()
+        sendAdBatch()
         return
     end
+    if state_.activeEndFlush or state_.activeAdFlush then return end
 
     local totalAccepted = state_.pendingFlushAccepted
     local totalRejected = state_.pendingFlushRejected
@@ -2240,6 +2449,7 @@ local function recoverTimedOutFlush(currentTime)
 end
 
 function GameAlgo.Update()
+    state_.backgroundWillSnapshotPending = false
     if state_.scheduler and type(state_.scheduler.Update) == "function" then
         local schedulerOk, schedulerError = pcall(function() state_.scheduler:Update() end)
         if not schedulerOk then log("scheduler update failed: " .. tostring(schedulerError)) end
@@ -2250,6 +2460,8 @@ function GameAlgo.Update()
     end
     if not state_.storageReady then return end
     local currentTime = clockMs()
+    if state_.activeEndFlush then recoverTimedOutEndFlush(currentTime) end
+    if state_.activeAdFlush then recoverTimedOutAdFlush(currentTime) end
     if state_.tapDbContextLinkProperties ~= nil
         and currentTime >= state_.tapDbContextLinkNextCheckAtMs
         and currentTime <= state_.tapDbContextLinkDiscoveryUntilMs then
@@ -2277,6 +2489,8 @@ function GameAlgo.Update()
         return
     end
     startFlush(false)
+    sendEndSnapshot()
+    sendAdBatch()
 end
 
 function GameAlgo.Flush(callback)
@@ -2287,6 +2501,8 @@ function GameAlgo.Flush(callback)
 
     local currentTime = clockMs()
     recoverTimedOutFlush(currentTime)
+    if state_.activeEndFlush then recoverTimedOutEndFlush(currentTime) end
+    if state_.activeAdFlush then recoverTimedOutAdFlush(currentTime) end
     -- Flush is also a durability boundary. A busy request or missing context
     -- must not leave newly queued exit events waiting for Update/the HTTP ACK.
     -- The normal send path checkpoints in startFlush before starting HTTP.
@@ -2298,9 +2514,12 @@ function GameAlgo.Flush(callback)
     if not queueFlushCallback(callback) then return end
     if state_.activeFlush then
         state_.flushRequested = true
+        sendEndSnapshot()
+        sendAdBatch()
         return
     end
     if not hasFlushableEvents() then
+        if state_.activeEndFlush or state_.activeAdFlush then return end
         if #state_.queue > 0 then
             completeFlushCallbacks("context not ready", nil)
         else
@@ -2311,6 +2530,8 @@ function GameAlgo.Flush(callback)
 
     state_.retryFlushAtMs = nil
     startFlush(true)
+    sendEndSnapshot()
+    sendAdBatch()
 end
 
 function GameAlgo.NewSession(sessionId, callback)
@@ -2337,6 +2558,7 @@ function GameAlgo.NewSession(sessionId, callback)
     end
     state_.ordinaryEventCounts["pending:" .. tostring(previousSessionId)] = nil
     state_.sessionId = nextSessionId
+    state_.backgroundWillSnapshotPending = false
     state_.sessionHasEnd = false
     state_.eventGuardDiagnosticKeys = {}
     state_.eventGuardDiagnosticCount = 0

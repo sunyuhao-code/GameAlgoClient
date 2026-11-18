@@ -1,4 +1,4 @@
-import { GameAlgoRestClient } from "../../rest-api/src/core-client.ts";
+import { GameAlgoApiError, GameAlgoRestClient } from "../../rest-api/src/core-client.ts";
 import type {
   ConfigResponse,
   FetchConfigOptions,
@@ -16,8 +16,9 @@ import { GameAlgoMatchmakingClient } from "./multiplayer.ts";
 import { RewardVideoManager } from "../../rest-api/src/reward-video-manager.ts";
 import type { RewardVideoHost } from "../../rest-api/src/reward-video-ad.ts";
 import { TapTapTelemetryRouter, telemetryPath, type TapDbProperties } from "./telemetry-routing.ts";
+import { fetchWithDeadline } from "./http-transport.ts";
 
-export const GAMEALGO_WEB_SDK_VERSION = "2.1.9";
+export const GAMEALGO_WEB_SDK_VERSION = "2.1.10";
 const WEB_KEEPALIVE_BODY_LIMIT_BYTES = 60 * 1024;
 const WEB_EVENT_BATCH_BODY_BUDGET_BYTES = 48 * 1024;
 const TAPDB_CONTEXT_LINK_EVENT = "gamealgo_context_link";
@@ -116,15 +117,14 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
   private readonly webLogger?: (message: string) => void;
   private readonly telemetryRouter = new TapTapTelemetryRouter((name, properties) => this.sendTapDbTelemetry(name, properties));
   private readonly tapDbTelemetryCancels = new Set<() => void>();
-  private readonly rewardVideos = new RewardVideoManager({
-    host: () => (globalThis as { tap?: RewardVideoHost }).tap,
-    logger: message => this.webLogger?.(message),
-    closeId: values => values.map(extractAdTrackId).find(id => id !== undefined),
-    report: (id, payload, _values, trackId) => {
-      if (trackId) payload.trackId = trackId;
-      return this.tracker.trackAdPlacement(id, 0, "taptap", payload);
-    },
-  });
+  private freshConfigSession?: string;
+  private configRecovery?: {
+    sessionId: string;
+    completed: boolean;
+    timer?: ReturnType<typeof setTimeout>;
+    wake?: () => void;
+  };
+  private readonly rewardVideos: RewardVideoManager;
   readonly matchmaking: GameAlgoMatchmakingClient;
 
   constructor(options: GameAlgoWebClientOptions) {
@@ -134,8 +134,12 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
     const fetchImpl: typeof fetch = (input, init = {}) => {
       const url = typeof input === "string" || input instanceof URL ? String(input) : input.url;
       const isEventBatch = /\/v1\/events\/batch(?:\?|$)/.test(url);
+      const isConfig = /\/v1\/config(?:\?|$)/.test(url);
       const keepalive = isEventBatch && requestBodyBytes(init.body) <= WEB_KEEPALIVE_BODY_LIMIT_BYTES;
-      return browserFetch(input, isEventBatch ? { ...init, keepalive } : init);
+      const request = isEventBatch ? { ...init, keepalive } : init;
+      return isEventBatch || isConfig
+        ? fetchWithDeadline(browserFetch, input, request, isConfig ? 12_000 : 15_000, isConfig)
+        : browserFetch(input, request);
     };
     const scriptRuntime = new GameAlgoWebScriptRuntime({
       prepareTimeoutMs: options.scriptPrepareTimeoutMs,
@@ -162,6 +166,16 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
 
     this.webScriptRuntime = scriptRuntime;
     this.webLogger = typeof options.logger === "function" ? options.logger : undefined;
+    this.rewardVideos = new RewardVideoManager({
+      host: () => (globalThis as { tap?: RewardVideoHost }).tap,
+      logger: message => this.webLogger?.(message),
+      closeId: values => values.map(extractAdTrackId).find(id => id !== undefined),
+      elapsed: { source: "show_call_to_close", now: options.now ?? (() => globalThis.performance?.now?.() ?? Date.now()) },
+      report: (id, payload, _values, trackId) => {
+        if (trackId) payload.trackId = trackId;
+        return this.tracker.trackAdPlacement(id, 0, "taptap", payload);
+      },
+    });
     this.deviceOverrides = withoutRuntimeIdentity(options.device);
     this.matchmaking = new GameAlgoMatchmakingClient({
       apiBaseUrl: options.baseUrl,
@@ -225,6 +239,42 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
     return super.fetchConfig({ ...options, device: withoutRuntimeIdentity(options.device) });
   }
 
+  protected override recoverInitialConfig(error: unknown, options: FetchConfigOptions & {
+    preloadConfigFiles?: boolean | string[];
+  }): Promise<void> | undefined {
+    const sessionId = options.sessionId!;
+    if (this.closed || this.freshConfigSession === sessionId || !retryableConfigError(error)
+      || this.tracker.currentSessionId() !== sessionId) return undefined;
+    const recovery = { sessionId, completed: false } as NonNullable<GameAlgoWebClient["configRecovery"]>;
+    this.configRecovery = recovery;
+    return (async () => {
+      try {
+        for (let failures = 0; ; failures++) {
+          await new Promise<void>(resolve => {
+            recovery.wake = resolve;
+            recovery.timer = setTimeout(resolve, Math.min(30_000, 1000 * 2 ** Math.min(failures, 5)));
+            recovery.timer.unref?.();
+          });
+          if (recovery.timer) clearTimeout(recovery.timer);
+          recovery.timer = undefined;
+          recovery.wake = undefined;
+          if (this.closed || this.tracker.currentSessionId() !== sessionId) throw new Error("Initial config recovery stopped");
+          if (recovery.completed) return;
+          try {
+            await this.refresh(options);
+            return;
+          } catch (retryError) {
+            if (this.closed || this.tracker.currentSessionId() !== sessionId
+              || this.freshConfigSession === sessionId || !retryableConfigError(retryError)) throw retryError;
+          }
+        }
+      } finally {
+        if (recovery.timer) clearTimeout(recovery.timer);
+        if (this.configRecovery === recovery) this.configRecovery = undefined;
+      }
+    })();
+  }
+
   protected override defaultDeviceContext(): Record<string, JsonValue> {
     const context = super.defaultDeviceContext();
     // Node/browser shims do not identify the OS of an H5 host.
@@ -241,6 +291,11 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
   protected override onConfigReceived(config: ConfigResponse, identity: { userId: string; sessionId: string; isDebug: boolean }): void {
     if (this.closed || identity.sessionId !== this.tracker.currentSessionId()
       || typeof config.contextId !== "string" || !config.contextId.trim()) return;
+    this.freshConfigSession = identity.sessionId;
+    if (this.configRecovery?.sessionId === identity.sessionId) {
+      this.configRecovery.completed = true;
+      this.configRecovery.wake?.();
+    }
     this.telemetryRouter.configure(config, identity);
   }
 
@@ -259,10 +314,12 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
       const subset = path === "/v1/events/batch"
         && (directBody.events as GameEvent[]).length !== (body.events as GameEvent[]).length;
       const response = await super.request(url, subset ? { ...init, body: JSON.stringify(directBody) } : init);
-      if (!subset) return response;
+      if (path !== "/v1/events/batch") return response;
       const events = directBody.events as GameEvent[];
       result = await response.json() as Record<string, unknown>;
       this.telemetryRouter.acknowledge(events, result);
+      if (!subset) return { ok: true, status: response.status, headers: response.headers,
+        json: async () => result, text: async () => JSON.stringify(result) };
       if (Array.isArray(result.rejected)) result.rejected = result.rejected
         .filter(row => row && typeof row === "object" && !Array.isArray(row))
         .slice(0, events.length - Number(result.accepted)).map(row => ({ ...row,
@@ -413,6 +470,8 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
 
   close(): void {
     this.closed = true;
+    if (this.configRecovery?.timer) clearTimeout(this.configRecovery.timer);
+    this.configRecovery?.wake?.();
     this.telemetryRouter.close();
     for (const cancel of this.tapDbTelemetryCancels) cancel();
     this.rewardVideos.close();
@@ -492,13 +551,16 @@ export class GameAlgoWebClient extends GameAlgoRestClient {
   private resumeSession(): void {
     if (this.closed) return;
     this.tracker.observeSessionDurationVisibility();
-    const hadEnd = this.endedSessionId !== undefined;
+    // Foreground restoration keeps the current session, context and config.
+    // Allow the next hide to record another cumulative end snapshot.
     this.endedSessionId = undefined;
-    if (!hadEnd) return;
-    // Returning to the page keeps the same session and duration origin.
-    // Only initialization or an explicit newSession call changes ownership.
-    void this.refresh({ forceRefresh: true }).catch(() => undefined);
   }
+}
+
+function retryableConfigError(error: unknown): boolean {
+  if (!(error instanceof GameAlgoApiError)) return true;
+  return error.status === 0 || error.status === 408 || error.status === 425
+    || error.status === 429 || error.status >= 500;
 }
 
 export function initGameAlgoWeb(options: GameAlgoWebClientOptions): GameAlgoWebClient {
