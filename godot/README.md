@@ -166,6 +166,32 @@ SDK 初始化从 `/v1/config` 获取当前普通事件额度，并把它作为�
 
 ## 归因
 
+### Adjust 初始化前注入用户身份
+
+启用 Adjust Server Callback 时，先确认 GamePropel `configure()` 返回 `true`，再从 `user_identity()` 读取持久化身份，并在初始化 Adjust SDK 前设置全局 callback 参数：
+
+```gdscript
+# 游戏内的适配函数，不是 GamePropel SDK API。
+# set_global_parameter 绑定当前 Adjust 插件的真实 setter，签名为 (key, value)。
+func configure_adjust_identity(client, set_global_parameter: Callable) -> bool:
+    var identity: Dictionary = client.user_identity()
+    var user_id := String(identity.get("userId", ""))
+    var user_created_at := String(identity.get("userCreatedAt", ""))
+    if user_id.is_empty() or user_created_at.is_empty() or not set_global_parameter.is_valid():
+        return false
+    set_global_parameter.call("gamealgo_user_id", user_id)
+    set_global_parameter.call("gamealgo_user_created_at", user_created_at)
+    return true
+```
+
+这两个参数名是服务端协议字段，保持原样。身份值必须使用 SDK 原值；`userCreatedAt` 是 UTC 注册时间，不能替换为当前时间、Adjust 安装时间或 `userCreatedLocalAt`。读取身份不需要等待远端配置；现有客户端仍需调用 `start()` 启动配置和事件通道，保持启动异步，不阻塞首屏。
+
+示例返回 `true` 只表示身份非空且两次 setter 调用已执行，不代表原生插件已确认设置成功，也不证明安装回调已接收或关联。适配函数应按项目所用 Adjust 插件的返回值、错误或日志核对实际设置结果。
+
+Godot SDK 不自带 Adjust 插件，也没有 `configureAdjustServerCallbackParams` 或对应的 snake_case helper。游戏应根据现用插件连接真实的归因变化和 ADID 回调，并在正式构建中保留这些接线。
+
+### 归因回调与设备标识
+
 接了 Adjust 等归因 SDK 时，每次归因回调返回后都可以调用 `set_attribution`：
 
 ```gdscript
