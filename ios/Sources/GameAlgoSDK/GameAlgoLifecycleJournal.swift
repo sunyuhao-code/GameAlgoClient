@@ -49,6 +49,7 @@ final class GameAlgoLifecycleJournal: @unchecked Sendable {
     private var sampleForeground = true
     private var foregroundTimeMs: Double = 0
     private var sessionForegroundStartMs: Double = 0
+    private var lastSessionEnd: (userId: String, sessionId: String, isDebug: Bool, at: Date)?
 
     init(storage: (any GameAlgoCacheStorage)?, key: String?, queueLimit: Int = 1000) {
         self.storage = storage
@@ -111,22 +112,31 @@ final class GameAlgoLifecycleJournal: @unchecked Sendable {
         persist()
     }
 
-    func record(_ event: GameAlgoEvent) {
+    @discardableResult
+    func record(_ event: GameAlgoEvent, at date: Date = Date(), persistEvent: Bool = true) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        merge(event)
+        var markerChanged = false
         if event.eventType == "session_end", state.session?.event.sessionId == event.sessionId {
+            markerChanged = state.session?.open == true || state.session?.hasEnd != true
             state.session?.open = false
             state.session?.hasEnd = true
         }
-        persist()
+        let accepted = event.eventType != "session_end" || acceptSessionEnd(event, at: date)
+        if persistEvent {
+            if accepted { merge(event) }
+            if accepted || markerChanged || !durable { persist() }
+        }
+        return accepted
     }
 
-    func observe(foreground next: Bool, at date: Date) {
+    @discardableResult
+    func observe(foreground next: Bool, at date: Date) -> Bool {
         lock.lock(); defer { lock.unlock() }
         sampleLocked(foreground: next, at: date)
         let changed = foreground != next
         foreground = next
-        guard active, var session = state.session else { return }
+        guard active, var session = state.session else { return false }
+        var generatedEnd = false
         session.lastSeen = max(date, session.startedAt)
         session.timestamp = GameAlgoEventBatchUploader.isoTimestamp(session.lastSeen)
         session.createdLocalAt = GameAlgoEventBatchUploader.localTimestamp(session.lastSeen)
@@ -134,12 +144,30 @@ final class GameAlgoLifecycleJournal: @unchecked Sendable {
             session.open = true
             session.nextEventId = UUID().uuidString
         } else if changed {
-            merge(end(session, reason: "background", at: session.lastSeen, recovered: false))
+            let event = end(session, reason: "background", at: session.lastSeen, recovered: false)
+            if acceptSessionEnd(event, at: date) {
+                merge(event)
+                generatedEnd = true
+            }
             session.open = false
             session.hasEnd = true
         }
         state.session = session
         persist()
+        return generatedEnd
+    }
+
+    // Shared by synchronous UIKit callbacks and actor/manual tracking. Do not
+    // extend the window on suppressed calls, or frequent calls could starve it.
+    private func acceptSessionEnd(_ event: GameAlgoEvent, at date: Date) -> Bool {
+        if let previous = lastSessionEnd,
+           previous.userId == event.userId, previous.sessionId == event.sessionId,
+           previous.isDebug == (event.isDebug == true) {
+            let elapsed = date.timeIntervalSince(previous.at)
+            if elapsed >= 0 && elapsed < 1 { return false }
+        }
+        lastSessionEnd = (event.userId, event.sessionId, event.isDebug == true, date)
+        return true
     }
 
     /// Memory only. Every tick supplies live UIKit state; notifications never

@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error as StdError;
 use std::fs::{self, File, OpenOptions};
@@ -14,6 +14,7 @@ const MIN_TIMEOUT_MS: u64 = 1;
 const MAX_TIMEOUT_MS: u64 = 60_000;
 const HTTP_REQUEST_TIMEOUT_CAP_MS: u64 = 2_500;
 const RESULT_HISTORY_LIMIT: usize = 16;
+const SESSION_END_REENTRY_WINDOW: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 pub(crate) struct EventBackend {
@@ -50,6 +51,47 @@ struct Inner {
     session_tracking: bool,
     foreground: bool,
     foreground_time_ms: u64,
+    last_session_end: Option<SessionEndStamp>,
+    #[cfg(test)]
+    test_clock_origin: Instant,
+    #[cfg(test)]
+    test_now: Option<Instant>,
+}
+
+struct SessionEndStamp {
+    user_id: String,
+    session_id: String,
+    is_debug: bool,
+    at: Instant,
+}
+
+impl Inner {
+    fn end_clock(&self) -> Instant {
+        #[cfg(test)]
+        if let Some(now) = self.test_now {
+            return now;
+        }
+        Instant::now()
+    }
+
+    fn suppress_session_end(&self, event: &Value) -> bool {
+        self.last_session_end.as_ref().is_some_and(|previous| {
+            event["userId"].as_str().unwrap_or_default() == previous.user_id
+                && event["sessionId"].as_str().unwrap_or_default() == previous.session_id
+                && event["isDebug"].as_bool().unwrap_or(false) == previous.is_debug
+                && self.end_clock().saturating_duration_since(previous.at)
+                    < SESSION_END_REENTRY_WINDOW
+        })
+    }
+
+    fn remember_session_end(&mut self, event: &Value) {
+        self.last_session_end = Some(SessionEndStamp {
+            user_id: event["userId"].as_str().unwrap_or_default().to_owned(),
+            session_id: event["sessionId"].as_str().unwrap_or_default().to_owned(),
+            is_debug: event["isDebug"].as_bool().unwrap_or(false),
+            at: self.end_clock(),
+        });
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -100,6 +142,11 @@ impl EventBackend {
                 session_tracking: false,
                 foreground: true,
                 foreground_time_ms: 0,
+                last_session_end: None,
+                #[cfg(test)]
+                test_clock_origin: Instant::now(),
+                #[cfg(test)]
+                test_now: None,
             })),
         }
     }
@@ -154,6 +201,7 @@ impl EventBackend {
             inner.session_tracking = false;
             inner.foreground = true;
             inner.foreground_time_ms = 0;
+            inner.last_session_end = None;
             inner.active_event_ids.clear();
             inner.results.clear();
             inner.last_error.clear();
@@ -205,6 +253,31 @@ impl EventBackend {
                     json!({"ok":true,"duplicate":true,"previous":previous_revision,"revision":previous_revision,"removed":[]}),
                 );
             }
+            if event["eventType"] == "session_end" && inner.suppress_session_end(&event) {
+                let mut session = inner.session.clone();
+                let mut marker_changed = false;
+                if let Some(session) = session.as_mut() {
+                    if event.get("sessionId") == session.event.get("sessionId") {
+                        marker_changed = session.open || !session.has_end;
+                        session.open = false;
+                        session.has_end = true;
+                    }
+                }
+                // Even a suppressed rapid background/terminate must close the
+                // marker durably, including when the first end is already ACKed.
+                if marker_changed {
+                    persist_incremental(&config, &inner.queue, session.as_ref())?;
+                }
+                inner.session = session;
+                let revision = config
+                    .journal
+                    .lock()
+                    .map_err(|_| "native_event_lock_poisoned")?
+                    .sequence;
+                return Ok(
+                    json!({"ok":true,"duplicate":true,"previous":previous_revision,"revision":revision,"removed":[]}),
+                );
+            }
             if inner.queue.len() < config.queue_limit {
                 let mut session = inner.session.clone();
                 if event["eventType"] == "session_end" {
@@ -216,6 +289,9 @@ impl EventBackend {
                     }
                 }
                 persist_new_event(&config, &inner.queue, &event, session.as_ref())?;
+                if event["eventType"] == "session_end" {
+                    inner.remember_session_end(&event);
+                }
                 inner.queue.push(event);
                 inner.session = session;
                 let revision = config
@@ -265,6 +341,9 @@ impl EventBackend {
                 Vec::new()
             };
             persist_incremental(&config, &candidate, session.as_ref())?;
+            if event["eventType"] == "session_end" {
+                inner.remember_session_end(&event);
+            }
             inner.queue = candidate;
             inner.session = session;
             let revision = config
@@ -499,6 +578,7 @@ impl EventBackend {
             session.event["timestamp"] = json!(timestamp);
             session.event["createdLocalAt"] = json!(created_local_at);
             let mut candidate = inner.queue.clone();
+            let mut committed_end = None;
             if changed && foreground {
                 if next_event_id.is_empty() {
                     return Err("invalid_native_session_event_id".to_string());
@@ -507,11 +587,17 @@ impl EventBackend {
                 session.open = true;
             } else if changed {
                 let event = session_end(&session, "background", false);
-                push_session_end(&inner, &config, &mut candidate, event)?;
+                if !inner.suppress_session_end(&event) {
+                    push_session_end(&inner, &config, &mut candidate, event.clone())?;
+                    committed_end = Some(event);
+                }
                 session.open = false;
                 session.has_end = true;
             }
             persist_incremental(&config, &candidate, Some(&session))?;
+            if let Some(event) = committed_end {
+                inner.remember_session_end(&event);
+            }
             inner.queue = candidate;
             inner.session = Some(session);
             inner.foreground = foreground;
@@ -1504,7 +1590,7 @@ mod platform_support {
 
     #[cfg(target_os = "ios")]
     fn begin_ios_background_task() -> Option<usize> {
-        use std::ffi::{c_char, c_void, CString};
+        use std::ffi::{CString, c_char, c_void};
         #[link(name = "objc")]
         unsafe extern "C" {
             fn objc_getClass(name: *const c_char) -> *mut c_void;
@@ -1543,7 +1629,7 @@ mod platform_support {
 
     #[cfg(target_os = "ios")]
     fn end_ios_background_task(identifier: usize) {
-        use std::ffi::{c_char, c_void, CString};
+        use std::ffi::{CString, c_char, c_void};
         #[link(name = "objc")]
         unsafe extern "C" {
             fn objc_getClass(name: *const c_char) -> *mut c_void;
@@ -1581,7 +1667,7 @@ mod platform_support {
 
     #[cfg(target_os = "android")]
     pub(super) fn log(message: &str) {
-        use std::ffi::{c_char, CString};
+        use std::ffi::{CString, c_char};
         #[link(name = "log")]
         unsafe extern "C" {
             fn __android_log_write(priority: i32, tag: *const c_char, text: *const c_char) -> i32;
@@ -1595,7 +1681,7 @@ mod platform_support {
 
     #[cfg(target_os = "ios")]
     pub(super) fn log(message: &str) {
-        use std::ffi::{c_char, c_void, CString};
+        use std::ffi::{CString, c_char, c_void};
         #[link(name = "objc")]
         unsafe extern "C" {
             fn objc_getClass(name: *const c_char) -> *mut c_void;
@@ -1954,18 +2040,22 @@ mod tests {
         assert_eq!(result["ok"], false);
         assert_eq!(result["accepted"], 1);
         assert_eq!(result["remaining"], 2);
-        assert!(result["error"]
-            .as_str()
-            .unwrap()
-            .starts_with("server_acked_local_commit_failed:"));
+        assert!(
+            result["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("server_acked_local_commit_failed:")
+        );
         restore_storage(&path, saved);
         assert_eq!(configured(&path).pending_count(), 2);
-        assert!(test_flush(&backend, |_, batch, _| accepted_batch_count(
-            &json!({"ok": true, "accepted": 1}),
-            batch.len()
-        ))["ok"]
-            .as_bool()
-            .unwrap());
+        assert!(
+            test_flush(&backend, |_, batch, _| accepted_batch_count(
+                &json!({"ok": true, "accepted": 1}),
+                batch.len()
+            ))["ok"]
+                .as_bool()
+                .unwrap()
+        );
         assert_eq!(configured(&path).pending_count(), 0);
     }
 
@@ -1976,6 +2066,10 @@ mod tests {
     }
 
     fn heartbeat(backend: &EventBackend, foreground: bool, now_ms: i64, id: &str) {
+        {
+            let mut inner = backend.inner.lock().unwrap();
+            inner.test_now = Some(inner.test_clock_origin + Duration::from_millis(now_ms as u64));
+        }
         assert!(
             backend.lifecycle(
                 foreground,
@@ -1987,6 +2081,76 @@ mod tests {
             "{}",
             backend.last_error()
         );
+    }
+
+    #[test]
+    fn session_end_reentry_is_shared_by_manual_and_lifecycle_and_does_not_slide() {
+        let path = temporary_path("session-end-reentry");
+        let backend = configured(&path);
+        assert!(backend.start_session(
+            &session_event("automatic", "session", "ctx").to_string(),
+            1000
+        ));
+        heartbeat(&backend, true, 2000, "unused");
+        assert!(backend.enqueue(&session_event("manual", "session", "ctx").to_string()));
+        let (job_id, generation) = reserve_test_flush(&backend);
+        heartbeat(&backend, false, 2200, "unused");
+        let duplicate: Value = serde_json::from_str(
+            &backend.enqueue_delta(&session_event("manual-again", "session", "ctx").to_string()),
+        )
+        .unwrap();
+        assert_eq!(duplicate["duplicate"], true);
+        assert_eq!(backend.pending_count(), 1);
+        run_flush_with_post(
+            Arc::clone(&backend.inner),
+            job_id,
+            generation,
+            |_, batch, _| Ok(batch.len()),
+        );
+        let ack: Value = serde_json::from_str(&backend.result_json(job_id as i64)).unwrap();
+        assert_eq!(ack["ok"], true);
+        heartbeat(&backend, true, 2400, "rapid-resume");
+        heartbeat(&backend, false, 2500, "unused");
+        assert_eq!(backend.pending_count(), 0, "ACK does not disable the guard");
+        assert!(
+            !load_state(&path).unwrap().1.unwrap().open,
+            "suppressed ends still close the durable marker"
+        );
+        heartbeat(&backend, true, 2900, "next-edge");
+        heartbeat(&backend, false, 3000, "unused");
+        assert_eq!(
+            backend.pending_count(),
+            1,
+            "the original one-second window does not slide"
+        );
+        let duplicate: Value = serde_json::from_str(
+            &backend
+                .enqueue_delta(&session_event("manual-after-auto", "session", "ctx").to_string()),
+        )
+        .unwrap();
+        assert_eq!(duplicate["duplicate"], true);
+        assert!(backend.start_session(&session_event("next-end", "next", "ctx").to_string(), 3000));
+        assert!(backend.enqueue(&session_event("new-session-manual", "next", "ctx").to_string()));
+        assert_eq!(
+            backend.pending_count(),
+            2,
+            "a new session is never throttled by the previous one"
+        );
+    }
+
+    #[test]
+    fn failed_session_end_commit_does_not_consume_the_reentry_window() {
+        let path = temporary_path("failed-end-reentry");
+        let backend = configured(&path);
+        let saved = block_storage(&path);
+        assert!(!backend.enqueue(&session_event("failed", "session", "ctx").to_string()));
+        restore_storage(&path, saved);
+        let retry: Value = serde_json::from_str(
+            &backend.enqueue_delta(&session_event("retry", "session", "ctx").to_string()),
+        )
+        .unwrap();
+        assert_eq!(retry["duplicate"], false);
+        assert_eq!(backend.pending_count(), 1);
     }
 
     #[test]
@@ -2566,15 +2730,17 @@ mod tests {
             2,
             "ios"
         ));
-        assert!(backend.import_events(
-            &json!([
-                event("event-1", "session", "context"),
-                event("event-2", "session", "context"),
-                event("event-1", "session", "context"),
-                event("event-3", "session", "context")
-            ])
-            .to_string()
-        ));
+        assert!(
+            backend.import_events(
+                &json!([
+                    event("event-1", "session", "context"),
+                    event("event-2", "session", "context"),
+                    event("event-1", "session", "context"),
+                    event("event-3", "session", "context")
+                ])
+                .to_string()
+            )
+        );
         let queue: Vec<Value> = serde_json::from_str(&backend.snapshot_json()).unwrap();
         assert_eq!(queue.len(), 2);
         assert_eq!(queue[0]["eventId"], "event-2");

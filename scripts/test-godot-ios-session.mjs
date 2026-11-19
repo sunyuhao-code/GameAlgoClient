@@ -2,7 +2,7 @@
 // Requires Xcode and the Rust aarch64-apple-ios-sim target. No game data is used.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { copyFile, cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
@@ -17,6 +17,7 @@ const app = resolve(work, "GameAlgoSessionSmoke.app");
 const harness = resolve(root, "runtime/godot/tests/ios-session");
 let device;
 let alreadyBooted;
+let passed = false;
 
 try {
   // A fresh CI VM may need more than 30s to initialize CoreSimulatorService,
@@ -46,7 +47,7 @@ try {
   await sim("launch", bundle);
   const data = (await sim("get_app_container", bundle, "data")).stdout.trim();
   const statePath = resolve(data, "Documents/session.json");
-  const state = async () => JSON.parse(await readFile(statePath, "utf8"));
+  const state = async () => readDurableState(statePath);
   await until(async () => (await readFile(resolve(data, "Documents/ready"), "utf8")) === "ad-visible");
   const first = await state();
   assert.equal(first.events.length, 0, "presenting a full-screen ad must not end the session");
@@ -92,14 +93,63 @@ try {
   assert.equal(recovered[0].payload.sessionDurationMs, killed.session.duration_ms);
   assert.equal(recovered[0].timestamp, killed.session.event.timestamp);
   console.log("PASS: SIGKILL during the ad recovers the old session identity and last-observed duration");
+
+  const beforeHooks = restored.events.length;
+  await writeFile(resolve(data, "Documents/command"), "lifecycle");
+  const checkpoint = (name) => readDurableState(resolve(data, "Documents", name, "session.json"));
+  await until(async () => (await checkpoint("scene-resume")).session.open);
+  for (const name of ["scene-only", "app-duplicate", "rapid-terminate"]) {
+    const snapshot = await checkpoint(name);
+    assert.equal(snapshot.events.length, beforeHooks + 1, `${name} must produce only one end inside 1s`);
+    assert.equal(snapshot.session.open, false, `${name} closes the durable marker synchronously`);
+    assert.equal(snapshot.session.event.sessionId, restored.session.event.sessionId);
+  }
+  assert.equal((await checkpoint("scene-resume")).session.event.sessionId, restored.session.event.sessionId);
+  console.log("PASS: Scene-only background persists an end; App/terminate reentry coalesces; Scene resume keeps identity");
+  await delay(1100);
+  await writeFile(resolve(data, "Documents/command"), "terminate");
+  await until(async () => (await checkpoint("terminate-only")).session.open === false);
+  assert.equal((await checkpoint("terminate-only")).events.length, beforeHooks + 2,
+    "a standalone terminate notification after the window creates a fresh end");
+  console.log("PASS: willTerminate independently persists session_end before returning");
   console.log(`iOS native session integration passed on ${device.name}`);
+  passed = true;
+} catch (error) {
+  if (device) {
+    const data = (await sim("get_app_container", bundle, "data").catch(() => ({ stdout: "" }))).stdout.trim();
+    if (data) await cp(resolve(data, "Documents"), resolve(work, "evidence"), { recursive: true }).catch(() => {});
+  }
+  console.error(`Failed native session evidence retained at ${work}`);
+  throw error;
 } finally {
   if (device) {
     await sim("terminate", bundle).catch(() => {});
     await sim("uninstall", bundle).catch(() => {});
     if (!alreadyBooted) await sim("shutdown").catch(() => {});
   }
-  await rm(work, { recursive: true, force: true });
+  if (passed) await rm(work, { recursive: true, force: true });
+}
+
+// Observe actual durable state, including the incremental format used before
+// the first snapshot compaction. Do not rely on an in-memory SDK inspection.
+async function readDurableState(path) {
+  let state = { sequence: 0, events: [], session: null };
+  try { state = JSON.parse(await readFile(path, "utf8")); }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
+  const directory = path.replace(/\.json$/, ".journal");
+  let records = [];
+  try { records = (await readdir(directory)).filter((name) => name.endsWith(".json")).sort(); }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
+  const events = new Map(state.events.map((event) => [event.eventId, event]));
+  for (const name of records) {
+    const operation = JSON.parse(await readFile(resolve(directory, name), "utf8"));
+    if (operation.sequence <= state.sequence) continue;
+    for (const id of operation.remove) events.delete(id);
+    for (const event of operation.put) events.set(event.eventId, event);
+    state.session = operation.session;
+    state.sequence = operation.sequence;
+  }
+  return { ...state, events: [...events.values()] };
 }
 
 async function run(command, args, timeout = 30_000) {
@@ -115,9 +165,10 @@ function sim(command, ...args) { return run("xcrun", ["simctl", command, device.
 function delay(ms) { return new Promise((done) => setTimeout(done, ms)); }
 async function until(check, timeout = 10_000) {
   const deadline = Date.now() + timeout;
+  let lastError;
   while (Date.now() < deadline) {
-    try { if (await check()) return; } catch { /* the first atomic write may not exist yet */ }
+    try { if (await check()) return; } catch (error) { lastError = error; }
     await delay(100);
   }
-  throw new Error("Timed out waiting for the native session state");
+  throw new Error("Timed out waiting for the native session state", { cause: lastError });
 }

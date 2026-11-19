@@ -29,6 +29,18 @@ final class GameAlgoLifecycleObserver {
         tokens.append(center.addObserver(forName: UIApplication.willTerminateNotification, object: nil, queue: .main) {
             [weak self] _ in MainActor.assumeIsolated { self?.background() }
         })
+        tokens.append(center.addObserver(forName: UIScene.didEnterBackgroundNotification, object: nil, queue: .main) {
+            [weak self] notification in MainActor.assumeIsolated {
+                guard let scene = notification.object as? UIScene else { return }
+                let anotherForegroundScene = UIApplication.shared.connectedScenes.contains {
+                    $0 !== scene && ($0.activationState == .foregroundActive || $0.activationState == .foregroundInactive)
+                }
+                if !anotherForegroundScene { self?.background() }
+            }
+        })
+        tokens.append(center.addObserver(forName: UIScene.willEnterForegroundNotification, object: nil, queue: .main) {
+            [weak self] _ in MainActor.assumeIsolated { self?.resume() }
+        })
         let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
@@ -52,7 +64,10 @@ final class GameAlgoLifecycleObserver {
 
     private func background() {
         // The durable end exists before scheduling any actor or network work.
-        journal.observe(foreground: false, at: now())
+        let generatedEnd = journal.observe(foreground: false, at: now())
+        // App and Scene callbacks may describe the same transition. Keep the
+        // active upload instead of cancelling it to start an identical one.
+        guard upload == nil || generatedEnd else { return }
         finishUpload()
         generation += 1
         let current = generation

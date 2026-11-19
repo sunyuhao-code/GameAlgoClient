@@ -33,6 +33,11 @@ static NSString *GameAlgoTimestamp(NSDate *date, BOOL local) {
         NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
         [center addObserver:self selector:@selector(background:) name:UIApplicationDidEnterBackgroundNotification object:nil];
         [center addObserver:self selector:@selector(foreground:) name:UIApplicationWillEnterForegroundNotification object:nil];
+        [center addObserver:self selector:@selector(background:) name:UIApplicationWillTerminateNotification object:nil];
+        if (@available(iOS 13.0, *)) {
+            [center addObserver:self selector:@selector(sceneBackground:) name:UISceneDidEnterBackgroundNotification object:nil];
+            [center addObserver:self selector:@selector(foreground:) name:UISceneWillEnterForegroundNotification object:nil];
+        }
         // Do not observe resign-active: ads, Control Center and permission
         // dialogs may make the app inactive without putting it in background.
         __weak GameAlgoGodotLifecycle *weakSelf = self;
@@ -66,6 +71,16 @@ static NSString *GameAlgoTimestamp(NSDate *date, BOOL local) {
     // Synchronous queue+marker commit, followed by the existing native flush
     // with its bounded iOS background execution task. No Godot frame required.
     [self report];
+}
+
+- (void)sceneBackground:(NSNotification *)notification API_AVAILABLE(ios(13.0)) {
+    if (![notification.object isKindOfClass:UIScene.class]) return;
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (scene != notification.object &&
+            (scene.activationState == UISceneActivationStateForegroundActive ||
+             scene.activationState == UISceneActivationStateForegroundInactive)) return;
+    }
+    [self background:notification];
 }
 
 - (void)report {

@@ -134,7 +134,9 @@ let decision = dda.decide(context: .object([
 
 `tracker` 每批最多上传 100 条，普通事件每 30 秒 flush 一次。在 iOS UIKit 环境中，事件入队即同步持久化，完整记录包含在途事件、未关闭会话和待恢复的原配置请求；成功 ACK 后才移除对应事件。默认 `GameAlgoFileCacheStorage` 使用 Application Support 内的原子文件并同步提交，旧 UserDefaults 缓存保持读取回退，旧 JSON Lines 事件队列在启用生命周期记录时迁移。自定义 `GameAlgoCacheStorage` 继续受支持；显式传 `nil` 时只能保留进程内队列，其他实现的持久化保证取决于自身行为。事件在产生时固定 `sessionId/contextId`，刷新配置不重绑旧事件。关键事件后仍可调用 `await sdk.tracker.flush()`；`trackSessionEnd` 入队后会立即触发 flush。
 
-初始化后自动监听 App 整体的 `didEnterBackground`、`willEnterForeground`、`willTerminate` 通知，无需修改 AppDelegate 或 SceneDelegate。后台通知先同步生成并保存 `reason=background` 的 `session_end`，随后通过有限后台任务尝试上传，主动预算为 2.5 秒，系统可更早收回执行时间。保存不等待 Swift actor 获得执行机会；失败事件保留供之后恢复。全屏广告、控制中心和权限弹窗引起的普通失焦不结束会话；真正进入后台才结束。恢复前台沿用原 `sessionId`，后续再次退后台可再次上报。
+初始化后自动监听 App 整体的 `didEnterBackground`、`willEnterForeground`、`willTerminate`，以及 Scene 的 `didEnterBackground`、`willEnterForeground` 通知，无需修改 AppDelegate 或 SceneDelegate。多 Scene 时，仍有其他前台 Scene 则不因单个 Scene 退后台生成结束事件。后台或退出通知先同步生成并保存 `reason=background` 的 `session_end`，随后通过有限后台任务尝试上传，主动预算为 2.5 秒，系统可更早收回执行时间。保存不等待 Swift actor 获得执行机会；失败事件保留供之后恢复。全屏广告、控制中心和权限弹窗引起的普通失焦不结束会话；真正进入后台才结束。恢复前台沿用原 `sessionId`，后续再次退后台可再次上报。
+
+同一用户、Session 和 debug 标记下，自动与手动 `session_end` 共用 1 秒重入保护：保留首条，窗口内后续调用不新增事件，且不延长窗口；手动 `trackSessionEnd()` 仍返回成功并尝试 flush 已有事件。被合并的快速退后台仍会关闭并保存会话标记，避免重启误补报；新 Session 不受旧 Session 的窗口限制。此保护仅属于当前 SDK 实例，不过滤重启恢复事件，也不对整个 Session 永久去重。
 
 `sessionDurationMs` 改为 1 秒采样累计：每次直接读取系统当前前后台状态，单次最多累计 1 秒，不追补暂停期间的长间隔；漏掉前台通知不会导致持续停计。后台不累计，广告期间采样可运行时累计，暂停时允许少计。手动结束、自动生命周期结束和会话切换共用累计值。每秒只更新内存，沿用 10 秒心跳及事件操作持久化，强杀恢复只使用最后保存的累计时长。初始化或显式新会话重置，恢复前台不重置。
 

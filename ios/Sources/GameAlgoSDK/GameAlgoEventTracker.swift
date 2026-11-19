@@ -375,7 +375,7 @@ public actor GameAlgoEventTracker {
             accountUserId: accountUserId,
             payload: normalizedPayload
         )
-        enqueue(event)
+        enqueue(event, at: eventDate)
         if let milestone, let key = milestone.key {
             rememberMilestone(key, durable: milestone.durable)
         }
@@ -741,10 +741,15 @@ public actor GameAlgoEventTracker {
         if hasPersistedQueue { clearPersistedQueue() }
     }
 
-    private func enqueue(_ event: GameAlgoEvent) {
-        queue.append(event)
+    private func enqueue(_ event: GameAlgoEvent, at date: Date? = nil) {
         if event.eventType == "session_end", event.sessionId == sessionId { sessionHasEnd = true }
-        if lifecycleEnabled { lifecycleJournal.record(event) }
+        if lifecycleEnabled || event.eventType == "session_end" {
+            guard lifecycleJournal.record(event, at: date ?? now(), persistEvent: lifecycleEnabled) else {
+                log("coalesced session_end within 1 second")
+                return
+            }
+        }
+        queue.append(event)
         log("enqueued \(event.eventType), queue size: \(queue.count)")
         if queue.count > queueLimit {
             queue.removeFirst(queue.count - queueLimit)

@@ -64,6 +64,53 @@ final class GameAlgoLifecycleTests: XCTestCase {
     }
     private func date(_ seconds: Double) -> Date { Date(timeIntervalSince1970: seconds) }
 
+    func testSessionEndReentrySharesManualAndLifecycleWindowAndClosesRapidResume() throws {
+        let storage = storage()
+        let journal = GameAlgoLifecycleJournal(storage: storage, key: "reentry")
+        journal.activate(template("session"), startedAt: date(1000), hasEnd: false, foreground: true, pending: [])
+        var manual = template("session")
+        manual.eventId = "manual"
+        XCTAssertTrue(journal.record(manual, at: date(1001)))
+        journal.observe(foreground: false, at: date(1001.2))
+        manual.eventId = "manual-again"
+        XCTAssertFalse(journal.record(manual, at: date(1001.3)))
+        XCTAssertEqual(journal.pending().count, 1)
+        journal.acknowledge(journal.pending())
+        journal.observe(foreground: true, at: date(1001.4))
+        journal.observe(foreground: false, at: date(1001.5))
+        XCTAssertTrue(journal.pending().isEmpty, "ACK does not disable reentry protection")
+        let restarted = GameAlgoLifecycleJournal(storage: storage, key: "reentry")
+        restarted.activate(template("new"), startedAt: date(1001.6), hasEnd: false, foreground: true, pending: [])
+        XCTAssertTrue(restarted.pending().isEmpty, "a suppressed rapid end still durably closes the old marker")
+        journal.observe(foreground: true, at: date(1001.9))
+        journal.observe(foreground: false, at: date(1002))
+        XCTAssertEqual(journal.pending().count, 1, "suppressed calls do not slide the window")
+        manual.eventId = "after-auto"
+        XCTAssertFalse(journal.record(manual, at: date(1002.1)))
+        journal.activate(template("next"), startedAt: date(1002.1), hasEnd: false, foreground: true, pending: [])
+        XCTAssertTrue(journal.record(template("next"), at: date(1002.1)), "new sessions are independent")
+        XCTAssertEqual(journal.pending().count, 2)
+    }
+
+    func testManualSessionEndReentryStillFlushesAndOrdinaryEventsAreUnaffected() async throws {
+        let uploader = LifecycleUploader()
+        let tracker = GameAlgoEventTracker(uploader: uploader, flushInterval: 0,
+                                          now: { Date(timeIntervalSince1970: 1000) })
+        await tracker.identify(userId: "user", sessionId: "session")
+        await tracker.setContextId("ctx")
+        _ = await tracker.trackSessionEnd()
+        _ = await tracker.trackLevelStart()
+        let repeated = await tracker.trackSessionEnd()
+        XCTAssertTrue(repeated)
+        let events = await uploader.events
+        XCTAssertEqual(events.map(\.eventType), ["session_end", "level_start"], "duplicate ends still flush other pending events")
+        await tracker.newSession("next")
+        await tracker.setContextId("next-ctx")
+        _ = await tracker.trackSessionEnd()
+        let afterRotation = await uploader.events
+        XCTAssertEqual(afterRotation.filter { $0.eventType == "session_end" }.map(\.sessionId), ["session", "next"])
+    }
+
     func testForegroundClockIsReadOnlyAndOutlivesSessions() throws {
         let storage = storage()
         let journal = GameAlgoLifecycleJournal(storage: storage, key: "journal")
