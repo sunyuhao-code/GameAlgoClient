@@ -8,6 +8,7 @@ extends SceneTree
 
 const Runtime := preload("res://addons/gamealgo/gamealgo_script_runtime.gd")
 const Tracker := preload("res://addons/gamealgo/gamealgo_tracker.gd")
+const ProtocolFixtures := preload("res://tests/gamealgo_sdk_contracts.gd")
 
 class EventMirrorProbe:
 	extends RefCounted
@@ -52,8 +53,41 @@ func _run() -> void:
 	_test_sdk_wrapper_uses_the_runtime()
 	_test_native_session_recovery(native)
 	_test_incremental_event_mirror(native)
+	_test_native_string_name_payload(native)
 	print("RESULT: %d passed, %d failed" % [_passed, _failed])
 	quit(0 if _failed == 0 else 1)
+
+
+func _test_native_string_name_payload(native: Object) -> void:
+	var path := ProjectSettings.globalize_path("user://string-name-payload-%d.json" % Time.get_ticks_usec())
+	var tracker := Tracker.new()
+	_check(tracker.configure(null, ProtocolFixtures.MemoryStore.new(), {
+		"event_backend": native, "native_event_storage_path": path,
+		"event_endpoint": "https://gamealgo.invalid/v1/events/batch", "game_key": "ga_live_fixture",
+		"platform": "ios", "user_id": "payload-user", "session_id": "payload-session",
+		"measurement_allowed": true, "flush_interval": 0.0,
+	}), "StringName payload configures the production native backend")
+	tracker.set_context_id("payload-context")
+	var dot: Dictionary = {}
+	dot.result = "win"
+	dot.steps = 12
+	dot.durationMs = 2500.5
+	dot.isNewUser = true
+	dot.details = {&"result": &"win"}
+	var plain := {"result": "win", "steps": 12, "durationMs": 2500.5, "isNewUser": true,
+		"details": {"result": "win"}}
+	_check(tracker.track_level_end(dot) and tracker.track_level_end(plain),
+		"both field-name styles pass through the real native enqueue bridge")
+	var events: Array = JSON.parse_string(String(native.call("event_backend_snapshot_json")))
+	var expected: Dictionary = JSON.parse_string('{"result":"win","steps":12,"durationMs":2500.5,"isNewUser":true,"details":"{\\"result\\":\\"win\\"}"}')
+	_check(events.size() == 2 and events[0]["payload"] == expected and events[1]["payload"] == expected,
+		"production Rust queue retains identical complete payloads for String and StringName keys")
+	_check(bool(native.call("event_backend_configure", path,
+		"https://gamealgo.invalid/v1/events/batch", "ga_live_fixture", 100, 1000, "ios")),
+		"production native payload queue reloads from disk")
+	_check(JSON.parse_string(String(native.call("event_backend_snapshot_json"))) == events,
+		"incremental storage round-trip preserves fields, values, and event IDs")
+	_check(bool(native.call("event_backend_clear")), "native payload fixture storage clears")
 
 
 func _test_incremental_event_mirror(native: Object) -> void:

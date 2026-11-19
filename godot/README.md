@@ -101,6 +101,8 @@ var result: Dictionary = await client.flush()
 
 `ad_placement_id` 来自本游戏 CLI 注册结果；payload 携带 `adPlacementId`、真实 `revenue` 和可选 `network` / `trackId`。服务端补齐名称、类型和币种，币种必须与回调金额一致。trackId 仍取真实回调，每次有效曝光只上报一次；加载失败、未填充或展示前失败不报曝光。
 
+Payload 的字段名兼容 `String` 和 `StringName`：`payload.result = "win"` 与 `payload["result"] = "win"` 上报相同字段。SDK 将顶层键及 `StringName` 字符串值转成普通字符串；嵌套字典和数组中的 `StringName` 同样受支持，仍按现有协议编码为 JSON 字符串。不修改调用方字典，非字符串键、非法数值、无法编码的类型和超深嵌套仍按原规则过滤。
+
 事件入队时即固定 `eventId`、UTC `timestamp`、本地 `createdLocalAt` 和当前 `sessionId`，延迟上传或重试不会改写发生时间。所有事件（包括已绑定 context 的广告和会话事件）先确认原生队列落盘，再返回 `true`；这个返回值表示本地持久化接纳，不表示服务端收到。默认每批最多 100 条；队列达到 100 条或经过 30 秒时自动 flush。
 
 原生队列按新增、context 绑定、ACK 移除和会话变化写入增量记录，每 256 次提交整理一次快照，旧记录在后台清理；旧版快照自动读取，整理中断时通过提交序号避免重复恢复。GDScript 入队只接收原生队列变更，原生后台发生 ACK 等变化时再同步镜像，避免每条事件都跨桥复制和解析整个队列。配置与归因恢复由队列变化或重试期限唤醒，空闲帧不再扫描恢复队列。

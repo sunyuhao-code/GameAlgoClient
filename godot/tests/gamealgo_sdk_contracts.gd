@@ -393,10 +393,12 @@ func _run() -> void:
 	_test_recovery_checks_wait_for_changes_or_retry_deadlines()
 	_test_base_url_and_key_validation()
 	_test_device_os_version()
+	_test_string_name_payload_normalization()
 	await _test_foreground_clock()
 	await _test_config_request_envelope()
 	await _test_device_version_override()
 	await _test_event_envelope_and_batching()
+	await _test_string_name_event_payloads()
 	await _test_registered_ad_placement()
 	await _test_event_batch_completion_policy()
 	await _test_native_event_backend_migration_and_recovery()
@@ -690,6 +692,109 @@ func _test_event_batch_completion_policy() -> void:
 	offline.events_ok = true
 	_check((await client.flush())["ok"], "transport errors can recover on a later attempt")
 	client.free()
+
+
+func _string_name_payload() -> Dictionary:
+	var payload: Dictionary = {}
+	payload.result = "win"
+	payload.steps = 12
+	payload.durationMs = 2500.5
+	payload.isNewUser = false
+	payload.empty = ""
+	payload.nullable = null
+	payload.details = {&"stage": &"clear", &"metrics": {&"steps": 12}}
+	payload.history = [{&"result": &"win", &"steps": 0}]
+	return payload
+
+
+func _expected_string_name_payload() -> Dictionary:
+	return {
+		"result": "win", "steps": 12, "durationMs": 2500.5, "isNewUser": false,
+		"empty": "", "nullable": null,
+		"details": '{"metrics":{"steps":12},"stage":"clear"}',
+		"history": '[{"result":"win","steps":0}]',
+	}
+
+
+func _test_string_name_payload_normalization() -> void:
+	var payload := _string_name_payload()
+	var original := JSON.stringify(payload, "", true, true)
+	_check(payload.keys().all(func(key: Variant): return key is StringName),
+		"dot-access fixture really contains StringName keys")
+	var normalized := Util.normalize_payload(payload)
+	_check(normalized == _expected_string_name_payload(),
+		"dot-access payload preserves results, numbers, false, null, and nested JSON strings")
+	_check(normalized.keys().all(func(key: Variant): return key is String),
+		"normalized payload keys are ordinary String values")
+	var ordinary: Dictionary = {}
+	for key: Variant in payload:
+		ordinary[String(key)] = payload[key]
+	_check(Util.normalize_payload(ordinary) == normalized,
+		"String and StringName field names produce the same payload")
+	_check(JSON.stringify(payload, "", true, true) == original \
+			and payload.keys().all(func(key: Variant): return key is StringName),
+		"normalization does not mutate the caller's values or key types")
+	var typed: Dictionary[StringName, Variant] = {&"result": &"win", &"steps": 0}
+	_check(Util.normalize_payload(typed) == {"result": "win", "steps": 0},
+		"typed StringName dictionaries and StringName string values are supported")
+	_check(Util.valid_json_value(payload[&"details"]) and Util.valid_json_value(payload[&"history"]),
+		"nested StringName keys and values pass JSON validation")
+	_check(not Util.valid_json_value({1: "invalid"}), "numeric dictionary keys remain invalid")
+	var invalid: Dictionary = {
+		&"": "empty", 1: "numeric-key", &"nan": NAN, &"infinity": INF,
+		&"object": Vector2.ONE, &"bad_nested": {&"number": NAN}, &"bad_array": [{1: true}],
+	}
+	_check(Util.normalize_payload(invalid).is_empty(),
+		"invalid keys, non-finite numbers, unsupported types, and invalid nested values remain omitted")
+	var deep: Variant = true
+	for _depth in range(Util.MAX_JSON_DEPTH + 2):
+		deep = {&"next": deep}
+	_check(not Util.valid_json_value(deep) and Util.normalize_payload({&"deep": deep}).is_empty(),
+		"StringName support preserves the JSON depth limit")
+
+
+func _test_string_name_event_payloads() -> void:
+	# Godot's JSON parser reads every number as float. Compare both paths in
+	# their JSON representation rather than requiring int/float Variant identity.
+	var expected_wire: Dictionary = JSON.parse_string(Util.canonical_json(_expected_string_name_payload()))
+	for native_queue: bool in [false, true]:
+		var transport := TransportFixture.new()
+		var backend: Variant = NativeEventBackendFixture.new() if native_queue else null
+		var client := _make_client({"transport": transport, "event_backend": backend})
+		if client == null:
+			_check(false, "StringName event fixture configures")
+			continue
+		await client.refresh(true)
+		var dot := _string_name_payload()
+		var ordinary: Dictionary = {}
+		for key: Variant in dot:
+			ordinary[String(key)] = dot[key]
+		_check(client.tracker.track_level_end(dot) and client.tracker.track_level_end(ordinary),
+			"both field-name styles enter the event queue")
+		var new_user: Dictionary = {}
+		new_user.isNewUser = true
+		_check(client.tracker.track_event("new_user", new_user), "dot-access new-user flag enters the queue")
+		var queued: Array = client.tracker.pending_events_for_testing()
+		_check(queued.size() == 3, "StringName fields do not alter event admission")
+		if queued.size() == 3:
+			for index in range(2):
+				_check(JSON.parse_string(Util.canonical_json(queued[index]["payload"])) == expected_wire,
+					"queued payload preserves all fields through native JSON or legacy storage")
+			_check(queued[2]["eventType"] == "_new_user" and queued[2]["payload"] == {"isNewUser": true},
+				"custom new-user event retains its boolean flag")
+		var result: Dictionary = await client.flush()
+		_check(result.get("ok", false) and result.get("accepted", 0) == 3,
+			"both native and legacy paths flush all three events")
+		if not native_queue:
+			var bodies := transport.bodies_for("/v1/events/batch")
+			_check(bodies.size() == 1, "StringName events share one JSON batch")
+			if bodies.size() == 1:
+				var events: Array = bodies[0]["events"]
+				_check(events.size() == 3 and events[0]["payload"] == expected_wire \
+						and events[1]["payload"] == expected_wire \
+						and events[2]["payload"] == {"isNewUser": true},
+					"actual serialized batch JSON contains identical complete payloads for both field-name styles")
+		client.free()
 
 
 func _test_event_envelope_and_batching() -> void:

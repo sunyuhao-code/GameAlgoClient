@@ -185,7 +185,7 @@ static func resolve_url(base_url: String, candidate: String) -> String:
 static func valid_json_value(value: Variant, depth: int = 0) -> bool:
 	if depth > MAX_JSON_DEPTH:
 		return false
-	if value == null or value is String or value is bool or value is int:
+	if value == null or value is String or value is StringName or value is bool or value is int:
 		return true
 	if value is float:
 		return is_finite(float(value))
@@ -196,7 +196,7 @@ static func valid_json_value(value: Variant, depth: int = 0) -> bool:
 		return true
 	if value is Dictionary:
 		for key: Variant in value:
-			if not key is String or not valid_json_value(value[key], depth + 1):
+			if not (key is String or key is StringName) or not valid_json_value(value[key], depth + 1):
 				return false
 		return true
 	return false
@@ -207,16 +207,19 @@ static func normalize_payload(payload: Variant) -> Dictionary:
 		return {}
 	var normalized: Dictionary = {}
 	for raw_key: Variant in payload:
-		if not raw_key is String or String(raw_key).is_empty():
+		if not (raw_key is String or raw_key is StringName) or String(raw_key).is_empty():
 			continue
+		var key := String(raw_key)
 		var value: Variant = payload[raw_key]
-		if value == null or value is String or value is bool or value is int:
-			normalized[raw_key] = value
+		if value is StringName:
+			normalized[key] = String(value)
+		elif value == null or value is String or value is bool or value is int:
+			normalized[key] = value
 		elif value is float:
 			if is_finite(float(value)):
-				normalized[raw_key] = value
+				normalized[key] = value
 		elif (value is Array or value is Dictionary) and valid_json_value(value):
-			normalized[raw_key] = canonical_json(value)
+			normalized[key] = canonical_json(value)
 	return normalized
 
 
