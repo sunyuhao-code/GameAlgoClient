@@ -35,7 +35,7 @@ var _user_id := ""
 var _session_id := ""
 var _context_id := ""
 var _platform := "rest"
-var _sdk_version := "2.1.3"
+var _sdk_version := "2.1.4"
 var _app_version := ""
 var _timezone := "UTC"
 var _user_created_at := ""
@@ -92,7 +92,7 @@ func configure(client: Object, storage: Variant, options: Dictionary) -> bool:
 	if _session_id.is_empty():
 		_session_id = GameAlgoUtil.uuid()
 	_platform = String(options.get("platform", "rest"))
-	_sdk_version = String(options.get("sdk_version", "2.1.3"))
+	_sdk_version = String(options.get("sdk_version", "2.1.4"))
 	_app_version = String(options.get("app_version", ""))
 	_timezone = String(options.get("timezone", GameAlgoUtil.timezone_name()))
 	_user_created_at = String(options.get("user_created_at", ""))

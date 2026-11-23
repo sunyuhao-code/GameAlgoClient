@@ -18,6 +18,8 @@ Android 导出需要在 **Project Settings / Plugins** 启用 **GameAlgo**，并
 
 支持 `android` 和 `ios` 两个导出目标。
 
+2.1.4 起，原生 Rust 绑定按需解析实际调用的引擎接口，兼容裁掉未使用的 3D / XR 功能的 2D 导出模板。自定义引擎仍需保留 GDExtension 以及 SDK 实际使用的接口。
+
 iOS 的运行时是 **framework 而不是裸 dylib**：dyld 按二进制自带的 install name 解析嵌入的库，只有 framework bundle 能带上这个名字。设备和模拟器各一份（`runtime/ios/` 和 `runtime/ios-simulator/`），两份都要放进去，否则对应环境里运行时单例加载不出来，SDK 会以 `native_event_backend_unavailable` 拒绝配置。
 
 本仓库的 `godot/project.godot` 和 `godot/tests/` 只用于跑测试，游戏不需要。
