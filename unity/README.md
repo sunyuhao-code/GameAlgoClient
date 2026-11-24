@@ -1,17 +1,18 @@
 # GamePropel Unity SDK
 
 Unity 2022.3 or later; Android API 24+ and iOS 15+. Install the prepared
-`com.gamepropel.sdk-1.0.0.tgz` with **Package Manager → Add package from tarball**.
+`com.gamepropel.sdk-1.0.1.tgz` with **Package Manager → Add package from tarball**.
 A source checkout can also be added as a local package after building its native
 artifacts. JSON uses the SDK's small, dependency-free data parser; no Newtonsoft
 or System.Text.Json assembly is required. The SDK initializes only in Android/iOS players;
 initialization in the Editor throws `PlatformNotSupportedException`.
 
 The repository includes prepared Android AARs and iOS XCFrameworks. The **Unity
-bindings** GitHub Actions workflow tests the sources and packages these checked-in
-native artifacts as the downloadable `gamepropel-unity-upm` artifact. SDK
-maintainers must rebuild the native artifacts with `Tools~/build_native.py` when
-the native SDK, runtime or bridge changes, then rerun the player and size checks.
+bindings** GitHub Actions workflow tests the sources, rebuilds matching native
+SDKs and bridges, and publishes the downloadable `gamepropel-unity-upm` artifact.
+SDK maintainers refresh the checked-in native artifacts from that validated
+package when releasing native SDK or bridge changes. Local rebuilding uses
+`Tools~/build_native.py`; player and size checks remain separate.
 Games importing the prepared package do not compile the SDK's Rust/Swift/Java
 sources themselves.
 
