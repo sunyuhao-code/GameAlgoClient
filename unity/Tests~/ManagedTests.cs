@@ -30,6 +30,12 @@ internal static class ManagedTests
         Throws(() => new GamePropelOptions { GameKey = "ga_admin_not_a_client_key" }.ToJson(), "management keys rejected");
         Throws(() => new GamePropelOptions { GameKey = "ga_live_test", BaseUrl = "https://example.com/?secret=1" }.ToJson(), "query URLs rejected");
 
+        Check(serialized["isOldUser"] == null, "omitted classification is absent rather than null");
+        foreach (var first in new[] { true, false }) {
+            options.IsOldUser = first;
+            Check(options.ToJson().Value<bool>("isOldUser") == first, "explicit classification survives serialization");
+        }
+
         var payload = new JsonObject { ["level_attempt_id"] = "attempt-1", ["name"] = "第一关" };
         var tracking = client.TrackLevelEndAsync(payload);
         payload["name"] = "changed";

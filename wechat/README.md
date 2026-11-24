@@ -15,6 +15,10 @@ The `GameAlgoWechatClient`, `initGameAlgoWechat`, and `GAMEALGO_WECHAT_*` names
 remain aliases for existing integrations. Storage keys and the wire protocol
 retain their historical names.
 
+## Existing or new players
+
+Optional initialization option `isOldUser` classifies pre-existing game progress: true for an existing player, false for a confirmed new player, and omitted when unknown. Read the necessary progress before initialization. The SDK persists the first explicit value per game/player; restarting or creating a new save does not overwrite it. Only the `new_user` standard milestone funnel excludes existing players from both its denominator and node counts. Other milestones, SDK registration dates, retention and LTV keep their existing definitions. Pass it to `GamePropelWechatClient.init(options)`; normal host storage is automatic.
+
 ## Install and initialize
 
 ```bash

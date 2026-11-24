@@ -43,6 +43,10 @@ Android 源码构建还需要 JDK 17 和 Android SDK 35；构建脚本会运行�
 
 接入方在 `configure` 的 `device` 选项中显式提供的同名字段仍优先于自动采集值。旧会话持久化的配置请求保留原始设备信息，不会在重试时改写。
 
+## 已有进度玩家
+
+可选初始化参数 `is_old_user` 用于区分 SDK 接入前已有游戏进度的玩家：true 为已有进度，false 为确认的新玩家，未知则省略。由游戏在初始化前读取必要存档并判断，不能只看文件是否存在。SDK 持久化该用户首次明确值，后续启动或重新开档不覆盖。仅 `new_user` 标准漏斗的分母与节点人数排除老玩家；其他类型里程碑、SDK 注册时间、留存与 LTV 沿用原规则。在 `configure(options)` 中传入，使用 GDScript snake_case，线上 config 字段为 `isOldUser`。
+
 ## 最小接入
 
 ```gdscript

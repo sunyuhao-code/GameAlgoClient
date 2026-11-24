@@ -151,6 +151,8 @@ export type ContextIdentifierResponse = {
 export type GameAlgoRestClientOptions = {
   baseUrl: string;
   gameKey: string;
+  /** Existing game progress when first integrated. The first explicit value is persisted. */
+  isOldUser?: boolean;
   userId?: string;
   userCreatedAt?: string;
   userCreatedLocalAt?: string;

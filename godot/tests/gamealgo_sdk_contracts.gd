@@ -396,6 +396,7 @@ func _run() -> void:
 	_test_string_name_payload_normalization()
 	await _test_foreground_clock()
 	await _test_config_request_envelope()
+	await _test_old_user_classification()
 	await _test_device_version_override()
 	await _test_event_envelope_and_batching()
 	await _test_string_name_event_payloads()
@@ -578,6 +579,31 @@ func _test_device_version_override() -> void:
 		_check(device.get("sdkInt") == 34, "config carries the API level as a JSON number")
 		_check(device.get("runtime") == "godot", "version overrides retain other default device fields")
 	client.free()
+
+
+func _test_old_user_classification() -> void:
+	for first: bool in [true, false]:
+		var storage := MemoryStore.new()
+		var inputs: Array = [null, first, not first, null]
+		for index: int in range(inputs.size()):
+			var transport := TransportFixture.new()
+			var options := {"storage": storage, "transport": transport}
+			if inputs[index] is bool:
+				options["is_old_user"] = inputs[index]
+			var client := _make_client(options)
+			if client == null:
+				_check(false, "old-user fixture configured")
+				continue
+			await client.refresh(true)
+			var bodies := transport.bodies_for("/v1/config")
+			_check(bodies.size() == 1, "old-user config request issued")
+			if not bodies.is_empty():
+				if index == 0:
+					_check(not bodies[0].has("isOldUser"), "omitted flag stays absent")
+				else:
+					_check(bodies[0].get("isOldUser") == first, "first explicit flag survives restart")
+			client.free()
+	_check(not _configure_result({"is_old_user": "false"})["ok"], "old-user string rejected")
 
 
 func _test_config_request_envelope() -> void:

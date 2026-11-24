@@ -80,6 +80,8 @@ export class GameAlgoRestClient {
   private readonly userIdKey: string;
   private readonly userCreatedAtKey: string;
   private readonly userCreatedLocalAtKey: string;
+  private readonly initialIsOldUser?: boolean;
+  private readonly oldUserStates = new Map<string, Promise<boolean | undefined>>();
   private cachedConfig: { value: ConfigResponse; expiresAt: number; cacheKey: string } | null = null;
   private snapshot: GameAlgoSnapshot = { configFiles: new Map(), updatedAt: 0 };
   private currentIdentity: GameAlgoUserIdentity | null = null;
@@ -93,6 +95,10 @@ export class GameAlgoRestClient {
   constructor(options: GameAlgoRestClientOptions) {
     if (!options.baseUrl) throw new Error("baseUrl is required");
     if (!options.gameKey) throw new Error("gameKey is required");
+    if (options.isOldUser !== undefined && typeof options.isOldUser !== "boolean") {
+      throw new Error("isOldUser must be a boolean");
+    }
+    this.initialIsOldUser = options.isOldUser;
 
     this.baseUrl = parseHttpBaseUrl(options.baseUrl);
     this.gameKey = options.gameKey;
@@ -260,6 +266,10 @@ export class GameAlgoRestClient {
   protected async resolveConfigIdentity(_config: ConfigResponse, identity: GameAlgoUserIdentity): Promise<GameAlgoUserIdentity> { return identity; }
 
   protected async persistResolvedIdentity(identity: GameAlgoUserIdentity): Promise<void> {
+    if (this.currentIdentity && this.currentIdentity.userId !== identity.userId) {
+      const first = await this.oldUserState(this.currentIdentity.userId);
+      await this.oldUserState(identity.userId, first);
+    }
     await this.storage?.setItem(this.userIdKey, identity.userId);
     await this.storage?.setItem(this.userCreatedAtKey, identity.userCreatedAt);
     await this.storage?.setItem(this.userCreatedLocalAtKey, identity.userCreatedLocalAt);
@@ -272,8 +282,26 @@ export class GameAlgoRestClient {
   /** Hosts may recover a failed initial request without refreshing on resume. */
   protected recoverInitialConfig(_error: unknown, _options: RefreshOptions): Promise<void> | undefined { return undefined; }
 
+  private oldUserState(userId: string, initialValue = this.initialIsOldUser): Promise<boolean | undefined> {
+    let pending = this.oldUserStates.get(userId);
+    if (!pending) {
+      pending = (async () => {
+        const key = `${this.userIdKey}:is-old-user:${userId}`;
+        const stored = await this.storage?.getItem(key);
+        if (stored === "true" || stored === "false") return stored === "true";
+        if (initialValue !== undefined) {
+          await this.storage?.setItem(key, String(initialValue));
+        }
+        return initialValue;
+      })();
+      this.oldUserStates.set(userId, pending);
+    }
+    return pending;
+  }
+
   async fetchConfig(options: FetchConfigOptions = {}): Promise<ConfigResponse> {
     const identity = await this.userIdentity(options.userId);
+    const isOldUser = await this.oldUserState(identity.userId);
     const userCreatedAt = clean(options.userCreatedAt) ?? identity.userCreatedAt;
     const userCreatedLocalAt = clean(options.userCreatedLocalAt)
       ?? (clean(options.userCreatedAt) ? localTimestamp(Date.parse(userCreatedAt)) : identity.userCreatedLocalAt);
@@ -297,6 +325,7 @@ export class GameAlgoRestClient {
     };
     const cacheKey = JSON.stringify({
       userId: identity.userId,
+      isOldUser,
       userCreatedAt,
       userCreatedLocalAt,
       accountUserId,
@@ -325,6 +354,7 @@ export class GameAlgoRestClient {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           userId: identity.userId,
+          isOldUser,
           userCreatedAt,
           userCreatedLocalAt,
           accountUserId,

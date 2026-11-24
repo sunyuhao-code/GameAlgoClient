@@ -17,6 +17,7 @@ public final class GameAlgoFetchConfigRequest {
     private String timezone;
     private Map<String, Object> device = new LinkedHashMap<>();
     private Boolean isDebug;
+    private Boolean isOldUser;
     private boolean forceRefresh;
 
     public GameAlgoFetchConfigRequest(String userId) {
@@ -85,6 +86,14 @@ public final class GameAlgoFetchConfigRequest {
         this.isDebug = isDebug;
         return this;
     }
+
+    /** Initialization only: describes pre-existing progress; the first explicit value is persisted. */
+    public GameAlgoFetchConfigRequest isOldUser(Boolean isOldUser) {
+        this.isOldUser = isOldUser;
+        return this;
+    }
+
+    public Boolean getIsOldUser() { return isOldUser; }
 
     public GameAlgoFetchConfigRequest forceRefresh(boolean forceRefresh) {
         this.forceRefresh = forceRefresh;

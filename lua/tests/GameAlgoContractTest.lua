@@ -358,6 +358,31 @@ assert(retryCallbackCount == 2)
 assert(retryConfigError == nil)
 assert(retryConfig.contextId == "ctx-after-retry")
 
+-- Old/new status belongs to the player, not the current save slot or SDK launch.
+for _, first in ipairs({true, false}) do
+    local user = "old-user-contract-" .. tostring(first)
+    local body
+    local oldUserTransport = { Request = function(options, callback)
+        body = cjson.decode(options.body)
+        callback(nil, { status = 200, body = configFixture, headers = {} })
+    end }
+    local function initialize(value)
+        GameAlgo.Init({ gameKey = "ga_live_fixture_key", userId = user,
+            transport = oldUserTransport, autoFetch = false, preloadConfigFiles = false,
+            isOldUser = value })
+        GameAlgo.FetchConfig(function(error) assert(error == nil, tostring(error)) end)
+    end
+    initialize(nil)
+    assert(body.isOldUser == nil, "omitted flag must stay absent")
+    initialize(first)
+    assert(body.isOldUser == first, "explicit false must be retained")
+    initialize(not first)
+    assert(body.isOldUser == first, "restart must preserve first classification")
+    initialize(nil)
+    assert(body.isOldUser == first, "later omission must retain persisted classification")
+end
+assert(not pcall(GameAlgo.Init, { gameKey = "ga_live_fixture_key", isOldUser = "false" }))
+
 File = nil
 FILE_READ = nil
 FILE_WRITE = nil
@@ -682,5 +707,6 @@ schedulerUpdateHandler()
 assert(scheduledCallbackCount == 1)
 makerScheduler:Shutdown()
 assert(schedulerUnsubscribed == true)
+
 
 print("Lua SDK contract tests passed")

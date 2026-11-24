@@ -97,6 +97,24 @@ test("first-install OpenID is decided by config, persists across restarts, and i
   assert.equal(f.requests[0].body.wechatLoginCode, undefined);
 });
 
+test("first old-user classification follows the config-resolved OpenID across restart", async t => {
+  for (const firstValue of [true, false]) {
+    const f = fixture();
+    f.wx.login = options => options.success({ code: "one-use-code" });
+    f.setResolvedOpenId("openid-classification-player");
+    const first = new GameAlgoWechatClient({ ...f.options, isOldUser: firstValue });
+    t.after(() => first.close());
+    assert.equal(await first.waitForReady(), true);
+    assert.equal(f.requests[0].body.isOldUser, firstValue);
+    first.close(); f.requests.length = 0;
+    const next = new GameAlgoWechatClient({ ...f.options, isOldUser: !firstValue });
+    t.after(() => next.close());
+    assert.equal(await next.waitForReady(), true);
+    assert.equal(f.requests[0].body.userId, "openid-classification-player");
+    assert.equal(f.requests[0].body.isOldUser, firstValue, "OpenID adoption retains the first explicit classification");
+  }
+});
+
 test("a player that first fell back to anonymous never upgrades when AppSecret is configured later", async t => {
   const f = fixture(); let logins = 0;
   f.wx.login = options => { logins++; options.success({ code: "first-code" }); };

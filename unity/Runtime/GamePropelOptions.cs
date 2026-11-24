@@ -12,6 +12,7 @@ namespace GamePropel
         public string AccountUserCreatedAt { get; set; }
         public int ExperimentIntegrationVersion { get; set; }
         public bool IsDebug { get; set; }
+        public bool? IsOldUser { get; set; }
         public bool EnableLogging { get; set; }
         public JsonObject Device { get; set; } = new JsonObject();
         internal JsonObject ToJson()
@@ -27,7 +28,7 @@ namespace GamePropel
             device["runtime"] = "unity";
             device["unityVersion"] = Application.unityVersion;
             device["unitySdkVersion"] = GamePropelClient.Version;
-            return new JsonObject {
+            var result = new JsonObject {
                 ["gameKey"] = GameKey, ["baseUrl"] = BaseUrl,
                 ["appVersion"] = AppVersion ?? Application.version,
                 ["accountUserId"] = AccountUserId, ["accountUserCreatedAt"] = AccountUserCreatedAt,
@@ -35,6 +36,8 @@ namespace GamePropel
                 ["isDebug"] = IsDebug, ["enableLogging"] = EnableLogging,
                 ["device"] = device
             };
+            if (IsOldUser.HasValue) result["isOldUser"] = IsOldUser.Value;
+            return result;
         }
     }
 

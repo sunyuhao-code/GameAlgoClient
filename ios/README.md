@@ -32,6 +32,10 @@ let elapsedMs = sdk.getForegroundTimeMs() - start
 
 返回 `Int64` 毫秒数；`sdk.tracker.getForegroundTimeMs()` 返回同一读数。这是同步的线程安全内存读取，无需 `await`，不推进采样、写盘或发送事件。累计值属于本次 SDK 实例，配置刷新、会话切换和 `session_end` 不清零；重新初始化或重启从零开始，不能跨初始化保存后相减。沿用当前 1 秒采样口径，后台不累计，广告挂起可能少计。SDK 自动 session 时长使用同一累计时钟减去该 session 起始读数。
 
+## 已有进度玩家
+
+可选初始化参数 `isOldUser` 用于区分 SDK 接入前已有游戏进度的玩家：true 为已有进度，false 为确认的新玩家，未知则省略。由游戏在初始化前读取必要存档并判断，不能只看文件是否存在。SDK 持久化该用户首次明确值，后续启动或重新开档不覆盖。仅 `new_user` 标准漏斗的分母与节点人数排除老玩家；其他类型里程碑、SDK 注册时间、留存与 LTV 沿用原规则。传入 `GameAlgoSDK(..., isOldUser: hasExistingProgress)`。
+
 ## 最小 API
 
 ```swift

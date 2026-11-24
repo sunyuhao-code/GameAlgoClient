@@ -23,6 +23,7 @@ public final class GamePropelUnityBridge {
     private static volatile String userId = "";
     private static Map<String, Object> device;
     private static boolean debug;
+    private static Boolean isOldUser;
     private static int integrationVersion;
     private static String accountUserId, accountUserCreatedAt;
     private GamePropelUnityBridge() {}
@@ -37,6 +38,7 @@ public final class GamePropelUnityBridge {
             device = object(options.optJSONObject("device"));
             device.put("runtime", "unity");
             debug = options.optBoolean("isDebug");
+            isOldUser = options.has("isOldUser") && !options.isNull("isOldUser") ? options.getBoolean("isOldUser") : null;
             integrationVersion = options.optInt("experimentIntegrationVersion");
             accountUserId = optional(options, "accountUserId");
             accountUserCreatedAt = optional(options, "accountUserCreatedAt");
@@ -159,7 +161,7 @@ public final class GamePropelUnityBridge {
     }
 
     private static GameAlgoFetchConfigRequest request(boolean force) {
-        return new GameAlgoFetchConfigRequest(null).device(device).isDebug(debug)
+        return new GameAlgoFetchConfigRequest(null).device(device).isDebug(debug).isOldUser(isOldUser)
                 .accountUserId(accountUserId).accountUserCreatedAt(accountUserCreatedAt)
                 .experimentIntegrationVersion(integrationVersion).forceRefresh(force);
     }

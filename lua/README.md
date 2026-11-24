@@ -67,6 +67,10 @@ Maker / Lua SDK 不提供匹配、Lobby、房间连接或实时状态同步；�
 
 关于何时创建新版本、Strategy 最低版本和托管实验覆盖率门槛，运行 `gamealgo docs experiments --host <admin-host>` 查看当前平台规则。
 
+### 已有进度玩家
+
+可选初始化参数 `isOldUser` 用于区分 SDK 接入前已有游戏进度的玩家：true 为已有进度，false 为确认的新玩家，未知则省略。由游戏在初始化前读取必要存档并判断，不能只看文件是否存在。SDK 持久化该用户首次明确值，后续启动或重新开档不覆盖。仅 `new_user` 标准漏斗的分母与节点人数排除老玩家；其他类型里程碑、SDK 注册时间、留存与 LTV 沿用原规则。Lua 示例：`GameAlgo.Init({ gameKey = clientKey, isOldUser = hasExistingProgress })`。
+
 ### 持久化存储
 
 Lua SDK 自动管理持久化，不允许传入 `storage`：

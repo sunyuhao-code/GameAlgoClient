@@ -62,6 +62,9 @@ local state_ = {
     userId = nil,
     userCreatedAt = nil,
     userCreatedLocalAt = nil,
+    isOldUser = nil,
+    initialIsOldUser = nil,
+    oldUserStateUserId = nil,
     accountUserId = nil,
     accountUserCreatedAt = nil,
     prefetchedMakerUserId = nil,
@@ -398,6 +401,18 @@ local function ensureIdentity(explicitUserId, explicitUserCreatedAt, explicitUse
             or storageGet("gamealgo_user_created_local_at")
             or localIsoFromUtc(state_.userCreatedAt)
             or localIsoNow()
+    end
+    if state_.oldUserStateUserId ~= state_.userId then
+        local oldUserKey = identityStorageKey("is_old_user:" .. state_.userId)
+        local stored = storageGet(oldUserKey)
+        state_.isOldUser = nil
+        if stored == "true" or stored == "false" then
+            state_.isOldUser = stored == "true"
+        elseif state_.initialIsOldUser ~= nil then
+            state_.isOldUser = state_.initialIsOldUser
+            storageSet(oldUserKey, tostring(state_.isOldUser))
+        end
+        state_.oldUserStateUserId = state_.userId
     end
     storageSet(identityStorageKey("user_id"), state_.userId)
     storageSet(identityStorageKey("user_created_at"), state_.userCreatedAt)
@@ -1386,6 +1401,9 @@ end
 ---@param options table
 function GameAlgo.Init(options)
     options = options or {}
+    if options.isOldUser ~= nil and type(options.isOldUser) ~= "boolean" then
+        error("isOldUser must be a boolean")
+    end
     if options.storage ~= nil then
         error("options.storage is not supported; TapTap Maker storage is managed automatically by the Lua SDK")
     end
@@ -1441,6 +1459,9 @@ function GameAlgo.Init(options)
     state_.sessionForegroundStartMs = 0
     state_.sessionHasEnd = false
     state_.userId = nil
+    state_.isOldUser = nil
+    state_.initialIsOldUser = options.isOldUser
+    state_.oldUserStateUserId = nil
     state_.userCreatedAt = nil
     state_.userCreatedLocalAt = nil
     state_.accountUserId = nil
@@ -1610,6 +1631,7 @@ local function configRequestBody()
         userId = state_.userId,
         userCreatedAt = state_.userCreatedAt,
         userCreatedLocalAt = state_.userCreatedLocalAt,
+        isOldUser = state_.isOldUser,
         accountUserId = state_.accountUserId,
         accountUserCreatedAt = state_.accountUserCreatedAt,
         createdLocalAt = localIsoNow(),

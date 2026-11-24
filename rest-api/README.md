@@ -8,6 +8,10 @@ REST 请求和 SDK 使用同一套 Protocol v1 接口。
 
 新客户端必须显式使用 `ios`、`android`、`maker` 或 `web`；`rest` 只由服务端用于兼容旧 Maker 数据，不是可选平台值。此 helper 的默认平台是 `maker`。
 
+## 已有进度玩家
+
+可选初始化参数 `isOldUser` 用于区分 SDK 接入前已有游戏进度的玩家：true 为已有进度，false 为确认的新玩家，未知则省略。由游戏在初始化前读取必要存档并判断，不能只看文件是否存在。SDK 持久化该用户首次明确值，后续启动或重新开档不覆盖。仅 `new_user` 标准漏斗的分母与节点人数排除老玩家；其他类型里程碑、SDK 注册时间、留存与 LTV 沿用原规则。跨启动持久化需沿用现有 `storage`。
+
 ## TypeScript Helper
 
 仓库内提供了一个无第三方依赖的 REST helper：

@@ -36,6 +36,10 @@ UA versions can be frozen, so they are not used as OS versions. The SDK does
 not invoke the older permission-sensitive system-info APIs. Information is
 refreshed for each config request, and explicit `device` fields take precedence.
 
+### Existing or new players
+
+Optional initialization option `isOldUser` classifies pre-existing game progress: true for an existing player, false for a confirmed new player, and omitted when unknown. Read the necessary progress before initialization. The SDK persists the first explicit value per game/player; restarting or creating a new save does not overwrite it. Only the `new_user` standard milestone funnel excludes existing players from both its denominator and node counts. Other milestones, SDK registration dates, retention and LTV keep their existing definitions. Pass it to `GamePropelTapTapH5Client.init(options)`; normal host storage is automatic.
+
 ### Runtime game identity (observation only)
 
 On each config request the SDK probes `tap.getAccountInfoSync()` when the host

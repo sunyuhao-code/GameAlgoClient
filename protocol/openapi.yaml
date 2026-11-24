@@ -329,6 +329,9 @@ components:
         userId:
           type: string
           minLength: 1
+        isOldUser:
+          type: boolean
+          description: Optional SDK initialization classification. True means pre-existing game progress; false means a confirmed new player. Persist the first explicit value and omit when unknown. Only the new_user milestone funnel excludes true.
         userCreatedAt:
           type: string
           format: date-time

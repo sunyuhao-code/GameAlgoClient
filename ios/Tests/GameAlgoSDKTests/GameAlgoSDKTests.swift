@@ -88,6 +88,31 @@ final class GameAlgoSDKTests: XCTestCase {
         XCTAssertEqual(try requestBody(secondRequests[0])["userId"] as? String, persistedUserId)
     }
 
+    func testOldUserClassificationSurvivesRestarts() async throws {
+        for first in [true, false] {
+            let suiteName = "GameAlgoSDKTests.oldUser.\(UUID().uuidString)"
+            let defaults = UserDefaults(suiteName: suiteName)!
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let inputs: [Bool?] = [nil, first, !first, nil]
+            for (index, input) in inputs.enumerated() {
+                let http = MockHTTPClient()
+                try await http.enqueueJSON(configResponse(version: "v1"))
+                let sdk = GameAlgoSDK(
+                    gameKey: gameKey, baseURL: URL(string: "https://gamealgo.test")!,
+                    httpClient: http, cacheStorage: nil,
+                    userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
+                    userId: "old-user", _autoStart: false, isOldUser: input,
+                    eventFlushInterval: 0, logger: nil
+                )
+                _ = try await sdk.fetchConfig(userId: "old-user")
+                let requests = await http.requests
+                let body = try requestBody(requests[0])
+                if index == 0 { XCTAssertNil(body["isOldUser"]) }
+                else { XCTAssertEqual(body["isOldUser"] as? Bool, first) }
+            }
+        }
+    }
+
     func testConstructorBackfillsCreatedAtForPersistedLegacyUserId() async throws {
         let suiteName = "GameAlgoSDKTests.legacyIdentity.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

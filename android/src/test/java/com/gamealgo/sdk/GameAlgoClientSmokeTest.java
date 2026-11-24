@@ -20,6 +20,7 @@ public final class GameAlgoClientSmokeTest {
         GameAlgoLifecycleTest.runAll();
         testSharedProtocolFixtureDecodesAndUsesImmutableScriptVersion();
         testFetchConfigSendsHeadersAndCaches();
+        testOldUserClassificationSurvivesRestarts();
         testFetchConfigFile();
         testConstructorPreloadsConfigFilesAndExposesLocalExecutorAndConfigReaders();
         testExecutorExecutesPreloadedScriptAgainstLocalSnapshot();
@@ -124,6 +125,26 @@ public final class GameAlgoClientSmokeTest {
         check("android".equals(runtime) || "java".equals(runtime), "config body should include default device runtime");
         if ("java".equals(runtime)) {
             check(device.get("javaVersion") instanceof String, "Java fallback context should include java version");
+        }
+    }
+
+    private static void testOldUserClassificationSurvivesRestarts() throws Exception {
+        for (boolean first : new boolean[] { true, false }) {
+            MemoryCacheStorage storage = new MemoryCacheStorage();
+            Boolean[] inputs = { null, first, !first, null };
+            for (int index = 0; index < inputs.length; index++) {
+                FakeHttpClient http = new FakeHttpClient();
+                http.enqueue(jsonResponse(configJson("v1")));
+                GameAlgoClient client = new GameAlgoClient(
+                        "ga_live_old_user_contract", "https://gamealgo.test", "test", null, "android",
+                        http, new FakeScriptRuntime(), storage, null, null,
+                        new GameAlgoFetchConfigRequest("old-user").isOldUser(inputs[index]), false);
+                client.fetchConfig("old-user");
+                Map<String, Object> body = requestBody(http.requests.get(0));
+                if (index == 0) check(!body.containsKey("isOldUser"), "omitted old-user flag stays absent");
+                else check(Boolean.valueOf(first).equals(body.get("isOldUser")), "first explicit old-user flag survives restart");
+                client.tracker().close();
+            }
         }
     }
 
