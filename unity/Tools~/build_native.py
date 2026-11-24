@@ -39,13 +39,23 @@ def ios():
         archive = BUILD / (name + ".xcarchive")
         run(["xcodebuild", "archive", "-scheme", "GamePropelUnity", "-destination", destination,
              "-archivePath", archive, "-derivedDataPath", BUILD / ("derived-" + name),
-             "SKIP_INSTALL=NO", "BUILD_LIBRARY_FOR_DISTRIBUTION=YES", "CODE_SIGNING_ALLOWED=NO",
+             "SKIP_INSTALL=NO", "BUILD_LIBRARY_FOR_DISTRIBUTION=NO",
+             "SWIFT_EMIT_MODULE_INTERFACE=NO", "CODE_SIGNING_ALLOWED=NO",
              "IPHONEOS_DEPLOYMENT_TARGET=15.0", "SWIFT_OPTIMIZATION_LEVEL=-Osize",
              "DEAD_CODE_STRIPPING=YES", "STRIP_INSTALLED_PRODUCT=YES", "STRIP_STYLE=non-global",
              'OTHER_LDFLAGS=$(inherited) -Xlinker -exported_symbols_list -Xlinker "' + str(PACKAGE / "Native~/iOS/UnityExports.txt") + '"'], PACKAGE / "Native~/iOS")
         matches = list((archive / "Products").rglob("GamePropelUnity.framework"))
         if len(matches) != 1:
             raise RuntimeError("Expected one archived GamePropelUnity.framework")
+        # Unity imports only GPUnity_* C symbols. Do not distribute compiler-
+        # specific Swift modules or emit interfaces for the internal SDK whose
+        # module and actor share a name (Swift issue #56573).
+        for module in (matches[0] / "Modules").glob("*.swiftmodule"):
+            shutil.rmtree(module)
+        exports = subprocess.check_output(["nm", "-gU", str(matches[0] / "GamePropelUnity")], text=True)
+        for symbol in (PACKAGE / "Native~/iOS/UnityExports.txt").read_text().splitlines():
+            if symbol and symbol not in exports:
+                raise RuntimeError("Missing Unity C export: " + symbol)
         archives.append(matches[0])
     framework = output / "GamePropelUnity.xcframework"
     if framework.exists(): shutil.rmtree(framework)
