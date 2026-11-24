@@ -311,21 +311,21 @@ local function epochMsFromIso(value)
 end
 
 local randomIdCounter = 0
+local randomIdEntropy = tostring({})
 
 local function randomId(prefix)
     randomIdCounter = randomIdCounter + 1
-    -- Do not reseed or rely on the shared math.random state: two VMs started
-    -- in the same second would draw identical sequences, and reseeding here
-    -- stomps the game's own RNG. Combine per-call and per-VM entropy instead.
+    -- Do not reseed or touch the game's shared math.random state. Combine
+    -- per-call and per-VM entropy instead.
     local address = tostring({}):match("0x(%x+)") or "0"
-    local entropy = Sha256.hex(table.concat({
+    randomIdEntropy = Sha256.hex(table.concat({
+        randomIdEntropy,
         tostring(os.time()),
         tostring(os.clock()),
         tostring(randomIdCounter),
         address,
-        tostring(math.random(0, 2147483647)),
     }, ":"))
-    return (prefix or "id") .. "_" .. entropy:sub(1, 24)
+    return (prefix or "id") .. "_" .. randomIdEntropy:sub(1, 24)
 end
 
 local function trimSlash(value)

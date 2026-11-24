@@ -87,15 +87,15 @@ gaq_*.json
 
 这些文件包含设备身份、配置缓存和待上传事件，在开发宿主中可能落到工程目录。已被跟踪的文件不会因为新增 ignore 自动退出版本控制，需要核对后另外排除；保留本地设备需要的存档，不把它作为工程资源分发。
 
-- 优先读取 Maker `File` 本地快照，启动时同步恢复身份、脚本缓存和 DDA 状态。
-- 本地快照不存在或当前运行模式不能读文件时，自动从 `clientCloud` 恢复。
+- 远端目录已经确认且没有待恢复读取时，优先读取 Maker `File` 本地快照，同步恢复身份、脚本缓存和 DDA 状态。
+- 本地快照不存在、缺少远端确认记录或上次云恢复未完成时，自动从 `clientCloud` 读取并合并。
 - 首次云端读取完成前，SDK 会暂存埋点和 DDA 操作，不会使用空 DDA 状态提前决策。
 - 身份、配置和 DDA 继续使用 SDK 快照；快照和事件目录本地采用两份交替写入的文件，启动时选择版本最新且完整可读的一份，避免目录覆盖写中断后找不到旧事件。事件队列独立分块存储，每块最多 100 条，各块同样交替写入两份文件，云端按块同步。新增事件、context 绑定和上传确认只保存受影响块，不重新编码或覆盖整个队列。云端先同步事件块，再发布块目录。
-- `File` 和 `clientCloud` 都暂时不可用时，Maker 运行时使用内存兜底，不阻塞游戏主流程，并在后续 flush 时重试云端。
+- `File` 和 `clientCloud` 都暂时不可用时，Maker 运行时使用内存兜底，不阻塞游戏主流程；未确认远端目录时暂不云写，后续具备云读与自动超时调度能力的启动再恢复。
 - `clientCloud:Set` 的 `timeout` 会和 `error` 走同一清理路径，释放 SDK 的云写入状态；宿主必须按约定触发该回调。
-- 首次云读超时、失败或返回损坏快照时，SDK 暂停目录与分块云写；保护状态随本地快照保存，重启后重新读云。成功读取后以云端身份字段为准，把临时身份名下的待发事件迁移到云端身份队列，保留其他本地修改并恢复远端事件，再开放云写。没有调度器且从未尝试云读的自定义运行时保留原有行为。Cloud write protection survives restarts until the unresolved read is reconciled; remote identity wins during recovery.
+- 首次没有云接口、没有自动超时调度器，或云读超时、失败、返回损坏快照时，SDK 暂停目录与分块云写；远端未确认状态随本地快照保存，旧快照缺少确认记录时也先读云。恢复云接口和调度器后，下次启动先读取并合并；以云端身份为准，把临时身份名下的待发事件迁移到云端身份队列，保留其他本地修改并恢复远端事件，再开放云写。Unconfirmed cloud directories stay write-blocked across restarts, including offline first launches; remote identity wins during recovery.
 - 离线事件重启恢复后，先上传分块再补传云目录。重新 `Init()` 会停用旧存储的本地落盘和异步续传；已提交给宿主的云写请求无法撤回。Restored chunks publish their directory; stopped instances ignore late callbacks.
-- `Init()` 不再重置宿主随机序列，玩家 ID / 会话 ID 由独立熵源生成（哈希格式）。
+- 玩家、会话及事件 ID 由 SDK 私有哈希状态、计数器、时钟和 VM 地址熵生成，不调用宿主的 `math.random()` / `math.randomseed()`。SDK identifiers neither consume nor reseed the game's global RNG.
 
 接入代码不要自行探测单机/联网模式，不要实现 GameAlgo 专用存档适配器，也不要给 `GameAlgo.Init` 传 `storage`。如果传入，SDK 会直接报错，避免本地存档和云端存档出现两套冲突语义。
 
@@ -262,7 +262,7 @@ local enabled = GameAlgo.ConfigValue("ads.rewarded.enabled", true, "gameplay.jso
 
 在途请求或失败积压期间，新增变化的定时补存间隔同样为 5 秒；累计 100 个事件变化也会提前保存。发送前、上传确认后、主动 Flush 和生命周期边界仍立即保存对应变化；没有变化不写盘。
 
-旧版本保存的 JSON Lines 队列会自动迁移；所有事件块成功写入前保留旧队列，迁移中断仍可恢复。事件的 ID、session、context 和发生时间保持原值。
+旧版本保存的 JSON Lines 队列会自动迁移；远端旧 JSONL 与本地事件先合并并完整落盘，再写分块并发布目录。所有事件块成功写入前保留合并检查点，迁移中断仍可恢复；重复恢复按完整事件和出现次数匹配，内容不同但旧 ID 相同的事件仍保留。事件的 ID、session、context 和发生时间保持原值。Legacy cloud JSONL and local queues merge before durable chunk migration and publication.
 
 广告播放封装、`TrackAdPlacement` 和直接 `Track("ad_view", payload)` 均在广告事件入队后立即 Flush。发送前，SDK 会把 inflight batch 和剩余队列中尚未落盘的变化写入独立事件块；下次启动自动恢复，按下述批次完成策略确认后才删除持久化副本。请求超过 15 秒没有终态回调时，watchdog 会释放请求，保留原事件，并按退避间隔重试。迟到或重复回调由 request token 忽略；成功后 SDK 会连续发送，直到所有已有 context 的事件全部排空。事件入队时即固定 `sessionId` 和已有的 `contextId`；同一 session 刷新 context 不会重绑旧事件。
 

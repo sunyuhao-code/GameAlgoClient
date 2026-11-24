@@ -3,9 +3,9 @@
 ---
 --- The SDK exposes synchronous reads to its identity, script cache, and DDA
 --- layers while hiding Maker's asynchronous clientCloud API. A local File
---- snapshot is used as the fast path. When no local snapshot exists, the
---- first cloud read completes before the SDK starts, with a bounded timeout so
---- a missing clientCloud callback cannot block the whole session.
+--- snapshot is used as the fast path after the cloud directory is confirmed.
+--- Otherwise a bounded cloud read precedes SDK startup; missing cloud access
+--- keeps local operation available without allowing destructive cloud writes.
 
 local cjson = require("cjson")
 
@@ -80,7 +80,8 @@ local function emptySnapshot()
         schemaVersion = SCHEMA_VERSION,
         revision = 0,
         data = {},
-        cloudDirectoryBlocked = false,
+        cloudDirectoryBlocked = true,
+        cloudDirectoryConfirmed = false,
     }
 end
 
@@ -97,6 +98,10 @@ local function normalizeSnapshot(value)
         revision = math.max(0, math.floor(tonumber(value.revision) or 0)),
         data = value.data,
         cloudDirectoryBlocked = value.cloudDirectoryBlocked == true,
+        -- Older snapshots did not record whether the remote directory had
+        -- ever been observed. Treat them as unknown and hydrate once before
+        -- publishing again.
+        cloudDirectoryConfirmed = value.cloudDirectoryConfirmed == true,
     }
 end
 
@@ -183,6 +188,47 @@ end
 local QUEUE_FORMAT = "event_chunks_v1"
 local CHUNK_SIZE = 100
 
+local function sameJsonValue(left, right)
+    if type(left) ~= type(right) then return false end
+    if type(left) ~= "table" then return left == right end
+    for key, value in pairs(left) do
+        if not sameJsonValue(value, right[key]) then return false end
+    end
+    for key in pairs(right) do
+        if left[key] == nil then return false end
+    end
+    return true
+end
+
+-- Keep remote order, append local-only events, and match identical records by
+-- occurrence. Repeating an interrupted merge must not duplicate the backlog;
+-- distinct events with colliding legacy IDs must still survive.
+local function mergeLegacyEvents(remote, localEvents)
+    local lines, unmatched = {}, {}
+    for line in remote:gmatch("[^\r\n]+") do
+        local ok, event = pcall(cjson.decode, line)
+        if ok and type(event) == "table" and type(event.eventId) == "string"
+            and type(event.sessionId) == "string" then
+            table.insert(lines, line)
+            local matches = unmatched[event.eventId] or {}
+            unmatched[event.eventId] = matches
+            table.insert(matches, event)
+        end
+    end
+    for _, event in ipairs(localEvents) do
+        local matched = false
+        for index, remoteEvent in ipairs(unmatched[event.eventId] or {}) do
+            if sameJsonValue(event, remoteEvent) then
+                table.remove(unmatched[event.eventId], index)
+                matched = true
+                break
+            end
+        end
+        if not matched then table.insert(lines, cjson.encode(event)) end
+    end
+    return table.concat(lines, "\n")
+end
+
 local function decodeChunk(value)
     if type(value) == "string" then
         local ok, decoded = pcall(cjson.decode, value)
@@ -219,7 +265,7 @@ local function newEventQueue(key, value, fileApi, publishManifest, remoteManifes
     local function newChunk(index, unknown)
         local chunk = { index = index, entries = {}, count = 0, revision = 0,
             cloudRevision = 0, bank = 0, unknown = unknown }
-        if remoteManifest then
+        if remoteManifest or migrating then
             -- Relocated chunks can reuse filenames from an older local queue.
             -- Their next checkpoint must outrank both of those local banks.
             for bank = 1, 2 do
@@ -346,6 +392,13 @@ local function newEventQueue(key, value, fileApi, publishManifest, remoteManifes
                     return publishManifest(nil, table.concat(lines, "\n"))
                 end
             end
+        end
+        if migrating and fileApi and not remoteManifest then
+            -- A legacy merge may reuse existing local chunk slots. Commit its
+            -- complete JSONL recovery source before changing either chunk bank.
+            local lines = {}
+            for _, event in ipairs(self:Events()) do table.insert(lines, cjson.encode(event)) end
+            if not publishManifest(nil, table.concat(lines, "\n")) then return false end
         end
         -- Publish new slots first so a completed chunk write is discoverable.
         -- Legacy migration instead keeps the old JSONL until every chunk is safe.
@@ -490,7 +543,8 @@ function MakerAutoStorage.NewScheduler(options)
 end
 
 --- Creates Maker storage with bounded cloud hydration and synchronous local
---- checkpoints. Unresolved cloud reads remain write-blocked across restarts.
+--- checkpoints. Unconfirmed cloud access remains write-blocked across restarts,
+--- including launches without clientCloud or an automatic timeout scheduler.
 ---@param options table|nil Scheduler, logger, and optional cloudReadTimeoutMs.
 ---@return table|nil storage
 ---@return string|nil error
@@ -516,9 +570,9 @@ function MakerAutoStorage.New(options)
     local cloudWritePending = false
     local cloudWriteCallbacks = {}
     local cloudDirty = false
-    local cloudDirectoryBlocked = localSnapshot and localSnapshot.cloudDirectoryBlocked == true or false
+    local cloudDirectoryConfirmed = snapshot.cloudDirectoryConfirmed == true
+    local cloudDirectoryBlocked = not cloudDirectoryConfirmed or snapshot.cloudDirectoryBlocked == true
     local cloudDirectoryKnown = false
-    local cloudReadAttempted = false
     local cloudRecoveryPending = false
 
     local storage = {}
@@ -526,11 +580,13 @@ function MakerAutoStorage.New(options)
     local recoveryManifests = {}
 
     local function persistLocal()
-        if snapshot.cloudDirectoryBlocked ~= cloudDirectoryBlocked then
+        if snapshot.cloudDirectoryBlocked ~= cloudDirectoryBlocked
+            or snapshot.cloudDirectoryConfirmed ~= cloudDirectoryConfirmed then
             snapshot.revision = snapshot.revision + 1
             localDirty = true
         end
         snapshot.cloudDirectoryBlocked = cloudDirectoryBlocked
+        snapshot.cloudDirectoryConfirmed = cloudDirectoryConfirmed
         local saved, bank = writeLocalSnapshot(fileApi, snapshot, localBank)
         if saved then
             localBank = bank
@@ -579,15 +635,19 @@ function MakerAutoStorage.New(options)
             if #queue:MissingBlocks() > 0 then return end
             if not queue:Persist() and fileApi then return end
         end
-        cloudRecoveryPending = false
         cloudDirectoryBlocked = false
-        persistLocal()
+        if persistLocal() or not fileApi then
+            cloudRecoveryPending = false
+        else
+            cloudDirectoryBlocked = true
+        end
     end
 
     local function loadQueuesThenReady(source)
         local missing = {}
         for key, value in pairs(snapshot.data) do
-            if recoveryManifests[key] or (type(value) == "table" and value.format == QUEUE_FORMAT) then
+            if recoveryManifests[key] or (type(value) == "table" and value.format == QUEUE_FORMAT)
+                or (type(key) == "string" and key:match(":events:jsonl$") and type(value) == "string") then
                 for _, block in ipairs(storage:EventQueue(key):MissingBlocks()) do table.insert(missing, block) end
             end
         end
@@ -630,6 +690,8 @@ function MakerAutoStorage.New(options)
     local function loadCloudThenReady()
         local cloud = makerCloud()
         if not cloud then
+            -- Keep this marker in the local snapshot. A later run may regain
+            -- clientCloud; it must read the remote directory before publishing.
             persistLocal()
             loadQueuesThenReady(localAvailable and "local" or "memory")
             return
@@ -659,7 +721,16 @@ function MakerAutoStorage.New(options)
             -- existing snapshot with the fresh empty one.
             if readResolved and next(snapshot.data) ~= nil then cloudDirty = true end
             cloudDirectoryKnown = readResolved == true
+            cloudDirectoryConfirmed = readResolved == true
             cloudDirectoryBlocked = not cloudDirectoryKnown
+            if remote then
+                for key, value in pairs(remote.data) do
+                    if type(key) == "string" and key:match(":events:jsonl$") and type(value) == "string" then
+                        cloudDirectoryBlocked, cloudRecoveryPending = true, true
+                        break
+                    end
+                end
+            end
             if remote and next(snapshot.data) ~= nil then
                 -- Keep local values created while offline and retain remote
                 -- keys. Conflicting queues append local events after reserved
@@ -711,6 +782,13 @@ function MakerAutoStorage.New(options)
                         or key:match(":identity:user_created_at$")
                         or key:match(":identity:user_created_local_at$")) then
                         snapshot.data[key] = value
+                    elseif type(value) == "string" and type(key) == "string"
+                        and key:match(":events:jsonl$") then
+                        local localEvents = localValue ~= nil and storage:EventQueue(key):Events() or {}
+                        -- Checkpoint the complete merged JSONL before touching
+                        -- chunk banks, so an interrupted migration can restart.
+                        snapshot.data[key] = mergeLegacyEvents(value, localEvents)
+                        eventQueues[key] = nil
                     elseif localValue == nil then
                         snapshot.data[key] = value
                     end
@@ -742,7 +820,6 @@ function MakerAutoStorage.New(options)
         cloudDirectoryBlocked = true
         persistLocal()
         local started = pcall(function()
-            cloudReadAttempted = true
             cloud:Get(CLOUD_KEY, {
                 ok = function(values)
                     local remote, resolved = cloudValue(values)
@@ -824,12 +901,10 @@ function MakerAutoStorage.New(options)
         -- Upload chunks before publishing a directory that references them.
         -- Publishing is gated on the cloud read: a read that timed out or
         -- failed leaves the remote state unknown, so overwriting it could
-        -- destroy the previous device's snapshot. Runs that never attempted a
-        -- read (no scheduler / custom runtime) keep their historical
-        -- publish-always behavior.
-        local canPublishDirectory = not cloudDirectoryBlocked
-            and (cloudDirectoryKnown or not cloudReadAttempted)
-        if (cloudDirty or (#jobs > 0 and not cloudDirectoryKnown)) and canPublishDirectory then
+        -- destroy the previous device's snapshot. A run without cloud access
+        -- or an automatic scheduler keeps its data local until a later launch
+        -- can confirm and reconcile the remote directory.
+        if cloudDirty or (#jobs > 0 and not cloudDirectoryKnown) then
             local revision = snapshot.revision
             table.insert(jobs, { key = CLOUD_KEY, data = normalizeSnapshot(encodeSnapshot(snapshot)),
                 ack = function()

@@ -301,28 +301,42 @@ do
     clientCloud = previousCloud
 end
 
--- Init must not reseed the game's RNG, and identifiers must not collide across
--- same-second initializations in independent VMs.
+-- SDK-generated identifiers must not reseed or consume the game's RNG. Check
+-- Init, event creation, and NewSession, as well as uniqueness across Init calls.
 do
-    local reseedCalls = 0
-    local previousSeed = math.randomseed
+    local reseedCalls, randomCalls = 0, 0
+    local previousSeed, previousRandom = math.randomseed, math.random
+    previousSeed(81725)
+    local expected = { previousRandom(), previousRandom(), previousRandom() }
+    previousSeed(81725)
     math.randomseed = function() reseedCalls = reseedCalls + 1 end
+    math.random = function(...)
+        randomCalls = randomCalls + 1
+        return previousRandom(...)
+    end
     clientCloud = {
         Get = function(_, _, callbacks) callbacks.ok({}) end,
         Set = function(_, _, _, callbacks) if callbacks and callbacks.ok then callbacks.ok() end end,
     }
     local seen = {}
-    for index = 1, 3 do
-        GameAlgo.Init({ gameKey = "ga_live_review_ids", autoFetch = false,
-            _scheduler = scheduler(), nowMs = function() return 8000 end })
-        local snapshot = GameAlgo.Snapshot()
-        assert(snapshot.userId ~= nil and snapshot.sessionId ~= nil)
-        local pair = tostring(snapshot.userId) .. "/" .. tostring(snapshot.sessionId)
-        assert(seen[pair] == nil, "identical ids across same-second Init: " .. pair)
-        seen[pair] = true
-    end
-    math.randomseed = previousSeed
+    local ok, reason = pcall(function()
+        for index = 1, 3 do
+            GameAlgo.Init({ gameKey = "ga_live_review_ids", autoFetch = false,
+                _scheduler = scheduler(), nowMs = function() return 8000 end })
+            local snapshot = GameAlgo.Snapshot()
+            assert(snapshot.userId ~= nil and snapshot.sessionId ~= nil)
+            local pair = tostring(snapshot.userId) .. "/" .. tostring(snapshot.sessionId)
+            assert(seen[pair] == nil, "identical ids across same-second Init: " .. pair)
+            seen[pair] = true
+            assert(GameAlgo.TrackEvent("random_probe", {}))
+            assert(GameAlgo.NewSession())
+        end
+    end)
+    math.randomseed, math.random = previousSeed, previousRandom
+    assert(ok, tostring(reason))
     assert(reseedCalls == 0, "Init must not reseed the game RNG")
+    assert(randomCalls == 0, "SDK IDs must not consume the game RNG")
+    for index = 1, #expected do assert(previousRandom() == expected[index], "game RNG sequence advanced") end
 end
 
 -- Re-initializing while the previous storage's cloud read is pending must not

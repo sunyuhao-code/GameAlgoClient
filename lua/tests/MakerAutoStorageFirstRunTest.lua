@@ -63,6 +63,33 @@ assert(readAttempts == 2, "second run must inspect both existing snapshot banks"
 assert(missingReadAttempts == 0, "existing snapshot recovery must not read a missing file")
 assert(secondRunStorage:GetItem("stable_user_id") == "maker-user-001")
 
+-- First-run offline snapshots remain unconfirmed even when clientCloud becomes
+-- available later. The next launch must hydrate before any upload is allowed.
+local hydrationTasks = {}
+local hydrationScheduler = {
+    Schedule = function(_, _, callback)
+        table.insert(hydrationTasks, callback)
+        return callback
+    end,
+    Cancel = function() end,
+    IsAutomatic = function() return true end,
+}
+local firstCloudRead, unconfirmedWrites = nil, 0
+clientCloud = {
+    Get = function(_, key, callbacks)
+        assert(key == "gamealgo_sdk_storage_v1")
+        firstCloudRead = callbacks
+    end,
+    Set = function() unconfirmedWrites = unconfirmedWrites + 1 end,
+}
+secondRunStorage:Flush()
+assert(unconfirmedWrites == 0)
+secondRunStorage:Shutdown()
+secondRunStorage = assert(MakerAutoStorage.New({ scheduler = hydrationScheduler }))
+assert(not secondRunStorage:IsReady() and firstCloudRead ~= nil)
+firstCloudRead.ok({})
+assert(secondRunStorage:IsReady())
+
 -- Repeated identity checks must not rewrite the whole snapshot or dirty cloud
 -- storage. A changed value still persists synchronously and syncs normally.
 local cloudWrites = 0
@@ -73,6 +100,8 @@ clientCloud = {
         callbacks.ok()
     end,
 }
+secondRunStorage:Flush() -- publish the newly reconciled offline snapshot once
+cloudWrites = 0
 local savedWrites = writes
 local savedRevision = secondRunStorage:Diagnostics().revision
 for _ = 1, 100 do
@@ -118,7 +147,11 @@ clientCloud = nil
 local Sha256 = require("Sha256")
 local queueKey = "test:game:user:events:jsonl"
 local prefix = "gaq_" .. Sha256.hex(queueKey):sub(1, 24)
-local storage = assert(MakerAutoStorage.New())
+clientCloud = {
+    Get = function(_, _, callbacks) callbacks.ok({}) end,
+    Set = function(_, _, _, callbacks) callbacks.ok() end,
+}
+local storage = assert(MakerAutoStorage.New({ scheduler = hydrationScheduler }))
 local queue = storage:EventQueue(queueKey)
 local events = {}
 for index = 1, 250 do
@@ -303,7 +336,10 @@ local migration = legacy:EventQueue(queueKey)
 failWriteName = prefix .. "_2_1.json"
 assert(migration:Persist() == false)
 assert(type(require("tests.support.PersistedSnapshot")(files).data[queueKey]) == "string")
-assert(#assert(MakerAutoStorage.New()):EventQueue(queueKey):Events() == 620,
+legacy:Shutdown()
+legacy = assert(MakerAutoStorage.New())
+migration = legacy:EventQueue(queueKey)
+assert(#migration:Events() == 620,
     "interrupted migration must preserve the full legacy queue")
 failWriteName = nil
 assert(migration:Persist())
@@ -415,8 +451,8 @@ do
     clientCloud = previousCloud
 end
 
--- An offline backlog recovered from disk must publish its directory after the
--- chunks, including retrying a directory write that failed before a restart.
+-- An offline backlog must first reconcile the remote directory, then publish
+-- its chunks and directory. A failed directory write still retries on restart.
 do
     files, tasks = {}, {}
     clientCloud = nil
@@ -425,10 +461,18 @@ do
     local backlog = offline:EventQueue(queueKey)
     backlog:Upsert({ eventId = "offline-event", sessionId = "offline-session" })
     assert(backlog:Persist())
+    local checkpoint = require("tests.support.PersistedSnapshot")(files)
+    assert(checkpoint.cloudDirectoryBlocked and not checkpoint.cloudDirectoryConfirmed)
+    offline:Shutdown()
     local uploaded = {}
     local failDirectory = true
+    local reads = 0
     clientCloud = {
-        Get = function() error("local snapshot should use the fast path") end,
+        Get = function(_, key, callbacks)
+            assert(key == "gamealgo_sdk_storage_v1")
+            reads = reads + 1
+            callbacks.ok({ [key] = { schemaVersion = 1, revision = 10, data = { remoteOnly = "preserved" } } })
+        end,
         Set = function(_, key, data, callbacks)
             table.insert(uploaded, { key = key, data = data })
             if key == "gamealgo_sdk_storage_v1" and failDirectory then callbacks.error(503, "retry")
@@ -436,6 +480,7 @@ do
         end,
     }
     local recovered = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+    assert(reads == 1 and recovered:GetItem("remoteOnly") == "preserved")
     assert(#recovered:EventQueue(queueKey):Events() == 1)
     recovered:Flush()
     assert(#uploaded == 2 and uploaded[1].key == prefix .. "_1"
@@ -443,9 +488,11 @@ do
     recovered:Shutdown()
     uploaded, failDirectory = {}, false
     local retry = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+    assert(reads == 1, "a confirmed directory keeps the local fast path")
     retry:Flush()
     assert(#uploaded == 2 and uploaded[2].key == "gamealgo_sdk_storage_v1")
     assert(uploaded[2].data.data.identity == "offline-user")
+    assert(uploaded[2].data.data.remoteOnly == "preserved")
     assert(uploaded[2].data.data[queueKey].blocks == 1)
 end
 
@@ -687,6 +734,98 @@ do
     local found = {}
     for _, event in ipairs(recovered:EventQueue(queueKey):Events()) do found[event.eventId] = true end
     assert(found["first-local"] and found["second-local"])
+end
+
+-- Old snapshots without confirmation metadata and launches without an
+-- automatic scheduler must both reconcile before uploading any local values.
+do
+    for _, mode in ipairs({ "old-snapshot", "no-scheduler" }) do
+        files, tasks = {}, {}
+        if mode == "old-snapshot" then
+            files["gamealgo_sdk_storage_v1.json"] = cjson.encode({ schemaVersion = 1,
+                revision = 2, cloudDirectoryBlocked = false, data = { localOnly = "local" } })
+        end
+        local reads, uploaded = 0, {}
+        clientCloud = {
+            Get = function(_, key, callbacks)
+                assert(key == "gamealgo_sdk_storage_v1")
+                reads = reads + 1
+                callbacks.ok({ [key] = { schemaVersion = 1, revision = 9,
+                    data = { remoteOnly = "remote" } } })
+            end,
+            Set = function(_, key, data, callbacks) uploaded[key] = data; callbacks.ok() end,
+        }
+        if mode == "no-scheduler" then
+            local offline = assert(MakerAutoStorage.New())
+            assert(offline:SetItem("localOnly", "local"))
+            offline:Flush()
+            assert(reads == 0 and next(uploaded) == nil)
+            offline:Shutdown()
+        end
+        local online = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+        online:Flush()
+        assert(reads == 1)
+        assert(uploaded.gamealgo_sdk_storage_v1.data.localOnly == "local")
+        assert(uploaded.gamealgo_sdk_storage_v1.data.remoteOnly == "remote")
+        local reopened = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+        assert(reopened:IsReady() and reads == 1, "confirmed directory should use the fast path")
+    end
+end
+
+-- A remote legacy JSONL backlog merges with local chunked or JSONL values.
+-- Interrupted migration keeps both sides recoverable without multiplying
+-- identical records or dropping distinct legacy events with colliding IDs.
+do
+    for _, localFormat in ipairs({ "chunks", "jsonl", "absent" }) do
+        for _, failure in ipairs({ "none", "root", "chunk" }) do
+            files, tasks = {}, {}
+            clientCloud = { Get = function() end, Set = function() error("unresolved read must block writes") end }
+            local offline = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+            tasks[#tasks].callback()
+            local localEvent = { eventId = "collision", sessionId = "session", payload = { source = "local" } }
+            if localFormat == "jsonl" then
+                assert(offline:SetItem(queueKey, cjson.encode(localEvent)))
+            elseif localFormat == "chunks" then
+                local queue = offline:EventQueue(queueKey)
+                for index = 1, 8 do
+                    localEvent.contextId = "context-" .. index
+                    queue:Upsert(localEvent)
+                    assert(queue:Persist())
+                end
+            end
+            offline:Shutdown()
+            local remoteEvent = { eventId = "collision", sessionId = "session", payload = { source = "remote" } }
+            local legacy = cjson.encode(remoteEvent) .. "\n" .. cjson.encode(remoteEvent)
+            local uploaded = {}
+            clientCloud = {
+                Get = function(_, key, callbacks)
+                    assert(key == "gamealgo_sdk_storage_v1")
+                    callbacks.ok({ [key] = { schemaVersion = 1, revision = 90,
+                        data = { [queueKey] = legacy } } })
+                end,
+                Set = function(_, key, data, callbacks) uploaded[key] = data; callbacks.ok() end,
+            }
+            if failure == "root" then failWrites = true
+            elseif failure == "chunk" then failWriteName = prefix .. "_1_1.json" end
+            local merged = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+            merged:Flush()
+            if failure ~= "none" then
+                assert(next(uploaded) == nil, "migration failure must keep every cloud write blocked")
+                merged:Shutdown()
+                failWrites, failWriteName = false, nil
+                merged = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+            end
+            local events = merged:EventQueue(queueKey):Events()
+            assert(#events == (localFormat == "absent" and 2 or 3), "both legacy and local records must survive")
+            merged:Flush()
+            assert(uploaded.gamealgo_sdk_storage_v1.data[queueKey].format == "event_chunks_v1")
+            local reopened = assert(MakerAutoStorage.New())
+            local saved = reopened:EventQueue(queueKey):Events()
+            assert(#saved == #events and saved[1].payload.source == "remote"
+                and saved[2].payload.source == "remote")
+            if localFormat ~= "absent" then assert(saved[3].payload.source == "local") end
+        end
+    end
 end
 
 print("Maker automatic storage first-run tests passed")
