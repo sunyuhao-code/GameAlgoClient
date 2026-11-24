@@ -49,10 +49,15 @@ function HttpTransport.Request(request, callback)
             record.client = nil
         end
         local callback = record and record.callback or nil
+        if record then record.callback = nil end
         local callbackOk, callbackError = pcall(callback, error, response)
         if not callbackOk then safePrint("[GameAlgoHttp] callback failed: ", callbackError) end
         return callbackOk
     end
+
+    nextRequestId = nextRequestId + 1
+    requestId = nextRequestId
+    activeRequests[requestId] = { complete = complete, callback = rawCallback }
 
     if type(request) ~= "table" then
         complete("invalid HTTP request", nil)
@@ -88,9 +93,7 @@ function HttpTransport.Request(request, callback)
         return nil
     end
 
-    nextRequestId = nextRequestId + 1
-    requestId = nextRequestId
-    activeRequests[requestId] = { client = client, complete = complete, callback = rawCallback }
+    activeRequests[requestId].client = client
     requestIdsByClient[client] = requestId
 
     local setupOk, setupError = pcall(function()

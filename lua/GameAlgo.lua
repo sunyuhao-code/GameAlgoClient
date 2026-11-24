@@ -1579,7 +1579,7 @@ function GameAlgo.Init(options)
     end
     local initGeneration = state_.lifecycleGeneration
     storage:OnReady(function()
-        if initGeneration ~= state_.lifecycleGeneration then
+        if initGeneration ~= state_.lifecycleGeneration or state_.storage ~= storage then
             log("stale storage ready callback ignored (SDK reinitialized)")
             return
         end
@@ -1696,10 +1696,6 @@ performConfigFetchAttempt = function()
                 if requestBody.sessionId ~= state_.sessionId then
                     -- The session changed while this retry was pending. Hand the
                     -- in-flight slot back to the queue instead of retrying.
-                    settled = true
-                    if requestTimeoutHandle and type(scheduler.Cancel) == "function" then
-                        scheduler:Cancel(requestTimeoutHandle)
-                    end
                     finishConfigFetch(error, nil)
                     return
                 end

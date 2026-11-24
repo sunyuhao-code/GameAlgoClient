@@ -2,6 +2,83 @@ local cjson = require("cjson")
 
 package.path = "lua/?.lua;lua/?/init.lua;" .. package.path
 
+-- Every transport failure path must notify its caller once, including failures
+-- before an HttpClient can be registered in the active-request table.
+do
+    HTTP_GET, HTTP_POST, HTTP_PUT, HTTP_DELETE, HTTP_PATCH = 1, 2, 3, 4, 5
+    local HttpTransport = require("HttpTransport")
+    local previousHttp = http
+    local calls, receivedError = 0, nil
+    http = nil
+    HttpTransport.Request({ method = "GET", url = "https://example.invalid" }, function(error)
+        calls, receivedError = calls + 1, error
+    end)
+    assert(calls == 1 and receivedError == "http client unavailable in this runtime")
+
+    calls, receivedError = 0, nil
+    http = {}
+    HttpTransport.Request({ method = "TRACE", url = "https://example.invalid" }, function(error)
+        calls, receivedError = calls + 1, error
+    end)
+    assert(calls == 1 and receivedError == "unsupported HTTP method: TRACE")
+
+    local function expectFailure(request, manager, expected)
+        http = manager
+        local count, reason = 0, nil
+        local returned = HttpTransport.Request(request, function(error)
+            count, reason = count + 1, error
+        end)
+        assert(returned == nil and count == 1, "each early failure must invoke its callback once")
+        assert(tostring(reason):find(expected, 1, true), tostring(reason))
+        assert(HttpTransport.Diagnostics().activeRequests == 0)
+    end
+    expectFailure(false, {}, "invalid HTTP request")
+    expectFailure({ method = setmetatable({}, { __tostring = function() error("bad method") end }) },
+        {}, "invalid HTTP method")
+    expectFailure({ method = "GET" }, { Create = function() return nil end }, "http client unavailable")
+    expectFailure({ method = "GET" }, { Create = function() error("Create failed") end }, "http client unavailable")
+    expectFailure({ method = "GET" }, { Create = function()
+        return { SetUrl = function() error("setup failed") end }
+    end }, "request setup failed")
+
+    -- Model native callbacks rooted outside the Lua collector. Both the client
+    -- and the business callback's captured objects must become collectible.
+    local roots, clients, captures = {}, setmetatable({}, { __mode = "v" }), setmetatable({}, { __mode = "v" })
+    http = { Create = function()
+        local client = {}
+        local callbacks = {}
+        table.insert(roots, callbacks)
+        for _, name in ipairs({ "SetUrl", "SetMethod", "SetTimeout", "Send" }) do
+            client[name] = function(self) return self end
+        end
+        function client:OnSuccess(callback) callbacks.ok = callback; return self end
+        function client:OnError(callback) callbacks.error = callback; return self end
+        return client
+    end }
+    for index, outcome in ipairs({ "success", "http-error", "error", "cancel", "callback-error" }) do
+        local capture = {}
+        captures[index] = capture
+        local count = 0
+        local client = HttpTransport.Request({ method = "GET", url = "https://example.invalid" },
+            function()
+                capture.used = true
+                count = count + 1
+                if outcome == "callback-error" then error("business callback failed") end
+            end)
+        clients[index] = client
+        if outcome == "cancel" then assert(HttpTransport.Cancel(client))
+        elseif outcome == "error" then roots[index].error(nil, 503, "unavailable")
+        else roots[index].ok(nil, { statusCode = outcome == "http-error" and 503 or 200, dataAsString = "{}" }) end
+        roots[index].error(nil, 500, "duplicate terminal event")
+        assert(count == 1 and capture.used)
+    end
+    collectgarbage("collect"); collectgarbage("collect")
+    assert(next(clients) == nil, "completed clients must be collectible despite rooted native callbacks")
+    assert(next(captures) == nil, "completed business callbacks must release their captured objects")
+    assert(HttpTransport.Diagnostics().activeRequests == 0)
+    http = previousHttp
+end
+
 -- Loading an SDK entry through a non-Maker namespace must keep all sibling
 -- modules in that namespace instead of silently falling back to sdk/.
 do
@@ -351,7 +428,16 @@ do
     local retryTask = scheduled[#scheduled]
     assert(retryTask ~= nil and not retryTask.cancelled)
     assert(GameAlgo.NewSession("retry-d"))
-    retryTask.callback()
+    local previousMeta = getmetatable(_G)
+    setmetatable(_G, { __index = function(_, name)
+        if name == "requestTimeoutHandle" then error("unexpected global timeout lookup") end
+        local lookup = previousMeta and previousMeta.__index
+        if type(lookup) == "function" then return lookup(_G, name) end
+        if type(lookup) == "table" then return lookup[name] end
+    end })
+    local retryOk, retryError = pcall(retryTask.callback)
+    setmetatable(_G, previousMeta)
+    assert(retryOk, tostring(retryError))
     assert(#configRequests == 4, "a pending retry must yield after the session switch")
     assert(configRequests[4].body.sessionId == "retry-d")
     configRequests[4].callback(nil, { status = 200, body = okConfig("retry-context-d") })

@@ -374,6 +374,9 @@ do
     heldRead.ok({}) -- late read is discarded; remote state must stay untouched
     pending:Flush()
     assert(#writesHeld == 0, "a late cloud read must not unlock publishing")
+    local timeoutSnapshot = require("tests.support.PersistedSnapshot")(files)
+    assert(timeoutSnapshot.cloudDirectoryBlocked == true, "the newest local bank must retain the cloud gate")
+    local timeoutSnapshotJson = cjson.encode(timeoutSnapshot)
 
     -- A resolved empty read opens the gate; the first write must be the
     -- directory carrying the merged local data. A fresh device (no local
@@ -390,7 +393,252 @@ do
     assert(writesHeld[1].key == "gamealgo_sdk_storage_v1")
     assert(writesHeld[1].data and writesHeld[1].data.data
         and writesHeld[1].data.data.identity == "confirmed-empty")
+
+    -- A timeout marker survives a restart, so restoring the local snapshot
+    -- cannot silently publish it over an unknown remote directory.
+    files = {}
+    files["gamealgo_sdk_storage_v1.json"] = timeoutSnapshotJson
+    local restartedWrites = {}
+    clientCloud = {
+        Get = function(_, key, callbacks)
+            assert(key == "gamealgo_sdk_storage_v1")
+        end,
+        Set = function(_, key, data, callbacks)
+            table.insert(restartedWrites, { key = key, data = data })
+        end,
+    }
+    local restarted = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+    restarted:SetItem("after-restart", "local-change")
+    tasks[#tasks].callback()
+    restarted:Flush()
+    assert(#restartedWrites == 0, "a timeout marker must keep directory publication blocked after restart")
     clientCloud = previousCloud
+end
+
+-- An offline backlog recovered from disk must publish its directory after the
+-- chunks, including retrying a directory write that failed before a restart.
+do
+    files, tasks = {}, {}
+    clientCloud = nil
+    local offline = assert(MakerAutoStorage.New())
+    offline:SetItem("identity", "offline-user")
+    local backlog = offline:EventQueue(queueKey)
+    backlog:Upsert({ eventId = "offline-event", sessionId = "offline-session" })
+    assert(backlog:Persist())
+    local uploaded = {}
+    local failDirectory = true
+    clientCloud = {
+        Get = function() error("local snapshot should use the fast path") end,
+        Set = function(_, key, data, callbacks)
+            table.insert(uploaded, { key = key, data = data })
+            if key == "gamealgo_sdk_storage_v1" and failDirectory then callbacks.error(503, "retry")
+            else callbacks.ok() end
+        end,
+    }
+    local recovered = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+    assert(#recovered:EventQueue(queueKey):Events() == 1)
+    recovered:Flush()
+    assert(#uploaded == 2 and uploaded[1].key == prefix .. "_1"
+        and uploaded[2].key == "gamealgo_sdk_storage_v1")
+    recovered:Shutdown()
+    uploaded, failDirectory = {}, false
+    local retry = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+    retry:Flush()
+    assert(#uploaded == 2 and uploaded[2].key == "gamealgo_sdk_storage_v1")
+    assert(uploaded[2].data.data.identity == "offline-user")
+    assert(uploaded[2].data.data[queueKey].blocks == 1)
+end
+
+-- A pending read is blocked on disk before any asynchronous callback. Empty
+-- or malformed replies must not overwrite existing remote chunks either.
+do
+    for _, reply in ipairs({ "timeout", "error", "invalid" }) do
+        files, tasks = {}, {}
+        local read, uploads = nil, 0
+        clientCloud = {
+            Get = function(_, _, callbacks) read = callbacks end,
+            Set = function() uploads = uploads + 1 end,
+        }
+        local waiting = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+        assert(require("tests.support.PersistedSnapshot")(files).cloudDirectoryBlocked == true)
+        if reply == "timeout" then tasks[#tasks].callback()
+        elseif reply == "error" then read.error(500, "unavailable")
+        else read.ok({ gamealgo_sdk_storage_v1 = "broken snapshot" }) end
+        local events = waiting:EventQueue(queueKey)
+        events:Upsert({ eventId = reply, sessionId = "blocked-session" })
+        assert(events:Persist())
+        waiting:Flush()
+        assert(uploads == 0, "an unresolved directory must block chunk writes too")
+        waiting:Shutdown()
+        local restarted = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+        assert(not restarted:IsReady(), "restart must retry the unresolved directory read")
+        read.ok(nil)
+        restarted:Flush()
+        assert(uploads == 0, "a malformed success must not confirm an empty directory")
+    end
+end
+
+-- Reconciliation after a timed-out run keeps local scalar values and appends
+-- local events after remote slots instead of overwriting the old backlog.
+do
+    files, tasks = {}, {}
+    local read, uploaded = nil, {}
+    clientCloud = {
+        Get = function(_, _, callbacks) read = callbacks end,
+        Set = function() error("unresolved storage must not upload") end,
+    }
+    local offline = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+    tasks[#tasks].callback()
+    offline:SetItem("identity", "local-user")
+    local events = offline:EventQueue(queueKey)
+    events:Upsert({ eventId = "local-event", sessionId = "local-session" })
+    assert(events:Persist())
+    offline:Shutdown()
+    clientCloud = {
+        Get = function(_, key, callbacks)
+            if key == "gamealgo_sdk_storage_v1" then
+                callbacks.ok({ [key] = { schemaVersion = 1, revision = 900, data = {
+                    identity = "remote-user", remoteOnly = "preserved",
+                    [queueKey] = { format = "event_chunks_v1", blocks = 1 },
+                } } })
+            else
+                assert(key == prefix .. "_1")
+                callbacks.ok({ [key] = { format = "event_chunks_v1", revision = 3, entries = {
+                    { sequence = 1, event = cjson.encode({ eventId = "remote-event", sessionId = "remote-session" }) },
+                } } })
+            end
+        end,
+        Set = function(_, key, data, callbacks)
+            table.insert(uploaded, { key = key, data = data })
+            callbacks.ok()
+        end,
+    }
+    local recovered = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+    assert(recovered:IsReady())
+    assert(recovered:GetItem("identity") == "local-user")
+    assert(recovered:GetItem("remoteOnly") == "preserved")
+    local found = {}
+    for _, event in ipairs(recovered:EventQueue(queueKey):Events()) do found[event.eventId] = true end
+    assert(found["remote-event"] and found["local-event"])
+    recovered:Flush()
+    assert(uploaded[1].key == prefix .. "_2", "local chunks must move past remote slots")
+    assert(uploaded[#uploaded].key == "gamealgo_sdk_storage_v1")
+    assert(uploaded[#uploaded].data.data[queueKey].blocks == 2)
+    local checkpoint = require("tests.support.PersistedSnapshot")(files)
+    assert(not checkpoint.cloudDirectoryBlocked and checkpoint.data.remoteOnly == "preserved")
+    local restarted = assert(MakerAutoStorage.New())
+    assert(restarted:GetItem("identity") == "local-user")
+    assert(#restarted:EventQueue(queueKey):Events() == 2, "both backlogs must survive another restart")
+end
+
+-- Shutdown stops the old write pump even when a chunk request is already in
+-- flight. Its delayed callback must not publish the old directory afterward.
+do
+    files, tasks = {}, {}
+    local pending, uploaded = {}, {}
+    clientCloud = {
+        Get = function(_, _, callbacks) callbacks.ok({}) end,
+        Set = function(_, key, data, callbacks)
+            table.insert(uploaded, { key = key, data = data })
+            if key ~= "gamealgo_sdk_storage_v1" then table.insert(pending, callbacks)
+            else callbacks.ok() end
+        end,
+    }
+    local old = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+    old:SetItem("identity", "old-user")
+    local oldEvents = old:EventQueue(queueKey)
+    oldEvents:Upsert({ eventId = "old-event", sessionId = "old-session" })
+    oldEvents:Persist()
+    local completions = 0
+    old:Flush(function(error)
+        assert(error == "storage stopped")
+        completions = completions + 1
+    end)
+    assert(#pending == 1 and #uploaded == 1)
+    old:Shutdown()
+    local current = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+    current:SetItem("identity", "new-user")
+    pending[1].ok()
+    pending[1].timeout()
+    assert(completions == 1 and #uploaded == 1, "old callbacks must not resume the write pump")
+    assert(old:SetItem("identity", "stale-user") == false)
+    assert(oldEvents:Persist() == false)
+    assert(assert(MakerAutoStorage.New()):GetItem("identity") == "new-user")
+end
+
+-- A stopped reader must not checkpoint its chunks over files written by the
+-- current instance, even if the old success and timeout both arrive late.
+do
+    files, tasks = {}, {}
+    local pending = {}
+    clientCloud = {
+        Get = function(_, key, callbacks)
+            if key == "gamealgo_sdk_storage_v1" then
+                callbacks.ok({ [key] = { schemaVersion = 1, revision = 1, data = {
+                    [queueKey] = { format = "event_chunks_v1", blocks = 1 },
+                } } })
+            else table.insert(pending, { key = key, callbacks = callbacks }) end
+        end,
+        Set = function(_, _, _, callbacks) callbacks.ok() end,
+    }
+    local old = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+    assert(not old:IsReady() and #pending == 1)
+    local oldTimeout = tasks[#tasks]
+    old:Shutdown()
+    local current = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+    assert(#pending == 2)
+    local function chunk(eventId)
+        return { format = "event_chunks_v1", revision = 1, entries = {
+            { sequence = 1, event = cjson.encode({ eventId = eventId, sessionId = "session" }) },
+        } }
+    end
+    pending[2].callbacks.ok({ [pending[2].key] = chunk("new-event") })
+    assert(current:IsReady())
+    pending[1].callbacks.ok({ [pending[1].key] = chunk("old-event") })
+    oldTimeout.callback()
+    local recovered = assert(MakerAutoStorage.New()):EventQueue(queueKey):Events()
+    assert(#recovered == 1 and recovered[1].eventId == "new-event")
+    assert(not old:IsReady(), "shutdown must suppress old readiness callbacks")
+end
+
+-- If reconciliation itself times out on a remote block, keep new local
+-- events durable and retry the unresolved directory on the next launch.
+do
+    files, tasks = {}, {}
+    clientCloud = { Get = function() end, Set = function() error("unexpected upload") end }
+    local first = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+    tasks[#tasks].callback()
+    first:SetItem("identity", "local-user")
+    local queue = first:EventQueue(queueKey)
+    queue:Upsert({ eventId = "first-local", sessionId = "local-session" })
+    queue:Persist()
+    first:Shutdown()
+    local uploaded, held = 0, nil
+    clientCloud = {
+        Get = function(_, key, callbacks)
+            if key == "gamealgo_sdk_storage_v1" then
+                callbacks.ok({ [key] = { schemaVersion = 1, revision = 100, data = {
+                    [queueKey] = { format = "event_chunks_v1", blocks = 1 },
+                } } })
+            else held = callbacks end
+        end,
+        Set = function() uploaded = uploaded + 1 end,
+    }
+    local second = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+    assert(not second:IsReady() and held)
+    tasks[#tasks].callback()
+    local currentQueue = second:EventQueue(queueKey)
+    currentQueue:Upsert({ eventId = "second-local", sessionId = "local-session" })
+    assert(currentQueue:Persist())
+    second:Flush()
+    assert(uploaded == 0)
+    second:Shutdown()
+    clientCloud.Get = function(_, key, callbacks) callbacks.ok({}) end
+    local recovered = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+    assert(recovered:IsReady())
+    local found = {}
+    for _, event in ipairs(recovered:EventQueue(queueKey):Events()) do found[event.eventId] = true end
+    assert(found["first-local"] and found["second-local"])
 end
 
 print("Maker automatic storage first-run tests passed")
