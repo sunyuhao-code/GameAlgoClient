@@ -4,6 +4,8 @@ GamePropel (formerly GameAlgo) SDK for **TapTap H5 minigames**, published as `@g
 Other minigame hosts, including WeChat, require their own host SDK; browser
 fallbacks are retained for local previews and compatible WebViews.
 
+Version 2.1.12 adds optional `isOldUser` at initialization and persists its first explicit value for the `new_user` standard milestone funnel.
+
 Version 2.1.11 resumes periodic uploads after restoring a persisted queue, even
 when the game has not produced a new event or called `flush()`. Restored events
 retain their original IDs, Session and Context.

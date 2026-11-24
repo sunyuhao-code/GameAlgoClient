@@ -5,6 +5,8 @@
 native local storage, `wx.onHide/onShow` and rewarded-video APIs. It fixes
 `platform=wechat`; iOS/Android/desktop are separate `device.os` values.
 
+Version 1.1.1 adds optional `isOldUser` at initialization, preserves its first explicit value across restarts, and carries it over when the first config resolves an OpenID identity.
+
 Version 1.1.0 supports events, durable offline queues, foreground time,
 optional first-install OpenID identity, configuration files in JSON and
 parameter-based A/B experiments. It does not
