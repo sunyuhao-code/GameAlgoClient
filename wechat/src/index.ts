@@ -1,11 +1,12 @@
 import { GameAlgoRestClient } from "../../rest-api/src/core-client.ts";
 import { RewardVideoManager, type RewardAdSpace, type RewardAdSpaceOptions } from "../../rest-api/src/reward-video-manager.ts";
-import type { ConfigResponse, FetchConfigOptions, GameAlgoRestClientOptions, JsonValue } from "../../rest-api/src/types.ts";
+import type { ConfigResponse, FetchConfigOptions, GameAlgoRestClientOptions, GameAlgoUserIdentity, JsonValue } from "../../rest-api/src/types.ts";
 import { getWechatHost, type WechatHost, type WechatNetworkStatus } from "./host.ts";
 import { GameAlgoWechatStorage } from "./storage.ts";
 import { GameAlgoWechatTransport } from "./transport.ts";
+import { isNewWechatIdentity } from "./identity.ts";
 
-export const GAMEALGO_WECHAT_SDK_VERSION = "1.0.0";
+export const GAMEALGO_WECHAT_SDK_VERSION = "1.1.0";
 export const GAMEALGO_WECHAT_CAPABILITIES = Object.freeze({ config: true, parameterExperiments: true, remoteScripts: false, multiplayer: false });
 
 export type GameAlgoWechatClientOptions = Omit<GameAlgoRestClientOptions,
@@ -15,6 +16,8 @@ export type GameAlgoWechatClientOptions = Omit<GameAlgoRestClientOptions,
   requestTimeoutMs?: number;
   autoLifecycle?: boolean;
   autoSessionLifecycle?: boolean;
+  /** Maximum wait for a first-install wx.login code; failure keeps the anonymous ID. */
+  wechatLoginTimeoutMs?: number;
 };
 type RefreshOptions = FetchConfigOptions & { preloadConfigFiles?: boolean | string[] };
 
@@ -30,6 +33,12 @@ export class GameAlgoWechatClient extends GameAlgoRestClient {
   private background = false;
   private closed = false;
   private endedSessionId?: string;
+  private initialIdentityPending: boolean;
+  private initialConfig?: Promise<ConfigResponse>;
+  private initialCandidateId?: string;
+  private initialLoginCodeSent = false;
+  private cancelLogin?: () => void;
+  private readonly wechatLoginTimeoutMs: number;
 
   private readonly onHide = (): void => {
     if (this.closed) return;
@@ -56,6 +65,9 @@ export class GameAlgoWechatClient extends GameAlgoRestClient {
     const host = getWechatHost(options.wx);
     const storage = new GameAlgoWechatStorage(host);
     const transport = new GameAlgoWechatTransport(host, options.requestTimeoutMs);
+    const initialIdentityPending = isNewWechatIdentity(storage, options.baseUrl, options.gameKey, options.userId);
+    const loginTimeout = options.wechatLoginTimeoutMs ?? 3000;
+    if (!Number.isFinite(loginTimeout) || loginTimeout < 1 || loginTimeout > 30_000) throw new Error("Invalid wechatLoginTimeoutMs");
     super({
       ...options,
       platform: "wechat",
@@ -73,6 +85,8 @@ export class GameAlgoWechatClient extends GameAlgoRestClient {
     });
     this.host = host;
     this.transport = transport;
+    this.initialIdentityPending = initialIdentityPending;
+    this.wechatLoginTimeoutMs = loginTimeout;
     this.deviceOverrides = sanitizeDevice(options.device);
     this.defaultPreload = options.preloadConfigFiles ?? true;
     this.autoSessionLifecycle = options.autoSessionLifecycle !== false;
@@ -110,7 +124,67 @@ export class GameAlgoWechatClient extends GameAlgoRestClient {
 
   override fetchConfig(options: FetchConfigOptions = {}): Promise<ConfigResponse> {
     if (this.closed) return Promise.reject(new Error("GameAlgo client is closed"));
-    return super.fetchConfig({ ...options, platform: "wechat", device: sanitizeDevice(options.device) });
+    if (this.initialIdentityPending) {
+      // Initialization and an immediate caller refresh share one single-use code.
+      return this.initialConfig ??= this.fetchInitialConfig(options);
+    }
+    return super.fetchConfig({ ...options, wechatLoginCode: undefined, platform: "wechat", device: sanitizeDevice(options.device) });
+  }
+
+  private async fetchInitialConfig(options: FetchConfigOptions): Promise<ConfigResponse> {
+    try {
+      this.initialCandidateId = (await this.userIdentity(options.userId)).userId;
+      const wechatLoginCode = await this.firstLoginCode();
+      if (this.closed) throw new Error("GameAlgo client is closed");
+      this.initialLoginCodeSent = Boolean(wechatLoginCode);
+      return await super.fetchConfig({ ...options, wechatLoginCode, platform: "wechat", device: sanitizeDevice(options.device) });
+    } finally {
+      // Once the first decision falls back, future config fetches never upgrade
+      // that local player, even after the developer configures AppSecret.
+      this.initialIdentityPending = false;
+    }
+  }
+
+  private firstLoginCode(): Promise<string | undefined> {
+    if (typeof this.host.login !== "function") return Promise.resolve(undefined);
+    return new Promise(resolve => {
+      let settled = false;
+      const finish = (code?: string): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.cancelLogin = undefined;
+        resolve(code);
+      };
+      const timer = setTimeout(() => finish(), this.wechatLoginTimeoutMs);
+      this.cancelLogin = () => finish();
+      try {
+        this.host.login!({ timeout: this.wechatLoginTimeoutMs,
+          success: result => finish(typeof result.code === "string" && result.code.trim().length <= 512 ? result.code.trim() || undefined : undefined),
+          fail: () => finish(),
+        });
+      } catch { finish(); }
+    });
+  }
+
+  protected override async resolveConfigIdentity(config: ConfigResponse, identity: GameAlgoUserIdentity): Promise<GameAlgoUserIdentity> {
+    if (!this.initialIdentityPending || identity.userId !== this.initialCandidateId || !config.userIdentity) return identity;
+    const resolved = config.userIdentity;
+    if (!resolved || typeof resolved.userId !== "string" || !resolved.userId.trim() || resolved.userId.length > 256
+      || (resolved.source !== "anonymous" && resolved.source !== "wechat_openid")
+      || (resolved.source === "anonymous" && resolved.userId !== identity.userId)
+      || (resolved.source === "wechat_openid" && !this.initialLoginCodeSent)) {
+      throw new Error("Invalid WeChat initial identity response");
+    }
+    if (this.closed) throw new Error("GameAlgo client is closed");
+    if (resolved.userId === identity.userId) return identity;
+    if ((resolved.userCreatedAt && !Number.isFinite(Date.parse(resolved.userCreatedAt)))
+      || (resolved.userCreatedLocalAt && !Number.isFinite(Date.parse(resolved.userCreatedLocalAt)))) throw new Error("Invalid WeChat identity creation time");
+    const next = { userId: resolved.userId, userCreatedAt: resolved.userCreatedAt ?? identity.userCreatedAt,
+      userCreatedLocalAt: resolved.userCreatedLocalAt ?? identity.userCreatedLocalAt };
+    await this.tracker.resolveInitialUserId(identity.userId, next.userId, next.userCreatedAt);
+    await this.persistResolvedIdentity(next);
+    return next;
   }
 
   override async refresh(options: RefreshOptions = {}): Promise<void> {
@@ -157,6 +231,7 @@ export class GameAlgoWechatClient extends GameAlgoRestClient {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.cancelLogin?.();
     this.ads.close();
     for (const release of this.releases.splice(0)) { try { release(); } catch { /* Closed guards suppress retained host callbacks. */ } }
     this.tracker.close();

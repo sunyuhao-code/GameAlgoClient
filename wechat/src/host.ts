@@ -3,6 +3,11 @@ import type { RewardVideoHost } from "../../rest-api/src/reward-video-ad.ts";
 export type WechatRequestResult = { statusCode: number; data: unknown; header?: Record<string, unknown> };
 export type WechatNetworkStatus = { isConnected: boolean; networkType?: string };
 export type WechatHost = {
+  login?: (options: {
+    timeout?: number;
+    success(result: { code?: string; errMsg?: string }): void;
+    fail(error: unknown): void;
+  }) => void;
   request(options: {
     url: string;
     method: "GET" | "POST";

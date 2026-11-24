@@ -30,6 +30,8 @@ export type ConfigResponse = {
   configVersion: string;
   ttlSeconds: number;
   serverTime: string;
+  /** WeChat first-install resolution; absent on servers without OpenID support. */
+  userIdentity?: { userId: string; source: "anonymous" | "wechat_openid"; userCreatedAt?: string; userCreatedLocalAt?: string };
   /** Absent/false disables Maker/H5 TapDB identity linking; never restored as startup permission. */
   tapdbContextLinkEnabled?: boolean;
   /** Four independent live Maker/H5 gates. GameAlgo defaults on; TapDB requires explicit true. */
@@ -67,6 +69,8 @@ export type FetchConfigOptions = {
   device?: Record<string, JsonValue>;
   isDebug?: boolean;
   forceRefresh?: boolean;
+  /** Single-use wx.login code, supplied only for a previously unseen local identity. */
+  wechatLoginCode?: string;
 };
 
 export type ConfigFileResponse = {

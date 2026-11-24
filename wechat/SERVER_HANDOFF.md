@@ -1,6 +1,6 @@
 # GamePropel 微信小游戏 SDK 服务端对接
 
-客户端：`@gamepropel/sdk-wechat@1.0.0`，入口 `GamePropelWechatClient`（保留 `GameAlgoWechatClient` 别名）。正式 SDK 固定发送
+客户端：`@gamepropel/sdk-wechat@1.1.0`，入口 `GamePropelWechatClient`（保留 `GameAlgoWechatClient` 别名）。正式 SDK 固定发送
 `platform=wechat`，网络使用 `wx.request`，不需要业务服务器转发，也不使用浏览器
 `fetch`、Worker、QuickJS 或 WebAssembly。TapTap H5 继续使用 `platform=web`。
 
@@ -28,13 +28,61 @@ Key 的 `X-GameAlgo-Key` 请求头，支持国内地址及海外 `/algo_sdk` 部
 
 身份与设备字段：
 
-- `userId` 是 SDK 原生存储中的匿名 ID，重开恢复；可选 `accountUserId` 关联游戏已有
-  OpenID，不替换匿名 ID。不需要把 AppSecret 放进客户端。
+- 老用户的 `userId` 从原生存储恢复，保持原值。首次本地用户在初次配置请求中可携带
+  `wechatLoginCode`；服务端已配置 AppSecret 且换取成功时，以 OpenID 作为主 `userId`，
+  其余情况保留请求里的匿名候选 ID。详见下方首次身份协议。`accountUserId` 仍只用于
+  接入方另行提供的游戏账号，不自动重复填入 OpenID。AppSecret 不进入客户端。
 - `device.runtime=wechat`；`device.os` 表示 `ios/android/windows/macos` 等实际系统，
   `device.osVersion` 是系统版本。
 - `device.wechatAppId` 只来自真实的 `wx.getAccountInfoSync()`；还可带品牌、型号及微信
   客户端/基础库版本。无需 TapTap `tapmc...` ID、Maker 项目 ID 或 TapTap 绑定。
 - 微信不调用 TapDB，也不应由服务端触发 TapDB Context 关联。
+
+## 首次用户 OpenID 协议（2026-11-24，服务端已部署，线上真机验证通过）
+
+客户端仅在本地尚无历史 `userId`、且没有显式传 `userId` 时调用一次 `wx.login`。
+成功拿到 code 后，在原 `/v1/config` 请求增加 `wechatLoginCode: string`；AppID 来自
+`device.wechatAppId`。不增加独立登录请求，不传 AppSecret，也不记录原始 code 到日志。
+没有 code 的配置请求维持原来的语义，尤其不得为老用户重置主 ID。
+
+服务端在鉴权后、缓存查询和实验分配及 Context 创建前完成以下操作：
+
+1. 按鉴权绑定的游戏查找可选微信 AppID/AppSecret，不能信任客户端指定另一个游戏的密钥。
+2. 仅在 `platform=wechat` 且带 `wechatLoginCode` 时尝试换取；配置 AppID 应与真实
+   `device.wechatAppId` 一致。凭证仅保存在服务端私密配置，不放公开配置文件或响应。
+3. 设置短超时，用微信 `jscode2session` 换取；不记录 code/AppSecret/session_key。
+   缺配置、微信报错或超时均回退请求的匿名候选 `userId`，配置仍正常返回。
+4. **先确定最终 userId，再进行缓存键计算、实验分桶、用户/Context 落库和响应生成**。
+   成功响应增加 `userIdentity: { userId: '<openid>', source: 'wechat_openid' }`；
+   回退可返回 `{ userId: '<请求的候选ID>', source: 'anonymous' }`。
+   不返回 AppSecret、session_key 或微信原始响应。
+
+成功身份还返回可选 `userCreatedAt`、`userCreatedLocalAt`。服务端按游戏和 OpenID
+持久化首次注册时间，后续清缓存或换设备时复用，避免同一玩家重复被当作新用户。
+SDK 在保存最终身份时同步保存这两个时间。
+
+旧服务端不返回 `userIdentity` 时，客户端保持匿名身份。旧用户即使收到额外身份字段也
+不替换本地主 ID。新用户已经走匿名回退后，后续启动/刷新不再发 code 或升级为 OpenID。
+SDK 在 Context 绑定前更新待绑定事件的 userId，保留 eventId、发生时间、sessionId 和
+payload；已经绑定 Context 的历史事件保持原始归属。并发初次配置共用一次换码请求。
+
+服务端已实现配置入口、加密存储和换取链路，国内服务已部署并完成线上真机验证。
+其他环境部署顺序：先服务端数据库迁移和密钥配置，再更新客户端。旧服务端上的首次用户会正常
+回退为匿名用户，后续按产品约定保持匿名 ID。
+
+管理 API 为 `/admin/v1/games/<gameId>/wechat-login`：GET 返回脱敏状态；PUT 接收
+`{ appId, appSecret, enabled }`；DELETE 移除配置。配置写入需要所属游戏的写权限。
+后台“游戏设置 → 微信小游戏 OpenID（可选）”提供同一入口。服务端环境变量
+`GAMEALGO_WECHAT_SECRET_ENCRYPTION_KEY` 为持久保存的 64 位十六进制加密密钥。
+AppSecret 使用 AES-256-GCM 加密，并绑定 gameId；不进入公开配置、日志或微信包。
+
+2026-11-24 微信真机 + 本机新服务端验证：真实 code 换取 OpenID 成功；首次 Context、
+关卡事件和 session_end 使用一致的 OpenID；停用配置后新用户保持匿名；重新启用后，
+匿名用户刷新、热启动和微信进程销毁后冷启动均保持原 ID。测试探针没有做平台转换。
+
+同日国内线上微信真机验证：首次用户身份来源为 `wechat_openid`，主 ID 为 OpenID；
+完全销毁微信进程后重进，配置继续使用相同的 OpenID 且不再携带 `wechatLoginCode`。
+两次配置均 HTTP 200，关卡事件均 accepted=2、stored=2、rejected=[]。
 
 ## session、计时和补发口径
 

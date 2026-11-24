@@ -25,7 +25,8 @@ const server = createServer(async (request, response) => {
   requests.push({ url: request.url, body, headers: request.headers });
   response.setHeader("content-type", "application/json");
   response.end(JSON.stringify(request.url.endsWith("/v1/config")
-    ? { contextId: "ctx-wechat-pack", gameId: "pack-test", environment: "live", configVersion: "1", ttlSeconds: 60, configFiles: [], experiments: [
+    ? { contextId: "ctx-wechat-pack", gameId: "pack-test", environment: "live", configVersion: "1", ttlSeconds: 60,
+      ...(body.wechatLoginCode ? { userIdentity: { userId: "openid-pack-test", source: "wechat_openid" } } : {}), configFiles: [], experiments: [
       { key: "difficulty", experimentId: "exp-pack", variant: "a", config: { difficulty: 3 } },
     ] }
     : { ok: true, accepted: body.events?.length ?? 1, rejected: [] }));
@@ -35,6 +36,8 @@ const values = new Map();
 const hide = new Set(), show = new Set();
 const nativeFetch = globalThis.fetch;
 const wx = {
+  login: options => queueMicrotask(() => options.success({ code: "pack-one-use-code" })),
+  getAccountInfoSync: () => ({ miniProgram: { appId: "wx0123456789abcdef" } }),
   request(options) {
     const controller = new AbortController();
     void nativeFetch(options.url, { method: options.method, headers: options.header, body: options.data, signal: controller.signal })
@@ -67,6 +70,8 @@ try {
   assert.equal(exports.GAMEPROPEL_WECHAT_CAPABILITIES, exports.GAMEALGO_WECHAT_CAPABILITIES);
   client = exports.GamePropelWechatClient.init({ baseUrl: `http://127.0.0.1:${server.address().port}/algo_sdk`, gameKey: "ga_live_pack_test", eventFlushIntervalMs: 0 });
   assert.equal(await client.waitForReady(), true);
+  assert.equal((await client.userIdentity()).userId, "openid-pack-test");
+  assert.equal(requests[0].body.wechatLoginCode, "pack-one-use-code");
   assert.equal(client.executor("difficulty").number("difficulty"), 3);
   client.tracker.trackLevelStart({ level_id: "关卡🙂" });
   for (const callback of hide) callback();
@@ -78,6 +83,7 @@ try {
   assert.equal(requests[0].headers["x-gamealgo-key"], "ga_live_pack_test");
   assert.ok(requests.flatMap(request => request.body.events ?? []).some(event => event.payload?.level_id === "关卡🙂"));
   assert.ok(requests.flatMap(request => request.body.events ?? []).some(event => event.eventType === "session_end"));
+  assert.ok(requests.flatMap(request => request.body.events ?? []).every(event => event.userId === "openid-pack-test"));
 
   const { stdout } = await run("npm", ["pack", "./wechat", "--ignore-scripts", "--pack-destination", directory, "--json"], { cwd: root });
   const result = JSON.parse(stdout);

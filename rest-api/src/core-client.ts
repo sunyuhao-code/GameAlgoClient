@@ -256,6 +256,16 @@ export class GameAlgoRestClient {
   /** Apply live delivery controls before binding a context can start an urgent upload. */
   protected onConfigReceived(_config: ConfigResponse, _identity: { userId: string; sessionId: string; isDebug: boolean }): void {}
 
+  /** Resolve a first-install identity before any Context is attached to events. */
+  protected async resolveConfigIdentity(_config: ConfigResponse, identity: GameAlgoUserIdentity): Promise<GameAlgoUserIdentity> { return identity; }
+
+  protected async persistResolvedIdentity(identity: GameAlgoUserIdentity): Promise<void> {
+    await this.storage?.setItem(this.userIdKey, identity.userId);
+    await this.storage?.setItem(this.userCreatedAtKey, identity.userCreatedAt);
+    await this.storage?.setItem(this.userCreatedLocalAtKey, identity.userCreatedLocalAt);
+    this.currentIdentity = identity;
+  }
+
   /** A second delivery channel may still need data already acknowledged by HTTP. */
   protected useAttributionAckCache(): boolean { return true; }
 
@@ -328,10 +338,13 @@ export class GameAlgoRestClient {
           timezone: options.timezone ?? this.timezone,
           device,
           isDebug,
+          ...(this.platform === "wechat" && clean(options.wechatLoginCode)
+            ? { wechatLoginCode: clean(options.wechatLoginCode) } : {}),
         }),
       });
+      const resolvedIdentity = await this.resolveConfigIdentity(config, identity);
       if (sessionId === this.tracker.currentSessionId()) {
-        this.onConfigReceived(config, { userId: identity.userId, sessionId, isDebug });
+        this.onConfigReceived(config, { userId: resolvedIdentity.userId, sessionId, isDebug });
       }
       this.tracker.bindSessionContext(sessionId, config.contextId);
       if (isBrowserHost(this.platform) && clean(config.contextId)) {
@@ -349,11 +362,11 @@ export class GameAlgoRestClient {
         ...this.snapshot,
         config,
         updatedAt: this.now(),
-        userId: identity.userId,
+        userId: resolvedIdentity.userId,
       };
       // Apply live operational controls before optional cache I/O: a delayed or
       // failed snapshot write must not leave a disabled native bridge active.
-      this.onConfigReady(config, { userId: identity.userId, sessionId, isDebug });
+      this.onConfigReady(config, { userId: resolvedIdentity.userId, sessionId, isDebug });
       await this.persistSnapshot();
       this.log(`config fetched: version=${config.configVersion}, experiments=${config.experiments.length}, configFiles=${config.configFiles.length}, ttl=${config.ttlSeconds}s`);
       this.logAssignments(config.experiments, "config ready");
@@ -888,6 +901,28 @@ export class GameAlgoEventTracker {
       for (const event of ends) this.enqueueSessionEndSnapshot({ ...event, userId: this.userId!,
         accountUserId: event.accountUserId ?? this.accountUserId });
     }
+  }
+
+  /** First-install only: unbound events keep their IDs/times while identity settles. */
+  async resolveInitialUserId(previousUserId: string, userId: string, userCreatedAt: string): Promise<void> {
+    await this.restorePromise;
+    if (!clean(previousUserId) || !clean(userId) || previousUserId === userId) return;
+    if (this.userId !== previousUserId || this.contextId) throw new Error("Initial identity is already bound");
+    const resolve = (event: GameEvent): GameEvent => !clean(event.contextId) && event.userId === previousUserId
+      ? { ...event, userId } : event;
+    this.queue = this.queue.map(resolve);
+    this.retryBatch = this.retryBatch.map(resolve);
+    // Milestone keys include their user; only pending keys may be reassigned.
+    const milestones = [...this.pendingMilestoneKeys];
+    this.pendingMilestoneKeys.clear();
+    for (const key of milestones) {
+      const parts = JSON.parse(key);
+      if (parts[1] === previousUserId) parts[1] = userId;
+      this.pendingMilestoneKeys.add(JSON.stringify(parts));
+    }
+    this.identify(userId, undefined, userCreatedAt, this.accountUserId);
+    this.hasPersistedQueue = true;
+    await this.persistPendingQueue();
   }
 
   newSession(sessionId = randomId()): void {
