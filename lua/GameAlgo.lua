@@ -13,9 +13,25 @@
 
 local cjson = require("cjson")
 
+local moduleName = ...
+
+local function localSdkModuleName(name)
+    if type(moduleName) == "string" then
+        local prefix, separator = moduleName:match("^(.*)([./])[^./]+$")
+        if prefix and prefix ~= "" then return prefix .. separator .. name end
+    end
+    return "sdk." .. name
+end
+
 local function requireSdkModule(name)
-    local ok, value = pcall(require, "sdk." .. name)
+    local localName = localSdkModuleName(name)
+    local ok, value = pcall(require, localName)
     if ok then return value end
+    local makerName = "sdk." .. name
+    if localName ~= makerName then
+        ok, value = pcall(require, makerName)
+        if ok then return value end
+    end
     return require(name)
 end
 
@@ -73,6 +89,7 @@ local state_ = {
     contextId = nil,
     config = nil,
     configFiles = {},
+    configFileRequestTokens = {},
     scripts = {},
     ddaControllers = {},
     queue = {},
@@ -231,10 +248,20 @@ local function localIsoFromUtc(value)
 end
 
 local function nowMs()
-    local ok, systemTime = pcall(function()
-        return Time and tonumber(Time.systemTime)
+    local ok, value = pcall(function()
+        if Time and type(Time.GetTimeSinceEpochMs) == "function" then
+            return Time:GetTimeSinceEpochMs()
+        end
+        if Time then
+            local systemTime = tonumber(Time.systemTime)
+            if systemTime then return systemTime * 1000 end
+        end
+        return nil
     end)
-    if ok and systemTime then return math.floor(systemTime * 1000) end
+    local milliseconds = tonumber(value)
+    if ok and milliseconds and milliseconds == milliseconds and milliseconds < math.huge then
+        return math.floor(milliseconds)
+    end
     return math.floor(os.time() * 1000)
 end
 
@@ -1141,11 +1168,12 @@ local function restoreEventQueue()
     end
 end
 
-local function bindQueuedEvents(contextId, sessionId)
+local function bindQueuedEvents(contextId, sessionId, adoptOrphans)
     if not contextId or contextId == "" then return end
     local changed = false
     for _, event in ipairs(state_.queue) do
-        if (not event.contextId or event.contextId == "") and event.sessionId == sessionId then
+        if (not event.contextId or event.contextId == "")
+            and (event.sessionId == sessionId or adoptOrphans) then
             event.contextId = contextId
             state_.flushableEvents = state_.flushableEvents + 1
             state_.eventQueueStorage:Upsert(event)
@@ -1449,6 +1477,7 @@ function GameAlgo.Init(options)
     state_.contextId = nil
     state_.config = nil
     state_.configFiles = {}
+    state_.configFileRequestTokens = {}
     state_.scripts = {}
     state_.ddaControllers = {}
     state_.queue = {}
@@ -1684,7 +1713,7 @@ performConfigFetchAttempt = function()
         end
         mergeCustomEventCountBucket("pending:" .. tostring(requestBody.sessionId), "context:" .. contextId)
         mergeOrdinaryEventCountBucket("pending:" .. tostring(requestBody.sessionId), "context:" .. contextId)
-        bindQueuedEvents(contextId, requestBody.sessionId)
+        bindQueuedEvents(contextId, requestBody.sessionId, current)
         rememberBoundMilestones(contextId)
         if state_.initWatchdogHandle and state_.scheduler and type(state_.scheduler.Cancel) == "function" then
             state_.scheduler:Cancel(state_.initWatchdogHandle)
@@ -1823,7 +1852,20 @@ function GameAlgo.FetchConfigFile(name, callback)
         if callback then callback("invalid config file name", nil) end
         return
     end
+    local generation = state_.lifecycleGeneration
+    local sessionId = state_.sessionId
+    local requestToken = (state_.configFileRequestTokens[name] or 0) + 1
+    state_.configFileRequestTokens[name] = requestToken
     httpRequest("GET", "/v1/config-files/" .. urlEncode(name), nil, function(error, decoded, response)
+        local stale = generation ~= state_.lifecycleGeneration
+            or sessionId ~= state_.sessionId
+            or requestToken ~= state_.configFileRequestTokens[name]
+        if stale then
+            local staleError = "stale config file response"
+            log("config file response ignored: " .. tostring(name))
+            if callback then callback(staleError, nil) end
+            return
+        end
         if error then
             log("config file fetch failed: " .. tostring(name) .. " " .. tostring(error))
             if callback then callback(error, nil) end
@@ -2566,6 +2608,8 @@ function GameAlgo.NewSession(sessionId, callback)
     state_.sessionForegroundStartMs = GameAlgo.GetForegroundTimeMs()
     state_.contextId = nil
     state_.config = nil
+    state_.configFiles = {}
+    state_.configFileRequestTokens = {}
     state_.eventQuota = nil
     state_.pendingMilestoneKeys = {}
     state_.queuePersistenceActive = true
@@ -2664,8 +2708,7 @@ function GameAlgo.DDA(key, options)
     if key == "" then error("DDA strategy key is required") end
     if state_.ddaControllers[key] then return state_.ddaControllers[key] end
     options = options or {}
-    local storageKey = options.storageKey or (userStorageNamespace() .. ":dda:" .. key)
-    local legacyStorageKey = "gamealgo:v1:dda:" .. tostring(state_.gameKey or "anonymous"):sub(1, 16) .. ":" .. key
+    local storageKey = options.storageKey
     local actual = nil
     local pending = {}
     local controller = {}
@@ -2677,6 +2720,8 @@ function GameAlgo.DDA(key, options)
 
     function controller._Hydrate()
         if actual or not state_.storageReady then return end
+        storageKey = storageKey or (userStorageNamespace() .. ":dda:" .. key)
+        local legacyStorageKey = "gamealgo:v1:dda:" .. tostring(state_.gameKey or "anonymous"):sub(1, 16) .. ":" .. key
         if storageGet(storageKey) == nil then
             local legacyValue = storageGet(legacyStorageKey)
             if legacyValue ~= nil then storageSet(storageKey, legacyValue) end

@@ -9,8 +9,29 @@
 
 local cjson = require("cjson")
 
-local shaOk, Sha256 = pcall(require, "sdk.Sha256")
-if not shaOk then Sha256 = require("Sha256") end
+local moduleName = ...
+
+local function localSdkModuleName(name)
+    if type(moduleName) == "string" then
+        local prefix, separator = moduleName:match("^(.*)([./])[^./]+$")
+        if prefix and prefix ~= "" then return prefix .. separator .. name end
+    end
+    return "sdk." .. name
+end
+
+local function requireSdkModule(name)
+    local localName = localSdkModuleName(name)
+    local ok, value = pcall(require, localName)
+    if ok then return value end
+    local makerName = "sdk." .. name
+    if localName ~= makerName then
+        ok, value = pcall(require, makerName)
+        if ok then return value end
+    end
+    return require(name)
+end
+
+local Sha256 = requireSdkModule("Sha256")
 
 local MakerAutoStorage = {}
 
@@ -690,6 +711,10 @@ function MakerAutoStorage.New(options)
                         error = function(code, reason)
                             logger("automatic storage cloud write failed: " .. tostring(code) .. " " .. tostring(reason))
                             done(tostring(reason or code or "cloud write failed"))
+                        end,
+                        timeout = function()
+                            logger("automatic storage cloud write timed out")
+                            done("cloud write timed out")
                         end,
                     })
                 end)

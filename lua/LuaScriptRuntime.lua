@@ -48,24 +48,49 @@ end
 local function executeWithLimit(execute, input, instructionLimit)
     local debugLibrary = rawget(_G, "debug")
     if not debugLibrary or type(debugLibrary.sethook) ~= "function" then
-        return pcall(execute, input)
+        return false, "instruction limit unavailable: debug.sethook is not available"
     end
 
-    local previousHook, previousMask, previousCount
-    if type(debugLibrary.gethook) == "function" then
-        previousHook, previousMask, previousCount = debugLibrary.gethook()
+    if type(debugLibrary.gethook) ~= "function" then
+        return false, "instruction limit unavailable: debug.gethook is not available"
     end
+
+    local inspected, hookState = pcall(function()
+        local previousHook, previousMask, previousCount = debugLibrary.gethook()
+        return { previousHook, previousMask, previousCount }
+    end)
+    if not inspected then
+        return false, "instruction limit unavailable: failed to inspect existing hook: " .. tostring(hookState)
+    end
+
+    local previousHook, previousMask, previousCount = hookState[1], hookState[2], hookState[3]
+    if previousHook ~= nil and type(previousHook) ~= "function" then
+        return false, "instruction limit unavailable: existing hook is not a Lua function"
+    end
+
     local hookStep = 1000
     local consumed = 0
-    debugLibrary.sethook(function()
-        consumed = consumed + hookStep
-        if consumed > instructionLimit then error("script instruction limit exceeded") end
-    end, "", hookStep)
+    local installed, installError = pcall(function()
+        debugLibrary.sethook(function()
+            consumed = consumed + hookStep
+            if consumed > instructionLimit then error("script instruction limit exceeded") end
+        end, "", hookStep)
+    end)
+    if not installed then
+        return false, "instruction limit unavailable: failed to install hook: " .. tostring(installError)
+    end
+
     local ok, result = pcall(execute, input)
-    if previousHook then
-        debugLibrary.sethook(previousHook, previousMask, previousCount)
-    else
-        debugLibrary.sethook()
+    local restored, restoreError = pcall(function()
+        if previousHook then
+            debugLibrary.sethook(previousHook, previousMask, previousCount)
+        else
+            debugLibrary.sethook()
+        end
+    end)
+    if not restored then
+        pcall(function() debugLibrary.sethook() end)
+        return false, "instruction limit cleanup failed: " .. tostring(restoreError)
     end
     return ok, result
 end

@@ -209,6 +209,26 @@ cloudFiles[secondJob.key] = cjson.encode(secondJob.data)
 secondJob.callbacks.ok()
 clientCloud.Set = normalSet
 
+-- A cloud timeout must release the write gate just like an ordinary error;
+-- later Flush calls must be able to start a fresh job.
+local timeoutHeld = {}
+clientCloud.Set = function(_, key, data, callbacks)
+    table.insert(timeoutHeld, { key = key, data = data, callbacks = callbacks })
+end
+storage:SetItem("timeout_value", "first")
+local timeoutError = nil
+storage:Flush(function(error) timeoutError = error end)
+assert(#timeoutHeld == 1)
+assert(type(timeoutHeld[1].callbacks.timeout) == "function")
+timeoutHeld[1].callbacks.timeout()
+assert(timeoutError == "cloud write timed out")
+timeoutHeld = {}
+storage:SetItem("timeout_value", "second")
+storage:Flush()
+assert(#timeoutHeld == 1, "cloud timeout must not leave cloudWriteInFlight locked")
+timeoutHeld[1].callbacks.ok()
+clientCloud.Set = normalSet
+
 local tasks = {}
 local scheduler = {
     Schedule = function(_, _, callback)

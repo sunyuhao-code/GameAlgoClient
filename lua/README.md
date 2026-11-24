@@ -15,7 +15,13 @@ TapTap Maker 客户端支持直接访问 GameAlgo HTTPS API。接入时把以下
 
 `client_main.lua` 是可直接参考的初始化示例。
 
-新接入推荐将六个模块一起放在 `scripts/sdk/`，入口写 `require("sdk.GameAlgo")`。Maker 的 `scripts/` 是脚本资源根，模块路径不带 `scripts.` 前缀。SDK 内部先尝试 `sdk.<模块名>`，再尝试根模块名；已有把文件直接放在 `scripts/`、使用 `require("GameAlgo")` 的项目可以保留原约定。
+新接入推荐将六个模块一起放在 `scripts/sdk/`，入口写 `require("sdk.GameAlgo")`。Maker 的 `scripts/` 是脚本资源根，模块路径不带 `scripts.` 前缀。SDK 内部先按入口命名空间加载同目录模块，再尝试 `sdk.<模块名>` 和根模块名；已有把文件直接放在 `scripts/`、使用 `require("GameAlgo")` 的项目可以保留原约定。
+
+SDK 内部模块会优先按照入口模块的命名空间加载同目录依赖。例如通过
+`require("sdk.GameAlgo")` 加载时使用 `sdk.HttpTransport`；宿主将 SDK 放在其他独立命名空间时，内部模块会跟随该命名空间，避免把项目旧副本混入当前 SDK。根模块加载仍保留作兼容兜底。
+
+The Lua modules resolve sibling dependencies relative to the namespace used to load
+`GameAlgo`, while retaining the legacy `sdk.*` and root-module fallbacks.
 
 新增模块或入口脚本后，先通过项目现有 Maker 构建流程使文件进入资源 manifest，再运行宿主；源码目录中的文件存在不代表旧构建产物能加载它。缺少资源时检查资源根、构建产物及现有资源分组，不连续试造 require 路径。运行工具的入口参数以当前 Maker 文档为准。
 
@@ -86,6 +92,7 @@ gaq_*.json
 - 首次云端读取完成前，SDK 会暂存埋点和 DDA 操作，不会使用空 DDA 状态提前决策。
 - 身份、配置和 DDA 继续使用 SDK 快照；快照和事件目录本地采用两份交替写入的文件，启动时选择版本最新且完整可读的一份，避免目录覆盖写中断后找不到旧事件。事件队列独立分块存储，每块最多 100 条，各块同样交替写入两份文件，云端按块同步。新增事件、context 绑定和上传确认只保存受影响块，不重新编码或覆盖整个队列。云端先同步事件块，再发布块目录。
 - `File` 和 `clientCloud` 都暂时不可用时，Maker 运行时使用内存兜底，不阻塞游戏主流程，并在后续 flush 时重试云端。
+- `clientCloud:Set` 的 `timeout` 会和 `error` 走同一清理路径，释放 SDK 的云写入状态；宿主必须按约定触发该回调。
 
 接入代码不要自行探测单机/联网模式，不要实现 GameAlgo 专用存档适配器，也不要给 `GameAlgo.Init` 传 `storage`。如果传入，SDK 会直接报错，避免本地存档和云端存档出现两套冲突语义。
 
@@ -203,6 +210,8 @@ end
 ```
 
 脚本没有准备好、hash 不一致、编译失败或执行失败时，`Execute` 返回 `nil`，游戏必须继续使用本地默认逻辑。没有绑定脚本的实验仍然返回 config-only 结果。
+
+脚本预算依赖宿主提供可用的 `debug.sethook` 和 `debug.gethook`。接口缺失、检查失败或已有 hook 不是 Lua 函数时，SDK 会拒绝执行脚本并返回错误，不会静默退化成无限执行；已有 Lua hook 会在执行后恢复。
 
 ## DDA 行为窗口
 
