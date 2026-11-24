@@ -93,7 +93,7 @@ gaq_*.json
 - 身份、配置和 DDA 继续使用 SDK 快照；快照和事件目录本地采用两份交替写入的文件，启动时选择版本最新且完整可读的一份，避免目录覆盖写中断后找不到旧事件。事件队列独立分块存储，每块最多 100 条，各块同样交替写入两份文件，云端按块同步。新增事件、context 绑定和上传确认只保存受影响块，不重新编码或覆盖整个队列。云端先同步事件块，再发布块目录。
 - `File` 和 `clientCloud` 都暂时不可用时，Maker 运行时使用内存兜底，不阻塞游戏主流程，并在后续 flush 时重试云端。
 - `clientCloud:Set` 的 `timeout` 会和 `error` 走同一清理路径，释放 SDK 的云写入状态；宿主必须按约定触发该回调。
-- 首次云读超时、失败或返回损坏快照时，SDK 暂停目录与分块云写；保护状态随本地快照保存，重启后重新读云。成功读取后保留本地修改并恢复远端事件，再开放云写。没有调度器且从未尝试云读的自定义运行时保留原有行为。Cloud write protection survives restarts until the unresolved read is reconciled.
+- 首次云读超时、失败或返回损坏快照时，SDK 暂停目录与分块云写；保护状态随本地快照保存，重启后重新读云。成功读取后以云端身份字段为准，把临时身份名下的待发事件迁移到云端身份队列，保留其他本地修改并恢复远端事件，再开放云写。没有调度器且从未尝试云读的自定义运行时保留原有行为。Cloud write protection survives restarts until the unresolved read is reconciled; remote identity wins during recovery.
 - 离线事件重启恢复后，先上传分块再补传云目录。重新 `Init()` 会停用旧存储的本地落盘和异步续传；已提交给宿主的云写请求无法撤回。Restored chunks publish their directory; stopped instances ignore late callbacks.
 - `Init()` 不再重置宿主随机序列，玩家 ID / 会话 ID 由独立熵源生成（哈希格式）。
 

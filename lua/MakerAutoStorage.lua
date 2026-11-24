@@ -665,6 +665,32 @@ function MakerAutoStorage.New(options)
                 -- keys. Conflicting queues append local events after reserved
                 -- remote slots; never upload them into unread remote slots.
                 cloudDirectoryBlocked, cloudRecoveryPending = true, true
+                -- A timeout-created identity is provisional. Recover the
+                -- original identity and retain both users' pending events.
+                for identityKey, remoteUserId in pairs(remote.data) do
+                    local namespace = type(identityKey) == "string"
+                        and identityKey:match("^(gamealgo:v2:game:[^:]+):identity:user_id$")
+                    local localUserId = snapshot.data[identityKey]
+                    if namespace and type(localUserId) == "string" and localUserId ~= ""
+                        and type(remoteUserId) == "string" and remoteUserId ~= ""
+                        and localUserId ~= remoteUserId then
+                        local localQueueKey = namespace .. ":user:" .. Sha256.hex(localUserId) .. ":events:jsonl"
+                        local remoteQueueKey = namespace .. ":user:" .. Sha256.hex(remoteUserId) .. ":events:jsonl"
+                        if snapshot.data[localQueueKey] ~= nil then
+                            local lines = {}
+                            for _, queueKey in ipairs({ remoteQueueKey, localQueueKey }) do
+                                if snapshot.data[queueKey] ~= nil then
+                                    for _, event in ipairs(storage:EventQueue(queueKey):Events()) do
+                                        table.insert(lines, cjson.encode(event))
+                                    end
+                                end
+                            end
+                            snapshot.data[remoteQueueKey] = table.concat(lines, "\n")
+                            snapshot.data[localQueueKey] = nil
+                            eventQueues[localQueueKey], eventQueues[remoteQueueKey] = nil, nil
+                        end
+                    end
+                end
                 for key, value in pairs(remote.data) do
                     local localValue = snapshot.data[key]
                     if type(value) == "table" and value.format == QUEUE_FORMAT then
@@ -680,6 +706,11 @@ function MakerAutoStorage.New(options)
                             snapshot.data[key] = ""
                         end
                         recoveryManifests[key], eventQueues[key] = value, nil
+                    elseif type(value) == "string" and value ~= "" and type(key) == "string"
+                        and (key:match(":identity:user_id$")
+                        or key:match(":identity:user_created_at$")
+                        or key:match(":identity:user_created_local_at$")) then
+                        snapshot.data[key] = value
                     elseif localValue == nil then
                         snapshot.data[key] = value
                     end

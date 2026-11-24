@@ -566,6 +566,54 @@ do
     assert(assert(MakerAutoStorage.New()):GetItem("identity") == "new-user")
 end
 
+-- A remote identity wins after a timeout recovery; the temporary local user's
+-- queue is moved into the remote user's namespace before publishing.
+do
+    files, tasks = {}, {}
+    local gameNamespace = "gamealgo:v2:game:" .. Sha256.hex("identity-merge-game")
+    local identityKey = gameNamespace .. ":identity:user_id"
+    local localQueueKey = gameNamespace .. ":user:" .. Sha256.hex("local-user") .. ":events:jsonl"
+    local remoteQueueKey = gameNamespace .. ":user:" .. Sha256.hex("remote-user") .. ":events:jsonl"
+    local remoteChunkPrefix = "gaq_" .. Sha256.hex(remoteQueueKey):sub(1, 24)
+    clientCloud = { Get = function() end, Set = function() error("unresolved merge write") end }
+    local localStorage = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+    tasks[#tasks].callback()
+    localStorage:SetItem(identityKey, "local-user")
+    local localQueue = localStorage:EventQueue(localQueueKey)
+    localQueue:Upsert({ eventId = "temporary-event", sessionId = "temporary-session" })
+    assert(localQueue:Persist())
+    localStorage:Shutdown()
+    local remoteChunk = { format = "event_chunks_v1", revision = 7, entries = {
+        { sequence = 1, event = cjson.encode({ eventId = "remote-event", sessionId = "remote-session" }) },
+    } }
+    local uploads = {}
+    clientCloud = {
+        Get = function(_, key, callbacks)
+            if key == "gamealgo_sdk_storage_v1" then
+                callbacks.ok({ [key] = { schemaVersion = 1, revision = 7, data = {
+                    [identityKey] = "remote-user",
+                    [gameNamespace .. ":identity:user_created_at"] = "2026-01-01T00:00:00Z",
+                    [remoteQueueKey] = { format = "event_chunks_v1", blocks = 1 },
+                } } })
+            elseif key == remoteChunkPrefix .. "_1" then
+                callbacks.ok({ [key] = remoteChunk })
+            else error("unexpected cloud key: " .. tostring(key)) end
+        end,
+        Set = function(_, key, data, callbacks) table.insert(uploads, { key = key, data = data }); callbacks.ok() end,
+    }
+    local merged = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+    assert(merged:IsReady())
+    assert(merged:GetItem(identityKey) == "remote-user")
+    local mergedEvents = merged:EventQueue(remoteQueueKey):Events()
+    local ids = {}
+    for _, event in ipairs(mergedEvents) do ids[event.eventId] = true end
+    assert(ids["remote-event"] and ids["temporary-event"])
+    merged:Flush()
+    assert(uploads[#uploads].key == "gamealgo_sdk_storage_v1")
+    assert(uploads[#uploads].data.data[identityKey] == "remote-user")
+    assert(uploads[#uploads].data.data[remoteQueueKey].blocks == 2)
+end
+
 -- A stopped reader must not checkpoint its chunks over files written by the
 -- current instance, even if the old success and timeout both arrive late.
 do

@@ -1,14 +1,14 @@
 ---@meta
 --- ============================================================
---- GameAlgo.lua — TapTap 小游戏 Lua SDK 业务层
+--- GameAlgo.lua — TapTap mini-game Lua SDK business layer
 --- ============================================================
---- 职责：实验/配置读取、事件排队和上报。网络请求由客户端直接
----       调用 GameAlgo HTTP API。
+--- Responsibilities: read experiments/configuration and queue/report events.
+--- Network requests go directly to the GameAlgo HTTP API.
 ---
---- 设计约束：
---- - Client Game Key 通过 X-GameAlgo-Key 随请求发送。
---- - 初始化不阻塞游戏主流程；远端失败时本地默认值继续生效。
---- - Lua 实验脚本按不可变 versionId 下载、校验后在受限环境执行。
+--- Design constraints:
+--- - Sends the Client Game Key in the X-GameAlgo-Key header.
+--- - Initialization does not block gameplay; local defaults remain on remote failure.
+--- - Downloads Lua experiments by immutable versionId, verifies them, and runs them in a restricted environment.
 --- ============================================================
 
 local cjson = require("cjson")
