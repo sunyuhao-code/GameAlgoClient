@@ -465,11 +465,13 @@ function MakerAutoStorage.New(options)
     local localDirty = localSnapshot == nil
     local ready = false
     local readyCallbacks = {}
+    local stopped = false
     local cloudWriteInFlight = false
     local cloudWritePending = false
     local cloudWriteCallbacks = {}
     local cloudDirty = false
     local cloudDirectoryKnown = false
+    local cloudReadAttempted = false
 
     local storage = {}
     local eventQueues = {}
@@ -486,7 +488,7 @@ function MakerAutoStorage.New(options)
     end
 
     local function markReady(source)
-        if ready then return end
+        if stopped or ready then return end
         ready = true
         logger("automatic storage ready: " .. tostring(source))
         local callbacks = readyCallbacks
@@ -573,13 +575,18 @@ function MakerAutoStorage.New(options)
 
         local settled = false
         local timeoutHandle = nil
-        local function finish(source, remote)
-            if settled then return end
+        local function finish(source, remote, readResolved)
+            if stopped or settled then return end
             settled = true
             if timeoutHandle and type(scheduler.Cancel) == "function" then
                 scheduler:Cancel(timeoutHandle)
             end
-            if remote then snapshot = remote; cloudDirectoryKnown = true end
+            -- Only a resolved read (merged snapshot or confirmed-empty) makes
+            -- the cloud directory safe to publish. After a timeout or error
+            -- the remote state is unknown, so publishing could overwrite an
+            -- existing snapshot with the fresh empty one.
+            if readResolved then cloudDirectoryKnown = true end
+            if remote then snapshot = remote end
             persistLocal()
             loadQueuesThenReady(source)
         end
@@ -597,10 +604,11 @@ function MakerAutoStorage.New(options)
         end
 
         local started = pcall(function()
+            cloudReadAttempted = true
             cloud:Get(CLOUD_KEY, {
                 ok = function(values)
                     local remote = cloudValue(values)
-                    finish(remote and "cloud" or (localAvailable and "local" or "memory"), remote)
+                    finish(remote and "cloud" or (localAvailable and "local" or "memory"), remote, true)
                 end,
                 error = function(code, reason)
                     logger("automatic storage cloud read failed: " .. tostring(code) .. " " .. tostring(reason))
@@ -626,6 +634,12 @@ function MakerAutoStorage.New(options)
         end
     end
 
+    function storage:Shutdown()
+        if stopped then return end
+        stopped = true
+        readyCallbacks = {}
+    end
+
     function storage:GetItem(key)
         return snapshot.data[tostring(key)]
     end
@@ -646,6 +660,7 @@ function MakerAutoStorage.New(options)
 
     function storage:Flush(callback)
         callback = type(callback) == "function" and callback or function() end
+        if stopped then callback(nil); return end
         if not ready then storage:OnReady(function() storage:Flush(callback) end); return end
         if localDirty then persistLocal() end
         if cloudWriteInFlight then
@@ -660,7 +675,12 @@ function MakerAutoStorage.New(options)
             for _, job in ipairs(queue:CloudJobs()) do table.insert(jobs, job) end
         end
         -- Upload chunks before publishing a directory that references them.
-        if cloudDirty or (#jobs > 0 and not cloudDirectoryKnown) then
+        -- Publishing is gated on the cloud read: a read that timed out or
+        -- failed leaves the remote state unknown, so overwriting it could
+        -- destroy the previous device's snapshot. Runs that never attempted a
+        -- read (no scheduler / custom runtime) keep their historical
+        -- publish-always behavior.
+        if cloudDirty and (cloudDirectoryKnown or not cloudReadAttempted) then
             local revision = snapshot.revision
             table.insert(jobs, { key = CLOUD_KEY, data = normalizeSnapshot(encodeSnapshot(snapshot)),
                 ack = function()

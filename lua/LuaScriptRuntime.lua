@@ -95,6 +95,18 @@ local function executeWithLimit(execute, input, instructionLimit)
     return ok, result
 end
 
+--- Returns whether Execute() can enforce its instruction budget on this host.
+--- Mirrors the fail-closed checks above so callers can tell a scripted
+--- experiment that will refuse to run apart from one that is merely loading.
+function LuaScriptRuntime.CanEnforceLimit()
+    local debugLibrary = rawget(_G, "debug")
+    if not debugLibrary or type(debugLibrary.sethook) ~= "function" then return false end
+    if type(debugLibrary.gethook) ~= "function" then return false end
+    local inspected, hook = pcall(debugLibrary.gethook)
+    if not inspected then return false end
+    return hook == nil or type(hook) == "function"
+end
+
 function LuaScriptRuntime.Execute(source, input, options)
     options = options or {}
     local instructionLimit = tonumber(options.instructionLimit) or 200000

@@ -348,4 +348,49 @@ for _, nextCount in ipairs({ 101, 201 }) do
     last = nextCount
 end
 
+-- A cloud read that times out must not publish a fresh snapshot over unknown
+-- remote state; only a resolved read (merged or confirmed empty) unlocks the
+-- directory write.
+do
+    files, tasks = {}, {}
+    local heldRead = nil
+    local writesHeld = {}
+    local previousCloud = clientCloud
+    clientCloud = {
+        Get = function(_, key, callbacks)
+            if key == "gamealgo_sdk_storage_v1" then heldRead = callbacks end
+        end,
+        Set = function(_, key, data, callbacks)
+            table.insert(writesHeld, { key = key, data = data, callbacks = callbacks })
+        end,
+    }
+    local pending = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+    assert(not pending:IsReady() and heldRead ~= nil)
+    pending:SetItem("identity", "fresh-device")
+    tasks[#tasks].callback() -- fire the read timeout
+    assert(pending:IsReady())
+    pending:Flush()
+    assert(#writesHeld == 0, "an unresolved cloud read must gate the directory write")
+    heldRead.ok({}) -- late read is discarded; remote state must stay untouched
+    pending:Flush()
+    assert(#writesHeld == 0, "a late cloud read must not unlock publishing")
+
+    -- A resolved empty read opens the gate; the first write must be the
+    -- directory carrying the merged local data. A fresh device (no local
+    -- snapshot) always goes through the cloud read.
+    writesHeld = {}
+    files = {}
+    local confirmed = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+    assert(not confirmed:IsReady() and heldRead ~= nil)
+    heldRead.ok({})
+    assert(confirmed:IsReady())
+    confirmed:SetItem("identity", "confirmed-empty")
+    confirmed:Flush()
+    assert(#writesHeld >= 1, "a resolved read must unlock the directory write")
+    assert(writesHeld[1].key == "gamealgo_sdk_storage_v1")
+    assert(writesHeld[1].data and writesHeld[1].data.data
+        and writesHeld[1].data.data.identity == "confirmed-empty")
+    clientCloud = previousCloud
+end
+
 print("Maker automatic storage first-run tests passed")

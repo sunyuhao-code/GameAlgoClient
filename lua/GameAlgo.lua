@@ -310,8 +310,22 @@ local function epochMsFromIso(value)
     return math.floor(timestamp * 1000 + milliseconds)
 end
 
+local randomIdCounter = 0
+
 local function randomId(prefix)
-    return (prefix or "id") .. "_" .. tostring(os.time()) .. "_" .. tostring(math.random(100000, 999999))
+    randomIdCounter = randomIdCounter + 1
+    -- Do not reseed or rely on the shared math.random state: two VMs started
+    -- in the same second would draw identical sequences, and reseeding here
+    -- stomps the game's own RNG. Combine per-call and per-VM entropy instead.
+    local address = tostring({}):match("0x(%x+)") or "0"
+    local entropy = Sha256.hex(table.concat({
+        tostring(os.time()),
+        tostring(os.clock()),
+        tostring(randomIdCounter),
+        address,
+        tostring(math.random(0, 2147483647)),
+    }, ":"))
+    return (prefix or "id") .. "_" .. entropy:sub(1, 24)
 end
 
 local function trimSlash(value)
@@ -1434,7 +1448,9 @@ function GameAlgo.Init(options)
     if state_.scheduler and type(state_.scheduler.Shutdown) == "function" then
         state_.scheduler:Shutdown()
     end
-    math.randomseed(os.time())
+    if state_.storage and type(state_.storage.Shutdown) == "function" then
+        state_.storage:Shutdown()
+    end
     state_.baseUrl = options.baseUrl or DEFAULT_BASE_URL
     state_.gameKey = options.gameKey
     state_.appVersion = options.appVersion
@@ -1561,7 +1577,14 @@ function GameAlgo.Init(options)
     if state_.fetchConfigRequested and state_.scheduler and type(state_.scheduler.Schedule) == "function" then
         state_.initWatchdogHandle = state_.scheduler:Schedule(INIT_WATCHDOG_MS, reportInitTimeout)
     end
-    storage:OnReady(function() completeInitialization(options) end)
+    local initGeneration = state_.lifecycleGeneration
+    storage:OnReady(function()
+        if initGeneration ~= state_.lifecycleGeneration then
+            log("stale storage ready callback ignored (SDK reinitialized)")
+            return
+        end
+        completeInitialization(options)
+    end)
     return GameAlgo
 end
 
@@ -1670,6 +1693,16 @@ performConfigFetchAttempt = function()
         local handle = scheduler ~= nil and type(scheduler.Schedule) == "function"
             and scheduler:Schedule(delayMs, function()
                 if generation ~= state_.lifecycleGeneration or not state_.configFetchInFlight then return end
+                if requestBody.sessionId ~= state_.sessionId then
+                    -- The session changed while this retry was pending. Hand the
+                    -- in-flight slot back to the queue instead of retrying.
+                    settled = true
+                    if requestTimeoutHandle and type(scheduler.Cancel) == "function" then
+                        scheduler:Cancel(requestTimeoutHandle)
+                    end
+                    finishConfigFetch(error, nil)
+                    return
+                end
                 performConfigFetchAttempt()
             end) or nil
         if handle then
@@ -1695,6 +1728,15 @@ performConfigFetchAttempt = function()
         end
 
         if error then
+            if requestBody.sessionId ~= state_.sessionId then
+                -- A newer session is waiting behind this request. Stop
+                -- retrying the old session and release the in-flight slot so
+                -- the queue advances; the current session's response adopts
+                -- any orphaned events from the previous one.
+                log("config fetch aborted for stale session: " .. tostring(error))
+                finishConfigFetch(error, nil)
+                return
+            end
             if isRetryableConfigFailure(response) and scheduleRetry(error) then return end
             log("config fetch failed: " .. tostring(error))
             finishConfigFetch(error, nil)
@@ -2628,7 +2670,10 @@ function GameAlgo.Executor(key)
         if not item then return false end
         if not item.script then return true end
         local cacheKey = scriptCacheKey(item.script)
+        -- Scripts also need a host that can enforce the instruction budget;
+        -- otherwise Execute() refuses and IsReady() would lie to the game.
         return cacheKey ~= nil and state_.scripts[cacheKey] ~= nil
+            and LuaScriptRuntime.CanEnforceLimit()
     end
 
     function executor.Variant(defaultValue)

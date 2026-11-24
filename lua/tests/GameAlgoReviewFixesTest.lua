@@ -224,4 +224,189 @@ do
     clientCloud = previousCloud
 end
 
+-- Init must not reseed the game's RNG, and identifiers must not collide across
+-- same-second initializations in independent VMs.
+do
+    local reseedCalls = 0
+    local previousSeed = math.randomseed
+    math.randomseed = function() reseedCalls = reseedCalls + 1 end
+    clientCloud = {
+        Get = function(_, _, callbacks) callbacks.ok({}) end,
+        Set = function(_, _, _, callbacks) if callbacks and callbacks.ok then callbacks.ok() end end,
+    }
+    local seen = {}
+    for index = 1, 3 do
+        GameAlgo.Init({ gameKey = "ga_live_review_ids", autoFetch = false,
+            _scheduler = scheduler(), nowMs = function() return 8000 end })
+        local snapshot = GameAlgo.Snapshot()
+        assert(snapshot.userId ~= nil and snapshot.sessionId ~= nil)
+        local pair = tostring(snapshot.userId) .. "/" .. tostring(snapshot.sessionId)
+        assert(seen[pair] == nil, "identical ids across same-second Init: " .. pair)
+        seen[pair] = true
+    end
+    math.randomseed = previousSeed
+    assert(reseedCalls == 0, "Init must not reseed the game RNG")
+end
+
+-- Re-initializing while the previous storage's cloud read is pending must not
+-- let the stale callback install the old identity or publish the old snapshot.
+do
+    local reads, writes = {}, {}
+    clientCloud = {
+        Get = function(_, _, callbacks) table.insert(reads, callbacks) end,
+        Set = function(_, key, data, callbacks)
+            table.insert(writes, { key = key, data = data })
+            if callbacks and callbacks.ok then callbacks.ok() end
+        end,
+    }
+    GameAlgo.Init({ gameKey = "ga_live_review_reinit", userId = "user-a", sessionId = "session-a",
+        autoFetch = false, _scheduler = scheduler(), nowMs = function() return 9000 end })
+    GameAlgo.Init({ gameKey = "ga_live_review_reinit", userId = "user-b", sessionId = "session-b",
+        autoFetch = false, _scheduler = scheduler(), nowMs = function() return 9000 end })
+    assert(#reads == 2)
+    reads[1].ok({})
+    local snapshot = GameAlgo.Snapshot()
+    assert(snapshot.userId ~= "user-a", "stale cloud callback installed the old identity")
+    assert(snapshot.storage and snapshot.storage.ready == false)
+    assert(#writes == 0, "stale storage must not publish before the current one is ready")
+    reads[2].ok({})
+    snapshot = GameAlgo.Snapshot()
+    assert(snapshot.userId == "user-b")
+    assert(snapshot.storage and snapshot.storage.ready == true)
+    GameAlgo.TrackEvent("reinit_probe", {})
+    GameAlgo.Flush()
+    local published = false
+    for _, write in ipairs(writes) do
+        if write.key == "gamealgo_sdk_storage_v1" then
+            published = true
+            local foundUserB = false
+            for _, value in pairs(write.data and write.data.data or {}) do
+                assert(value ~= "user-a", "stale identity published to cloud")
+                if value == "user-b" then foundUserB = true end
+            end
+            assert(foundUserB, "current identity must be published")
+        end
+    end
+    assert(published, "a resolved read must unlock the directory write")
+end
+
+-- A retrying config fetch from a previous session must hand the in-flight slot
+-- to the queued session instead of starving it.
+do
+    local configRequests = {}
+    local scheduled = {}
+    local transport = {}
+    function transport.Request(options, callback)
+        if options.url:match("/v1/config$") then
+            table.insert(configRequests, { callback = callback, body = cjson.decode(options.body) })
+        elseif options.url:match("/v1/events/batch$") then
+            callback(nil, { status = 200, body = '{"ok":true,"accepted":1}', headers = {} })
+        else
+            error("unexpected request: " .. tostring(options.url))
+        end
+    end
+    local function taskScheduler()
+        local value = {}
+        function value:Schedule(delayMs, callback)
+            local handle = { delayMs = delayMs, callback = callback, cancelled = false }
+            table.insert(scheduled, handle)
+            return handle
+        end
+        function value:Cancel(handle) if handle then handle.cancelled = true end end
+        function value:IsAutomatic() return true end
+        function value:Update() end
+        return value
+    end
+    local function okConfig(contextId)
+        return cjson.encode({ contextId = contextId, experiments = {}, configFiles = {} })
+    end
+    clientCloud = {
+        Get = function(_, _, callbacks) callbacks.ok({}) end,
+        Set = function(_, _, _, callbacks) if callbacks and callbacks.ok then callbacks.ok() end end,
+    }
+
+    -- A stale failure arrives after the session switch: it must yield the slot
+    -- immediately instead of retrying the old session.
+    GameAlgo.Init({ gameKey = "ga_live_review_retry", userId = "retry-user",
+        sessionId = "retry-a", autoFetch = false, preloadConfigFiles = false,
+        transport = transport, _scheduler = taskScheduler(), nowMs = function() return 10000 end })
+    GameAlgo.FetchConfig()
+    assert(#configRequests == 1)
+    assert(GameAlgo.NewSession("retry-b"))
+    configRequests[1].callback("HTTP 503", nil, { status = 503 })
+    assert(#configRequests == 2, "stale fetch must yield to the queued session")
+    assert(configRequests[2].body.sessionId == "retry-b")
+    configRequests[2].callback(nil, { status = 200, body = okConfig("retry-context-b") })
+    assert(GameAlgo.Snapshot().contextId == "retry-context-b")
+
+    -- A retry scheduled while the old session was still current must stop once
+    -- the session changes, handing the slot to the queue.
+    GameAlgo.Init({ gameKey = "ga_live_review_retry", userId = "retry-user",
+        sessionId = "retry-c", autoFetch = false, preloadConfigFiles = false,
+        transport = transport, _scheduler = taskScheduler(), nowMs = function() return 11000 end })
+    GameAlgo.FetchConfig()
+    assert(#configRequests == 3)
+    configRequests[3].callback("HTTP 503", nil, { status = 503 })
+    assert(#configRequests == 3, "the current session may still retry")
+    local retryTask = scheduled[#scheduled]
+    assert(retryTask ~= nil and not retryTask.cancelled)
+    assert(GameAlgo.NewSession("retry-d"))
+    retryTask.callback()
+    assert(#configRequests == 4, "a pending retry must yield after the session switch")
+    assert(configRequests[4].body.sessionId == "retry-d")
+    configRequests[4].callback(nil, { status = 200, body = okConfig("retry-context-d") })
+    assert(GameAlgo.Snapshot().contextId == "retry-context-d")
+end
+
+-- Scripted experiments must not report IsReady on hosts that cannot enforce an
+-- instruction budget; config-only experiments stay ready either way.
+do
+    local scriptBody = "return function(input) return { payload = { adjustment = 'keep' } } end"
+    local configBody = cjson.encode({
+        contextId = "ready-context", configVersion = "v1",
+        experiments = {
+            { key = "scripted", variant = "a",
+              script = { name = "exp.lua", versionId = "sv1",
+                  url = "https://example.invalid/exp.lua", hash = Sha256.hash(scriptBody) } },
+            { key = "plain", variant = "b", config = { difficulty = 1 } },
+        },
+        configFiles = {},
+    })
+    local transport = {}
+    function transport.Request(options, callback)
+        if options.url:match("/v1/config$") then
+            callback(nil, { status = 200, body = configBody, headers = {} })
+        elseif options.url:match("/exp%.lua$") then
+            callback(nil, { status = 200, body = scriptBody, headers = {} })
+        elseif options.url:match("/v1/events/batch$") then
+            callback(nil, { status = 200, body = '{"ok":true,"accepted":1}', headers = {} })
+        else
+            error("unexpected request: " .. tostring(options.url))
+        end
+    end
+    clientCloud = {
+        Get = function(_, _, callbacks) callbacks.ok({}) end,
+        Set = function(_, _, _, callbacks) if callbacks and callbacks.ok then callbacks.ok() end end,
+    }
+    local originalDebug = debug
+    GameAlgo.Init({ gameKey = "ga_live_review_ready", userId = "ready-user",
+        sessionId = "ready-session", autoFetch = false, transport = transport,
+        _scheduler = scheduler(), nowMs = function() return 12000 end })
+    GameAlgo.FetchConfig(function(error) assert(error == nil, tostring(error)) end)
+
+    local scripted = GameAlgo.Executor("scripted")
+    local plain = GameAlgo.Executor("plain")
+    assert(scripted:IsReady() == true, "scripted executor must be ready on a hook-capable host")
+    local executed = scripted:Execute({ turn = 1 })
+    assert(executed ~= nil and executed.payload.adjustment == "keep")
+    assert(plain:IsReady() == true)
+
+    debug = { traceback = originalDebug.traceback, getinfo = originalDebug.getinfo }
+    assert(scripted:IsReady() == false, "IsReady must reflect the missing instruction budget")
+    assert(scripted:Execute({ turn = 1 }) == nil)
+    assert(plain:IsReady() == true, "config-only experiments stay ready without a budget")
+    debug = originalDebug
+    assert(scripted:IsReady() == true)
+end
+
 print("GameAlgo review-fix tests passed")
