@@ -12,7 +12,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const RESPONSE_BODY_LIMIT: u64 = 64 * 1024;
 const MIN_TIMEOUT_MS: u64 = 1;
 const MAX_TIMEOUT_MS: u64 = 60_000;
-const HTTP_REQUEST_TIMEOUT_CAP_MS: u64 = 2_500;
+const HTTP_REQUEST_TIMEOUT_CAP_MS: u64 = 10_000;
+#[cfg(any(target_os = "android", target_os = "ios", test))]
+const LIFECYCLE_FLUSH_TIMEOUT_MS: i64 = 10_000;
 const RESULT_HISTORY_LIMIT: usize = 16;
 const SESSION_END_REENTRY_WINDOW: Duration = Duration::from_secs(1);
 
@@ -29,6 +31,7 @@ struct Config {
     max_batch: usize,
     queue_limit: usize,
     platform: String,
+    agent: ureq::Agent,
     journal: Arc<Mutex<EventJournal>>,
 }
 
@@ -193,6 +196,7 @@ impl EventBackend {
                 max_batch: max_batch as usize,
                 queue_limit: queue_limit as usize,
                 platform: platform.to_string(),
+                agent: ureq::AgentBuilder::new().redirects(0).build(),
                 journal: Arc::new(Mutex::new(EventJournal::new(&queue, sequence, operations))),
             });
             inner.queue = queue;
@@ -598,12 +602,19 @@ impl EventBackend {
             if let Some(event) = committed_end {
                 inner.remember_session_end(&event);
             }
+            let has_bound_events = candidate.iter().any(|event| {
+                event
+                    .get("contextId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|context| !context.is_empty())
+            });
             inner.queue = candidate;
             inner.session = Some(session);
             inner.foreground = foreground;
             inner.foreground_time_ms = foreground_time_ms;
-            should_flush = changed && !foreground;
-            if should_flush {
+            let backgrounded = changed && !foreground;
+            should_flush = backgrounded || (changed && foreground && has_bound_events);
+            if backgrounded {
                 platform_support::log(&format!(
                     "[GameAlgoSDK] session_end persisted: sessionId={}, reason=background",
                     inner
@@ -617,7 +628,7 @@ impl EventBackend {
         })();
         let accepted = self.record(result);
         if accepted && should_flush {
-            self.start_flush(2_500);
+            self.start_flush_with_policy(LIFECYCLE_FLUSH_TIMEOUT_MS, true);
         }
         accepted
     }
@@ -731,6 +742,10 @@ impl EventBackend {
     }
 
     pub(crate) fn start_flush(&self, timeout_ms: i64) -> i64 {
+        self.start_flush_with_policy(timeout_ms, false)
+    }
+
+    fn start_flush_with_policy(&self, timeout_ms: i64, extend_deadline: bool) -> i64 {
         let timeout_ms = timeout_ms.clamp(MIN_TIMEOUT_MS as i64, MAX_TIMEOUT_MS as i64) as u64;
         let mut inner = match self.inner.lock() {
             Ok(inner) => inner,
@@ -742,7 +757,11 @@ impl EventBackend {
         }
         let requested_deadline = Instant::now() + Duration::from_millis(timeout_ms);
         if let Some(active) = inner.active.as_mut() {
-            active.deadline = active.deadline.min(requested_deadline);
+            active.deadline = if extend_deadline {
+                active.deadline.max(requested_deadline)
+            } else {
+                active.deadline.min(requested_deadline)
+            };
             return active.id as i64;
         }
         let job_id = inner.next_job_id;
@@ -886,19 +905,7 @@ fn run_flush_with_post(
                     return;
                 }
             };
-            let batch: Vec<Value> = inner
-                .queue
-                .iter()
-                .filter(|event| {
-                    event
-                        .get("contextId")
-                        .and_then(Value::as_str)
-                        .map(|context| !context.is_empty())
-                        .unwrap_or(false)
-                })
-                .take(config.max_batch)
-                .cloned()
-                .collect();
+            let batch = select_flush_batch(&inner.queue, config.max_batch);
             if batch.is_empty() {
                 let pending = inner.queue.len();
                 finish(
@@ -1001,30 +1008,67 @@ fn run_flush_with_post(
     }
 }
 
-fn post_batch(config: &Config, batch: &[Value], timeout: Duration) -> Result<usize, String> {
-    let request_timeout = timeout.min(Duration::from_millis(HTTP_REQUEST_TIMEOUT_CAP_MS));
-    if request_timeout.is_zero() {
-        return Err("timeout".to_string());
+fn select_flush_batch(queue: &[Value], max_batch: usize) -> Vec<Value> {
+    let eligible: Vec<&Value> = queue
+        .iter()
+        .filter(|event| {
+            event
+                .get("contextId")
+                .and_then(Value::as_str)
+                .is_some_and(|context| !context.is_empty())
+        })
+        .collect();
+    if eligible.len() <= max_batch {
+        return eligible.into_iter().cloned().collect();
     }
-    let agent = ureq::AgentBuilder::new()
-        .redirects(0)
-        .timeout(request_timeout)
-        .timeout_connect(request_timeout)
-        .build();
-    let encoded = serde_json::to_string(&json!({"events": batch}))
-        .map_err(|_| "request_invalid_json".to_string())?;
+    let mut batch = Vec::with_capacity(max_batch);
+    for event in &eligible {
+        if event.get("eventType").and_then(Value::as_str) == Some("session_end") {
+            batch.push((*event).clone());
+            if batch.len() == max_batch {
+                return batch;
+            }
+        }
+    }
+    for event in &eligible {
+        if event.get("eventType").and_then(Value::as_str) != Some("session_end") {
+            batch.push((*event).clone());
+            if batch.len() == max_batch {
+                break;
+            }
+        }
+    }
+    batch
+}
+
+enum PostAttemptError {
+    RetryableTransport(String),
+    Terminal(String),
+}
+
+fn send_batch_once(
+    agent: &ureq::Agent,
+    endpoint: &str,
+    game_key: &str,
+    encoded: &str,
+    timeout: Duration,
+) -> Result<Vec<u8>, PostAttemptError> {
+    if timeout.is_zero() {
+        return Err(PostAttemptError::Terminal("timeout".to_string()));
+    }
     let response = agent
-        .post(&config.endpoint)
+        .post(endpoint)
+        .timeout(timeout)
         .set("Accept", "application/json")
         .set("Content-Type", "application/json")
-        .set("X-GameAlgo-Key", &config.game_key)
-        .send_string(&encoded)
+        .set("X-GameAlgo-Key", game_key)
+        .send_string(encoded)
         .map_err(|error| match error {
-            ureq::Error::Status(code, _) => format!("http_{code}"),
+            ureq::Error::Status(code, _) => PostAttemptError::Terminal(format!("http_{code}")),
             ureq::Error::Transport(transport) if transport_timed_out(&transport) => {
-                "timeout".to_string()
+                PostAttemptError::Terminal("timeout".to_string())
             }
-            other => format!("transport:{other}"),
+            other => PostAttemptError::RetryableTransport(format!("transport:{other}")),
         })?;
     let mut body = Vec::new();
     response
@@ -1036,14 +1080,57 @@ fn post_batch(config: &Config, batch: &[Value], timeout: Duration) -> Result<usi
                 error.kind(),
                 std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
             ) {
-                "timeout".to_string()
+                PostAttemptError::Terminal("timeout".to_string())
             } else {
-                "response_read_failed".to_string()
+                PostAttemptError::Terminal("response_read_failed".to_string())
             }
         })?;
     if body.len() as u64 > RESPONSE_BODY_LIMIT {
-        return Err("response_body_too_large".to_string());
+        return Err(PostAttemptError::Terminal(
+            "response_body_too_large".to_string(),
+        ));
     }
+    Ok(body)
+}
+
+fn post_batch(config: &Config, batch: &[Value], timeout: Duration) -> Result<usize, String> {
+    let request_timeout = timeout.min(Duration::from_millis(HTTP_REQUEST_TIMEOUT_CAP_MS));
+    if request_timeout.is_zero() {
+        return Err("timeout".to_string());
+    }
+    let attempt_deadline = Instant::now() + request_timeout;
+    let encoded = serde_json::to_string(&json!({"events": batch}))
+        .map_err(|_| "request_invalid_json".to_string())?;
+    let body = match send_batch_once(
+        &config.agent,
+        &config.endpoint,
+        &config.game_key,
+        &encoded,
+        request_timeout,
+    ) {
+        Ok(body) => body,
+        Err(PostAttemptError::Terminal(error)) => return Err(error),
+        Err(PostAttemptError::RetryableTransport(first_error)) => {
+            // ureq does not automatically retry POST on a stale pooled keep-alive
+            // socket. Event batches are deduplicated by eventId, so retry once on a
+            // fresh connection within the remaining per-request budget.
+            let remaining = attempt_deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(first_error);
+            }
+            match send_batch_once(
+                &config.agent,
+                &config.endpoint,
+                &config.game_key,
+                &encoded,
+                remaining,
+            ) {
+                Ok(body) => body,
+                Err(PostAttemptError::Terminal(error))
+                | Err(PostAttemptError::RetryableTransport(error)) => return Err(error),
+            }
+        }
+    };
     let value: Value =
         serde_json::from_slice(&body).map_err(|_| "invalid_event_response".to_string())?;
     let accepted = accepted_batch_count(&value, batch.len())?;
@@ -1590,36 +1677,11 @@ mod platform_support {
 
     #[cfg(target_os = "ios")]
     fn begin_ios_background_task() -> Option<usize> {
-        use std::ffi::{CString, c_char, c_void};
-        #[link(name = "objc")]
         unsafe extern "C" {
-            fn objc_getClass(name: *const c_char) -> *mut c_void;
-            fn sel_registerName(name: *const c_char) -> *mut c_void;
-            fn objc_msgSend();
+            fn gamealgo_godot_begin_background_task() -> usize;
         }
-        unsafe {
-            let class_name = CString::new("UIApplication").ok()?;
-            let shared_name = CString::new("sharedApplication").ok()?;
-            let begin_name = CString::new("beginBackgroundTaskWithExpirationHandler:").ok()?;
-            let class = objc_getClass(class_name.as_ptr());
-            if class.is_null() {
-                return None;
-            }
-            let shared: extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
-                std::mem::transmute(objc_msgSend as *const ());
-            let application = shared(class, sel_registerName(shared_name.as_ptr()));
-            if application.is_null() {
-                return None;
-            }
-            let begin: extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> usize =
-                std::mem::transmute(objc_msgSend as *const ());
-            let identifier = begin(
-                application,
-                sel_registerName(begin_name.as_ptr()),
-                std::ptr::null_mut(),
-            );
-            (identifier != usize::MAX).then_some(identifier)
-        }
+        let identifier = unsafe { gamealgo_godot_begin_background_task() };
+        (identifier != 0).then_some(identifier)
     }
 
     #[cfg(not(target_os = "ios"))]
@@ -1629,36 +1691,11 @@ mod platform_support {
 
     #[cfg(target_os = "ios")]
     fn end_ios_background_task(identifier: usize) {
-        use std::ffi::{CString, c_char, c_void};
-        #[link(name = "objc")]
         unsafe extern "C" {
-            fn objc_getClass(name: *const c_char) -> *mut c_void;
-            fn sel_registerName(name: *const c_char) -> *mut c_void;
-            fn objc_msgSend();
+            fn gamealgo_godot_end_background_task(identifier: usize);
         }
         unsafe {
-            let Ok(class_name) = CString::new("UIApplication") else {
-                return;
-            };
-            let Ok(shared_name) = CString::new("sharedApplication") else {
-                return;
-            };
-            let Ok(end_name) = CString::new("endBackgroundTask:") else {
-                return;
-            };
-            let class = objc_getClass(class_name.as_ptr());
-            if class.is_null() {
-                return;
-            }
-            let shared: extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
-                std::mem::transmute(objc_msgSend as *const ());
-            let application = shared(class, sel_registerName(shared_name.as_ptr()));
-            if application.is_null() {
-                return;
-            }
-            let end: extern "C" fn(*mut c_void, *mut c_void, usize) =
-                std::mem::transmute(objc_msgSend as *const ());
-            end(application, sel_registerName(end_name.as_ptr()), identifier);
+            gamealgo_godot_end_background_task(identifier);
         }
     }
 
@@ -2781,6 +2818,226 @@ mod tests {
         assert_eq!(result["timed_out"], false);
         assert_eq!(result["error"], "context_not_ready");
         assert_eq!(backend.pending_count(), 1);
+        assert!(backend.clear());
+    }
+
+    #[test]
+    fn session_end_is_prioritized_in_first_batch_when_queue_exceeds_max_batch() {
+        let path = temporary_path("prioritize-session-end");
+        let backend = configured(&path);
+        backend.lock().unwrap().config.as_mut().unwrap().max_batch = 2;
+        assert!(backend.enqueue(&event("first", "session", "ctx").to_string()));
+        assert!(backend.enqueue(&event("second", "session", "ctx").to_string()));
+        assert!(backend.enqueue(&event("third", "session", "ctx").to_string()));
+        assert!(backend.enqueue(&session_event("end-1", "session", "ctx").to_string()));
+        let mut batches = Vec::new();
+        let result = test_flush(&backend, |_, batch, _| {
+            batches.push(
+                batch
+                    .iter()
+                    .map(|e| e["eventId"].as_str().unwrap().to_owned())
+                    .collect::<Vec<_>>(),
+            );
+            Ok(batch.len())
+        });
+        assert_eq!(result["ok"], true);
+        assert_eq!(
+            batches,
+            vec![vec!["end-1", "first"], vec!["second", "third"]]
+        );
+        assert!(backend.clear());
+    }
+
+    #[test]
+    fn foreground_resume_flushes_pending_bound_events_and_extends_lifecycle_deadline() {
+        let path = temporary_path("resume-flush");
+        let backend = configured(&path);
+        assert!(backend.start_session(
+            &session_event("end-1", "session", "ctx").to_string(),
+            1000
+        ));
+        let (job_id, generation) = reserve_test_flush(&backend);
+        // Shrink active deadline to 500ms before backgrounding; lifecycle flush
+        // must extend the deadline to at least the full lifecycle budget.
+        {
+            let mut inner = backend.lock().unwrap();
+            inner.active.as_mut().unwrap().deadline = Instant::now() + Duration::from_millis(500);
+        }
+        heartbeat(&backend, false, 2000, "unused");
+        {
+            let inner = backend.lock().unwrap();
+            let remaining = inner
+                .active
+                .as_ref()
+                .unwrap()
+                .deadline
+                .saturating_duration_since(Instant::now());
+            assert!(
+                remaining >= Duration::from_millis(8_000),
+                "background lifecycle flush should extend a nearly-expired deadline, got {remaining:?}"
+            );
+        }
+        // Fail the background flush so the bound session_end stays queued.
+        run_flush_with_post(
+            Arc::clone(&backend.inner),
+            job_id,
+            generation,
+            |_, _, _| Err("timeout".to_string()),
+        );
+        assert_eq!(backend.pending_count(), 1);
+        assert!(backend.lock().unwrap().active.is_none());
+
+        // Returning to foreground with a pending bound session_end must trigger
+        // an immediate flush (coalescing into our reserved test job and extending
+        // its deadline).
+        let (resume_job, resume_gen) = reserve_test_flush(&backend);
+        {
+            let mut inner = backend.lock().unwrap();
+            inner.active.as_mut().unwrap().deadline = Instant::now() + Duration::from_millis(200);
+        }
+        heartbeat(&backend, true, 5000, "end-2");
+        {
+            let inner = backend.lock().unwrap();
+            let remaining = inner
+                .active
+                .as_ref()
+                .unwrap()
+                .deadline
+                .saturating_duration_since(Instant::now());
+            assert!(
+                remaining >= Duration::from_millis(8_000),
+                "foreground resume with pending bound events must trigger lifecycle flush"
+            );
+        }
+        run_flush_with_post(
+            Arc::clone(&backend.inner),
+            resume_job,
+            resume_gen,
+            |_, batch, _| Ok(batch.len()),
+        );
+        assert_eq!(backend.pending_count(), 0);
+        assert!(backend.clear());
+    }
+
+    #[test]
+    fn pooled_http_agent_reuses_keep_alive_and_retries_once_on_stale_connection() {
+        use std::io::{BufRead, BufReader};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepted_connections = Arc::new(AtomicUsize::new(0));
+        let connections_for_server = Arc::clone(&accepted_connections);
+
+        let server = thread::spawn(move || {
+            // Connection 1: serve two keep-alive requests, then close immediately
+            // so the pooled socket goes stale before request 3.
+            let (mut stream, _) = listener.accept().unwrap();
+            connections_for_server.fetch_add(1, Ordering::SeqCst);
+            for _ in 0..2 {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut content_length = 0usize;
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    let read = reader.read_line(&mut line).unwrap();
+                    if read == 0 || line == "\r\n" {
+                        break;
+                    }
+                    let lower = line.to_ascii_lowercase();
+                    if let Some(rest) = lower.strip_prefix("content-length:") {
+                        content_length = rest.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                std::io::Read::read_exact(&mut reader, &mut body).unwrap();
+                let resp = r#"{"ok":true,"accepted":1}"#;
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{}",
+                    resp.len(),
+                    resp
+                )
+                .unwrap();
+                stream.flush().unwrap();
+            }
+            // Drop connection 1 so client pool holds a stale socket.
+            drop(stream);
+
+            // Connection 2: serves the retried 3rd request on a fresh socket.
+            let (mut stream2, _) = listener.accept().unwrap();
+            connections_for_server.fetch_add(1, Ordering::SeqCst);
+            let mut reader = BufReader::new(stream2.try_clone().unwrap());
+            let mut content_length = 0usize;
+            let mut line = String::new();
+            loop {
+                line.clear();
+                let read = reader.read_line(&mut line).unwrap();
+                if read == 0 || line == "\r\n" {
+                    break;
+                }
+                let lower = line.to_ascii_lowercase();
+                if let Some(rest) = lower.strip_prefix("content-length:") {
+                    content_length = rest.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut body = vec![0u8; content_length];
+            std::io::Read::read_exact(&mut reader, &mut body).unwrap();
+            let resp = r#"{"ok":true,"accepted":1}"#;
+            write!(
+                stream2,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                resp.len(),
+                resp
+            )
+            .unwrap();
+            stream2.flush().unwrap();
+        });
+
+        let path = temporary_path("keepalive-retry");
+        let backend = configured(&path);
+        let mut config = backend.lock().unwrap().config.clone().unwrap();
+        config.endpoint = format!("http://{addr}/v1/events/batch");
+
+        // Requests 1 & 2 reuse the exact same TCP connection.
+        assert_eq!(
+            post_batch(
+                &config,
+                &[session_event("e1", "s1", "c1")],
+                Duration::from_secs(5)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            post_batch(
+                &config,
+                &[session_event("e2", "s1", "c1")],
+                Duration::from_secs(5)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            accepted_connections.load(Ordering::SeqCst),
+            1,
+            "second batch should reuse pooled keep-alive connection"
+        );
+        // Give the server thread a moment to drop socket 1 before request 3.
+        thread::sleep(Duration::from_millis(30));
+        // Request 3 hits stale socket 1 and retries once on fresh socket 2.
+        assert_eq!(
+            post_batch(
+                &config,
+                &[session_event("e3", "s1", "c1")],
+                Duration::from_secs(5)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(accepted_connections.load(Ordering::SeqCst), 2);
+        server.join().unwrap();
         assert!(backend.clear());
     }
 }

@@ -241,6 +241,7 @@ class NativeEventBackendFixture:
 	var max_batch := 100
 	var queue_limit := 1000
 	var flush_calls := 0
+	var last_flush_timeout_ms := 0
 	var fail_with_timeout := false
 	var last_error := ""
 	var session_events: Array[Dictionary] = []
@@ -315,8 +316,9 @@ class NativeEventBackendFixture:
 	func event_backend_pending_count() -> int:
 		return queue.size()
 
-	func event_backend_flush(_timeout_ms: int) -> int:
+	func event_backend_flush(timeout_ms: int) -> int:
 		flush_calls += 1
+		last_flush_timeout_ms = timeout_ms
 		var job_id := next_job_id
 		next_job_id += 1
 		if fail_with_timeout:
@@ -405,6 +407,7 @@ func _run() -> void:
 	await _test_native_event_backend_migration_and_recovery()
 	await _test_native_mobile_session_registration()
 	await _test_native_queue_full_triggers_flush()
+	await _test_session_end_flushes_on_bind_and_startup()
 	await _test_bound_event_admission_survives_restart()
 	await _test_event_admission_storage_failure()
 	await _test_cached_snapshot_does_not_own_new_session()
@@ -1032,6 +1035,48 @@ func _test_native_queue_full_triggers_flush() -> void:
 	_check(backend.flush_calls == 1, "native queue reaching 100 starts one automatic flush")
 	_check(client.tracker.pending_count() == 0, "automatic native flush commits its ACK")
 	client.free()
+
+
+func _test_session_end_flushes_on_bind_and_startup() -> void:
+	# 1. Pre-existing bound session_end restored at startup flushes immediately on start().
+	var startup_backend := NativeEventBackendFixture.new()
+	startup_backend.queue.append({
+		"eventId": "recovered-end", "contextId": "prev-ctx", "userId": "u1",
+		"sessionId": "prev-session", "eventType": "session_end", "isDebug": false,
+		"timestamp": "2026-11-23T00:00:00.000Z",
+		"createdLocalAt": "2026-11-23T08:00:00.000+08:00",
+		"payload": {"reason": "process_restart", "sessionDurationMs": 5000},
+	})
+	var startup_client := _make_client({
+		"platform": "ios", "event_backend": startup_backend,
+		"transport": RecoveryTransport.new(), "json_decoder": ImmediateDecoder.new(),
+	})
+	_check(startup_backend.flush_calls == 0, "configure alone does not flush before start()")
+	await startup_client.start()
+	_check(
+		startup_backend.flush_calls >= 1 and startup_backend.last_flush_timeout_ms == 10000 \
+				and startup_client.tracker.pending_count() == 0,
+		"start() immediately flushes a restored bound session_end with the 10s default budget"
+	)
+	startup_client.free()
+
+	# 2. A session_end queued before contextId arrives flushes as soon as context binds.
+	var bind_backend := NativeEventBackendFixture.new()
+	var bind_client := _make_client({
+		"platform": "ios", "event_backend": bind_backend, "session_id": "early-bg",
+		"transport": RecoveryTransport.new(), "json_decoder": ImmediateDecoder.new(),
+	})
+	_check(await bind_client.tracker.track_session_end({"reason": "background"}, false),
+		"unbound session_end enqueues before contextId arrives")
+	_check(bind_backend.flush_calls == 0, "track_session_end(flush_immediately=false) waits for context")
+	_check(bind_client.tracker.bind_session_context("early-bg", "ctx-early-bg"),
+		"binding context succeeds for unbound session_end")
+	_check(
+		bind_backend.flush_calls == 1 and bind_backend.last_flush_timeout_ms == 10000 \
+				and bind_client.tracker.pending_count() == 0,
+		"bind_session_context() immediately flushes a newly bound session_end"
+	)
+	bind_client.free()
 
 
 func _test_bound_event_admission_survives_restart() -> void:

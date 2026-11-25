@@ -113,6 +113,49 @@ static NSString *GameAlgoTimestamp(NSDate *date, BOOL local) {
 
 static GameAlgoGodotLifecycle *observer;
 
+static NSMutableSet<NSNumber *> *GameAlgoActiveBackgroundTasks(void) {
+    static NSMutableSet<NSNumber *> *tasks;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        tasks = [NSMutableSet new];
+    });
+    return tasks;
+}
+
+void gamealgo_godot_end_background_task(uintptr_t identifier) {
+    UIBackgroundTaskIdentifier taskId = (UIBackgroundTaskIdentifier)identifier;
+    if (taskId == UIBackgroundTaskInvalid) return;
+    BOOL shouldEnd = NO;
+    NSMutableSet<NSNumber *> *tasks = GameAlgoActiveBackgroundTasks();
+    @synchronized(tasks) {
+        NSNumber *key = @(taskId);
+        if ([tasks containsObject:key]) {
+            [tasks removeObject:key];
+            shouldEnd = YES;
+        }
+    }
+    if (shouldEnd) {
+        [UIApplication.sharedApplication endBackgroundTask:taskId];
+    }
+}
+
+uintptr_t gamealgo_godot_begin_background_task(void) {
+    NSMutableSet<NSNumber *> *tasks = GameAlgoActiveBackgroundTasks();
+    __block UIBackgroundTaskIdentifier taskId = UIBackgroundTaskInvalid;
+    @synchronized(tasks) {
+        taskId = [UIApplication.sharedApplication
+            beginBackgroundTaskWithName:@"GameAlgo event flush"
+                      expirationHandler:^{
+                          gamealgo_godot_end_background_task((uintptr_t)taskId);
+                      }];
+        if (taskId == UIBackgroundTaskInvalid) {
+            return 0;
+        }
+        [tasks addObject:@(taskId)];
+    }
+    return (uintptr_t)taskId;
+}
+
 int32_t gamealgo_godot_lifecycle_install(void) {
     void (^install)(void) = ^{
         if (!observer) observer = [[GameAlgoGodotLifecycle alloc] init];

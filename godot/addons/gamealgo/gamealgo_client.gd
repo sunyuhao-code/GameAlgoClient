@@ -18,7 +18,7 @@ signal startup_completed(success: bool)
 ## console there; this signal is how an iOS host gets the same information.
 signal sdk_log(message: String)
 
-const SDK_VERSION := "2.1.5"
+const SDK_VERSION := "2.1.6"
 # The Protocol v1 client is platform-neutral. Storage and script execution are
 # injected capabilities; no native runtime is required.
 ## Godot exports to five targets, but GameAlgo only accepts the two mobile
@@ -293,6 +293,8 @@ func start() -> bool:
 		_ready = true
 		status = "ready_cached"
 		sdk_ready.emit(true)
+	if tracker.measurement_allowed() and tracker.has_bound_session_end():
+		tracker.flush()
 	var startup_session := tracker.current_session_id()
 	var refreshed := await refresh(true)
 	if startup_session != tracker.current_session_id():
@@ -505,7 +507,10 @@ func new_session(session_id: String = "") -> bool:
 
 
 func set_measurement_allowed(allowed: bool) -> bool:
-	return tracker.set_measurement_allowed(allowed)
+	var ok := tracker.set_measurement_allowed(allowed)
+	if ok and allowed and _started and tracker.has_bound_session_end():
+		tracker.flush()
+	return ok
 
 
 func assignment_script_ready(assignment: Dictionary) -> bool:
@@ -598,7 +603,7 @@ func upload_events(events: Array[Dictionary]) -> Dictionary:
 ## Starts the event upload before the first await. On Android and iOS the
 ## default backend then owns the work, so callers may intentionally omit await
 ## when entering the background. Await it when the ACK result is needed.
-func flush(timeout_ms: int = 2500) -> Dictionary:
+func flush(timeout_ms: int = 10000) -> Dictionary:
 	return await tracker.flush(timeout_ms)
 
 
@@ -997,7 +1002,7 @@ func _notification(what: int) -> void:
 			return
 		_persist_config_requests()
 		tracker.persist_pending()
-		tracker.flush(2500)
+		tracker.flush(10000)
 
 
 func _config_request() -> Dictionary:
