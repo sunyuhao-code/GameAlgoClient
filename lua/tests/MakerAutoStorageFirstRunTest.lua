@@ -828,8 +828,8 @@ do
     end
 end
 
--- A markerless upgrade with a current local directory must keep local ACKs.
--- The remote chunk may still hold an event removed before its last upload.
+-- A markerless upgrade keeps local ACKs only when an older local chunk bank
+-- matches the cloud chunk, proving a shared synchronized history.
 do
     for _, remoteRevision in ipairs({ 19, 20 }) do
         files, tasks = {}, {}
@@ -838,18 +838,27 @@ do
             data = { [queueKey] = { format = "event_chunks_v1", blocks = 1 } } })
         files[prefix .. "_1_1.json"] = cjson.encode({ format = "event_chunks_v1", revision = 4,
             entries = { { sequence = 2, event = cjson.encode(pending) } } })
+        files[prefix .. "_1_2.json"] = cjson.encode({ format = "event_chunks_v1", revision = 3,
+            entries = {
+                { sequence = 1, event = cjson.encode({ eventId = "already-acked", sessionId = "session" }) },
+                { sequence = 2, event = cjson.encode(pending) },
+            } })
         local reads, uploaded = 0, {}
         clientCloud = {
             Get = function(_, key, callbacks)
-                assert(key == "gamealgo_sdk_storage_v1", "upgrade must not import an older remote chunk")
                 reads = reads + 1
-                callbacks.ok({ [key] = { schemaVersion = 1, revision = remoteRevision,
-                    data = { [queueKey] = { format = "event_chunks_v1", blocks = 1 } } } })
+                if key == "gamealgo_sdk_storage_v1" then
+                    callbacks.ok({ [key] = { schemaVersion = 1, revision = remoteRevision,
+                        data = { [queueKey] = { format = "event_chunks_v1", blocks = 1 } } } })
+                else
+                    assert(key == prefix .. "_1")
+                    callbacks.ok({ [key] = cjson.decode(files[prefix .. "_1_2.json"]) })
+                end
             end,
             Set = function(_, key, data, callbacks) uploaded[key] = data; callbacks.ok() end,
         }
         local upgraded = assert(MakerAutoStorage.New({ scheduler = scheduler }))
-        assert(upgraded:IsReady() and reads == 1)
+        assert(upgraded:IsReady() and reads == 2)
         local events = upgraded:EventQueue(queueKey):Events()
         assert(#events == 1 and events[1].eventId == "pending")
         upgraded:Flush()
@@ -858,29 +867,30 @@ do
         assert(uploaded.gamealgo_sdk_storage_v1.cloudDirectoryConfirmed)
         upgraded:Shutdown()
         local reopened = assert(MakerAutoStorage.New({ scheduler = scheduler }))
-        assert(#reopened:EventQueue(queueKey):Events() == 1 and reads == 1)
+        assert(#reopened:EventQueue(queueKey):Events() == 1 and reads == 2)
         reopened:Shutdown()
     end
 end
 
--- A newer remote directory, or an explicitly blocked offline snapshot, still
--- merges both queues. Match identical cross-source records by occurrence,
--- retaining extra occurrences and different payloads with the same eventId.
+-- Newer, blocked, and diverged markerless snapshots still merge both queues.
+-- Match identical cross-source records by occurrence, retaining extra
+-- occurrences and different payloads with the same eventId.
 do
-    for _, blocked in ipairs({ false, true }) do
+    for _, scenario in ipairs({ { blocked = false, revision = 21 },
+        { blocked = true, revision = 19 }, { blocked = false, revision = 19 } }) do
         files, tasks = {}, {}
         local shared = { eventId = "same-id", sessionId = "session", payload = { source = "shared" } }
         local localOnly = { eventId = "same-id", sessionId = "session", payload = { source = "local" } }
         local remoteOnly = { eventId = "same-id", sessionId = "session", payload = { source = "remote" } }
         files["gamealgo_sdk_storage_v1.json"] = cjson.encode({ schemaVersion = 1, revision = 20,
-            cloudDirectoryBlocked = blocked,
+            cloudDirectoryBlocked = scenario.blocked,
             data = { [queueKey] = { format = "event_chunks_v1", blocks = 1 } } })
         files[prefix .. "_1_1.json"] = cjson.encode({ format = "event_chunks_v1", revision = 4, entries = {
             { sequence = 1, event = cjson.encode(shared) },
             { sequence = 2, event = cjson.encode(localOnly) },
         } })
         local cloudFiles = { gamealgo_sdk_storage_v1 = cjson.encode({ schemaVersion = 1,
-            revision = blocked and 19 or 21,
+            revision = scenario.revision,
             data = { [queueKey] = { format = "event_chunks_v1", blocks = 1 } } }),
             [prefix .. "_1"] = cjson.encode({ format = "event_chunks_v1", revision = 3, entries = {
                 { sequence = 1, event = cjson.encode(shared) },
@@ -905,7 +915,7 @@ do
             assert(#storage:EventQueue(queueKey):Events() == 4)
         end
         local merged = assert(MakerAutoStorage.New({ scheduler = scheduler }))
-        assert(reads == 2, "newer and blocked directories must still read remote chunks")
+        assert(reads == 2, "unconfirmed directories must still read remote chunks")
         assertMerged(merged)
         merged:Flush()
         merged:Shutdown()
@@ -918,6 +928,51 @@ do
         assertMerged(otherDevice)
         otherDevice:Shutdown()
     end
+end
+
+-- A high local revision alone can come from offline writes. A markerless
+-- temporary identity must still recover the original remote identity and
+-- remote-only queues before allowing directory publication.
+do
+    files, tasks = {}, {}
+    local namespace = "gamealgo:v2:game:" .. Sha256.hex("legacy-offline")
+    local identityKey = namespace .. ":identity:user_id"
+    local remoteQueueKey = namespace .. ":user:" .. Sha256.hex("original") .. ":events:jsonl"
+    local remoteChunkKey = "gaq_" .. Sha256.hex(remoteQueueKey):sub(1, 24) .. "_1"
+    files["gamealgo_sdk_storage_v1.json"] = cjson.encode({ schemaVersion = 1, revision = 20,
+        data = { [identityKey] = "temporary", localOnly = "preserved" } })
+    local reads, uploaded = {}, {}
+    clientCloud = {
+        Get = function(_, key, callbacks)
+            table.insert(reads, key)
+            if key == "gamealgo_sdk_storage_v1" then
+                callbacks.ok({ [key] = { schemaVersion = 1, revision = 19, data = {
+                    [identityKey] = "original", remoteOnly = "preserved",
+                    [remoteQueueKey] = { format = "event_chunks_v1", blocks = 1 },
+                } } })
+            else
+                assert(key == remoteChunkKey)
+                callbacks.ok({ [key] = { format = "event_chunks_v1", revision = 3, entries = {
+                    { sequence = 1, event = cjson.encode({ eventId = "remote-event", sessionId = "session" }) },
+                } } })
+            end
+        end,
+        Set = function(_, key, data, callbacks) uploaded[key] = data; callbacks.ok() end,
+    }
+    local recovered = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+    assert(recovered:IsReady())
+    assert(#reads == 2 and reads[1] == "gamealgo_sdk_storage_v1" and reads[2] == remoteChunkKey)
+    assert(recovered:GetItem(identityKey) == "original")
+    assert(recovered:GetItem("localOnly") == "preserved" and recovered:GetItem("remoteOnly") == "preserved")
+    assert(#recovered:EventQueue(remoteQueueKey):Events() == 1)
+    recovered:Flush()
+    assert(uploaded.gamealgo_sdk_storage_v1.data[identityKey] == "original")
+    assert(uploaded.gamealgo_sdk_storage_v1.data[remoteQueueKey] ~= nil)
+    recovered:Shutdown()
+    local reopened = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+    assert(reopened:GetItem(identityKey) == "original")
+    assert(#reopened:EventQueue(remoteQueueKey):Events() == 1)
+    reopened:Shutdown()
 end
 
 print("Maker automatic storage first-run tests passed")

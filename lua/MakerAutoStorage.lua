@@ -200,6 +200,20 @@ local function sameJsonValue(left, right)
     return true
 end
 
+local function sameChunkContent(left, right)
+    if type(left) ~= "table" or type(right) ~= "table"
+        or left.format ~= QUEUE_FORMAT or right.format ~= QUEUE_FORMAT
+        or #left.entries ~= #right.entries then return false end
+    for index, entry in ipairs(left.entries) do
+        local other = right.entries[index]
+        if entry.sequence ~= other.sequence then return false end
+        local leftOk, leftEvent = pcall(cjson.decode, entry.event)
+        local rightOk, rightEvent = pcall(cjson.decode, other.event)
+        if not leftOk or not rightOk or not sameJsonValue(leftEvent, rightEvent) then return false end
+    end
+    return true
+end
+
 -- Keep remote order, append local-only events, and match identical records by
 -- occurrence. Repeating an interrupted merge must not duplicate the backlog;
 -- distinct events with colliding legacy IDs must still survive.
@@ -254,7 +268,7 @@ end
 
 -- Queue chunks have stable names and reusable slots. ACKs and appends touch
 -- only affected chunks; the main snapshot contains just a small directory.
-local function newEventQueue(key, value, fileApi, publishManifest, remoteManifest)
+local function newEventQueue(key, value, fileApi, publishManifest, remoteManifest, recoverLegacyAcks)
     local prefix = "gaq_" .. Sha256.hex(key):sub(1, 24)
     -- Object identity also preserves legacy events whose short IDs collide.
     local chunks, records, dirtyLocal = {}, {}, {}
@@ -349,6 +363,26 @@ local function newEventQueue(key, value, fileApi, publishManifest, remoteManifes
         if not decoded then return false end
         local chunk = chunks[index]
         if not chunk or not chunk.unknown then return false end
+        local recoveredAcks = false
+        if recoverLegacyAcks and source == "cloud" then
+            -- A shared directory only contains chunk counts. Verify that the
+            -- remote chunk is one of this device's retained versions before
+            -- treating local removals as ACKs rather than missing data. The
+            -- inactive local bank is the proof that the remote snapshot was
+            -- once published by this device.
+            local matchedHistory, latest = false, nil
+            for bank = 1, 2 do
+                local previous = decodeChunk(readLocalFile(fileApi, prefix .. "_" .. index .. "_" .. bank .. ".json"))
+                if previous then
+                    if sameChunkContent(previous, decoded) then matchedHistory = true end
+                    if not latest or previous.revision > latest.revision then latest = previous end
+                end
+            end
+            if matchedHistory and latest and latest.revision > decoded.revision then
+                decoded, imported = decodeChunk(latest)
+                recoveredAcks = true
+            end
+        end
         chunk.unknown = false
         chunk.revision = remoteManifest and math.max(decoded.revision, chunk.revision + 1) or decoded.revision
         chunk.data = chunk.revision == decoded.revision and decoded or nil
@@ -387,6 +421,7 @@ local function newEventQueue(key, value, fileApi, publishManifest, remoteManifes
                 nextSequence = math.max(nextSequence, record.sequence)
             end
         end
+        if recoveredAcks then changed(chunk) end
         return true
     end
 
@@ -607,6 +642,7 @@ function MakerAutoStorage.New(options)
     local cloudDirectoryBlocked = not cloudDirectoryConfirmed or snapshot.cloudDirectoryBlocked == true
     local cloudDirectoryKnown = false
     local cloudRecoveryPending = false
+    local recoverLegacyAcks = false
 
     local storage = {}
     local eventQueues = {}
@@ -657,7 +693,7 @@ function MakerAutoStorage.New(options)
                     localDirty, cloudDirty = true, true
                 end
                 return not localDirty or persistLocal()
-            end, recoveryManifests[key])
+            end, recoveryManifests[key], recoverLegacyAcks)
         end
         return eventQueues[key]
     end
@@ -764,20 +800,12 @@ function MakerAutoStorage.New(options)
                     end
                 end
             end
-            local legacySnapshotIsCurrent = legacyCloudDirectory
+            recoverLegacyAcks = legacyCloudDirectory
                 and legacyLocalRevision ~= nil
                 and remote ~= nil
                 and remote.revision <= legacyLocalRevision
-            if legacySnapshotIsCurrent then
-                -- Snapshots written before the confirmation marker were
-                -- published directly by the SDK. If the remote revision is
-                -- not newer, the local directory is already authoritative;
-                -- upgrade the marker without replaying its chunks.
-                cloudDirectoryKnown = true
-                cloudDirectoryConfirmed = true
-                cloudDirectoryBlocked = false
-                cloudRecoveryPending = false
-            elseif remote and next(snapshot.data) ~= nil then
+                and sameJsonValue(snapshot.data, remote.data)
+            if remote and next(snapshot.data) ~= nil then
                 -- Keep local values created while offline and retain remote
                 -- keys. Conflicting queues append local events after reserved
                 -- remote slots; never upload them into unread remote slots.
