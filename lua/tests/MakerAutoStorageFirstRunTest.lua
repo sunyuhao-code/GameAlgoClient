@@ -828,4 +828,96 @@ do
     end
 end
 
+-- A markerless upgrade with a current local directory must keep local ACKs.
+-- The remote chunk may still hold an event removed before its last upload.
+do
+    for _, remoteRevision in ipairs({ 19, 20 }) do
+        files, tasks = {}, {}
+        local pending = { eventId = "pending", sessionId = "session" }
+        files["gamealgo_sdk_storage_v1.json"] = cjson.encode({ schemaVersion = 1, revision = 20,
+            data = { [queueKey] = { format = "event_chunks_v1", blocks = 1 } } })
+        files[prefix .. "_1_1.json"] = cjson.encode({ format = "event_chunks_v1", revision = 4,
+            entries = { { sequence = 2, event = cjson.encode(pending) } } })
+        local reads, uploaded = 0, {}
+        clientCloud = {
+            Get = function(_, key, callbacks)
+                assert(key == "gamealgo_sdk_storage_v1", "upgrade must not import an older remote chunk")
+                reads = reads + 1
+                callbacks.ok({ [key] = { schemaVersion = 1, revision = remoteRevision,
+                    data = { [queueKey] = { format = "event_chunks_v1", blocks = 1 } } } })
+            end,
+            Set = function(_, key, data, callbacks) uploaded[key] = data; callbacks.ok() end,
+        }
+        local upgraded = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+        assert(upgraded:IsReady() and reads == 1)
+        local events = upgraded:EventQueue(queueKey):Events()
+        assert(#events == 1 and events[1].eventId == "pending")
+        upgraded:Flush()
+        local chunk = uploaded[prefix .. "_1"]
+        assert(#chunk.entries == 1 and cjson.decode(chunk.entries[1].event).eventId == "pending")
+        assert(uploaded.gamealgo_sdk_storage_v1.cloudDirectoryConfirmed)
+        upgraded:Shutdown()
+        local reopened = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+        assert(#reopened:EventQueue(queueKey):Events() == 1 and reads == 1)
+        reopened:Shutdown()
+    end
+end
+
+-- A newer remote directory, or an explicitly blocked offline snapshot, still
+-- merges both queues. Match identical cross-source records by occurrence,
+-- retaining extra occurrences and different payloads with the same eventId.
+do
+    for _, blocked in ipairs({ false, true }) do
+        files, tasks = {}, {}
+        local shared = { eventId = "same-id", sessionId = "session", payload = { source = "shared" } }
+        local localOnly = { eventId = "same-id", sessionId = "session", payload = { source = "local" } }
+        local remoteOnly = { eventId = "same-id", sessionId = "session", payload = { source = "remote" } }
+        files["gamealgo_sdk_storage_v1.json"] = cjson.encode({ schemaVersion = 1, revision = 20,
+            cloudDirectoryBlocked = blocked,
+            data = { [queueKey] = { format = "event_chunks_v1", blocks = 1 } } })
+        files[prefix .. "_1_1.json"] = cjson.encode({ format = "event_chunks_v1", revision = 4, entries = {
+            { sequence = 1, event = cjson.encode(shared) },
+            { sequence = 2, event = cjson.encode(localOnly) },
+        } })
+        local cloudFiles = { gamealgo_sdk_storage_v1 = cjson.encode({ schemaVersion = 1,
+            revision = blocked and 19 or 21,
+            data = { [queueKey] = { format = "event_chunks_v1", blocks = 1 } } }),
+            [prefix .. "_1"] = cjson.encode({ format = "event_chunks_v1", revision = 3, entries = {
+                { sequence = 1, event = cjson.encode(shared) },
+                { sequence = 2, event = cjson.encode(shared) },
+                { sequence = 3, event = cjson.encode(remoteOnly) },
+            } }),
+        }
+        local reads = 0
+        clientCloud = {
+            Get = function(_, key, callbacks)
+                reads = reads + 1
+                callbacks.ok({ [key] = cloudFiles[key] and cjson.decode(cloudFiles[key]) or nil })
+            end,
+            Set = function(_, key, data, callbacks) cloudFiles[key] = cjson.encode(data); callbacks.ok() end,
+        }
+        local function assertMerged(storage)
+            local counts = {}
+            for _, event in ipairs(storage:EventQueue(queueKey):Events()) do
+                counts[event.payload.source] = (counts[event.payload.source] or 0) + 1
+            end
+            assert(counts.shared == 2 and counts["local"] == 1 and counts.remote == 1)
+            assert(#storage:EventQueue(queueKey):Events() == 4)
+        end
+        local merged = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+        assert(reads == 2, "newer and blocked directories must still read remote chunks")
+        assertMerged(merged)
+        merged:Flush()
+        merged:Shutdown()
+        local reopened = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+        assertMerged(reopened)
+        assert(reads == 2)
+        reopened:Shutdown()
+        files = {}
+        local otherDevice = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+        assertMerged(otherDevice)
+        otherDevice:Shutdown()
+    end
+end
+
 print("Maker automatic storage first-run tests passed")

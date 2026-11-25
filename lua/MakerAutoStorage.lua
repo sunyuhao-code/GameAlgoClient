@@ -260,6 +260,7 @@ local function newEventQueue(key, value, fileApi, publishManifest, remoteManifes
     local chunks, records, dirtyLocal = {}, {}, {}
     local nextSequence = 0
     local migrating = type(value) == "string" and (value ~= "" or remoteManifest ~= nil)
+    local unmatchedLocal = nil
     local queue = {}
 
     local function newChunk(index, unknown)
@@ -337,6 +338,12 @@ local function newEventQueue(key, value, fileApi, publishManifest, remoteManifes
         return events
     end
 
+    --- Restores an unread chunk. Recovery matches cloud/local copies once by
+    --- eventId and JSON content, preserving colliding IDs and multiplicity.
+    ---@param index integer Reserved chunk slot to hydrate.
+    ---@param data table|string Encoded or decoded chunk.
+    ---@param source string "local" or "cloud".
+    ---@return boolean imported Whether a valid unread chunk was accepted.
     function queue:Import(index, data, source)
         local decoded, imported = decodeChunk(data)
         if not decoded then return false end
@@ -349,8 +356,29 @@ local function newEventQueue(key, value, fileApi, publishManifest, remoteManifes
             chunk.cloudRevision = chunk.revision
             dirtyLocal[index] = chunk
         end
+        if remoteManifest and source == "cloud" and not unmatchedLocal then
+            unmatchedLocal = {}
+            for _, existing in pairs(records) do
+                local event = existing.event
+                local matches = unmatchedLocal[event.eventId] or {}
+                unmatchedLocal[event.eventId] = matches
+                table.insert(matches, event)
+            end
+        end
         for _, record in ipairs(imported) do
             local event = record.event
+            if source == "cloud" and remoteManifest ~= nil then
+                for matchIndex, localEvent in ipairs(unmatchedLocal[event.eventId] or {}) do
+                    if sameJsonValue(localEvent, event) then
+                        table.remove(unmatchedLocal[event.eventId], matchIndex)
+                        -- Keep the cloud copy in its existing slot. Removing
+                        -- the local copy avoids deleting remote data before
+                        -- a relocated local chunk has reached the cloud.
+                        self:Remove({ localEvent })
+                        break
+                    end
+                end
+            end
             if not records[event] then
                 record.contextId, record.chunk = event.contextId, chunk
                 record.fromRemote = remoteManifest ~= nil and source == "cloud"
@@ -392,6 +420,7 @@ local function newEventQueue(key, value, fileApi, publishManifest, remoteManifes
                     return publishManifest(nil, table.concat(lines, "\n"))
                 end
             end
+            unmatchedLocal = nil
         end
         if migrating and fileApi and not remoteManifest then
             -- A legacy merge may reuse existing local chunk slots. Commit its
@@ -563,6 +592,10 @@ function MakerAutoStorage.New(options)
     local snapshot = localSnapshot or emptySnapshot()
     local localAvailable = localSnapshot ~= nil
     local localDirty = localSnapshot == nil
+    local legacyLocalRevision = localSnapshot and localSnapshot.revision or nil
+    local legacyCloudDirectory = localSnapshot ~= nil
+        and not localSnapshot.cloudDirectoryBlocked
+        and not localSnapshot.cloudDirectoryConfirmed
     local ready = false
     local readyCallbacks = {}
     local stopped = false
@@ -731,7 +764,20 @@ function MakerAutoStorage.New(options)
                     end
                 end
             end
-            if remote and next(snapshot.data) ~= nil then
+            local legacySnapshotIsCurrent = legacyCloudDirectory
+                and legacyLocalRevision ~= nil
+                and remote ~= nil
+                and remote.revision <= legacyLocalRevision
+            if legacySnapshotIsCurrent then
+                -- Snapshots written before the confirmation marker were
+                -- published directly by the SDK. If the remote revision is
+                -- not newer, the local directory is already authoritative;
+                -- upgrade the marker without replaying its chunks.
+                cloudDirectoryKnown = true
+                cloudDirectoryConfirmed = true
+                cloudDirectoryBlocked = false
+                cloudRecoveryPending = false
+            elseif remote and next(snapshot.data) ~= nil then
                 -- Keep local values created while offline and retain remote
                 -- keys. Conflicting queues append local events after reserved
                 -- remote slots; never upload them into unread remote slots.

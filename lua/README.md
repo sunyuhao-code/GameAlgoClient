@@ -95,6 +95,7 @@ gaq_*.json
 - `clientCloud:Set` 的 `timeout` 会和 `error` 走同一清理路径，释放 SDK 的云写入状态；宿主必须按约定触发该回调。
 - 首次没有云接口、没有自动超时调度器，或云读超时、失败、返回损坏快照时，SDK 暂停目录与分块云写；远端未确认状态随本地快照保存，旧快照缺少确认记录时也先读云。恢复云接口和调度器后，下次启动先读取并合并；以云端身份为准，把临时身份名下的待发事件迁移到云端身份队列，保留其他本地修改并恢复远端事件，再开放云写。Unconfirmed cloud directories stay write-blocked across restarts, including offline first launches; remote identity wins during recovery.
 - 离线事件重启恢复后，先上传分块再补传云目录。重新 `Init()` 会停用旧存储的本地落盘和异步续传；已提交给宿主的云写请求无法撤回。Restored chunks publish their directory; stopped instances ignore late callbacks.
+- 旧 SDK 快照读云后，若云端目录版本不高于本地，保留本地队列与 ACK 结果，仅补确认标记；需要合并分块时，按事件 ID、完整内容与出现次数匹配两侧副本，保留内容不同的旧 ID 碰撞事件。Current legacy snapshots retain local ACKs; chunk reconciliation matches identical records once per occurrence.
 - 玩家、会话及事件 ID 由 SDK 私有哈希状态、计数器、时钟和 VM 地址熵生成，不调用宿主的 `math.random()` / `math.randomseed()`。SDK identifiers neither consume nor reseed the game's global RNG.
 
 接入代码不要自行探测单机/联网模式，不要实现 GameAlgo 专用存档适配器，也不要给 `GameAlgo.Init` 传 `storage`。如果传入，SDK 会直接报错，避免本地存档和云端存档出现两套冲突语义。
