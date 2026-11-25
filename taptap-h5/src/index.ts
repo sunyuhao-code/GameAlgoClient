@@ -18,7 +18,7 @@ import type { RewardVideoHost } from "../../rest-api/src/reward-video-ad.ts";
 import { TapTapTelemetryRouter, telemetryPath, type TapDbProperties } from "./telemetry-routing.ts";
 import { fetchWithDeadline } from "./http-transport.ts";
 
-export const GAMEALGO_WEB_SDK_VERSION = "2.1.12";
+export const GAMEALGO_WEB_SDK_VERSION = "2.1.13";
 const WEB_KEEPALIVE_BODY_LIMIT_BYTES = 60 * 1024;
 const WEB_EVENT_BATCH_BODY_BUDGET_BYTES = 48 * 1024;
 const TAPDB_CONTEXT_LINK_EVENT = "gamealgo_context_link";
