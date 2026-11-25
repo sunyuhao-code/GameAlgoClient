@@ -872,6 +872,92 @@ do
     end
 end
 
+-- Failed reads and interrupted launches must preserve the original upgrade
+-- baseline across restarts, even when offline writes change the directory.
+do
+    for _, failure in ipairs({ "timeout", "error", "no-cloud", "no-scheduler", "interrupted", "chunk-timeout" }) do
+        for _, remoteState in ipairs({ "shared", "newer-directory", "different-directory", "different-chunk" }) do
+            files, tasks = {}, {}
+            local acked = { eventId = "already-acked", sessionId = "session" }
+            local pending = { eventId = "pending", sessionId = "session" }
+            local directory = { schemaVersion = 1, revision = 20, data = {
+                [queueKey] = { format = "event_chunks_v1", blocks = 1 },
+            } }
+            files["gamealgo_sdk_storage_v1.json"] = cjson.encode(directory)
+            local remoteChunk = { format = "event_chunks_v1", revision = 3, entries = {
+                { sequence = 1, event = cjson.encode(acked) },
+                { sequence = 2, event = cjson.encode(pending) },
+            } }
+            files[prefix .. "_1_1.json"] = cjson.encode(remoteChunk)
+            if failure == "interrupted" or failure == "chunk-timeout" then
+                files[prefix .. "_1_2.json"] = cjson.encode({ format = "event_chunks_v1", revision = 4,
+                    entries = { remoteChunk.entries[2] } })
+            end
+            for attempt = 1, 2 do
+                local read
+                clientCloud = failure ~= "no-cloud" and {
+                    Get = function(_, key, callbacks)
+                        if failure == "chunk-timeout" and key == "gamealgo_sdk_storage_v1" then
+                            callbacks.ok({ [key] = cjson.decode(cjson.encode(directory)) })
+                        else
+                            assert(key == (failure == "chunk-timeout" and prefix .. "_1" or "gamealgo_sdk_storage_v1"))
+                            read = callbacks
+                        end
+                    end,
+                    Set = function() error("unconfirmed directory must not upload") end,
+                } or nil
+                local storage = assert(MakerAutoStorage.New({
+                    scheduler = failure ~= "no-scheduler" and scheduler or nil,
+                }))
+                if failure == "timeout" or failure == "chunk-timeout" then tasks[#tasks].callback()
+                elseif failure == "error" then read.error(500, "offline") end
+                if failure ~= "interrupted" then
+                    assert(storage:IsReady())
+                    local queue = storage:EventQueue(queueKey)
+                    for _, event in ipairs(queue:Events()) do
+                        if event.eventId == acked.eventId then queue:Remove({ event }) end
+                    end
+                    assert(queue:Persist())
+                    assert(storage:SetItem("offline-change", "attempt-" .. attempt))
+                    storage:Flush()
+                else
+                    assert(not storage:IsReady())
+                end
+                storage:Shutdown()
+            end
+            if remoteState == "newer-directory" then directory.revision = 21
+            elseif remoteState == "different-directory" then directory.data.remoteOnly = "preserved"
+            elseif remoteState == "different-chunk" then
+                remoteChunk.entries[1].event = cjson.encode({ eventId = "remote-only", sessionId = "session" })
+            end
+            local reads, uploaded = 0, {}
+            clientCloud = {
+                Get = function(_, key, callbacks)
+                    reads = reads + 1
+                    if key == "gamealgo_sdk_storage_v1" then callbacks.ok({ [key] = directory })
+                    else assert(key == prefix .. "_1"); callbacks.ok({ [key] = remoteChunk }) end
+                end,
+                Set = function(_, key, data, callbacks) uploaded[key] = data; callbacks.ok() end,
+            }
+            local recovered = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+            local events = recovered:EventQueue(queueKey):Events()
+            assert(reads == 2)
+            local expectedCount = remoteState == "shared" and 1 or 2
+            assert(#events == expectedCount, failure .. " / " .. remoteState)
+            assert(events[#events].eventId == pending.eventId)
+            if expectedCount == 2 then
+                assert(events[1].eventId == cjson.decode(remoteChunk.entries[1].event).eventId)
+            end
+            recovered:Flush()
+            assert(uploaded.gamealgo_sdk_storage_v1.legacyCloudBaseline == nil)
+            recovered:Shutdown()
+            local reopened = assert(MakerAutoStorage.New({ scheduler = scheduler }))
+            assert(#reopened:EventQueue(queueKey):Events() == expectedCount and reads == 2)
+            reopened:Shutdown()
+        end
+    end
+end
+
 -- Newer, blocked, and diverged markerless snapshots still merge both queues.
 -- Match identical cross-source records by occurrence, retaining extra
 -- occurrences and different payloads with the same eventId.

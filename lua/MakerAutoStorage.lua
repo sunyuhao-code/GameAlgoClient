@@ -102,6 +102,9 @@ local function normalizeSnapshot(value)
         -- ever been observed. Treat them as unknown and hydrate once before
         -- publishing again.
         cloudDirectoryConfirmed = value.cloudDirectoryConfirmed == true,
+        -- Keep the pre-upgrade directory immutable while reads are retried.
+        legacyCloudBaseline = type(value.legacyCloudBaseline) == "string"
+            and value.legacyCloudBaseline or nil,
     }
 end
 
@@ -609,6 +612,8 @@ end
 --- Creates Maker storage with bounded cloud hydration and synchronous local
 --- checkpoints. Unconfirmed cloud access remains write-blocked across restarts,
 --- including launches without clientCloud or an automatic timeout scheduler.
+--- Legacy ACK recovery retains its pre-upgrade directory until chunk recovery
+--- is durably complete, including restarts after failed or interrupted reads.
 ---@param options table|nil Scheduler, logger, and optional cloudReadTimeoutMs.
 ---@return table|nil storage
 ---@return string|nil error
@@ -627,10 +632,13 @@ function MakerAutoStorage.New(options)
     local snapshot = localSnapshot or emptySnapshot()
     local localAvailable = localSnapshot ~= nil
     local localDirty = localSnapshot == nil
-    local legacyLocalRevision = localSnapshot and localSnapshot.revision or nil
-    local legacyCloudDirectory = localSnapshot ~= nil
+    local legacyCloudBaseline = localSnapshot and localSnapshot.legacyCloudBaseline or nil
+    if not legacyCloudBaseline and localSnapshot ~= nil
         and not localSnapshot.cloudDirectoryBlocked
-        and not localSnapshot.cloudDirectoryConfirmed
+        and not localSnapshot.cloudDirectoryConfirmed then
+        legacyCloudBaseline = encodeSnapshot(localSnapshot)
+    end
+    local legacyDirectory = normalizeSnapshot(legacyCloudBaseline)
     local ready = false
     local readyCallbacks = {}
     local stopped = false
@@ -650,12 +658,14 @@ function MakerAutoStorage.New(options)
 
     local function persistLocal()
         if snapshot.cloudDirectoryBlocked ~= cloudDirectoryBlocked
-            or snapshot.cloudDirectoryConfirmed ~= cloudDirectoryConfirmed then
+            or snapshot.cloudDirectoryConfirmed ~= cloudDirectoryConfirmed
+            or snapshot.legacyCloudBaseline ~= legacyCloudBaseline then
             snapshot.revision = snapshot.revision + 1
             localDirty = true
         end
         snapshot.cloudDirectoryBlocked = cloudDirectoryBlocked
         snapshot.cloudDirectoryConfirmed = cloudDirectoryConfirmed
+        snapshot.legacyCloudBaseline = legacyCloudBaseline
         local saved, bank = writeLocalSnapshot(fileApi, snapshot, localBank)
         if saved then
             localBank = bank
@@ -704,11 +714,12 @@ function MakerAutoStorage.New(options)
             if #queue:MissingBlocks() > 0 then return end
             if not queue:Persist() and fileApi then return end
         end
-        cloudDirectoryBlocked = false
+        local savedLegacyBaseline = legacyCloudBaseline
+        cloudDirectoryBlocked, legacyCloudBaseline = false, nil
         if persistLocal() or not fileApi then
             cloudRecoveryPending = false
         else
-            cloudDirectoryBlocked = true
+            cloudDirectoryBlocked, legacyCloudBaseline = true, savedLegacyBaseline
         end
     end
 
@@ -800,11 +811,10 @@ function MakerAutoStorage.New(options)
                     end
                 end
             end
-            recoverLegacyAcks = legacyCloudDirectory
-                and legacyLocalRevision ~= nil
+            recoverLegacyAcks = legacyDirectory ~= nil
                 and remote ~= nil
-                and remote.revision <= legacyLocalRevision
-                and sameJsonValue(snapshot.data, remote.data)
+                and remote.revision <= legacyDirectory.revision
+                and sameJsonValue(legacyDirectory.data, remote.data)
             if remote and next(snapshot.data) ~= nil then
                 -- Keep local values created while offline and retain remote
                 -- keys. Conflicting queues append local events after reserved
@@ -873,6 +883,9 @@ function MakerAutoStorage.New(options)
                 remote.revision = math.max(snapshot.revision, remote.revision) + 1
                 snapshot = remote
             end
+            -- A confirmed empty directory has no legacy chunks to reconcile.
+            -- Otherwise retain the baseline until every chunk is durable.
+            if readResolved and not cloudRecoveryPending then legacyCloudBaseline = nil end
             persistLocal()
             loadQueuesThenReady(source)
         end
