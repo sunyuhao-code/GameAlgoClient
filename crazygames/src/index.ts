@@ -105,9 +105,15 @@ export class GamePropelCrazyGamesClient extends GameAlgoRestClient {
     if (this.closed) return;
     const preload = options.preloadConfigFiles ?? this.preload;
     if (preload === false) return;
-    const jsonFiles = config.configFiles.filter(file => file.name.endsWith(".json") || file.contentType?.includes("application/json"));
-    const names = jsonFiles.filter(file => !Array.isArray(preload) || preload.includes(file.name)).map(file => file.name);
-    await Promise.all([...new Set(names)].map(name => this.fetchConfigFile(name)));
+    const jsonFiles = config.configFiles.filter(file =>
+      (file.name.endsWith(".json") || file.contentType?.includes("application/json"))
+      && (!Array.isArray(preload) || preload.includes(file.name)));
+    const hashes = new Map(jsonFiles.map(file => [file.name, file.hash]));
+    const names = [...new Set(jsonFiles.map(file => file.name))];
+    if (names.length > 0) {
+      await Promise.all(names.map(name => this.fetchConfigFile(name, { expectedHash: hashes.get(name), persist: false })));
+      await this.persistSnapshot();
+    }
   }
 
   protected override defaultDeviceContext(): Record<string, JsonValue> {
@@ -151,7 +157,7 @@ export class GamePropelCrazyGamesClient extends GameAlgoRestClient {
     const hadEnd = this.endedSessionId !== undefined;
     this.endedSessionId = undefined;
     this.flushInBackground();
-    if (hadEnd) void this.refresh({ forceRefresh: true }).catch(() => undefined);
+    if (hadEnd && !this.snapshotValue().config) void this.refresh({ forceRefresh: true }).catch(() => undefined);
   }
   private flushInBackground(): void {
     if (this.closed) return;

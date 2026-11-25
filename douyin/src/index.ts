@@ -47,8 +47,9 @@ export class GamePropelDouyinClient extends GameAlgoRestClient {
     this.endedSessionId = undefined;
     this.tracker.observeSessionDurationVisibility();
     this.flushInBackground();
-    // Session ownership changes only on initialization or explicit newSession.
-    if (wasHidden) void this.refresh({ forceRefresh: true }).catch(() => undefined);
+    // Foreground restoration keeps the current session, context and config.
+    // Only retry config if startup has not yet obtained a valid snapshot.
+    if (wasHidden && !this.snapshotValue().config) void this.refresh({ forceRefresh: true }).catch(() => undefined);
   };
   private readonly onNetwork = (result: DouyinNetworkStatus): void => {
     if (!this.closed && result.isConnected) this.flushInBackground();
@@ -124,10 +125,15 @@ export class GamePropelDouyinClient extends GameAlgoRestClient {
     const preload = options.preloadConfigFiles ?? this.defaultPreload;
     if (preload === false) return;
     // Never download or execute a remote JS file in the first Douyin release.
-    const files = config.configFiles.filter(file =>
+    const jsonFiles = config.configFiles.filter(file =>
       (file.name.endsWith(".json") || file.contentType?.includes("application/json"))
-      && (!Array.isArray(preload) || preload.includes(file.name))).map(file => file.name);
-    await Promise.all([...new Set(files)].map(name => this.fetchConfigFile(name)));
+      && (!Array.isArray(preload) || preload.includes(file.name)));
+    const hashes = new Map(jsonFiles.map(file => [file.name, file.hash]));
+    const names = [...new Set(jsonFiles.map(file => file.name))];
+    if (names.length > 0) {
+      await Promise.all(names.map(name => this.fetchConfigFile(name, { expectedHash: hashes.get(name), persist: false })));
+      await this.persistSnapshot();
+    }
   }
 
   protected override defaultDeviceContext(): Record<string, JsonValue> {

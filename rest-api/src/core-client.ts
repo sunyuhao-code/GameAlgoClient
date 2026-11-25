@@ -50,11 +50,13 @@ const STANDARD_EVENT_TYPES = new Set([
 export class GameAlgoApiError extends Error {
   readonly status: number;
   readonly code?: string;
+  readonly retryAfterMs?: number;
 
-  constructor(status: number, message: string, code?: string) {
+  constructor(status: number, message: string, code?: string, retryAfterMs?: number) {
     super(message);
     this.status = status;
     this.code = code;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -85,9 +87,10 @@ export class GameAlgoRestClient {
   private cachedConfig: { value: ConfigResponse; expiresAt: number; cacheKey: string } | null = null;
   private snapshot: GameAlgoSnapshot = { configFiles: new Map(), updatedAt: 0 };
   private currentIdentity: GameAlgoUserIdentity | null = null;
+  private pendingAnonymousIdentity: Promise<GameAlgoUserIdentity> | null = null;
   private readyPromise: Promise<void> | null = null;
   private didLogUserId = false;
-  private didMigrateLegacyIdentity = false;
+  private legacyMigrationPromise: Promise<void> | null = null;
   private readonly ddaControllers = new Map<string, GameAlgoDDAController>();
   readonly config: GameAlgoConfigReader;
   readonly tracker: GameAlgoEventTracker;
@@ -215,29 +218,37 @@ export class GameAlgoRestClient {
     }
     if (this.currentIdentity) return this.currentIdentity;
 
-    const existing = clean(await this.storage?.getItem(this.userIdKey));
-    if (existing) {
-      const existingCreatedAt = clean(await this.storage?.getItem(this.userCreatedAtKey)) ?? new Date(this.now()).toISOString();
-      const existingCreatedLocalAt = clean(await this.storage?.getItem(this.userCreatedLocalAtKey)) ?? localTimestamp(Date.parse(existingCreatedAt));
-      this.currentIdentity = {
-        userId: existing,
-        userCreatedAt: existingCreatedAt,
-        userCreatedLocalAt: existingCreatedLocalAt,
-      };
-      await this.storage?.setItem(this.userCreatedAtKey, existingCreatedAt);
-      await this.storage?.setItem(this.userCreatedLocalAtKey, existingCreatedLocalAt);
-      return this.currentIdentity;
-    }
+    if (!this.pendingAnonymousIdentity) {
+      this.pendingAnonymousIdentity = (async () => {
+        const existing = clean(await this.storage?.getItem(this.userIdKey));
+        if (existing) {
+          const existingCreatedAt = clean(await this.storage?.getItem(this.userCreatedAtKey)) ?? new Date(this.now()).toISOString();
+          const existingCreatedLocalAt = clean(await this.storage?.getItem(this.userCreatedLocalAtKey)) ?? localTimestamp(Date.parse(existingCreatedAt));
+          this.currentIdentity = {
+            userId: existing,
+            userCreatedAt: existingCreatedAt,
+            userCreatedLocalAt: existingCreatedLocalAt,
+          };
+          await this.storage?.setItem(this.userCreatedAtKey, existingCreatedAt);
+          await this.storage?.setItem(this.userCreatedLocalAtKey, existingCreatedLocalAt);
+          return this.currentIdentity;
+        }
 
-    this.currentIdentity = {
-      userId: randomId(),
-      userCreatedAt: new Date(this.now()).toISOString(),
-      userCreatedLocalAt: localTimestamp(this.now()),
-    };
-    await this.storage?.setItem(this.userIdKey, this.currentIdentity.userId);
-    await this.storage?.setItem(this.userCreatedAtKey, this.currentIdentity.userCreatedAt);
-    await this.storage?.setItem(this.userCreatedLocalAtKey, this.currentIdentity.userCreatedLocalAt);
-    return this.currentIdentity;
+        const created: GameAlgoUserIdentity = {
+          userId: randomId(),
+          userCreatedAt: new Date(this.now()).toISOString(),
+          userCreatedLocalAt: localTimestamp(this.now()),
+        };
+        await this.storage?.setItem(this.userIdKey, created.userId);
+        await this.storage?.setItem(this.userCreatedAtKey, created.userCreatedAt);
+        await this.storage?.setItem(this.userCreatedLocalAtKey, created.userCreatedLocalAt);
+        this.currentIdentity = created;
+        return created;
+      })().finally(() => {
+        this.pendingAnonymousIdentity = null;
+      });
+    }
+    return this.pendingAnonymousIdentity;
   }
 
   async configureAdjustServerCallbackParams(
@@ -381,9 +392,33 @@ export class GameAlgoRestClient {
         try { this.log("context ready"); } catch { /* Optional diagnostics. */ }
       }
       if (sessionId !== this.tracker.currentSessionId()) return config;
+      const resolvedUserCreatedAt = clean(options.userCreatedAt) ?? resolvedIdentity.userCreatedAt;
+      const resolvedUserCreatedLocalAt = clean(options.userCreatedLocalAt)
+        ?? (clean(options.userCreatedAt) ? localTimestamp(Date.parse(resolvedUserCreatedAt)) : resolvedIdentity.userCreatedLocalAt);
+      const resolvedCacheKey = resolvedIdentity.userId === identity.userId
+        && resolvedUserCreatedAt === userCreatedAt
+        && resolvedUserCreatedLocalAt === userCreatedLocalAt
+        ? cacheKey
+        : JSON.stringify({
+            userId: resolvedIdentity.userId,
+            isOldUser,
+            userCreatedAt: resolvedUserCreatedAt,
+            userCreatedLocalAt: resolvedUserCreatedLocalAt,
+            accountUserId,
+            accountUserCreatedAt,
+            sessionId,
+            platform,
+            sdkVersion,
+            appVersion,
+            experimentIntegrationVersion,
+            deviceId: options.deviceId,
+            timezone: options.timezone ?? this.timezone,
+            device,
+            isDebug,
+          });
       this.cachedConfig = {
         value: config,
-        cacheKey,
+        cacheKey: resolvedCacheKey,
         expiresAt: this.now() + Math.max(Number(config.ttlSeconds) || 0, 0) * 1000,
       };
       this.tracker.setEventQuota(config.eventQuota);
@@ -411,9 +446,28 @@ export class GameAlgoRestClient {
     }
   }
 
-  async fetchConfigFile(name: string): Promise<ConfigFileResponse> {
+  async fetchConfigFile(name: string, options?: { expectedHash?: string; persist?: boolean }): Promise<ConfigFileResponse> {
     const safeName = normalizeFileName(name);
-    const response = await this.request(this.url(`/v1/config-files/${encodeURIComponent(safeName)}`), { method: "GET" });
+    const existing = this.snapshot.configFiles.get(safeName);
+    if (options?.expectedHash && existing && etagMatchesHash(existing.etag, options.expectedHash)) {
+      this.log(`config file cache hit: ${existing.name}`);
+      return existing;
+    }
+    const headers: Record<string, string> = {};
+    if (existing?.etag) headers["If-None-Match"] = existing.etag;
+    let response: GameAlgoHttpResponse;
+    try {
+      response = await this.request(this.url(`/v1/config-files/${encodeURIComponent(safeName)}`), {
+        method: "GET",
+        ...(Object.keys(headers).length ? { headers } : {}),
+      });
+    } catch (error) {
+      if (error instanceof GameAlgoApiError && error.status === 304 && existing) {
+        this.log(`config file not modified: ${existing.name}`);
+        return existing;
+      }
+      throw error;
+    }
     const file = {
       name: safeName,
       content: await response.text(),
@@ -427,23 +481,37 @@ export class GameAlgoRestClient {
       configFiles,
       updatedAt: this.now(),
     };
-    await this.persistSnapshot();
+    if (options?.persist !== false) {
+      await this.persistSnapshot();
+    }
     this.log(`config file loaded: ${file.name} (${file.contentType})`);
     return file;
   }
 
-  private async fetchScriptFile(script: ConfigFileRef): Promise<ConfigFileResponse> {
+  private async fetchScriptFile(script: ConfigFileRef, options?: { persist?: boolean }): Promise<ConfigFileResponse> {
     const versionId = clean(script.versionId);
     if (!versionId) throw new Error(`script versionId is required: ${script.name}`);
     if (!clean(script.url)) throw new Error(`script url is required: ${script.name}@${versionId}`);
     if (!/^sha256:[a-f0-9]{64}$/i.test(script.hash)) throw new Error(`script hash is invalid: ${script.name}@${versionId}`);
+    const key = scriptCacheKey(script);
+    const existing = this.snapshot.configFiles.get(key);
+    if (existing) {
+      try {
+        await verifyScriptHash(existing.content, script.hash);
+        await this.scriptRuntime.prepare?.(existing.content);
+        this.log(`script cache hit: ${script.name} (${versionId})`);
+        return existing;
+      } catch {
+        // Cached content does not match expected hash; re-fetch below.
+      }
+    }
     const scriptUrl = resolveHttpUrl(script.url, this.baseUrl);
     const response = await this.request(scriptUrl, { method: "GET" });
     const content = await response.text();
     await verifyScriptHash(content, script.hash);
     await this.scriptRuntime.prepare?.(content);
     const file = {
-      name: scriptCacheKey(script),
+      name: key,
       content,
       contentType: response.headers.get("content-type") ?? script.contentType ?? "application/octet-stream",
       etag: response.headers.get("etag") ?? undefined,
@@ -455,7 +523,9 @@ export class GameAlgoRestClient {
       configFiles,
       updatedAt: this.now(),
     };
-    await this.persistSnapshot();
+    if (options?.persist !== false) {
+      await this.persistSnapshot();
+    }
     this.log(`script loaded: ${script.name}${script.versionId ? ` (${script.versionId})` : ""}`);
     return file;
   }
@@ -679,10 +749,15 @@ export class GameAlgoRestClient {
     } else {
       this.log(`preloading config files: ${preloadLabels.sort().join(", ")}`);
     }
-    await Promise.all([
-      ...[...new Set(configFileNames)].map((name) => this.fetchConfigFile(name)),
-      ...scriptRefs.map((script) => this.fetchScriptFile(script)),
-    ]);
+    const configFileHashes = new Map(config.configFiles.map((file) => [file.name, file.hash]));
+    const uniqueFileNames = [...new Set(configFileNames)];
+    if (uniqueFileNames.length > 0 || scriptRefs.length > 0) {
+      await Promise.all([
+        ...uniqueFileNames.map((name) => this.fetchConfigFile(name, { expectedHash: configFileHashes.get(name), persist: false })),
+        ...scriptRefs.map((script) => this.fetchScriptFile(script, { persist: false })),
+      ]);
+      await this.persistSnapshot();
+    }
     for (const experiment of config.experiments) {
       const script = experiment.script;
       if (script && this.snapshot.configFiles.has(scriptCacheKey(script))) {
@@ -726,7 +801,7 @@ export class GameAlgoRestClient {
     }
   }
 
-  private async persistSnapshot(): Promise<void> {
+  protected async persistSnapshot(): Promise<void> {
     if (!this.storage) return;
     await this.storage.setItem(this.snapshotCacheKey, JSON.stringify({
       config: this.snapshot.config,
@@ -736,21 +811,28 @@ export class GameAlgoRestClient {
     }));
   }
 
-  private async migrateLegacyIdentity(): Promise<void> {
-    if (this.didMigrateLegacyIdentity || !this.storage) return;
-    this.didMigrateLegacyIdentity = true;
-    const current = await this.storage.getItem(this.userIdKey);
-    if (clean(current)) return;
-    const legacyUserId = clean(await this.storage.getItem("gamealgo_user_id"));
-    if (!legacyUserId) return;
-    const legacyCreatedAt = clean(await this.storage.getItem("gamealgo_user_created_at"));
-    const legacyCreatedLocalAt = clean(await this.storage.getItem("gamealgo_user_created_local_at"));
-    await this.storage.setItem(this.userIdKey, legacyUserId);
-    if (legacyCreatedAt) await this.storage.setItem(this.userCreatedAtKey, legacyCreatedAt);
-    if (legacyCreatedLocalAt) await this.storage.setItem(this.userCreatedLocalAtKey, legacyCreatedLocalAt);
-    await this.storage.removeItem?.("gamealgo_user_id");
-    await this.storage.removeItem?.("gamealgo_user_created_at");
-    await this.storage.removeItem?.("gamealgo_user_created_local_at");
+  private migrateLegacyIdentity(): Promise<void> {
+    if (!this.storage) return Promise.resolve();
+    if (!this.legacyMigrationPromise) {
+      this.legacyMigrationPromise = (async () => {
+        const current = await this.storage!.getItem(this.userIdKey);
+        if (clean(current)) return;
+        const legacyUserId = clean(await this.storage!.getItem("gamealgo_user_id"));
+        if (!legacyUserId) return;
+        const legacyCreatedAt = clean(await this.storage!.getItem("gamealgo_user_created_at"));
+        const legacyCreatedLocalAt = clean(await this.storage!.getItem("gamealgo_user_created_local_at"));
+        await this.storage!.setItem(this.userIdKey, legacyUserId);
+        if (legacyCreatedAt) await this.storage!.setItem(this.userCreatedAtKey, legacyCreatedAt);
+        if (legacyCreatedLocalAt) await this.storage!.setItem(this.userCreatedLocalAtKey, legacyCreatedLocalAt);
+        await this.storage!.removeItem?.("gamealgo_user_id");
+        await this.storage!.removeItem?.("gamealgo_user_created_at");
+        await this.storage!.removeItem?.("gamealgo_user_created_local_at");
+      })().catch((error) => {
+        this.legacyMigrationPromise = null;
+        throw error;
+      });
+    }
+    return this.legacyMigrationPromise;
   }
 
   private url(path: string): string {
@@ -842,6 +924,7 @@ export class GameAlgoEventTracker {
   private sessionHasEnd = false;
   private sessionHasSnapshot = false;
   private consecutiveFailures = 0;
+  private nextAutoFlushAt = 0;
   private hasPersistedQueue = false;
   private queueRestorePending = false;
   private incrementalQueue?: IncrementalEventQueue;
@@ -1238,6 +1321,7 @@ export class GameAlgoEventTracker {
     bucket.total += 1;
     bucket.byType.set(eventType, current + 1);
     this.customCounts.set(bucketKey, bucket);
+    pruneMapLimit(this.customCounts, 64);
     return true;
   }
 
@@ -1249,6 +1333,7 @@ export class GameAlgoEventTracker {
     for (const [eventType, count] of pending.byType) target.byType.set(eventType, (target.byType.get(eventType) ?? 0) + count);
     this.customCounts.set(to, target);
     this.customCounts.delete(from);
+    pruneMapLimit(this.customCounts, 64);
   }
 
   private consumeOrdinaryEventQuota(
@@ -1268,7 +1353,10 @@ export class GameAlgoEventTracker {
       this.reportContextQuotaDiagnostic(eventType, sessionId, contextId, quota, current + 1);
       return false;
     }
-    if (consume) this.ordinaryCounts.set(bucketKey, current + 1);
+    if (consume) {
+      this.ordinaryCounts.set(bucketKey, current + 1);
+      pruneMapLimit(this.ordinaryCounts, 64);
+    }
     return true;
   }
 
@@ -1277,6 +1365,7 @@ export class GameAlgoEventTracker {
     if (pending === undefined) return;
     this.ordinaryCounts.set(to, (this.ordinaryCounts.get(to) ?? 0) + pending);
     this.ordinaryCounts.delete(from);
+    pruneMapLimit(this.ordinaryCounts, 64);
   }
 
   private reportContextQuotaDiagnostic(
@@ -1451,13 +1540,22 @@ export class GameAlgoEventTracker {
         responses.push(await this.uploadEvents(uploadBatch));
         this.inflightBatch = [];
         this.consecutiveFailures = 0;
+        this.nextAutoFlushAt = 0;
         // A storage failure after a successful HTTP ACK must not turn that
         // response into a transport failure or requeue the acknowledged batch.
         if (this.hasPersistedQueue) await this.persistPendingQueue().catch(() => undefined);
       } catch (error) {
         this.inflightBatch = [];
+        if (isPermanentBatchError(error)) {
+          // Terminal 4xx payload rejection: drop the poison-pill batch so later
+          // valid events are not permanently head-of-line blocked across restarts.
+          if (this.hasPersistedQueue) await this.persistPendingQueue().catch(() => undefined);
+          throw error;
+        }
         this.retryBatch = [...uploadBatch, ...this.retryBatch];
+        this.enforceQueueLimit();
         this.consecutiveFailures += 1;
+        this.nextAutoFlushAt = this.now() + computeRetryDelayMs(error, this.consecutiveFailures);
         if (this.hasPersistedQueue || this.consecutiveFailures >= 3) {
           this.hasPersistedQueue = true;
           try {
@@ -1518,10 +1616,17 @@ export class GameAlgoEventTracker {
           // critical request on an IndexedDB transaction or a paused callback.
           if (this.hasPersistedQueue) void this.persistPendingQueue().catch(() => undefined);
         } catch (error) {
+          if (isPermanentBatchError(error)) {
+            this.retryBatch = this.retryBatch.filter((event) => !ids.has(event.eventId!));
+            this.queue = this.queue.filter((event) => !ids.has(event.eventId!));
+            if (this.hasPersistedQueue) void this.persistPendingQueue().catch(() => undefined);
+            throw error;
+          }
           // Queue overflow or a session transition may have removed an
           // unacknowledged row while the request was in flight.
           const pendingIds = new Set([...this.retryBatch, ...this.queue, ...this.inflightBatch].map((event) => event.eventId));
           this.retryBatch = [...uploadBatch.filter((event) => !pendingIds.has(event.eventId)), ...this.retryBatch];
+          this.enforceQueueLimit();
           if (this.hasPersistedQueue) void this.persistPendingQueue().catch(() => undefined);
           throw error;
         } finally {
@@ -1548,22 +1653,33 @@ export class GameAlgoEventTracker {
   private enqueue(event: GameEvent, sessionEndSnapshot = false): void {
     this.queue.push(event);
     if (!sessionEndSnapshot && event.eventType === "session_end" && event.sessionId === this.sessionId) this.sessionHasEnd = true;
-    if (this.queue.length > this.queueLimit) {
-      this.queue.splice(0, this.queue.length - this.queueLimit);
-    }
+    this.enforceQueueLimit();
     if (this.persistOnEnqueue) {
       this.hasPersistedQueue = true;
       void this.persistPendingQueue().catch(() => undefined);
     }
     this.startTimer();
-    if (this.queue.length >= this.maxBatchSize) {
+    if (this.queue.length >= this.maxBatchSize && this.now() >= this.nextAutoFlushAt) {
       void this.flush().catch(() => undefined);
     }
+  }
+
+  private enforceQueueLimit(): void {
+    const overflow = this.retryBatch.length + this.queue.length - this.queueLimit;
+    if (overflow <= 0) return;
+    if (this.queue.length >= overflow) {
+      this.queue.splice(0, overflow);
+      return;
+    }
+    const remainingOverflow = overflow - this.queue.length;
+    this.queue = [];
+    this.retryBatch.splice(0, remainingOverflow);
   }
 
   private startTimer(): void {
     if (this.timersStopped || this.flushTimer || this.flushIntervalMs <= 0) return;
     this.flushTimer = setInterval(() => {
+      if (this.now() < this.nextAutoFlushAt) return;
       void this.flush().catch(() => undefined);
     }, this.flushIntervalMs);
     this.flushTimer.unref?.();
@@ -1815,6 +1931,7 @@ export class GameAlgoExperimentExecutor {
 
 export class GameAlgoConfigReader {
   private readonly snapshotProvider: () => GameAlgoSnapshot;
+  private readonly parsedFileCache = new WeakMap<ConfigFileResponse, { ok: true; value: JsonValue } | { ok: false }>();
 
   constructor(snapshotProvider: () => GameAlgoSnapshot) {
     this.snapshotProvider = snapshotProvider;
@@ -1855,19 +1972,31 @@ export class GameAlgoConfigReader {
     return typeof value === "boolean" ? value : defaultValue;
   }
 
+  private parseCachedJson(file: ConfigFileResponse): JsonValue | undefined {
+    const cached = this.parsedFileCache.get(file);
+    if (cached) return cached.ok ? cached.value : undefined;
+    try {
+      const value = JSON.parse(file.content) as JsonValue;
+      this.parsedFileCache.set(file, { ok: true, value });
+      return value;
+    } catch {
+      this.parsedFileCache.set(file, { ok: false });
+      return undefined;
+    }
+  }
+
   private defaultJsonSource(fileName?: string): JsonValue | undefined {
-    if (fileName) return this.jsonFile(fileName, undefinedJson);
+    if (fileName) {
+      const file = this.file(fileName);
+      return file ? this.parseCachedJson(file) : undefined;
+    }
 
     const jsonFiles = [...this.snapshotProvider().configFiles.values()].filter((file) => (
       file.contentType.includes("application/json") || file.name.endsWith(".json")
     ));
     if (jsonFiles.length !== 1) return undefined;
 
-    try {
-      return JSON.parse(jsonFiles[0].content) as JsonValue;
-    } catch {
-      return undefined;
-    }
+    return this.parseCachedJson(jsonFiles[0]);
   }
 }
 
@@ -1908,11 +2037,51 @@ function scriptCacheKey(script: ConfigFileRef): string {
 
 async function apiError(response: GameAlgoHttpResponse): Promise<GameAlgoApiError> {
   const fallback = `GameAlgo API returned ${response.status}`;
+  const retryAfterMs = parseRetryAfterMs(response.headers?.get?.("retry-after"));
   try {
     const payload = await response.json() as { error?: string; message?: string };
-    return new GameAlgoApiError(response.status, payload.message ?? payload.error ?? fallback, payload.error);
+    return new GameAlgoApiError(response.status, payload.message ?? payload.error ?? fallback, payload.error, retryAfterMs);
   } catch {
-    return new GameAlgoApiError(response.status, fallback);
+    return new GameAlgoApiError(response.status, fallback, undefined, retryAfterMs);
+  }
+}
+
+function parseRetryAfterMs(header: string | null | undefined): number | undefined {
+  const raw = header?.trim();
+  if (!raw) return undefined;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(60_000, Math.round(seconds * 1000));
+  }
+  const timestamp = Date.parse(raw);
+  if (Number.isFinite(timestamp)) {
+    return Math.min(60_000, Math.max(0, timestamp - Date.now()));
+  }
+  return undefined;
+}
+
+function isPermanentBatchError(error: unknown): boolean {
+  return error instanceof GameAlgoApiError && (error.status === 400 || error.status === 413 || error.status === 422);
+}
+
+function computeRetryDelayMs(error: unknown, consecutiveFailures: number): number {
+  if (error instanceof GameAlgoApiError && error.retryAfterMs !== undefined) {
+    return Math.max(1_000, Math.min(60_000, error.retryAfterMs));
+  }
+  return Math.min(60_000, 1_000 * 2 ** Math.min(Math.max(consecutiveFailures - 1, 0), 6));
+}
+
+function etagMatchesHash(etag: string | undefined, expectedHash: string | undefined): boolean {
+  const normalizedExpected = clean(expectedHash);
+  const normalizedEtag = clean(etag)?.replace(/^W\//i, "").replace(/^"|"$/g, "");
+  return Boolean(normalizedExpected && normalizedEtag && normalizedEtag === normalizedExpected);
+}
+
+function pruneMapLimit<K, V>(map: Map<K, V>, maxSize: number): void {
+  while (map.size > maxSize) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
   }
 }
 
@@ -2020,9 +2189,12 @@ function eventBatchWithinBudget(events: GameEvent[], maxCount: number, maxBytes?
   const countLimited = events.slice(0, maxCount);
   if (!maxBytes || countLimited.length <= 1) return countLimited;
   const batch: GameEvent[] = [];
+  // '{"events":[]}' is 12 ASCII bytes; each additional element adds 1 comma byte.
+  let totalBytes = 12;
   for (const event of countLimited) {
-    const candidate = [...batch, event];
-    if (batch.length > 0 && utf8Bytes(JSON.stringify({ events: candidate })) > maxBytes) break;
+    const eventBytes = utf8Bytes(JSON.stringify(event)) + (batch.length > 0 ? 1 : 0);
+    if (batch.length > 0 && totalBytes + eventBytes > maxBytes) break;
+    totalBytes += eventBytes;
     batch.push(event);
   }
   return batch;
@@ -2104,8 +2276,6 @@ function stableStringify(value: JsonValue): string {
   }
   return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
 }
-
-const undefinedJson = undefined as unknown as JsonValue;
 
 function readPath(source: JsonValue, path: string): JsonValue | undefined {
   if (!path) return source;

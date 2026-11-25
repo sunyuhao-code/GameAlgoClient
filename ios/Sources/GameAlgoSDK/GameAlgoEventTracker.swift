@@ -67,6 +67,7 @@ public actor GameAlgoEventTracker {
     private var sessionHasEnd = false
     private var currentAssignments: [GameAlgoExperimentAssignment] = []
     private var consecutiveFailures = 0
+    private var nextAutoFlushDate: Date?
     private var hasPersistedQueue = false
     nonisolated let lifecycleJournal: GameAlgoLifecycleJournal
     private var lifecycleEnabled = false
@@ -724,12 +725,21 @@ public actor GameAlgoEventTracker {
                 if lifecycleEnabled { lifecycleJournal.acknowledge(uploadBatch) }
                 inflightBatch = []
                 consecutiveFailures = 0
+                nextAutoFlushDate = nil
                 if hasPersistedQueue { persistPendingQueue() }
                 log("flush success: \(uploadBatch.count) events")
             } catch {
                 inflightBatch = []
+                if Self.isPermanentBatchError(error) {
+                    if lifecycleEnabled { lifecycleJournal.acknowledge(uploadBatch) }
+                    if hasPersistedQueue { persistPendingQueue() }
+                    log("flush dropped terminal 4xx batch: \(error)")
+                    return
+                }
                 retryBatch = uploadBatch + retryBatch
+                enforceQueueLimit()
                 consecutiveFailures += 1
+                nextAutoFlushDate = now().addingTimeInterval(Self.retryDelaySeconds(failures: consecutiveFailures))
                 if hasPersistedQueue || consecutiveFailures >= 3 {
                     hasPersistedQueue = true
                     persistPendingQueue()
@@ -751,14 +761,41 @@ public actor GameAlgoEventTracker {
         }
         queue.append(event)
         log("enqueued \(event.eventType), queue size: \(queue.count)")
-        if queue.count > queueLimit {
-            queue.removeFirst(queue.count - queueLimit)
-        }
+        enforceQueueLimit()
         startFlushTimerIfNeeded()
-        if queue.count >= maxBatchSize {
+        if queue.count >= maxBatchSize, canAutoFlush() {
             let tracker = self
             Task { await tracker.flush() }
         }
+    }
+
+    private func enforceQueueLimit() {
+        let overflow = retryBatch.count + queue.count - queueLimit
+        guard overflow > 0 else { return }
+        if queue.count >= overflow {
+            queue.removeFirst(overflow)
+            return
+        }
+        let remaining = overflow - queue.count
+        queue.removeAll()
+        retryBatch.removeFirst(min(remaining, retryBatch.count))
+    }
+
+    private func canAutoFlush() -> Bool {
+        guard let nextAutoFlushDate else { return true }
+        return now() >= nextAutoFlushDate
+    }
+
+    private static func isPermanentBatchError(_ error: Error) -> Bool {
+        if case let GameAlgoError.apiError(statusCode, _, _) = error {
+            return statusCode == 400 || statusCode == 413 || statusCode == 422
+        }
+        return false
+    }
+
+    private static func retryDelaySeconds(failures: Int) -> TimeInterval {
+        let exponent = min(max(failures - 1, 0), 6)
+        return min(60.0, pow(2.0, Double(exponent)))
     }
 
     private func persistPendingQueue() {
@@ -796,7 +833,9 @@ public actor GameAlgoEventTracker {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: interval)
                 guard !Task.isCancelled, let self else { return }
-                await self.flush()
+                if await self.canAutoFlush() {
+                    await self.flush()
+                }
             }
         }
     }

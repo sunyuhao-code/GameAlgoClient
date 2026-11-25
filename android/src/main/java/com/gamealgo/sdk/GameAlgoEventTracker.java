@@ -62,6 +62,7 @@ public final class GameAlgoEventTracker implements AutoCloseable {
     private boolean flushing;
     private Thread flushingThread;
     private int consecutiveFailures;
+    private long nextAutoFlushMillis;
     private boolean hasPersistedQueue;
     private GameAlgoLifecycleJournal lifecycleJournal;
     private AutoCloseable lifecycleRegistration;
@@ -673,16 +674,24 @@ public final class GameAlgoEventTracker implements AutoCloseable {
                         if (lifecycleJournal != null) lifecycleJournal.acknowledge(batch);
                         inflightBatch.clear();
                         consecutiveFailures = 0;
+                        nextAutoFlushMillis = 0L;
                         if (hasPersistedQueue) persistPendingQueue();
                     }
                 } catch (GameAlgoException error) {
                     synchronized (this) {
                         inflightBatch.clear();
-                        retryBatch.addAll(0, batch);
-                        consecutiveFailures += 1;
-                        if (hasPersistedQueue || consecutiveFailures >= 3) {
-                            hasPersistedQueue = true;
-                            persistPendingQueue();
+                        if (isPermanentBatchError(error)) {
+                            if (lifecycleJournal != null) lifecycleJournal.acknowledge(batch);
+                            if (hasPersistedQueue) persistPendingQueue();
+                        } else {
+                            retryBatch.addAll(0, batch);
+                            enforceQueueLimit();
+                            consecutiveFailures += 1;
+                            nextAutoFlushMillis = System.currentTimeMillis() + retryDelayMillis(consecutiveFailures);
+                            if (hasPersistedQueue || consecutiveFailures >= 3) {
+                                hasPersistedQueue = true;
+                                persistPendingQueue();
+                            }
                         }
                     }
                     throw error;
@@ -730,15 +739,35 @@ public final class GameAlgoEventTracker implements AutoCloseable {
             queue.add(event);
             if ("session_end".equals(event.getEventType()) && sessionId.equals(event.getSessionId())) sessionHasEnd = true;
             if (lifecycleJournal != null) lifecycleJournal.record(event);
-            if (queue.size() > queueLimit) {
-                queue.subList(0, queue.size() - queueLimit).clear();
-            }
+            enforceQueueLimit();
             ensureScheduler();
-            shouldFlush = queue.size() >= maxBatchSize;
+            shouldFlush = queue.size() >= maxBatchSize && System.currentTimeMillis() >= nextAutoFlushMillis;
         }
         if (shouldFlush) {
             flushAsync();
         }
+    }
+
+    private void enforceQueueLimit() {
+        int overflow = retryBatch.size() + queue.size() - queueLimit;
+        if (overflow <= 0) return;
+        if (queue.size() >= overflow) {
+            queue.subList(0, overflow).clear();
+            return;
+        }
+        int remaining = overflow - queue.size();
+        queue.clear();
+        retryBatch.subList(0, Math.min(remaining, retryBatch.size())).clear();
+    }
+
+    private static boolean isPermanentBatchError(GameAlgoException error) {
+        Integer status = error.getStatusCode();
+        return status != null && (status == 400 || status == 413 || status == 422);
+    }
+
+    private static long retryDelayMillis(int failures) {
+        int exponent = Math.min(Math.max(failures - 1, 0), 6);
+        return Math.min(60_000L, 1_000L << exponent);
     }
 
     private synchronized void bindSession(List<GameAlgoEvent> events, String sessionId, String contextId) {
@@ -855,6 +884,9 @@ public final class GameAlgoEventTracker implements AutoCloseable {
         });
         if (flushIntervalMillis > 0) {
             scheduler.scheduleWithFixedDelay(() -> {
+                synchronized (this) {
+                    if (System.currentTimeMillis() < nextAutoFlushMillis) return;
+                }
                 try {
                     flush();
                 } catch (GameAlgoException ignored) {

@@ -17,6 +17,7 @@ export class IncrementalEventQueue {
   private chunks: Chunk[] = [];
   private locations = new Map<string, number>();
   private contexts = new Map<string, string>();
+  private users = new Map<string, string>();
   private dirty = new Set<number>();
   private revision = 0;
   private sequence = 0;
@@ -36,7 +37,7 @@ export class IncrementalEventQueue {
   }
 
   reset(): void {
-    this.chunks = []; this.locations.clear(); this.contexts.clear(); this.dirty.clear();
+    this.chunks = []; this.locations.clear(); this.contexts.clear(); this.users.clear(); this.dirty.clear();
     this.revision = 0; this.sequence = 0;
     this.reloadAfterFailure = false;
   }
@@ -72,6 +73,7 @@ export class IncrementalEventQueue {
           ordered.push({ sequence: row.sequence, event });
           this.locations.set(id, index);
           this.contexts.set(id, event.contextId);
+          this.users.set(id, event.userId);
           this.sequence = Math.max(this.sequence, row.sequence);
         }
         chunk.rows = rows;
@@ -83,7 +85,7 @@ export class IncrementalEventQueue {
   private upsert(event: GameEvent): void {
     const id = event.eventId!;
     const previous = this.locations.get(id);
-    if (previous !== undefined && this.contexts.get(id) === event.contextId) return;
+    if (previous !== undefined && this.contexts.get(id) === event.contextId && this.users.get(id) === event.userId) return;
     let index = previous;
     if (index === undefined) {
       index = this.chunks.findIndex(chunk => chunk.rows !== undefined && chunk.rows.size < 100);
@@ -93,6 +95,7 @@ export class IncrementalEventQueue {
     rows.set(id, { sequence: rows.get(id)?.sequence ?? ++this.sequence, event: JSON.stringify(event) });
     this.locations.set(id, index);
     this.contexts.set(id, event.contextId);
+    this.users.set(id, event.userId);
     this.dirty.add(index);
   }
 
@@ -115,6 +118,7 @@ export class IncrementalEventQueue {
       this.chunks[index].rows!.delete(id);
       this.locations.delete(id);
       this.contexts.delete(id);
+      this.users.delete(id);
       this.dirty.add(index);
     }
     for (const event of events) this.upsert(event);

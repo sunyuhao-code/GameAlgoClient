@@ -376,3 +376,35 @@ test("portable UTF-8/hash and URL handling work when browser primitives do not e
   assert.equal(resolveHttpUrl("../v1/config", base), "https://example.com/v1/config");
   assert.throws(() => parseHttpBaseUrl("https://user:secret@example.com"), /Invalid/);
 });
+
+test("foreground resume preserves current config/context without forceRefresh, while failed cold-start recovers on show", async t => {
+  const f = fixture();
+  const client = new GameAlgoWechatClient(f.options);
+  t.after(() => client.close());
+  assert.equal(await client.waitForReady(), true);
+  const initialConfigCalls = f.requests.filter(request => request.url.endsWith("/config")).length;
+  for (const callback of f.hide) callback();
+  for (const callback of f.show) callback();
+  await turn();
+  assert.equal(f.requests.filter(request => request.url.endsWith("/config")).length, initialConfigCalls,
+    "returning from hide/ad must keep the active context and config");
+
+  const f2 = fixture();
+  const origRequest = f2.wx.request;
+  let failFirst = true;
+  f2.wx.request = options => {
+    if (failFirst && options.url.endsWith("/config")) {
+      failFirst = false;
+      queueMicrotask(() => options.fail({ errMsg: "offline" }));
+      return { abort() {} };
+    }
+    return origRequest(options);
+  };
+  const cold = new GameAlgoWechatClient(f2.options);
+  t.after(() => cold.close());
+  assert.equal(await cold.waitForReady(), false);
+  for (const callback of f2.hide) callback();
+  for (const callback of f2.show) callback();
+  await turn();
+  assert.ok(cold.snapshotValue().config?.contextId, "foreground resume should recover config when startup has none");
+});
