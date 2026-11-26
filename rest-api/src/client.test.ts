@@ -1333,6 +1333,100 @@ test("createEvent fills eventId and timestamp", () => {
   assert.equal(Date.parse(event.createdLocalAt as string), Date.parse(event.timestamp as string));
 });
 
+test("tracker drops terminal 4xx poison-pill batches and backs off auto-flushes on transient failures", async () => {
+  let now = 1_000_000;
+  let mode: "400" | "503" | "200" = "400";
+  const uploaded: Array<Array<Record<string, unknown>>> = [];
+  const client = createClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    userId: "u1",
+    autoStart: false,
+    eventFlushIntervalMs: 0,
+    eventMaxBatchSize: 2,
+    now: () => now,
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      const body = await request.json() as { events: Array<Record<string, unknown>> };
+      uploaded.push(body.events);
+      if (mode === "400") return jsonResponse({ error: "invalid_request", message: "bad payload" }, 400);
+      if (mode === "503") return jsonResponse({ error: "server_error", message: "unavailable" }, 503);
+      return jsonResponse({ ok: true, accepted: body.events.length });
+    },
+  });
+  client.tracker.identify("u1", "s1");
+  client.tracker.setContextId("ctx-1");
+
+  client.tracker.trackLevelStart({ level: "poison" });
+  await assert.rejects(client.tracker.flush(), /bad payload/);
+  assert.equal(uploaded.length, 1);
+
+  mode = "200";
+  client.tracker.trackLevelEnd({ level: "valid" });
+  await client.tracker.flush();
+  assert.equal(uploaded.length, 2);
+  assert.deepEqual(uploaded[1].map((event) => event.eventType), ["level_end"]);
+
+  mode = "503";
+  client.tracker.trackLevelStart({ level: "retry-1" });
+  await assert.rejects(client.tracker.flush(), /unavailable/);
+  assert.equal(uploaded.length, 3);
+
+  // Within backoff window (1000ms), hitting maxBatchSize must not trigger another automatic upload storm.
+  client.tracker.trackLevelStart({ level: "retry-2" });
+  client.tracker.trackLevelStart({ level: "retry-3" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(uploaded.length, 3);
+
+  now += 2_000;
+  mode = "200";
+  await client.tracker.flush();
+  assert.ok(uploaded.length >= 4);
+  client.tracker.close();
+});
+
+test("concurrent anonymous userIdentity calls share one generated ID and config file fetch supports 304", async () => {
+  const storage = new MapStorage();
+  let fileRequests = 0;
+  const client = createClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    storage,
+    autoStart: false,
+    eventFlushIntervalMs: 0,
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      if (request.url.endsWith("/v1/config-files/gameplay.json")) {
+        fileRequests += 1;
+        if (request.headers.get("if-none-match") === '"sha256:abc"') {
+          return new Response(null, { status: 304, headers: { etag: '"sha256:abc"' } });
+        }
+        return new Response('{"hp":100}', {
+          status: 200,
+          headers: { "content-type": "application/json", etag: '"sha256:abc"' },
+        });
+      }
+      throw new Error(`Unexpected URL: ${request.url}`);
+    },
+  });
+
+  const [a, b, c] = await Promise.all([client.userIdentity(), client.userIdentity(), client.userIdentity()]);
+  assert.equal(a.userId, b.userId);
+  assert.equal(b.userId, c.userId);
+
+  const first = await client.fetchConfigFile("gameplay.json");
+  assert.equal(first.content, '{"hp":100}');
+  assert.equal(client.config.number("hp", 0, "gameplay.json"), 100);
+  const cachedByHash = await client.fetchConfigFile("gameplay.json", { expectedHash: "sha256:abc" });
+  assert.equal(cachedByHash.content, '{"hp":100}');
+  assert.equal(fileRequests, 1);
+
+  const revalidated = await client.fetchConfigFile("gameplay.json");
+  assert.equal(revalidated.content, '{"hp":100}');
+  assert.equal(fileRequests, 2);
+  client.tracker.close();
+});
+
 function assertLocalTimestamp(value: unknown): asserts value is string {
   assert.equal(typeof value, "string");
   assert.match(value as string, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$/);

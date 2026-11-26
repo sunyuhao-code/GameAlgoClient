@@ -4,7 +4,7 @@ import UIKit
 #endif
 
 public actor GameAlgoSDK {
-    public static let defaultSDKVersion = "2.1.2"
+    public static let defaultSDKVersion = "2.1.5"
 
     private let gameKey: String
     private let baseURL: URL
@@ -15,6 +15,8 @@ public actor GameAlgoSDK {
     private let defaultAccountUserCreatedAt: String?
     private let experimentIntegrationVersion: Int
     private let defaultIsDebug: Bool
+    private let initialIsOldUser: Bool?
+    private let oldUserStateKeyPrefix: String
     private let httpClient: any GameAlgoHTTPClient
     private let scriptRuntime: any GameAlgoScriptRuntime
     private let cacheStorage: (any GameAlgoCacheStorage)?
@@ -65,6 +67,7 @@ public actor GameAlgoSDK {
         device: [String: JSONValue] = [:],
         preloadConfigFiles: GameAlgoConfigFilePreload = .all,
         isDebug: Bool = false,
+        isOldUser: Bool? = nil,
         eventFlushInterval: TimeInterval = 30,
         eventMaxBatchSize: Int = 100,
         eventQueueLimit: Int = 1000,
@@ -95,6 +98,7 @@ public actor GameAlgoSDK {
             identifierForVendorProvider: { await Self.systemIdentifierForVendor() },
             _autoStart: true,
             isDebug: isDebug,
+            isOldUser: isOldUser,
             eventFlushInterval: eventFlushInterval,
             eventMaxBatchSize: eventMaxBatchSize,
             eventQueueLimit: eventQueueLimit,
@@ -127,6 +131,7 @@ public actor GameAlgoSDK {
         identifierForVendorProvider: @escaping @Sendable () async -> String? = { nil },
         _autoStart: Bool,
         isDebug: Bool = false,
+        isOldUser: Bool? = nil,
         eventFlushInterval: TimeInterval = 30,
         eventMaxBatchSize: Int = 100,
         eventQueueLimit: Int = 1000,
@@ -157,6 +162,8 @@ public actor GameAlgoSDK {
         self.experimentIntegrationVersion = experimentIntegrationVersion
         self.defaultPlatform = platform
         self.defaultIsDebug = isDebug
+        self.initialIsOldUser = isOldUser
+        self.oldUserStateKeyPrefix = "gamealgo:v1:old-user:\(baseURL.absoluteString):\(gameKeyHash):"
         self.httpClient = httpClient
         self.scriptRuntime = scriptRuntime
         self.cacheStorage = cacheStorage
@@ -348,6 +355,7 @@ public actor GameAlgoSDK {
         let identity = userIdentityStore.identity(userId: userId, now: now())
         logUserId(identity.userId)
         let resolvedUserCreatedAt = identity.userCreatedAt
+        let resolvedIsOldUser = userIdentityStore.firstBoolean(initialIsOldUser, forKey: oldUserStateKeyPrefix + identity.userId)
         let resolvedPlatform = platform ?? defaultPlatform
         let resolvedSDKVersion = sdkVersion ?? defaultSDKVersion
         let resolvedAppVersion = appVersion ?? defaultAppVersion
@@ -375,6 +383,7 @@ public actor GameAlgoSDK {
         }
         let cacheKey = ConfigCacheKey(
             userId: identity.userId,
+            isOldUser: resolvedIsOldUser,
             userCreatedAt: resolvedUserCreatedAt,
             accountUserId: resolvedAccountUserId,
             accountUserCreatedAt: resolvedAccountUserCreatedAt,
@@ -400,6 +409,7 @@ public actor GameAlgoSDK {
             log("fetching config: userId=\(identity.userId), platform=\(resolvedPlatform.rawValue)")
             let requestBody = ConfigRequest(
                 userId: identity.userId,
+                isOldUser: resolvedIsOldUser,
                 userCreatedAt: resolvedUserCreatedAt,
                 userCreatedLocalAt: identity.userCreatedLocalAt,
                 accountUserId: resolvedAccountUserId,
@@ -868,6 +878,7 @@ public actor GameAlgoSDK {
 
 private struct ConfigCacheKey: Sendable, Equatable {
     let userId: String
+    let isOldUser: Bool?
     let userCreatedAt: String
     let accountUserId: String?
     let accountUserCreatedAt: String?
@@ -883,6 +894,7 @@ private struct ConfigCacheKey: Sendable, Equatable {
 
 private struct ConfigRequest: Encodable {
     let userId: String
+    let isOldUser: Bool?
     let userCreatedAt: String
     let userCreatedLocalAt: String
     let accountUserId: String?

@@ -17,6 +17,7 @@ struct UnityOptions: Decodable {
     var accountUserCreatedAt: String?
     var experimentIntegrationVersion: Int?
     var isDebug: Bool?
+    var isOldUser: Bool?
     var enableLogging: Bool?
     var device: [String: JSONValue]?
 }
@@ -56,7 +57,8 @@ final class UnityBridge: @unchecked Sendable {
                           experimentIntegrationVersion: options.experimentIntegrationVersion ?? 0,
                           platform: .ios, httpClient: httpClient, cacheStorage: cacheStorage, ddaStorage: ddaStorage,
                           userIdentityStore: identityStore, sessionId: session, device: device,
-                          isDebug: debug, logger: options.enableLogging == true ? GameAlgoLoggers.console : nil)
+                          isDebug: debug, isOldUser: options.isOldUser,
+                          logger: options.enableLogging == true ? GameAlgoLoggers.console : nil)
         return .object(["nativeSdkVersion": .string(GameAlgoSDK.defaultSDKVersion)])
     }
 

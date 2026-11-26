@@ -1,17 +1,18 @@
 # GamePropel Unity SDK
 
 Unity 2022.3 or later; Android API 24+ and iOS 15+. Install the prepared
-`com.gamepropel.sdk-1.0.0.tgz` with **Package Manager → Add package from tarball**.
+`com.gamepropel.sdk-1.0.1.tgz` with **Package Manager → Add package from tarball**.
 A source checkout can also be added as a local package after building its native
 artifacts. JSON uses the SDK's small, dependency-free data parser; no Newtonsoft
 or System.Text.Json assembly is required. The SDK initializes only in Android/iOS players;
 initialization in the Editor throws `PlatformNotSupportedException`.
 
 The repository includes prepared Android AARs and iOS XCFrameworks. The **Unity
-bindings** GitHub Actions workflow tests the sources and packages these checked-in
-native artifacts as the downloadable `gamepropel-unity-upm` artifact. SDK
-maintainers must rebuild the native artifacts with `Tools~/build_native.py` when
-the native SDK, runtime or bridge changes, then rerun the player and size checks.
+bindings** GitHub Actions workflow tests the sources, rebuilds matching native
+SDKs and bridges, and publishes the downloadable `gamepropel-unity-upm` artifact.
+SDK maintainers refresh the checked-in native artifacts from that validated
+package when releasing native SDK or bridge changes. Local rebuilding uses
+`Tools~/build_native.py`; player and size checks remain separate.
 Games importing the prepared package do not compile the SDK's Rust/Swift/Java
 sources themselves.
 
@@ -49,6 +50,10 @@ return the supplied fallback. Native callbacks are delivered through a persisten
 Unity synchronization context; call this API on the main thread as well.
 Optional `AccountUserId` / `AccountUserCreatedAt` initialization fields associate
 the game's account with the independent native anonymous identity.
+
+## Existing or new players
+
+Optional initialization option `IsOldUser` classifies pre-existing game progress: true for an existing player, false for a confirmed new player, and omitted when unknown. Read the necessary progress before initialization. The SDK persists the first explicit value per game/player; restarting or creating a new save does not overwrite it. Only the `new_user` standard milestone funnel excludes existing players from both its denominator and node counts. Other milestones, SDK registration dates, retention and LTV keep their existing definitions. Set the nullable `GamePropelOptions.IsOldUser`; null omits the field.
 
 ## Events and sessions
 

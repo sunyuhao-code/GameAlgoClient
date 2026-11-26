@@ -1,6 +1,6 @@
 {
   "name": "@gamepropel/sdk-douyin",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "GamePropel SDK for Douyin minigames",
   "repository": {
     "type": "git",

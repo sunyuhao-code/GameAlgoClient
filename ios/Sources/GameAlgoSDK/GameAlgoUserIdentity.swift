@@ -89,6 +89,16 @@ public final class GameAlgoUserIdentityStore: @unchecked Sendable {
         return GameAlgoUserIdentity(userId: newId, userCreatedAt: createdAt, userCreatedLocalAt: createdLocalAt)
     }
 
+    func firstBoolean(_ value: Bool?, forKey key: String) -> Bool? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let stored = userDefaults.string(forKey: key), stored == "true" || stored == "false" {
+            return stored == "true"
+        }
+        if let value { userDefaults.set(value ? "true" : "false", forKey: key) }
+        return value
+    }
+
     func string(forKey key: String) -> String? {
         lock.lock()
         defer { lock.unlock() }

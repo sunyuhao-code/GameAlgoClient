@@ -4,6 +4,8 @@ GamePropel (formerly GameAlgo) SDK for **TapTap H5 minigames**, published as `@g
 Other minigame hosts, including WeChat, require their own host SDK; browser
 fallbacks are retained for local previews and compatible WebViews.
 
+Version 2.1.12 adds optional `isOldUser` at initialization and persists its first explicit value for the `new_user` standard milestone funnel.
+
 Version 2.1.11 resumes periodic uploads after restoring a persisted queue, even
 when the game has not produced a new event or called `flush()`. Restored events
 retain their original IDs, Session and Context.
@@ -35,6 +37,10 @@ API is unavailable or fails, browser information provides the OS type. Browser
 UA versions can be frozen, so they are not used as OS versions. The SDK does
 not invoke the older permission-sensitive system-info APIs. Information is
 refreshed for each config request, and explicit `device` fields take precedence.
+
+### Existing or new players
+
+Optional initialization option `isOldUser` classifies pre-existing game progress: true for an existing player, false for a confirmed new player, and omitted when unknown. Read the necessary progress before initialization. The SDK persists the first explicit value per game/player; restarting or creating a new save does not overwrite it. Only the `new_user` standard milestone funnel excludes existing players from both its denominator and node counts. Other milestones, SDK registration dates, retention and LTV keep their existing definitions. Pass it to `GamePropelTapTapH5Client.init(options)`; normal host storage is automatic.
 
 ### Runtime game identity (observation only)
 

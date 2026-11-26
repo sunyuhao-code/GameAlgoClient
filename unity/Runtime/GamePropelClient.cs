@@ -29,7 +29,7 @@ namespace GamePropel
 
     public sealed class GamePropelClient
     {
-        public const string Version = "1.0.0";
+        public const string Version = "1.0.1";
         private readonly BridgeDispatcher bridge;
         internal GamePropelClient(BridgeDispatcher bridge) { this.bridge = bridge; }
         public JsonObject Identity => (JsonObject)bridge.Read("identity");

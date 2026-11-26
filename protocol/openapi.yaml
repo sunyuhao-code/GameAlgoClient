@@ -8,6 +8,94 @@ servers:
 security:
   - gameKey: []
 paths:
+  /v1/integration/status/{miniGameId}:
+    get:
+      summary: Read a mini-game's Agent-declared completion flag without a Key or CLI.
+      description: Unknown IDs and games without a completion declaration return completed=false. This does not prove the game was never integrated. Ambiguous bindings, unavailable games and storage errors are returned as errors. This operation never provisions a game.
+      operationId: fetchMiniGameIntegrationStatus
+      security: []
+      parameters:
+        - name: miniGameId
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" }
+      responses:
+        "200":
+          description: Only the mini-game completion flag and caller-supplied ID. A mini-game ID identifies one Maker or H5 game. No platform parameter, internal game ID or credentials.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: no-store }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, miniGameId, completed]
+                properties:
+                  ok: { type: boolean, const: true }
+                  miniGameId: { type: string }
+                  completed: { type: boolean }
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The mini-game ID maps to multiple games; no target is selected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/ServerError"
+        "503":
+          $ref: "#/components/responses/ServerError"
+
+  /v1/integration/status:
+    get:
+      summary: Read the Agent-declared initial integration status for this SDK Key's game.
+      description: Does not require a management key. The Agent registers completion through the management API after acceptance. A false marker means not registered and does not prove this game has never integrated.
+      operationId: fetchIntegrationStatus
+      parameters:
+        - name: platform
+          in: query
+          description: Required for all-platform keys; otherwise defaults to the key's platform.
+          schema:
+            type: string
+            enum: [ios, android, maker, web, wechat, crazygames, douyin]
+      responses:
+        "200":
+          description: Stored Agent completion declaration. No player data or credentials are returned.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, gameId, platform, completed, completedAt, sdkVersion]
+                properties:
+                  ok: { type: boolean, const: true }
+                  gameId: { type: string }
+                  platform: { type: string, enum: [ios, android, maker, web, wechat, crazygames, douyin] }
+                  completed: { type: boolean }
+                  completedAt: { type: [string, "null"], format: date-time }
+                  sdkVersion: { type: [string, "null"] }
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/MissingGameKey"
+        "403":
+          $ref: "#/components/responses/InvalidGameKey"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/ServerError"
+        "503":
+          $ref: "#/components/responses/ServerError"
+
   /v1/config:
     post:
       summary: Fetch game config, experiment assignments, and config file metadata.
@@ -103,7 +191,7 @@ paths:
                         level: 7
       responses:
         "200":
-          description: Accepted event count.
+          description: Entire batch acknowledged after valid rows were written and terminal row rejections were resolved. Do not retry rejected rows.
           content:
             application/json:
               schema:
@@ -118,6 +206,58 @@ paths:
           $ref: "#/components/responses/RateLimited"
         "503":
           $ref: "#/components/responses/AdPlacementUnavailable"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /v1/diagnostics/init:
+    post:
+      summary: Upload an SDK initialization failure or recovery without requiring a config context.
+      operationId: uploadSdkInitDiagnostic
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SdkInitDiagnosticRequest"
+      responses:
+        "200":
+          description: Accepted diagnostic count.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventBatchResponse"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/MissingGameKey"
+        "403":
+          $ref: "#/components/responses/InvalidGameKey"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /v1/diagnostics/sdk:
+    post:
+      summary: Upload a general SDK diagnostic, including local event-guard rejections.
+      operationId: uploadSdkDiagnostic
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SdkInitDiagnosticRequest"
+      responses:
+        "200":
+          description: Accepted diagnostic count.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventBatchResponse"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/MissingGameKey"
+        "403":
+          $ref: "#/components/responses/InvalidGameKey"
         "500":
           $ref: "#/components/responses/ServerError"
 
@@ -329,6 +469,9 @@ components:
         userId:
           type: string
           minLength: 1
+        isOldUser:
+          type: boolean
+          description: Optional SDK initialization classification. True means pre-existing game progress; false means a confirmed new player. Persist the first explicit value and omit when unknown. Only the new_user milestone funnel excludes true.
         userCreatedAt:
           type: string
           format: date-time
@@ -453,6 +596,7 @@ components:
           format: date-time
         exemptEventTypes:
           type: array
+          description: Event types excluded from the ordinary event quota; currently purchase, ad_view and session_end.
           items:
             type: string
 
@@ -533,12 +677,57 @@ components:
       required:
         - ok
         - accepted
+        - rejected
       properties:
         ok:
           type: boolean
         accepted:
           type: integer
           minimum: 0
+          description: For /v1/events/batch, the acknowledged row count including terminal rejections, equal to the submitted batch size on success. This lets legacy SDKs drain the entire batch. Use stored for the actual written count. Diagnostic endpoints retain their diagnostic-count semantics.
+        stored:
+          type: integer
+          minimum: 0
+          description: Actual number of events successfully written to the event sink. Present on /v1/events/batch responses; stored + sum(filtered[].count) = accepted, treating an omitted filtered as zero. Omitted by older servers and diagnostic endpoints.
+        rejected:
+          type: array
+          maxItems: 0
+          description: Compatibility array, always empty on successful /v1/events/batch responses. This satisfies both legacy accepted == submitted and accepted + rejected.length == submitted ACK checks. Terminal filtering is summarized separately in filtered and must not trigger retries.
+          items:
+            $ref: "#/components/schemas/RejectedEvent"
+        filtered:
+          type: array
+          minItems: 1
+          maxItems: 5
+          description: Terminally filtered events grouped by code only, without per-event index, eventId or reason. Omitted when nothing was filtered. Every filtered row is already acknowledged in accepted and must not be retried.
+          items:
+            type: object
+            required: [code, count]
+            additionalProperties: false
+            properties:
+              code:
+                type: string
+                enum: [invalid_event, unregistered_event, blocked_event, deprecated_event, daily_event_limit_exceeded]
+              count:
+                type: integer
+                minimum: 1
+
+    RejectedEvent:
+      type: object
+      required:
+        - index
+        - reason
+      properties:
+        index:
+          type: integer
+          minimum: 0
+        eventId:
+          type: string
+        code:
+          type: string
+          enum: [invalid_event, unregistered_event, blocked_event, deprecated_event, daily_event_limit_exceeded]
+        reason:
+          type: string
 
     GameEvent:
       type: object
@@ -578,10 +767,12 @@ components:
         payload:
           type: object
           description: >
-            Flat event properties. For ad_view with a registered adPlacementId,
-            the server adds or overrides placement, adType and currency from
-            this game's placement definition before storage; revenue is not
-            converted. Other business fields are stored for report definitions.
+            Flat or JSON event properties. For ad_view with a registered
+            adPlacementId, the server adds or overrides placement, adType and
+            currency from this game's placement definition before storage;
+            revenue is not converted. Standard enum validation and display
+            mapping happen in event catalogs and reports rather than rejecting
+            raw telemetry at ingestion.
           additionalProperties:
             $ref: "#/components/schemas/EventPayloadValue"
       allOf:
@@ -639,6 +830,74 @@ components:
         - type: number
         - type: boolean
         - type: "null"
+        - type: array
+          items:
+            $ref: "#/components/schemas/EventPayloadValue"
+        - type: object
+          additionalProperties:
+            $ref: "#/components/schemas/EventPayloadValue"
+
+    SdkInitDiagnosticRequest:
+      type: object
+      required:
+        - diagnosticId
+        - sessionId
+        - platform
+        - sdkVersion
+        - stage
+        - status
+        - reasonCode
+        - createdAt
+      properties:
+        diagnosticId:
+          type: string
+          minLength: 1
+        correlationId:
+          type: string
+          description: Original diagnosticId when status is recovered.
+        userId:
+          type: string
+          description: Optional because SDK identity storage may not be ready.
+        accountUserId:
+          type: string
+          description: Optional Maker/platform account identity captured before asynchronous storage.
+        sessionId:
+          type: string
+          minLength: 1
+        contextId:
+          type: string
+          description: Optional because the failure may happen before config succeeds.
+        platform:
+          type: string
+          enum: [ios, android, maker, web, wechat, crazygames, douyin]
+        sdkVersion:
+          type: string
+        appVersion:
+          type: string
+        stage:
+          type: string
+          enum: [storage, config, transport, event_guard]
+        status:
+          type: string
+          enum: [degraded, failed, recovered]
+        reasonCode:
+          type: string
+          pattern: "^[a-z][a-z0-9_]{0,63}$"
+        reasonDetail:
+          type: string
+          maxLength: 256
+        attempts:
+          type: integer
+          minimum: 0
+          maximum: 100
+        createdAt:
+          type: string
+          format: date-time
+        createdLocalAt:
+          type: string
+          format: date-time
+        isDebug:
+          type: boolean
 
     UserAttributionRequest:
       type: object

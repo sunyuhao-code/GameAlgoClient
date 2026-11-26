@@ -10,6 +10,10 @@ public final class GameAlgo {
         return client;
     }
 
+    public static synchronized GameAlgoClient init(String gameKey, String baseUrl, Boolean isOldUser) {
+        return init(gameKey, baseUrl, GameAlgoClient.DEFAULT_SDK_VERSION, null, 0, null, isOldUser);
+    }
+
     public static synchronized GameAlgoClient init(
             String gameKey,
             String baseUrl,
@@ -43,6 +47,17 @@ public final class GameAlgo {
             String appVersion,
             int experimentIntegrationVersion,
             GameAlgoCacheStorage cacheStorage) {
+        return init(gameKey, baseUrl, sdkVersion, appVersion, experimentIntegrationVersion, cacheStorage, null);
+    }
+
+    public static synchronized GameAlgoClient init(
+            String gameKey,
+            String baseUrl,
+            String sdkVersion,
+            String appVersion,
+            int experimentIntegrationVersion,
+            GameAlgoCacheStorage cacheStorage,
+            Boolean isOldUser) {
         client = new GameAlgoClient(
                 gameKey,
                 baseUrl,
@@ -54,7 +69,7 @@ public final class GameAlgo {
                 cacheStorage,
                 null,
                 GameAlgoLogger.console(),
-                new GameAlgoFetchConfigRequest(null).experimentIntegrationVersion(experimentIntegrationVersion)
+                new GameAlgoFetchConfigRequest(null).experimentIntegrationVersion(experimentIntegrationVersion).isOldUser(isOldUser)
         );
         return client;
     }

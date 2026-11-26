@@ -18,7 +18,7 @@ signal startup_completed(success: bool)
 ## console there; this signal is how an iOS host gets the same information.
 signal sdk_log(message: String)
 
-const SDK_VERSION := "2.1.4"
+const SDK_VERSION := "2.1.6"
 # The Protocol v1 client is platform-neutral. Storage and script execution are
 # injected capabilities; no native runtime is required.
 ## Godot exports to five targets, but GameAlgo only accepts the two mobile
@@ -40,6 +40,7 @@ var _account_user_id := ""
 var _account_user_created_at := ""
 var _integration_version := 0
 var _is_debug := false
+var _is_old_user: Variant = null
 var _timezone := "UTC"
 var _device: Dictionary = {}
 var _preload: Variant = DEFAULT_PRELOAD
@@ -100,6 +101,9 @@ func configure(options: Dictionary) -> bool:
 		last_error = "invalid_experiment_integration_version"
 		return false
 	var device_value: Variant = options.get("device", {})
+	if options.has("is_old_user") and not options["is_old_user"] is bool:
+		last_error = "invalid_is_old_user"
+		return false
 	var measurement_value: Variant = options.get("measurement_allowed", false)
 	var attribution_value: Variant = options.get("attribution_allowed", true)
 	var measurement_resolved_value: Variant = options.get("measurement_resolved", true)
@@ -179,6 +183,23 @@ func configure(options: Dictionary) -> bool:
 		"%s:%s:%s" % [_base_url, GameAlgoUtil.sha256_text(_game_key), _identity["userId"]]
 	)
 	_snapshot_key = "snapshot_" + _namespace
+	_is_old_user = null
+	var old_user_key := "old_user_" + _namespace
+	var old_user_state := _load_json_result(old_user_key)
+	if old_user_state.get("status") == GameAlgoJsonStore.STATUS_LOADED:
+		if not old_user_state.get("value") is bool:
+			last_error = "invalid_old_user_state"
+			return false
+		_is_old_user = old_user_state["value"]
+	elif old_user_state.get("status") != GameAlgoJsonStore.STATUS_MISSING:
+		last_error = "old_user_state_read_failed"
+		return false
+	elif options.has("is_old_user"):
+		_is_old_user = options["is_old_user"]
+		var saved_old_user: Variant = _storage.call("save_json", old_user_key, _is_old_user)
+		if not saved_old_user is bool or not saved_old_user:
+			last_error = "old_user_state_persistence_failed"
+			return false
 	_event_backend = options.get("event_backend", null)
 	var native_events_required := _event_backend != null or (
 		not options.has("transport") and OS.get_name().to_lower() in ALLOWED_PLATFORMS
@@ -272,6 +293,8 @@ func start() -> bool:
 		_ready = true
 		status = "ready_cached"
 		sdk_ready.emit(true)
+	if tracker.measurement_allowed() and tracker.has_bound_session_end():
+		tracker.flush()
 	var startup_session := tracker.current_session_id()
 	var refreshed := await refresh(true)
 	if startup_session != tracker.current_session_id():
@@ -484,7 +507,10 @@ func new_session(session_id: String = "") -> bool:
 
 
 func set_measurement_allowed(allowed: bool) -> bool:
-	return tracker.set_measurement_allowed(allowed)
+	var ok := tracker.set_measurement_allowed(allowed)
+	if ok and allowed and _started and tracker.has_bound_session_end():
+		tracker.flush()
+	return ok
 
 
 func assignment_script_ready(assignment: Dictionary) -> bool:
@@ -577,7 +603,7 @@ func upload_events(events: Array[Dictionary]) -> Dictionary:
 ## Starts the event upload before the first await. On Android and iOS the
 ## default backend then owns the work, so callers may intentionally omit await
 ## when entering the background. Await it when the ACK result is needed.
-func flush(timeout_ms: int = 2500) -> Dictionary:
+func flush(timeout_ms: int = 10000) -> Dictionary:
 	return await tracker.flush(timeout_ms)
 
 
@@ -976,11 +1002,11 @@ func _notification(what: int) -> void:
 			return
 		_persist_config_requests()
 		tracker.persist_pending()
-		tracker.flush(2500)
+		tracker.flush(10000)
 
 
 func _config_request() -> Dictionary:
-	return {
+	var request := {
 		"userId": _identity["userId"],
 		"userCreatedAt": _identity["userCreatedAt"],
 		"userCreatedLocalAt": _identity["userCreatedLocalAt"],
@@ -996,6 +1022,9 @@ func _config_request() -> Dictionary:
 		"device": _device.duplicate(true),
 		"isDebug": _is_debug,
 	}
+	if _is_old_user is bool:
+		request["isOldUser"] = _is_old_user
+	return request
 
 
 func _request_json(method: String, path: String, body: Variant = null) -> Dictionary:

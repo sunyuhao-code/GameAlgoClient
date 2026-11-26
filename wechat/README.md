@@ -5,14 +5,21 @@
 native local storage, `wx.onHide/onShow` and rewarded-video APIs. It fixes
 `platform=wechat`; iOS/Android/desktop are separate `device.os` values.
 
-Version 1.0.0 supports events, durable offline queues, foreground time,
-configuration files in JSON and parameter-based A/B experiments. It does not
+Version 1.1.1 adds optional `isOldUser` at initialization, preserves its first explicit value across restarts, and carries it over when the first config resolves an OpenID identity.
+
+Version 1.1.0 supports events, durable offline queues, foreground time,
+optional first-install OpenID identity, configuration files in JSON and
+parameter-based A/B experiments. It does not
 execute remote JavaScript/WASM, provide multiplayer or retrieve individual ad
 revenue. The TapTap H5 package is a different SDK.
 
 The `GameAlgoWechatClient`, `initGameAlgoWechat`, and `GAMEALGO_WECHAT_*` names
 remain aliases for existing integrations. Storage keys and the wire protocol
 retain their historical names.
+
+## Existing or new players
+
+Optional initialization option `isOldUser` classifies pre-existing game progress: true for an existing player, false for a confirmed new player, and omitted when unknown. Read the necessary progress before initialization. The SDK persists the first explicit value per game/player; restarting or creating a new save does not overwrite it. Only the `new_user` standard milestone funnel excludes existing players from both its denominator and node counts. Other milestones, SDK registration dates, retention and LTV keep their existing definitions. Pass it to `GamePropelWechatClient.init(options)`; normal host storage is automatic.
 
 ## Install and initialize
 
@@ -53,8 +60,27 @@ console (`game-algo-sdk.dictapis.cn` above). Overseas deployments use the full
 `https://dirichlet.ai/algo_sdk` prefix. The server must support `wechat` before
 using this SDK; never change it to `web` to bypass a platform error.
 Only `ga_live_*` belongs in game code. No AppSecret or management key is needed
-in the game. Anonymous user identity and creation time are persisted; an existing
-OpenID can be linked as `accountUserId` without replacing the anonymous ID.
+in the game. The first local installation can resolve its identity during the
+initial config request: the SDK obtains a silent `wx.login` code (up to three
+seconds, configurable with `wechatLoginTimeoutMs`) and sends `wechatLoginCode`
+with `/v1/config`. If the developer has configured this game's AppSecret on the
+GamePropel server and exchange succeeds, the server builds the Context for the
+OpenID and returns `userIdentity: { userId: openId, source: 'wechat_openid' }`.
+The SDK persists that OpenID as its **primary `userId`**, before binding early
+events to the Context. It does not also set `accountUserId` automatically.
+
+Without configured credentials, on exchange failure, or on a server without
+this capability, the original anonymous candidate remains the primary ID.
+Missing/failed/timed-out `wx.login` does not prevent a normal config request.
+**Existing local users never switch IDs**: restarting, resuming, refreshing
+config, or configuring AppSecret later does not upgrade an anonymous ID. An
+explicit `userId` also bypasses this automatic resolution. Both IDs and their
+creation times survive restart. A separately provided game account can still
+be linked through `accountUserId`.
+
+AppSecret is optional server-side configuration, never a client SDK option.
+The corresponding server contract and rollout prerequisites are documented in
+`SERVER_HANDOFF.md`; a client build alone does not enable server-side exchange.
 
 ## Events, storage and lifecycle
 
@@ -153,8 +179,13 @@ identity/config restoration and offline-queue recovery after force closing
 WeChat. These device tests used an independent test game and a **probe-only**
 translation to the existing `web` receiving platform because the live server
 rejected `wechat`. The shipped SDK always sends `wechat` and contains no such
-translation. Native WeChat platform acceptance must be verified after the server
-update. Android WeChat, Developer Tools and real rewarded ads remain unverified.
+translation. On 2026-11-24, the same iOS device verified the deployed server with
+native `platform=wechat`: first-install config resolved the primary user ID to
+OpenID, and force closing and reopening WeChat restored the same ID without
+another login code. Config returned HTTP 200 and both level events were accepted
+and stored. Local-server device tests also verified anonymous fallback and that
+enabling AppSecret later does not change an existing anonymous ID.
+Android WeChat, Developer Tools and real rewarded ads remain unverified.
 
 Server integration requirements and the exact validation boundary are in
 [SERVER_HANDOFF.md](./SERVER_HANDOFF.md).

@@ -20,6 +20,8 @@ Android 导出需要在 **Project Settings / Plugins** 启用 **GameAlgo**，并
 
 2.1.4 起，原生 Rust 绑定按需解析实际调用的引擎接口，兼容裁掉未使用的 3D / XR 功能的 2D 导出模板。自定义引擎仍需保留 GDExtension 以及 SDK 实际使用的接口。
 
+2.1.6 起，原生事件上传器复用持久 HTTP 连接池并在陈旧连接异常时单次重试，默认与生命周期 `flush()` 预算提升至 10 秒，`session_end` 超批量优先装入首批，并在切回前台、启动恢复及 `bind_session_context()` 绑定完成后立即补发；iOS 后台任务改由带 `expirationHandler` 的 Objective-C 封装托管，避免切后台超时被系统终止。
+
 iOS 的运行时是 **framework 而不是裸 dylib**：dyld 按二进制自带的 install name 解析嵌入的库，只有 framework bundle 能带上这个名字。设备和模拟器各一份（`runtime/ios/` 和 `runtime/ios-simulator/`），两份都要放进去，否则对应环境里运行时单例加载不出来，SDK 会以 `native_event_backend_unavailable` 拒绝配置。
 
 本仓库的 `godot/project.godot` 和 `godot/tests/` 只用于跑测试，游戏不需要。
@@ -42,6 +44,10 @@ Android 源码构建还需要 JDK 17 和 Android SDK 35；构建脚本会运行�
 `/v1/config` 的 `device` 自动携带系统和设备信息。Android 与原生 Android SDK 使用相同口径：`osVersion` 读取 `Build.VERSION.RELEASE`（例如 `"14"`），`sdkInt` 读取 `Build.VERSION.SDK_INT`（例如 `34`，JSON 数字）。不再把 Godot `OS.get_version()` 返回的 API 级别／构建号放入 `osVersion`；系统接口不可用或字段无效时省略相应字段。iOS 仍使用 `OS.get_version()`，不受此调整影响。
 
 接入方在 `configure` 的 `device` 选项中显式提供的同名字段仍优先于自动采集值。旧会话持久化的配置请求保留原始设备信息，不会在重试时改写。
+
+## 已有进度玩家
+
+可选初始化参数 `is_old_user` 用于区分 SDK 接入前已有游戏进度的玩家：true 为已有进度，false 为确认的新玩家，未知则省略。由游戏在初始化前读取必要存档并判断，不能只看文件是否存在。SDK 持久化该用户首次明确值，后续启动或重新开档不覆盖。仅 `new_user` 标准漏斗的分母与节点人数排除老玩家；其他类型里程碑、SDK 注册时间、留存与 LTV 沿用原规则。在 `configure(options)` 中传入，使用 GDScript snake_case，线上 config 字段为 `isOldUser`。
 
 ## 最小接入
 
@@ -115,13 +121,13 @@ Payload 的字段名兼容 `String` 和 `StringName`：`payload.result = "win"` 
 
 `acked_event_ids` 表示服务端响应触发上述批次完成判定的事件 ID，包含明确拒绝或允许丢弃的事件，不等于逐条接收成功的 ID 列表；本地提交失败时仍可能保留在队列中，应结合 `ok`、`remaining` 和 `error` 判断。不能用它的长度代替 `accepted`。原生 worker 与 GDScript 后备发送路径遵守相同规则。
 
-SDK 在应用暂停/关闭通知时自动以 2.5 秒预算补一次 flush，但这不能代替 paid callback 中的显式调用：Android force-stop 没有可靠回调，而且 `OnPause` 可能早于 MAX `onPaidEvent`。SDK 不理解 rewarded/interstitial 业务规则，因此由 App 在对应 paid callback 成功入队后触发。
+SDK 在应用暂停/关闭通知时自动以 10 秒预算补一次 flush，但这不能代替 paid callback 中的显式调用：Android force-stop 没有可靠回调，而且 `OnPause` 可能早于 MAX `onPaidEvent`。SDK 不理解 rewarded/interstitial 业务规则，因此由 App 在对应 paid callback 成功入队后触发。
 
-Android 还会在同一进程的所有 Activity 都停止、持续 100ms 后，原生生成并同步持久化 `session_end`，再以 2.5 秒预算启动上传。正常切换到全屏广告 Activity 保持前台，不会结束会话；从广告页按 Home 则会结束。配置变更引起的 Activity 重建不触发结束。监听与 Godot 帧循环无关，已有游戏层 `track_session_end()` 调用可以保留；每次真正退后台仍可产生新的结束事件，不按 `sessionId` 做全局去重。返回前台也不会自动创建新 session，仍由游戏调用 `new_session()`。
+Android 还会在同一进程的所有 Activity 都停止、持续 100ms 后，原生生成并同步持久化 `session_end`，再以 10 秒预算启动上传（复用长连接并在队列超批时优先发送 `session_end`）。正常切换到全屏广告 Activity 保持前台，不会结束会话；从广告页按 Home 则会结束。配置变更引起的 Activity 重建不触发结束。监听与 Godot 帧循环无关，已有游戏层 `track_session_end()` 调用可以保留；每次真正退后台仍可产生新的结束事件，不按 `sessionId` 做全局去重。返回前台不会自动创建新 session，仍由游戏调用 `new_session()`；若队列中仍有待传的已绑定事件，返回前台及启动/绑定 context 后会立即补传。
 
 Android 同时监听应用级 `onTrimMemory(TRIM_MEMORY_UI_HIDDEN)` 和动态注册的 `SCREEN_OFF` 广播。UI 已不可见或设备进入非交互状态时立即走同一条原生持久化和 Flush 路径，无需等待所有 Activity stopped 或额外的 100ms。前台心跳随后台状态停止；重复后台信号和迟到的 stopped 不会重复切换同一次状态。Activity resumed 时检查设备交互状态并恢复前台；`SCREEN_ON` 只有在应用仍有 resumed Activity 且未收到 UI 隐藏通知时才恢复，停在锁屏界面或桌面不会仅因亮屏就恢复会话。其他内存压力通知不作为 UI 隐藏处理。这些监听无需游戏额外接入，也不会更换 `sessionId`。
 
-iOS 在原生层监听 `UIApplication` 的整体前后台和 `willTerminate` 通知，同时监听 `UIScene` 的前后台通知，不依赖 Godot 暂停通知或帧循环。展示全屏广告、控制中心和权限弹窗引起的失焦不会结束会话；真正进入后台或收到退出通知时立即同步持久化 `session_end`，再用 2.5 秒预算和有限后台执行任务尝试上传，失败事件留待下次发送。监听内置于 iOS framework，无需修改游戏的 AppDelegate 或 SceneDelegate，也不需要声明长期后台运行权限。多 Scene 时按整个 App 的状态处理，仍有其他前台 Scene 时不因单个 Scene 退后台就结束会话。游戏已有的 `track_session_end()` 可以保留，返回前台仍不自动新建 session。
+iOS 在原生层监听 `UIApplication` 的整体前后台和 `willTerminate` 通知，同时监听 `UIScene` 的前后台通知，不依赖 Godot 暂停通知或帧循环。展示全屏广告、控制中心和权限弹窗引起的失焦不会结束会话；真正进入后台或收到退出通知时立即同步持久化 `session_end`，再用 10 秒预算、连接复用与有限后台执行任务尝试上传，失败事件留待回前台或下次启动/绑定 context 时立即补传。监听内置于 iOS framework，无需修改游戏的 AppDelegate 或 SceneDelegate，也不需要声明长期后台运行权限。多 Scene 时按整个 App 的状态处理，仍有其他前台 Scene 时不因单个 Scene 退后台就结束会话。游戏已有的 `track_session_end()` 可以保留，返回前台仍不自动新建 session。
 
 Android/iOS 原生队列对同一用户、Session 和 debug 标记的自动及手动 `session_end` 共用 1 秒重入保护，保留首条，窗口内不新增事件，也不延长窗口。被合并的结束仍会关闭并保存会话标记，默认的手动 `track_session_end()` 仍返回成功并尝试 flush；传入 `flush_immediately=false` 时仍由调用方控制 flush。新 Session 和重启恢复事件不受旧窗口限制，超过窗口后仍可再次上报。保护只读取并更新一个内存记录，不扫描队列，也不增加定时器。
 

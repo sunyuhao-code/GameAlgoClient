@@ -57,9 +57,29 @@ jobs:
           java -cp /tmp/gamepropel-unity-java com.gamealgo.sdk.GameAlgoJsonIntegerTest
   package:
     needs: [rust, managed, swift, java]
-    runs-on: ubuntu-latest
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          java-version: "17"
+          distribution: temurin
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: "platforms;android-35 build-tools;35.0.0"
+          log-accepted-android-sdk-licenses: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: armv7-linux-androideabi,aarch64-linux-android,x86_64-linux-android
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r27c
+      - run: cargo install cargo-ndk --locked
+      - name: Build matching native SDKs and Unity bridges
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: python3 unity/Tools~/build_native.py --android --ios
       - name: Package validated native artifacts for Unity Package Manager
         run: |
           python3 unity/Tools~/package.py

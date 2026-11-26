@@ -161,3 +161,14 @@ test("a burst coalesces enqueue persistence instead of serializing every snapsho
   assert.equal((await new IncrementalEventQueue(store, "queue").load()).length, 500);
   tracker.close();
 });
+
+test("incremental queue rewrites persisted chunks when an unbound event userId changes", async () => {
+  const store = storage(), queue = new IncrementalEventQueue(store, "queue");
+  const unbound = { ...event(1, ""), userId: "anon-candidate" };
+  await queue.save([unbound]);
+  const resolved = { ...unbound, userId: "openid-real" };
+  await queue.save([resolved]);
+  const reloaded = await new IncrementalEventQueue(store, "queue").load();
+  assert.equal(reloaded.length, 1);
+  assert.equal(reloaded[0].userId, "openid-real");
+});

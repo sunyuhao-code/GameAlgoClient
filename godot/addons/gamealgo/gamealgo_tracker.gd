@@ -6,7 +6,7 @@ const GameAlgoJsonStore := preload("res://addons/gamealgo/internal/json_store.gd
 const DEFAULT_MAX_BATCH_SIZE := 100
 const DEFAULT_QUEUE_LIMIT := 1000
 const DEFAULT_FLUSH_INTERVAL := 30.0
-const DEFAULT_FLUSH_TIMEOUT_MS := 2500
+const DEFAULT_FLUSH_TIMEOUT_MS := 10000
 
 ## Standard semantic events are never charged against the custom-event quota.
 const STANDARD_EVENT_TYPES := [
@@ -35,7 +35,7 @@ var _user_id := ""
 var _session_id := ""
 var _context_id := ""
 var _platform := "rest"
-var _sdk_version := "2.1.4"
+var _sdk_version := "2.1.6"
 var _app_version := ""
 var _timezone := "UTC"
 var _user_created_at := ""
@@ -92,7 +92,7 @@ func configure(client: Object, storage: Variant, options: Dictionary) -> bool:
 	if _session_id.is_empty():
 		_session_id = GameAlgoUtil.uuid()
 	_platform = String(options.get("platform", "rest"))
-	_sdk_version = String(options.get("sdk_version", "2.1.4"))
+	_sdk_version = String(options.get("sdk_version", "2.1.6"))
 	_app_version = String(options.get("app_version", ""))
 	_timezone = String(options.get("timezone", GameAlgoUtil.timezone_name()))
 	_user_created_at = String(options.get("user_created_at", ""))
@@ -310,11 +310,21 @@ func bind_session_context(session_id: String, context_id: String) -> bool:
 	_bind_context(_retry_batch, session_id, normalized)
 	_bind_context(_queue, session_id, normalized)
 	_remember_bound_milestones(normalized)
-	if _native_events:
-		return true
-	if _has_persisted_queue:
-		return _persist_pending()
-	return true
+	var saved := true
+	if not _native_events and _has_persisted_queue:
+		saved = _persist_pending()
+	if saved and _measurement_allowed and is_instance_valid(_client) and has_bound_session_end():
+		flush()
+	return saved
+
+
+func has_bound_session_end() -> bool:
+	for events: Array[Dictionary] in [_retry_batch, _queue]:
+		for event: Dictionary in events:
+			if String(event.get("eventType", "")) == "session_end" \
+					and not String(event.get("contextId", "")).is_empty():
+				return true
+	return false
 
 
 func _pending_changed() -> void:

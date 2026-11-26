@@ -1,6 +1,6 @@
 # GamePropel TapTap Maker / 小游戏 Lua SDK
 
-当前版本：`2.1.5-lua`。广告与结束事件使用独立优先通道，队列预留关键事件名额；广告播放封装会在原 `ad_view` 中附带流程耗时。公开调用接口不变。
+当前版本：`2.1.6-lua`。新增初始化参数 `isOldUser`，持久化首次明确值供新用户漏斗使用。广告与结束事件使用独立优先通道，队列预留关键事件名额；广告播放封装会在原 `ad_view` 中附带流程耗时。公开调用接口不变。
 
 GamePropel 原名 GameAlgo，现有 `GameAlgo*` API、模块名和安装路径继续兼容。
 
@@ -72,6 +72,10 @@ Maker / Lua SDK 不提供匹配、Lobby、房间连接或实时状态同步；�
 `experimentIntegrationVersion` 来自 `gamealgo experiment integration-version create`，表示当前小游戏版本支持的实验参数能力。它需要固定在发布代码中，不能在运行时查询 latest；没有接入实验时可省略，默认是 `0`。
 
 关于何时创建新版本、Strategy 最低版本和托管实验覆盖率门槛，运行 `gamealgo docs experiments --host <admin-host>` 查看当前平台规则。
+
+### 已有进度玩家
+
+可选初始化参数 `isOldUser` 用于区分 SDK 接入前已有游戏进度的玩家：true 为已有进度，false 为确认的新玩家，未知则省略。由游戏在初始化前读取必要存档并判断，不能只看文件是否存在。SDK 持久化该用户首次明确值，后续启动或重新开档不覆盖。仅 `new_user` 标准漏斗的分母与节点人数排除老玩家；其他类型里程碑、SDK 注册时间、留存与 LTV 沿用原规则。Lua 示例：`GameAlgo.Init({ gameKey = clientKey, isOldUser = hasExistingProgress })`。
 
 ### 持久化存储
 

@@ -21,7 +21,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
 
 public final class GameAlgoClient {
-    public static final String DEFAULT_SDK_VERSION = "2.1.2";
+    public static final String DEFAULT_SDK_VERSION = "2.1.5";
     private static final String USER_ID_KEY = "gamealgo_user_id";
     private static final String USER_CREATED_AT_KEY = "gamealgo_user_created_at";
     private static final String USER_CREATED_LOCAL_AT_KEY = "gamealgo_user_created_local_at";
@@ -46,6 +46,9 @@ public final class GameAlgoClient {
     private final CompletableFuture<Void> readyFuture;
     private CachedConfig cachedConfig;
     private GameAlgoUserIdentity userIdentity;
+    private final Boolean initialIsOldUser;
+    private final String oldUserStateKeyPrefix;
+    private final Map<String, Boolean> oldUserStates = new LinkedHashMap<>();
     private boolean didLogUserId;
 
     public GameAlgoClient(String gameKey, String baseUrl) {
@@ -142,6 +145,7 @@ public final class GameAlgoClient {
         this.baseUrl = trimTrailingSlash(baseUrl);
         this.defaultSDKVersion = isBlank(sdkVersion) ? DEFAULT_SDK_VERSION : sdkVersion;
         this.defaultAppVersion = appVersion;
+        this.initialIsOldUser = initialRequest == null ? null : initialRequest.getIsOldUser();
         this.defaultPlatform = isBlank(platform) ? "android" : platform;
         this.defaultExperimentIntegrationVersion = initialRequest == null || initialRequest.getExperimentIntegrationVersion() == null
                 ? 0
@@ -153,6 +157,7 @@ public final class GameAlgoClient {
         String explicitUserId = initialRequest == null ? null : initialRequest.getUserId();
         String userScope = resolveInitialUserScope(cacheStorage, explicitUserId);
         String gameKeyHash = sha256Unchecked(gameKey).substring("sha256:".length());
+        this.oldUserStateKeyPrefix = "gamealgo:v1:old-user:" + this.baseUrl + ":" + gameKeyHash + ":";
         String namespace = this.baseUrl + ":" + gameKeyHash + ":" + userScope;
         this.legacySnapshotCacheKey = "gamealgo:v1:snapshot:" + this.baseUrl + ":" + gameKey.substring(0, Math.min(16, gameKey.length()));
         this.snapshotCacheKey = cacheKey == null ? "gamealgo:v1:snapshot:" + namespace : cacheKey;
@@ -272,6 +277,7 @@ public final class GameAlgoClient {
 
     public synchronized GameAlgoConfigResponse fetchConfig(GameAlgoFetchConfigRequest request) throws GameAlgoException {
         GameAlgoFetchConfigRequest resolvedRequest = requestWithResolvedUser(request);
+        Boolean isOldUser = oldUserState(resolvedRequest.getUserId());
         String platform = isBlank(request.getPlatform()) ? defaultPlatform : request.getPlatform();
         String sdkVersion = isBlank(request.getSdkVersion()) ? defaultSDKVersion : request.getSdkVersion();
         String appVersion = request.getAppVersion() == null ? defaultAppVersion : request.getAppVersion();
@@ -314,6 +320,7 @@ public final class GameAlgoClient {
             log("fetching config: userId=" + resolvedRequest.getUserId() + ", platform=" + platform);
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("userId", resolvedRequest.getUserId());
+            if (isOldUser != null) body.put("isOldUser", isOldUser);
             body.put("userCreatedAt", resolvedRequest.getUserCreatedAt());
             body.put("userCreatedLocalAt", userIdentity.getUserCreatedLocalAt());
             if (!isBlank(resolvedRequest.getAccountUserId())) {
@@ -733,6 +740,16 @@ public final class GameAlgoClient {
                 tracker.bindSessionContext(request.getKey(), config.getContextId());
             } catch (GameAlgoException error) { log("session context recovery failed: " + error.getMessage()); }
         }
+    }
+
+    private Boolean oldUserState(String userId) throws GameAlgoException {
+        if (oldUserStates.containsKey(userId)) return oldUserStates.get(userId);
+        String key = oldUserStateKeyPrefix + userId;
+        String stored = cacheStorage == null ? null : cacheStorage.getItem(key);
+        Boolean value = "true".equals(stored) || "false".equals(stored) ? Boolean.valueOf(stored) : initialIsOldUser;
+        if (!"true".equals(stored) && !"false".equals(stored) && value != null && cacheStorage != null) cacheStorage.setItem(key, value.toString());
+        oldUserStates.put(userId, value);
+        return value;
     }
 
     private synchronized GameAlgoFetchConfigRequest requestWithResolvedUser(GameAlgoFetchConfigRequest request) throws GameAlgoException {
