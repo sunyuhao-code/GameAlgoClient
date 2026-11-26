@@ -1,6 +1,6 @@
 # GamePropel TapTap Maker / 小游戏 Lua SDK
 
-当前版本：`2.1.7-lua`。新增活跃会话本地 checkpoint 与冷启动 `crash_recovery` 补报，并增加 30s 首次 / 120s 周期前台保底 `session_end` 心跳快照（支持 `autoSessionHeartbeat = false` 关闭）；保留 `2.1.6-lua` 的 `isOldUser`、本地 `File` 分块持久化、广告与结束事件独立优先通道及命名空间相对 `require`。公开调用接口不变。
+当前版本：`2.1.8-lua`。加固活跃会话本地 checkpoint、冷启动 `crash_recovery` 与前景心跳状态机（确保替代事件先落盘再清旧检查点、按最大已覆盖时长判重、避免晚到配置重开已确认快照、心跳不抢占退出保留槽位、检查点写失败指数退避、以及持久化宿主上 `isOldUser` 首次写盘确认后再上报）。公开调用接口不变。
 
 GamePropel 原名 GameAlgo，现有 `GameAlgo*` API、模块名和安装路径继续兼容。
 

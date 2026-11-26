@@ -44,7 +44,7 @@ local MakerAutoStorage = requireSdkModule("MakerAutoStorage")
 local GameAlgo = {}
 local unpackArgs = table.unpack or unpack
 
-local SDK_VERSION = "2.1.7-lua"
+local SDK_VERSION = "2.1.8-lua"
 local DEFAULT_BASE_URL = "https://game-algo-sdk.dictapis.cn"
 local DEFAULT_FLUSH_INTERVAL_MS = 5000
 local DEFAULT_FLUSH_TIMEOUT_MS = 15000
@@ -61,6 +61,8 @@ local CONFIG_FETCH_TIMEOUT_MS = 12000
 local INIT_WATCHDOG_MS = 10000
 local SESSION_CHECKPOINT_MIN_FOREGROUND_MS = 5000
 local SESSION_CHECKPOINT_INTERVAL_MS = 15000
+local SESSION_CHECKPOINT_RETRY_BASE_MS = 2000
+local SESSION_CHECKPOINT_RETRY_MAX_MS = 30000
 local SESSION_HEARTBEAT_INITIAL_MS = 30000
 local SESSION_HEARTBEAT_INTERVAL_MS = 120000
 local TAPDB_CONTEXT_LINK_EVENT = "gamealgo_context_link"
@@ -87,6 +89,7 @@ local state_ = {
     isOldUser = nil,
     initialIsOldUser = nil,
     oldUserStateUserId = nil,
+    oldUserPendingWrite = false,
     accountUserId = nil,
     accountUserCreatedAt = nil,
     prefetchedMakerUserId = nil,
@@ -98,6 +101,14 @@ local state_ = {
     sessionCheckpointForegroundMs = 0,
     sessionCheckpointWritten = false,
     sessionCheckpointEnded = false,
+    sessionCheckpointFailures = 0,
+    sessionCheckpointNextRetryAtMs = nil,
+    sessionCoveredDurationMs = 0,
+    sessionAckedEndDurationMs = 0,
+    sessionAckedTerminalEnd = false,
+    pendingRecoveryCheckpoint = nil,
+    pendingRecoveryEventId = nil,
+    pendingCheckpointReconcile = false,
     sessionHeartbeatEnabled = true,
     sessionHeartbeatEmitted = false,
     sessionHeartbeatLastForegroundMs = 0,
@@ -401,6 +412,40 @@ local function resolveMakerUserId()
     return normalized
 end
 
+local function syncOldUserClassification()
+    if not state_.storageReady or not state_.userId or state_.userId == "" then return end
+    local oldUserKey = identityStorageKey("is_old_user:" .. state_.userId)
+    if state_.oldUserStateUserId ~= state_.userId then
+        state_.isOldUser = nil
+        state_.oldUserPendingWrite = false
+        state_.oldUserStateUserId = state_.userId
+    end
+    if state_.isOldUser ~= nil then return end
+    if not state_.oldUserPendingWrite then
+        local stored = storageGet(oldUserKey)
+        if stored == "true" or stored == "false" then
+            state_.isOldUser = stored == "true"
+            return
+        end
+    end
+    if state_.initialIsOldUser ~= nil then
+        -- On hosts with persistent storage, never send an unpersisted first-time
+        -- classification that could flip to the opposite value after a restart.
+        -- MakerAutoStorage keeps failed SetItem values in memory, so track
+        -- oldUserPendingWrite until SetItem actually commits to disk.
+        if not state_.persistentStorageAvailable then
+            state_.isOldUser = state_.initialIsOldUser
+            state_.oldUserPendingWrite = false
+        else
+            state_.oldUserPendingWrite = true
+            if storageSet(oldUserKey, tostring(state_.initialIsOldUser)) then
+                state_.isOldUser = state_.initialIsOldUser
+                state_.oldUserPendingWrite = false
+            end
+        end
+    end
+end
+
 local function ensureIdentity(explicitUserId, explicitUserCreatedAt, explicitUserCreatedLocalAt)
     if state_.userId then return end
     local legacyUser = storageGet(identityStorageKey("user_id"))
@@ -429,18 +474,7 @@ local function ensureIdentity(explicitUserId, explicitUserCreatedAt, explicitUse
         storageSet(key, { utc = state_.userCreatedAt, localTime = state_.userCreatedLocalAt })
     end
     storageSet(identityStorageKey("last_user_id"), state_.userId)
-    if state_.oldUserStateUserId ~= state_.userId then
-        local oldUserKey = identityStorageKey("is_old_user:" .. state_.userId)
-        local stored = storageGet(oldUserKey)
-        state_.isOldUser = nil
-        if stored == "true" or stored == "false" then
-            state_.isOldUser = stored == "true"
-        elseif state_.initialIsOldUser ~= nil then
-            state_.isOldUser = state_.initialIsOldUser
-            storageSet(oldUserKey, tostring(state_.isOldUser))
-        end
-        state_.oldUserStateUserId = state_.userId
-    end
+    syncOldUserClassification()
 end
 
 local function ensureAccountIdentity(explicitAccountUserId, explicitCreatedAt)
@@ -1141,8 +1175,17 @@ local function outstandingEventCount()
     return activeCount + #state_.queue
 end
 
-local function queueAdmissionError(eventType, count)
+local function queueAdmissionError(eventType, count, isHeartbeat)
     local maximum = state_.maxQueueSize
+    if isHeartbeat then
+        -- Always keep at least one exit slot free for explicit TrackSessionEnd / NewSession.
+        local heartbeatLimit = math.max(0, maximum - 1)
+        if count >= heartbeatLimit then
+            return "event queue is full for session_end heartbeat (limit="
+                .. tostring(heartbeatLimit) .. ", max=" .. tostring(maximum) .. ")"
+        end
+        return nil
+    end
     if count >= maximum then return "event queue is full (max=" .. tostring(maximum) .. ")" end
     -- Preserve a small exit slot even when ads fill the shared critical reserve.
     -- Tiny custom queues keep their existing capacity; default 500 reserves 8.
@@ -1157,11 +1200,37 @@ local function queueAdmissionError(eventType, count)
     return nil
 end
 
+local function evictQueuedHeartbeat()
+    for index, event in ipairs(state_.queue) do
+        local isHeartbeat = event.eventType == "session_end"
+            and type(event.payload) == "table"
+            and event.payload.reason == "heartbeat"
+        local inFlightEnd = state_.activeEndFlush and state_.activeEndFlush.event.eventId == event.eventId
+        if isHeartbeat and not inFlightEnd then
+            table.remove(state_.queue, index)
+            if event.contextId and event.contextId ~= "" then
+                state_.flushableEvents = math.max(0, state_.flushableEvents - 1)
+            end
+            if state_.pendingEndSnapshot and state_.pendingEndSnapshot.eventId == event.eventId then
+                state_.pendingEndSnapshot = nil
+            end
+            if state_.eventQueueStorage then
+                state_.eventQueueStorage:Remove({ event })
+                state_.queuePersistenceDirty = true
+            end
+            return true
+        end
+    end
+    return false
+end
+
 local function armAutoFlush()
     if state_.flushIntervalMs > 0 and not state_.nextAutoFlushAtMs then
         state_.nextAutoFlushAtMs = clockMs() + state_.flushIntervalMs
     end
 end
+
+local reconcileSessionCheckpointAfterPersist
 
 local function persistEventQueue()
     if not state_.eventQueueStorage then return true end
@@ -1186,7 +1255,11 @@ local function persistEventQueue()
     state_.queuePersistenceDirty = not (ok and persisted)
     state_.queueEventsSincePersist = 0
     state_.lastQueuePersistAtMs = clockMs()
-    return not state_.queuePersistenceDirty
+    local succeeded = not state_.queuePersistenceDirty
+    if succeeded and reconcileSessionCheckpointAfterPersist then
+        reconcileSessionCheckpointAfterPersist()
+    end
+    return succeeded
 end
 
 local function scheduleEventQueuePersistence()
@@ -1244,24 +1317,32 @@ local function sessionAttribution()
         sessionId = state_.sessionId, contextId = state_.contextId, isDebug = state_.isDebug }
 end
 
-local function makeEvent(owner, eventType, payload, timestamp, createdLocalAt)
+local function makeEvent(owner, eventType, payload, timestamp, createdLocalAt, explicitEventId)
     return {
-        eventId = randomId("ga_event"), contextId = owner.contextId or "", userId = owner.userId,
+        eventId = explicitEventId or randomId("ga_event"), contextId = owner.contextId or "", userId = owner.userId,
         accountUserId = owner.accountUserId, sessionId = owner.sessionId, isDebug = owner.isDebug,
         eventType = eventType, timestamp = timestamp or isoNow(), createdLocalAt = createdLocalAt or localIsoNow(),
         payload = payload,
     }
 end
 
-local function enqueueTrack(eventType, payload, timestamp, createdLocalAt, sessionEndSnapshot, owner, suppressEndPriority)
-    local admissionError = queueAdmissionError(eventType, outstandingEventCount())
+local function enqueueTrack(eventType, payload, timestamp, createdLocalAt, sessionEndSnapshot, owner, suppressEndPriority, options)
+    local isHeartbeat = type(options) == "table" and options.isHeartbeat == true
+    local allowEvictHeartbeat = type(options) == "table" and options.allowEvictHeartbeat == true
+    local explicitEventId = type(options) == "table" and options.eventId or nil
+    local admissionError = queueAdmissionError(eventType, outstandingEventCount(), isHeartbeat)
+    if admissionError and eventType == "session_end" and not isHeartbeat and allowEvictHeartbeat then
+        if evictQueuedHeartbeat() then
+            admissionError = queueAdmissionError(eventType, outstandingEventCount(), false)
+        end
+    end
     if admissionError then
         persistEventQueue()
-        return false, admissionError
+        return false, admissionError, nil
     end
     local payloadCopy, payloadError = preparePayload(payload)
-    if payloadError then return false, payloadError end
-    local event = makeEvent(owner or state_.sessionAttribution, eventType, payloadCopy, timestamp, createdLocalAt)
+    if payloadError then return false, payloadError, nil end
+    local event = makeEvent(owner or state_.sessionAttribution, eventType, payloadCopy, timestamp, createdLocalAt, explicitEventId)
     table.insert(state_.queue, event)
     if event.contextId and event.contextId ~= "" then
         state_.flushableEvents = state_.flushableEvents + 1
@@ -1273,72 +1354,264 @@ local function enqueueTrack(eventType, payload, timestamp, createdLocalAt, sessi
     if eventType == "session_end" and not suppressEndPriority then state_.pendingEndSnapshot = event end
     if eventType == "ad_view" then state_.pendingAdFlush = true end
     scheduleEventQueuePersistence()
-    return true, nil
+    return true, nil, event
 end
 
-local function hasQueuedSessionEnd(sessionId)
-    if not sessionId or sessionId == "" then return false end
+local function sanitizeDurationMs(value)
+    local durationMs = tonumber(value)
+    if not durationMs or durationMs ~= durationMs or durationMs < 0 or durationMs == math.huge then
+        return 0
+    end
+    return math.floor(durationMs)
+end
+
+local function sessionEndEventDurationMs(event)
+    if type(event) ~= "table" or type(event.payload) ~= "table" then return 0 end
+    return sanitizeDurationMs(event.payload.sessionDurationMs)
+end
+
+local function isSnapshotSessionEndEvent(event)
+    if type(event) ~= "table" or type(event.payload) ~= "table" then return false end
+    local reason = event.payload.reason
+    return reason == "heartbeat" or reason == "app_background" or reason == "crash_recovery"
+end
+
+local function maxSessionEndDurationInQueue(sessionId, contextId)
+    if not sessionId or sessionId == "" then return -1 end
+    local best = -1
+    local function inspect(list)
+        if type(list) ~= "table" then return end
+        for _, event in ipairs(list) do
+            if event.eventType == "session_end" and event.sessionId == sessionId
+                and (not contextId or contextId == "" or event.contextId == contextId) then
+                local dur = sessionEndEventDurationMs(event)
+                if dur > best then best = dur end
+            end
+        end
+    end
+    inspect(state_.queue)
+    if state_.activeFlush and state_.activeFlush.batch then
+        inspect(state_.activeFlush.batch)
+    end
+    return best
+end
+
+local function hasEventIdInQueue(eventId)
+    if not eventId or eventId == "" then return false end
     for _, event in ipairs(state_.queue) do
-        if event.eventType == "session_end" and event.sessionId == sessionId then return true end
+        if event.eventId == eventId then return true end
     end
     if state_.activeFlush and state_.activeFlush.batch then
         for _, event in ipairs(state_.activeFlush.batch) do
-            if event.eventType == "session_end" and event.sessionId == sessionId then return true end
+            if event.eventId == eventId then return true end
         end
     end
     return false
+end
+
+local function deterministicRecoveryEventId(sessionId, contextId, durationMs)
+    return "ga_event_rec_" .. Sha256.hex(
+        tostring(sessionId) .. "|" .. tostring(contextId) .. "|" .. tostring(sanitizeDurationMs(durationMs))
+    ):sub(1, 24)
 end
 
 local function currentSessionForegroundMs()
     return math.max(0, GameAlgo.GetForegroundTimeMs() - state_.sessionForegroundStartMs)
 end
 
-local function persistSessionCheckpoint(ended)
+local function persistSessionCheckpoint(ended, options)
     if not state_.storageReady or not state_.persistentStorageAvailable then return false end
     if not state_.sessionId or state_.sessionId == "" or not state_.userId or state_.userId == "" then return false end
     if not state_.contextId or state_.contextId == "" then return false end
-    local durationMs = currentSessionForegroundMs()
-    if ended and not state_.sessionCheckpointWritten then
-        state_.sessionCheckpointEnded = true
-        return true
+    -- Never clobber an unrecovered previous session's checkpoint on disk.
+    if state_.pendingRecoveryCheckpoint ~= nil then return false end
+
+    local key = sessionCheckpointStorageKey()
+    local durationMs = options and options.durationMs ~= nil and sanitizeDurationMs(options.durationMs)
+        or currentSessionForegroundMs()
+    local coveredMs = math.max(
+        state_.sessionCoveredDurationMs or 0,
+        state_.sessionAckedEndDurationMs or 0,
+        options and options.coveredDurationMs ~= nil and sanitizeDurationMs(options.coveredDurationMs) or 0
+    )
+
+    if ended then
+        if not state_.sessionCheckpointWritten then
+            local existing = storageGet(key)
+            if type(existing) ~= "table" or existing.ended == true or existing.sessionId ~= state_.sessionId then
+                state_.sessionCheckpointEnded = true
+                if coveredMs > state_.sessionCoveredDurationMs then
+                    state_.sessionCoveredDurationMs = coveredMs
+                end
+                return true
+            end
+            durationMs = math.max(durationMs, sanitizeDurationMs(existing.sessionDurationMs))
+        else
+            durationMs = math.max(durationMs, state_.sessionCheckpointForegroundMs)
+        end
+    else
+        if durationMs < SESSION_CHECKPOINT_MIN_FOREGROUND_MS then return false end
+        if state_.sessionHasEnd or state_.sessionAckedTerminalEnd then return false end
+        if durationMs <= coveredMs then return false end
+        if not state_.sessionCheckpointWritten then
+            local existing = storageGet(key)
+            if type(existing) == "table" and existing.ended ~= true
+                and existing.sessionId == state_.sessionId
+                and sanitizeDurationMs(existing.sessionDurationMs) > durationMs then
+                return false
+            end
+        end
     end
-    if not ended and durationMs < SESSION_CHECKPOINT_MIN_FOREGROUND_MS then return false end
-    local persisted = storageSet(sessionCheckpointStorageKey(), {
+
+    local persisted = storageSet(key, {
         sessionId = state_.sessionId,
         contextId = state_.contextId,
         userId = state_.userId,
         accountUserId = state_.accountUserId,
         isDebug = state_.isDebug == true,
         sessionDurationMs = durationMs,
+        coveredDurationMs = coveredMs,
+        recoveryEventId = deterministicRecoveryEventId(state_.sessionId, state_.contextId, durationMs),
         timestamp = isoNow(),
         createdLocalAt = localIsoNow(),
         ended = ended == true,
     })
     if persisted then
-        state_.sessionCheckpointForegroundMs = durationMs
+        state_.sessionCheckpointForegroundMs = math.max(state_.sessionCheckpointForegroundMs, durationMs)
         state_.sessionCheckpointWritten = true
         state_.sessionCheckpointEnded = ended == true
+        state_.sessionCheckpointFailures = 0
+        state_.sessionCheckpointNextRetryAtMs = nil
+        if coveredMs > state_.sessionCoveredDurationMs then
+            state_.sessionCoveredDurationMs = coveredMs
+        end
+    else
+        state_.sessionCheckpointFailures = state_.sessionCheckpointFailures + 1
+        local retryDelay = math.min(
+            SESSION_CHECKPOINT_RETRY_MAX_MS,
+            SESSION_CHECKPOINT_RETRY_BASE_MS * (2 ^ math.min(4, state_.sessionCheckpointFailures - 1))
+        )
+        state_.sessionCheckpointNextRetryAtMs = clockMs() + retryDelay
     end
     return persisted
+end
+
+local function finalizeSessionEndCheckpoint(event, isTerminal, durationMs, persistNow)
+    local dur = sanitizeDurationMs(durationMs ~= nil and durationMs or sessionEndEventDurationMs(event))
+    local queuePersisted
+    if persistNow then
+        queuePersisted = persistEventQueue()
+    else
+        queuePersisted = not state_.queuePersistenceDirty
+    end
+    if not queuePersisted then
+        -- Replacement event is not durably on disk yet; keep any existing checkpoint alive
+        -- until the queue commits (Flush / save interval) or HTTP acknowledges the event.
+        state_.pendingCheckpointReconcile = true
+        return false
+    end
+    if dur > state_.sessionCoveredDurationMs then
+        state_.sessionCoveredDurationMs = dur
+    end
+    local currentDur = currentSessionForegroundMs()
+    local targetDur = math.max(dur, currentDur)
+    if isTerminal then
+        if not persistSessionCheckpoint(true, { durationMs = targetDur, coveredDurationMs = targetDur }) then
+            state_.pendingCheckpointReconcile = true
+        end
+    elseif dur >= math.max(currentDur, state_.sessionCheckpointForegroundMs) then
+        if not persistSessionCheckpoint(true, { durationMs = dur, coveredDurationMs = dur }) then
+            state_.pendingCheckpointReconcile = true
+        end
+    end
+    return true
+end
+
+local function onSessionEndAcknowledged(event)
+    if type(event) ~= "table" or event.eventType ~= "session_end" then return end
+    if event.sessionId == state_.sessionId
+        and (not state_.contextId or state_.contextId == "" or event.contextId == state_.contextId) then
+        local dur = sessionEndEventDurationMs(event)
+        if dur > state_.sessionAckedEndDurationMs then
+            state_.sessionAckedEndDurationMs = dur
+        end
+        if dur > state_.sessionCoveredDurationMs then
+            state_.sessionCoveredDurationMs = dur
+        end
+        if not isSnapshotSessionEndEvent(event) then
+            state_.sessionAckedTerminalEnd = true
+            state_.sessionHasEnd = true
+            local targetDur = math.max(dur, currentSessionForegroundMs())
+            if not persistSessionCheckpoint(true, { durationMs = targetDur, coveredDurationMs = targetDur }) then
+                state_.pendingCheckpointReconcile = true
+            end
+        elseif dur >= math.max(currentSessionForegroundMs(), state_.sessionCheckpointForegroundMs) then
+            if not persistSessionCheckpoint(true, { durationMs = dur, coveredDurationMs = dur }) then
+                state_.pendingCheckpointReconcile = true
+            end
+        end
+    end
+    if state_.pendingRecoveryCheckpoint ~= nil
+        and state_.pendingRecoveryEventId ~= nil
+        and event.eventId == state_.pendingRecoveryEventId then
+        if storageSet(sessionCheckpointStorageKey(), nil) then
+            state_.pendingRecoveryCheckpoint = nil
+            state_.pendingRecoveryEventId = nil
+        end
+    end
 end
 
 local function recoverUnendedSessionCheckpoint()
     if not state_.storageReady or not state_.persistentStorageAvailable then return end
     local key = sessionCheckpointStorageKey()
     local checkpoint = storageGet(key)
-    if type(checkpoint) ~= "table" then return end
+    if type(checkpoint) ~= "table" then
+        state_.pendingRecoveryCheckpoint = nil
+        state_.pendingRecoveryEventId = nil
+        return
+    end
     local previousSessionId = type(checkpoint.sessionId) == "string" and checkpoint.sessionId or ""
-    if previousSessionId == "" or previousSessionId == state_.sessionId then return end
-    storageSet(key, nil)
-    if checkpoint.ended == true then return end
     local previousContextId = type(checkpoint.contextId) == "string" and checkpoint.contextId or ""
     local previousUserId = type(checkpoint.userId) == "string" and checkpoint.userId or ""
-    if previousContextId == "" or previousUserId == "" then return end
-    if hasQueuedSessionEnd(previousSessionId) then return end
-    local durationMs = tonumber(checkpoint.sessionDurationMs)
-    if not durationMs or durationMs ~= durationMs or durationMs < 0 or durationMs == math.huge then
-        durationMs = 0
+    if previousSessionId == "" or previousContextId == "" or previousUserId == "" then
+        storageSet(key, nil)
+        state_.pendingRecoveryCheckpoint = nil
+        state_.pendingRecoveryEventId = nil
+        return
     end
+    local durationMs = sanitizeDurationMs(checkpoint.sessionDurationMs)
+    local coveredMs = sanitizeDurationMs(checkpoint.coveredDurationMs)
+    if checkpoint.ended == true and (checkpoint.coveredDurationMs == nil or coveredMs >= durationMs) then
+        storageSet(key, nil)
+        state_.pendingRecoveryCheckpoint = nil
+        state_.pendingRecoveryEventId = nil
+        return
+    end
+
+    local recoveryEventId = type(checkpoint.recoveryEventId) == "string" and checkpoint.recoveryEventId ~= ""
+        and checkpoint.recoveryEventId
+        or deterministicRecoveryEventId(previousSessionId, previousContextId, durationMs)
+
+    local maxQueued = maxSessionEndDurationInQueue(previousSessionId, previousContextId)
+    if maxQueued >= durationMs or hasEventIdInQueue(recoveryEventId) then
+        -- Replacement event is already durably present in the queue (or recovered on an earlier pass).
+        if not state_.queuePersistenceDirty or persistEventQueue() then
+            if storageSet(key, nil) then
+                state_.pendingRecoveryCheckpoint = nil
+                state_.pendingRecoveryEventId = nil
+            else
+                state_.pendingRecoveryCheckpoint = checkpoint
+                state_.pendingRecoveryEventId = recoveryEventId
+            end
+        else
+            state_.pendingRecoveryCheckpoint = checkpoint
+            state_.pendingRecoveryEventId = recoveryEventId
+        end
+        return
+    end
+
+    state_.pendingRecoveryCheckpoint = checkpoint
+    state_.pendingRecoveryEventId = recoveryEventId
     local owner = {
         queueKey = queueStorageKey(),
         userId = previousUserId,
@@ -1351,11 +1624,52 @@ local function recoverUnendedSessionCheckpoint()
     local createdLocalAt = type(checkpoint.createdLocalAt) == "string" and checkpoint.createdLocalAt ~= "" and checkpoint.createdLocalAt or localIsoNow()
     local ok = enqueueTrack("session_end", {
         reason = "crash_recovery",
-        sessionDurationMs = math.floor(durationMs),
-    }, timestamp, createdLocalAt, true, owner, true)
-    if ok then
-        persistEventQueue()
+        sessionDurationMs = durationMs,
+    }, timestamp, createdLocalAt, true, owner, true, {
+        eventId = recoveryEventId,
+        allowEvictHeartbeat = true,
+    })
+    if not ok then
+        -- Queue is full; keep checkpoint on disk until space frees up or next cold start.
+        return
+    end
+    if persistEventQueue() then
+        if storageSet(key, nil) then
+            state_.pendingRecoveryCheckpoint = nil
+            state_.pendingRecoveryEventId = nil
+        end
         log("recovered unended session_end for previous session: " .. previousSessionId)
+    end
+end
+
+reconcileSessionCheckpointAfterPersist = function()
+    if not state_.storageReady or not state_.persistentStorageAvailable then return end
+    if state_.pendingRecoveryCheckpoint ~= nil and state_.pendingRecoveryEventId ~= nil then
+        if hasEventIdInQueue(state_.pendingRecoveryEventId) then
+            if storageSet(sessionCheckpointStorageKey(), nil) then
+                state_.pendingRecoveryCheckpoint = nil
+                state_.pendingRecoveryEventId = nil
+            end
+        end
+    end
+    if state_.pendingCheckpointReconcile and state_.pendingRecoveryCheckpoint == nil then
+        local maxQueued = maxSessionEndDurationInQueue(state_.sessionId, state_.contextId)
+        local bestCovered = math.max(state_.sessionCoveredDurationMs, state_.sessionAckedEndDurationMs, maxQueued)
+        if bestCovered > state_.sessionCoveredDurationMs then
+            state_.sessionCoveredDurationMs = bestCovered
+        end
+        local currentDur = currentSessionForegroundMs()
+        if state_.sessionHasEnd or state_.sessionAckedTerminalEnd then
+            if persistSessionCheckpoint(true, { durationMs = math.max(currentDur, bestCovered), coveredDurationMs = math.max(currentDur, bestCovered) }) then
+                state_.pendingCheckpointReconcile = false
+            end
+        elseif bestCovered >= math.max(currentDur, state_.sessionCheckpointForegroundMs) and bestCovered > 0 then
+            if persistSessionCheckpoint(true, { durationMs = bestCovered, coveredDurationMs = bestCovered }) then
+                state_.pendingCheckpointReconcile = false
+            end
+        else
+            state_.pendingCheckpointReconcile = false
+        end
     end
 end
 
@@ -1369,20 +1683,23 @@ local function updateSessionCheckpointAndHeartbeat()
         local heartbeatDue = (not state_.sessionHeartbeatEmitted and durationMs >= SESSION_HEARTBEAT_INITIAL_MS)
             or (state_.sessionHeartbeatEmitted and durationMs - state_.sessionHeartbeatLastForegroundMs >= SESSION_HEARTBEAT_INTERVAL_MS)
         if heartbeatDue then
-            local tracked = enqueueTrack("session_end", {
+            local tracked, _, event = enqueueTrack("session_end", {
                 reason = "heartbeat",
                 sessionDurationMs = durationMs,
-            }, nil, nil, true, nil, true)
+            }, nil, nil, true, nil, true, { isHeartbeat = true })
             if tracked then
                 state_.sessionHeartbeatEmitted = true
                 state_.sessionHeartbeatLastForegroundMs = durationMs
-                persistSessionCheckpoint(true)
+                finalizeSessionEndCheckpoint(event, false, durationMs, true)
                 return
             end
         end
     end
 
     if state_.persistentStorageAvailable
+        and state_.pendingRecoveryCheckpoint == nil
+        and durationMs > state_.sessionCoveredDurationMs
+        and (not state_.sessionCheckpointNextRetryAtMs or clockMs() >= state_.sessionCheckpointNextRetryAtMs)
         and (state_.sessionCheckpointForegroundMs == 0
             or durationMs - state_.sessionCheckpointForegroundMs >= SESSION_CHECKPOINT_INTERVAL_MS) then
         persistSessionCheckpoint(false)
@@ -1443,15 +1760,18 @@ local function handleLifecycleSessionEnd(eventName, reason)
     -- Backgrounding includes fullscreen ads in Maker. This is an end snapshot,
     -- not a session rotation or an explicit terminal end. Later backgrounds and
     -- NewSession must still be able to report a newer duration for this session.
-    local tracked, error = enqueueTrack("session_end", payload, nil, nil, true)
+    local tracked, error, event = enqueueTrack("session_end", payload, nil, nil, true, nil, false, {
+        allowEvictHeartbeat = true,
+    })
     if not tracked then log("lifecycle session_end not queued: " .. tostring(error)) end
     if tracked then
         state_.backgroundWillSnapshotPending = eventName == "AppWillEnterBackground"
         state_.sessionHeartbeatEmitted = true
         state_.sessionHeartbeatLastForegroundMs = payload.sessionDurationMs
-        persistSessionCheckpoint(true)
+        finalizeSessionEndCheckpoint(event, false, payload.sessionDurationMs, true)
+    else
+        persistEventQueue()
     end
-    persistEventQueue()
     flushAutomaticStorage()
     GameAlgo.Flush(nil)
 end
@@ -1611,6 +1931,28 @@ function GameAlgo.Init(options)
         if options[name] ~= nil and type(options[name]) ~= "string" then error(name .. " must be a string") end
     end
 
+    -- Close an active in-process session cleanly with its live foreground duration
+    -- before reinitializing, so re-Init is not misclassified as a crash recovery.
+    local nextSessionId = options.sessionId or randomId("ga_session")
+    if state_.storageReady and state_.initializationComplete
+        and state_.sessionId and state_.sessionId ~= ""
+        and not state_.sessionHasEnd
+        and state_.contextId and state_.contextId ~= "" then
+        local previousDurationMs = currentSessionForegroundMs()
+        local alreadyCoveredMs = math.max(state_.sessionCoveredDurationMs or 0, state_.sessionAckedEndDurationMs or 0)
+        if previousDurationMs > alreadyCoveredMs then
+            local closed, _, closeEvent = enqueueTrack("session_end", {
+                reason = "reinit",
+                sessionDurationMs = previousDurationMs,
+            }, nil, nil, false, state_.sessionAttribution, true, {
+                allowEvictHeartbeat = true,
+            })
+            if closed then
+                finalizeSessionEndCheckpoint(closeEvent, true, previousDurationMs, true)
+            end
+        end
+    end
+
     -- Chunks own both queued and in-flight events. Commit their complete index
     -- before retiring any HTTP handles or opening the next storage snapshot.
     if not persistEventQueue() or not flushAutomaticStorage() then
@@ -1668,7 +2010,7 @@ function GameAlgo.Init(options)
     state_.flushTimeoutMs = timeout
     state_.clock = type(options.nowMs) == "function" and options.nowMs or nowMs
     state_.preloadConfigFiles = options.preloadConfigFiles ~= false
-    state_.sessionId = options.sessionId or randomId("ga_session")
+    state_.sessionId = nextSessionId
     state_.sessionStartMs = clockMs()
     state_.foregroundTimeMs = 0
     state_.sessionForegroundStartMs = 0
@@ -1676,6 +2018,14 @@ function GameAlgo.Init(options)
     state_.sessionCheckpointForegroundMs = 0
     state_.sessionCheckpointWritten = false
     state_.sessionCheckpointEnded = false
+    state_.sessionCheckpointFailures = 0
+    state_.sessionCheckpointNextRetryAtMs = nil
+    state_.sessionCoveredDurationMs = 0
+    state_.sessionAckedEndDurationMs = 0
+    state_.sessionAckedTerminalEnd = false
+    state_.pendingRecoveryCheckpoint = nil
+    state_.pendingRecoveryEventId = nil
+    state_.pendingCheckpointReconcile = false
     state_.sessionHeartbeatEnabled = options.autoSessionHeartbeat ~= false
     state_.sessionHeartbeatEmitted = false
     state_.sessionHeartbeatLastForegroundMs = 0
@@ -1683,6 +2033,7 @@ function GameAlgo.Init(options)
     state_.isOldUser = nil
     state_.initialIsOldUser = options.isOldUser
     state_.oldUserStateUserId = nil
+    state_.oldUserPendingWrite = false
     state_.userCreatedAt = nil
     state_.userCreatedLocalAt = nil
     state_.accountUserId = nil
@@ -1856,6 +2207,7 @@ local function deviceContext()
 end
 
 local function configRequestBody()
+    syncOldUserClassification()
     return {
         userId = state_.userId,
         userCreatedAt = state_.userCreatedAt,
@@ -1974,9 +2326,23 @@ performConfigFetchAttempt = function()
         mergeOrdinaryEventCountBucket("pending:" .. tostring(requestBody.sessionId), "context:" .. contextId)
         bindQueuedEvents(contextId, requestBody, current)
         if current then
-            if state_.sessionHasEnd or hasQueuedSessionEnd(state_.sessionId) then
-                persistSessionCheckpoint(true)
-            else
+            local durationMs = currentSessionForegroundMs()
+            local maxQueued = state_.queuePersistenceDirty and -1
+                or maxSessionEndDurationInQueue(state_.sessionId, contextId)
+            local maxCovered = math.max(
+                state_.sessionCoveredDurationMs or 0,
+                state_.sessionAckedEndDurationMs or 0,
+                maxQueued
+            )
+            if maxCovered > state_.sessionCoveredDurationMs then
+                state_.sessionCoveredDurationMs = maxCovered
+            end
+            if state_.sessionHasEnd or state_.sessionAckedTerminalEnd then
+                if maxCovered > 0 or state_.sessionAckedTerminalEnd then
+                    local targetDur = math.max(durationMs, maxCovered)
+                    persistSessionCheckpoint(true, { durationMs = targetDur, coveredDurationMs = targetDur })
+                end
+            elseif durationMs > maxCovered then
                 persistSessionCheckpoint(false)
             end
         end
@@ -2260,10 +2626,16 @@ function GameAlgo.Track(eventType, payload)
         return false, quotaError
     end
     consumeOrdinaryEventQuota(eventType, true)
-    local tracked, trackError = enqueueTrack(eventType, prepared, nil, nil)
+    local tracked, trackError, trackedEvent = enqueueTrack(eventType, prepared, nil, nil, false, nil, false,
+        eventType == "session_end" and { allowEvictHeartbeat = true } or nil)
     if not tracked then
         log("event rejected: " .. tostring(eventType) .. " " .. tostring(trackError))
         return false, trackError
+    end
+    if eventType == "session_end" then
+        state_.sessionHeartbeatEmitted = true
+        state_.sessionHeartbeatLastForegroundMs = currentSessionForegroundMs()
+        finalizeSessionEndCheckpoint(trackedEvent, true, sessionEndEventDurationMs(trackedEvent), false)
     end
     if key then
         rememberMilestone(key, durable)
@@ -2490,13 +2862,7 @@ function GameAlgo.TrackSessionEnd(payload)
     if merged.sessionDurationMs == nil and state_.sessionStartMs then
         merged.sessionDurationMs = GameAlgo.GetForegroundTimeMs() - state_.sessionForegroundStartMs
     end
-    local ok, err = GameAlgo.Track("session_end", merged)
-    if ok then
-        state_.sessionHeartbeatEmitted = true
-        state_.sessionHeartbeatLastForegroundMs = currentSessionForegroundMs()
-        persistSessionCheckpoint(true)
-    end
-    return ok, err
+    return GameAlgo.Track("session_end", merged)
 end
 
 local function hasFlushableEvents()
@@ -2626,6 +2992,7 @@ local function finishEndFlush(active, error, result, localOnly)
             -- The durable queue still owns this event. Its normal flush can
             -- reuse the existing routing receipt instead of sending it again.
             rememberDirectEvents({ active.event })
+            onSessionEndAcknowledged(active.event)
         end
     end
     if error then log("session end immediate send failed; durable retry retained: " .. tostring(error))
@@ -2773,6 +3140,14 @@ local function finishActiveFlush(lifecycleGeneration, sequence, error, result, l
     end
     state_.queuePersistenceDirty = true
     persistEventQueue()
+    if accepted > 0 then
+        for _, event in ipairs(active.batch) do
+            onSessionEndAcknowledged(event)
+        end
+    end
+    if state_.pendingRecoveryCheckpoint ~= nil then
+        recoverUnendedSessionCheckpoint()
+    end
     flushAutomaticStorage()
     log("flush ok: accepted=" .. tostring(accepted) .. ", rejected=" .. tostring(#rejected)
         .. ", skipped=" .. tostring(skipped or 0) .. ", notAccepted=" .. tostring(#active.batch - accepted - (skipped or 0)))
@@ -2950,17 +3325,22 @@ function GameAlgo.NewSession(sessionId, callback)
         return nil, "storage not ready"
     end
     local endedAt = clockMs()
+    local previousDurationMs = GameAlgo.GetForegroundTimeMs() - state_.sessionForegroundStartMs
     if not state_.sessionHasEnd then
-        local accepted, error = enqueueTrack("session_end", {
+        local accepted, error, endEvent = enqueueTrack("session_end", {
             reason = "new_session",
-            sessionDurationMs = GameAlgo.GetForegroundTimeMs() - state_.sessionForegroundStartMs,
+            sessionDurationMs = previousDurationMs,
+        }, nil, nil, false, nil, false, {
+            allowEvictHeartbeat = true,
         })
         if not accepted then
             safeCallback(callback, error, nil)
             return nil, error
         end
+        finalizeSessionEndCheckpoint(endEvent, true, previousDurationMs, true)
+    elseif persistEventQueue() then
+        persistSessionCheckpoint(true, { durationMs = previousDurationMs, coveredDurationMs = previousDurationMs })
     end
-    persistSessionCheckpoint(true)
     state_.ordinaryEventCounts["pending:" .. tostring(previousSessionId)] = nil
     state_.sessionId = nextSessionId
     state_.backgroundWillSnapshotPending = false
@@ -2968,6 +3348,12 @@ function GameAlgo.NewSession(sessionId, callback)
     state_.sessionCheckpointForegroundMs = 0
     state_.sessionCheckpointWritten = false
     state_.sessionCheckpointEnded = false
+    state_.sessionCheckpointFailures = 0
+    state_.sessionCheckpointNextRetryAtMs = nil
+    state_.sessionCoveredDurationMs = 0
+    state_.sessionAckedEndDurationMs = 0
+    state_.sessionAckedTerminalEnd = false
+    state_.pendingCheckpointReconcile = false
     state_.sessionHeartbeatEmitted = false
     state_.sessionHeartbeatLastForegroundMs = 0
     state_.eventGuardDiagnosticKeys = {}
