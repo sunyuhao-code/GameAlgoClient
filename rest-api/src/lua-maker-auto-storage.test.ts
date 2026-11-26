@@ -22,7 +22,7 @@ test("Lua SDK owns Maker persistence and rejects caller-provided storage", async
   assert.doesNotMatch(example, /storage\s*=/);
 });
 
-test("Maker automatic storage uses normal Maker global lookup and hydrates before SDK startup", async () => {
+test("Maker automatic storage uses local File persistence before SDK startup", async () => {
   const [gameAlgo, storage] = await Promise.all([
     readFile(gameAlgoUrl, "utf8"),
     readFile(storageUrl, "utf8"),
@@ -32,18 +32,23 @@ test("Maker automatic storage uses normal Maker global lookup and hydrates befor
   assert.match(storage, /local function makerGlobal\(read\)\s+local ok, value = pcall\(read\)/s);
   assert.match(storage, /makerGlobal\(function\(\) return File end\)/);
   assert.match(storage, /makerGlobal\(function\(\) return fileSystem end\)/);
-  assert.match(storage, /fileApi\.fileSystem:FileExists\(name\)/);
-  assert.match(storage, /if not existsOk or not exists then return nil end/);
-  assert.match(storage, /makerGlobal\(function\(\) return clientCloud end\)/);
-  assert.match(storage, /cloud:Get\(CLOUD_KEY/);
-  assert.match(storage, /DEFAULT_CLOUD_READ_TIMEOUT_MS = 5000/);
+  assert.match(storage, /fs:FileExists\(name\)/);
+  assert.match(storage, /if existsOk and exists == false then return nil end/);
+  assert.doesNotMatch(storage, /clientCloud/);
+  assert.doesNotMatch(storage, /cloudDirectory|CloudJobs|loadCloud/);
   assert.match(storage, /eventObject:SubscribeToEvent\("Update"/);
-  assert.match(storage, /automatic storage cloud read timed out after/);
-  assert.match(storage, /file:ReadString\(\)/);
+  assert.match(storage, /automatic storage ready: /);
+  assert.match(storage, /persistentStorageAvailable/);
+  assert.match(storage, /event_chunks_v1/);
+  assert.match(storage, /legacy JSONL/);
+  assert.match(storage, /reader:ReadString\(\)/);
   assert.match(storage, /file:WriteString\(encoded\)/);
-  assert.match(gameAlgo, /storage:OnReady\(function\(\) completeInitialization\(options\) end\)/);
+  assert.match(storage, /readLocalFile\(fileApi, name, #encoded \+ 1\) == encoded/);
+  assert.match(gameAlgo, /local initGeneration = state_\.lifecycleGeneration/);
+  assert.match(gameAlgo, /storage:OnReady\(function\(\)[\s\S]*?completeInitialization\(options\)/);
+  assert.match(gameAlgo, /stale storage ready callback ignored/);
   assert.match(gameAlgo, /if not state_\.storageReady then[\s\S]*?table\.insert\(state_\.pendingTracks/s);
-  assert.match(gameAlgo, /if actual or not state_\.storageReady then return end/);
+  assert.match(gameAlgo, /if generation ~= state_\.lifecycleGeneration or actual or not state_\.storageReady then return end/);
   assert.match(gameAlgo, /CONFIG_FETCH_RETRY_BASE_MS = 1000/);
   assert.match(gameAlgo, /CONFIG_FETCH_RETRY_MAX_MS = 30000/);
   assert.match(gameAlgo, /CONFIG_FETCH_TIMEOUT_MS = 12000/);

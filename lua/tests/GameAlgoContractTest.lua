@@ -388,22 +388,13 @@ FILE_READ = nil
 FILE_WRITE = nil
 
 local initOrder = {}
-local initCloudCallbacks = nil
 lobby = {
     GetMyUserId = function()
         table.insert(initOrder, "maker_user_id")
-        return "maker-account-before-cloud"
+        return "maker-account-local"
     end,
 }
-clientCloud = {
-    Get = function(_, _, callbacks)
-        table.insert(initOrder, "cloud_get")
-        initCloudCallbacks = callbacks
-    end,
-    Set = function(_, _, _, callbacks)
-        if callbacks and callbacks.ok then callbacks.ok() end
-    end,
-}
+clientCloud = nil
 
 local initTasks = {}
 local initScheduler = {}
@@ -457,42 +448,37 @@ GameAlgo.Init({
     transport = initTransport,
     preloadConfigFiles = false,
     _scheduler = initScheduler,
-    _cloudReadTimeoutMs = 5000,
 })
 assert(initOrder[1] == "maker_user_id")
-assert(initOrder[2] == "cloud_get")
-assert(type(initCloudCallbacks) == "table")
-assert(#initTasks == 2)
-assert(initTasks[1].delayMs == 5000)
-assert(initTasks[2].delayMs == 10000)
-
-initTasks[1].callback()
+assert(GameAlgo.Snapshot().storage.ready)
 assert(initConfigRequests == 1)
 assert(#initDiagnostics == 0)
-assert(#initTasks == 3 and initTasks[3].delayMs == 1000)
-initTasks[3].callback()
+assert(#initTasks == 2)
+assert(initTasks[1].delayMs == 10000)
+assert(initTasks[2].delayMs == 1000)
+initTasks[2].callback()
 assert(initConfigRequests == 2)
-assert(#initTasks == 4 and initTasks[4].delayMs == 2000)
-initTasks[4].callback()
+assert(#initTasks == 3 and initTasks[3].delayMs == 2000)
+initTasks[3].callback()
 assert(initConfigRequests == 3)
 assert(#initDiagnostics == 0)
-assert(#initTasks == 5 and initTasks[5].delayMs == 4000)
+assert(#initTasks == 4 and initTasks[4].delayMs == 4000)
 
-initTasks[2].callback()
+initTasks[1].callback()
 assert(#initDiagnostics == 1)
-assert(initDiagnostics[1].accountUserId == "maker-account-before-cloud")
+assert(initDiagnostics[1].accountUserId == "maker-account-local")
 assert(initDiagnostics[1].contextId == nil)
 assert(initDiagnostics[1].stage == "config")
 assert(initDiagnostics[1].status == "failed")
 assert(initDiagnostics[1].reasonCode == "initialization_timeout")
-initTasks[2].callback()
+initTasks[1].callback()
 assert(#initDiagnostics == 1)
 
 initConfigShouldFail = false
 local recoveredError = "not-called"
 GameAlgo.FetchConfig(function(error) recoveredError = error end)
 assert(recoveredError == "not-called")
-initTasks[5].callback()
+initTasks[4].callback()
 assert(recoveredError == nil)
 assert(#initDiagnostics == 1)
 
@@ -576,57 +562,21 @@ assert(guardedCallbackCount == 1)
 assert(guardedError == nil)
 assert(guardedConfig.contextId == "ctx-after-timeout-and-invalid-response")
 
-local cloudCallbacks = nil
-clientCloud = {
-    Get = function(_, _, callbacks)
-        cloudCallbacks = callbacks
-    end,
-    Set = function(_, _, _, callbacks)
-        if callbacks and callbacks.ok then callbacks.ok() end
-    end,
-}
-
-local timeoutTasks = {}
-local timeoutScheduler = {}
-function timeoutScheduler:Schedule(delayMs, callback)
-    local handle = { delayMs = delayMs, callback = callback }
-    table.insert(timeoutTasks, handle)
-    return handle
-end
-function timeoutScheduler:Cancel(handle)
-    handle.cancelled = true
-end
-function timeoutScheduler:IsAutomatic()
-    return true
-end
-
+-- Local initialization needs neither a cloud callback nor a timeout task.
 local MakerAutoStorage = require("MakerAutoStorage")
-local timeoutStorage = assert(MakerAutoStorage.New({ scheduler = timeoutScheduler }))
-local timeoutReadyCount = 0
-timeoutStorage:OnReady(function() timeoutReadyCount = timeoutReadyCount + 1 end)
-assert(timeoutStorage:IsReady() == false)
-assert(type(cloudCallbacks) == "table")
-assert(#timeoutTasks == 1)
-assert(timeoutTasks[1].delayMs == 5000)
-timeoutTasks[1].callback()
-assert(timeoutStorage:IsReady() == true)
-assert(timeoutReadyCount == 1)
-
-cloudCallbacks.ok({
-    gamealgo_sdk_storage_v1 = {
-        schemaVersion = 1,
-        revision = 1,
-        data = { late_cloud_value = "must-not-overwrite-live-state" },
-    },
-})
-assert(timeoutStorage:GetItem("late_cloud_value") == nil)
-assert(timeoutReadyCount == 1)
+local storage = assert(MakerAutoStorage.New({ scheduler = {
+    Schedule = function() error("local storage must not schedule hydration") end,
+} }))
+local readyCount = 0
+storage:OnReady(function() readyCount = readyCount + 1 end)
+assert(storage:IsReady() and readyCount == 1)
+assert(not storage:Diagnostics().persistentStorageAvailable)
+assert(storage:SetItem("memory-value", "retained") == false)
+assert(storage:GetItem("memory-value") == "retained")
 
 -- The iPhone probe reports iOS correctly but GetOSVersion returns a Darwin
 -- description. Only recognized platform names should be collected by default.
 local previousNativePlatform, previousPlatform, previousOSVersion = GetNativePlatform, GetPlatform, GetOSVersion
-local previousCloud = clientCloud
-clientCloud = nil
 local osVersionCalls = 0
 GetOSVersion = function() osVersionCalls = osVersionCalls + 1; return "macOS/Mac OS X Unknown (Darwin kernel 25.5.0)" end
 local deviceCases = {
@@ -669,7 +619,6 @@ for index, case in ipairs(deviceCases) do
 end
 assert(osVersionCalls == 0, "the unreliable Maker version API must not be called")
 GetNativePlatform, GetPlatform, GetOSVersion = previousNativePlatform, previousPlatform, previousOSVersion
-clientCloud = previousCloud
 
 local schedulerNowMs = 1000
 local schedulerUpdateHandler = nil

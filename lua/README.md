@@ -15,7 +15,13 @@ TapTap Maker 客户端支持直接访问 GameAlgo HTTPS API。接入时把以下
 
 `client_main.lua` 是可直接参考的初始化示例。
 
-新接入推荐将六个模块一起放在 `scripts/sdk/`，入口写 `require("sdk.GameAlgo")`。Maker 的 `scripts/` 是脚本资源根，模块路径不带 `scripts.` 前缀。SDK 内部先尝试 `sdk.<模块名>`，再尝试根模块名；已有把文件直接放在 `scripts/`、使用 `require("GameAlgo")` 的项目可以保留原约定。
+新接入推荐将六个模块一起放在 `scripts/sdk/`，入口写 `require("sdk.GameAlgo")`。Maker 的 `scripts/` 是脚本资源根，模块路径不带 `scripts.` 前缀。SDK 内部先按入口命名空间加载同目录模块，再尝试 `sdk.<模块名>` 和根模块名；已有把文件直接放在 `scripts/`、使用 `require("GameAlgo")` 的项目可以保留原约定。
+
+SDK 内部模块会优先按照入口模块的命名空间加载同目录依赖。例如通过
+`require("sdk.GameAlgo")` 加载时使用 `sdk.HttpTransport`；宿主将 SDK 放在其他独立命名空间时，内部模块会跟随该命名空间，避免把项目旧副本混入当前 SDK。根模块加载仍保留作兼容兜底。
+
+The Lua modules resolve sibling dependencies relative to the namespace used to load
+`GameAlgo`, while retaining the legacy `sdk.*` and root-module fallbacks.
 
 新增模块或入口脚本后，先通过项目现有 Maker 构建流程使文件进入资源 manifest，再运行宿主；源码目录中的文件存在不代表旧构建产物能加载它。缺少资源时检查资源根、构建产物及现有资源分组，不连续试造 require 路径。运行工具的入口参数以当前 Maker 文档为准。
 
@@ -36,7 +42,7 @@ SDK 每次创建 Context 请求时读取宿主 `GetAppArgv("miniapp_id")`，
 这些信息沿用现有 Context `device_json` 落库，不重复放进每条业务事件，
 不新增埋点，也不启用绑定校验或过滤；后续先确认正式环境的返回值与覆盖率。
 
-SDK 会先同步读取 Maker `lobby:GetMyUserId()` 并暂存为 `accountUserId`，再开始 `clientCloud:Get`，因此云读取卡住时仍然能标识受影响账号。首次启动没有本地快照时，SDK 会等待云端恢复身份；若云读取在 5 秒内没有任何回调，SDK 会自动降级到本地/内存存储继续初始化，不会阻塞本次会话。`/v1/config` 遇到网络错误、限流或服务端暂时不可用时，会进行最多 3 次、间隔 1 秒和 2 秒的受控重试；鉴权等不可重试的 4xx 错误会直接返回。
+SDK 同步读取 Maker `lobby:GetMyUserId()` 作为独立的 `accountUserId`，并从本地 File 恢复 SDK 身份、脚本缓存和 DDA 状态；本地初始化不等待网络。`/v1/config` 遇到网络错误、限流或服务端暂时不可用时，按 1～30 秒退避重试；鉴权等不可重试的 4xx 错误会直接返回。
 
 ## 客户端配置
 
@@ -75,7 +81,7 @@ Maker / Lua SDK 不提供匹配、Lobby、房间连接或实时状态同步；�
 
 Lua SDK 自动管理持久化，不允许传入 `storage`：
 
-首次本地运行前，把以下相对文件名模式加入 `.gitignore`，并按项目现有格式追加到 Maker 的 `asset_ignores`，防止打包或自动同步设备状态，保留其他已有忽略规则：
+UrhoX 内置宿主把下列文件写入当前项目、当前用户的存档沙盒，无需修改 `.gitignore` 或 Maker 的 `asset_ignores`。其他开发宿主若把存档写入工程目录，首次本地运行前需把以下相对文件名模式加入 `.gitignore`，并按项目现有格式追加到 `asset_ignores`；保留其他已有忽略规则：
 
 ```gitignore
 gamealgo_sdk_storage_v1.json
@@ -85,13 +91,18 @@ gaq_*.json
 
 这些文件包含设备身份、配置缓存和待上传事件，在开发宿主中可能落到工程目录。已被跟踪的文件不会因为新增 ignore 自动退出版本控制，需要核对后另外排除；保留本地设备需要的存档，不把它作为工程资源分发。
 
-- 优先读取 Maker `File` 本地快照，启动时同步恢复身份、脚本缓存和 DDA 状态。
-- 本地快照不存在或当前运行模式不能读文件时，自动从 `clientCloud` 恢复。
-- 首次云端读取完成前，SDK 会暂存埋点和 DDA 操作，不会使用空 DDA 状态提前决策。
-- 身份、配置和 DDA 继续使用 SDK 快照；快照和事件目录本地采用两份交替写入的文件，启动时选择版本最新且完整可读的一份，避免目录覆盖写中断后找不到旧事件。事件队列独立分块存储，每块最多 100 条，各块同样交替写入两份文件，云端按块同步。新增事件、context 绑定和上传确认只保存受影响块，不重新编码或覆盖整个队列。云端先同步事件块，再发布块目录。
-- `File` 和 `clientCloud` 都暂时不可用时，Maker 运行时使用内存兜底，不阻塞游戏主流程，并在后续 flush 时重试云端。
+- 启动时只读写 Maker `File`，同步恢复身份、脚本缓存、DDA 和待传事件；不访问 `clientCloud`，不占用游戏云变量，也不跨设备同步 SDK 存档。
+- 快照与事件分块均采用两个交替写入的本地文件，关闭文件后重新读取并核对完整内容，再提交银行切换；重启时选择最新有效版本。每块最多 100 条事件，追加、context 绑定和 ACK 只保存受影响块。新分块全部保存成功后才发布目录。
+- HTTP `/v1/events/batch` 负责补报：发送前保存本地，按批次完成策略收到有效 ACK 后删除；失败或超时保持原事件重试。写入失败会保留内存状态供后续保存，存盘或发起请求均不等于服务端已接收。
+- 本地旧 JSONL 会迁移为分块；所有新块写入成功前保留完整 JSONL 检查点，迁移中断后可重启恢复。旧快照中的云同步标记被忽略，下一次本地写入会清除这些标记；只在云端存在的数据不会再读取。
+- `File` 不可用时只提供当前进程内存兜底，HTTP 仍可上报，退出后不保证恢复。重新 `Init()` 时按游戏和用户保留内存队列；有 File 时先保存旧队列（包括在途请求期间新增的事件），保存失败则抛错并保留旧实例供重试。重新初始化后请重新取得 DDA 控制器。
+- 玩家、会话及事件 ID 由 SDK 私有哈希状态、计数器、时钟和 VM 地址熵生成，不调用宿主的 `math.random()` / `math.randomseed()`。SDK identifiers neither consume nor reseed the game's global RNG.
 
-接入代码不要自行探测单机/联网模式，不要实现 GameAlgo 专用存档适配器，也不要给 `GameAlgo.Init` 传 `storage`。如果传入，SDK 会直接报错，避免本地存档和云端存档出现两套冲突语义。
+接入代码不要自行探测单机/联网模式，也不要给 `GameAlgo.Init` 传 `storage`；SDK 自动管理本地 File 存储，传入适配器会报错。
+
+SDK state and pending events use local File storage only. HTTP delivers and acknowledges events; `clientCloud` is never accessed. There is no cross-device SDK save recovery. Without File, only in-process memory is available.
+
+Reinitialization checkpoints all pending events before retiring the previous session. A failed local checkpoint leaves that session available for retry; memory-only hosts retain per-game, per-user queues within the current SDK instance.
 
 `Init` 会从客户端发起非阻塞的 `/v1/config` 请求。游戏逻辑应该保留本地默认值，只在远端配置可用时读取远端值。
 
@@ -208,6 +219,18 @@ end
 
 脚本没有准备好、hash 不一致、编译失败或执行失败时，`Execute` 返回 `nil`，游戏必须继续使用本地默认逻辑。没有绑定脚本的实验仍然返回 config-only 结果。
 
+脚本预算依赖宿主提供可用的 `debug.sethook` 和 `debug.gethook`。接口缺失、检查失败或已有 hook 不是 Lua 函数时，SDK 会拒绝执行脚本并返回错误，不会静默退化成无限执行；已有 Lua hook 会在执行后恢复。
+
+指令超限会终止当前脚本阶段，脚本内的 `pcall` 不能吞掉预算错误；普通业务错误与多返回值保持原语义。脚本使用独立的 `math.random` / `math.randomseed` 状态，不改变游戏的随机序列。
+
+Instruction-limit failures escape protected calls inside the experiment. Experiments use a private random stream and restore the host's instruction hook after execution.
+
+脚本型实验的 `Executor.IsReady()` 同时检查宿主能否执行指令预算：无法执行预算的宿主上，即使脚本已下载，`IsReady()` 也返回 `false`，游戏应继续使用本地默认逻辑。纯配置型实验不受影响。
+
+自动脚本预取也只在宿主支持指令预算时启动；相同版本和摘要共享下载及校验，大脚本的 SHA-256 校验分散到多个 Update。脚本下载只向配置 API 的同源 HTTPS 地址（包括端口）附加 `X-GameAlgo-Key`；跨域 CDN 不携带该凭据。
+
+纯配置型 `Execute()` 保留布尔配置，并返回独立的 `payload` 和 `assignment`。`Executor.Value()` 与 `ConfigValue()` 的数组路径从零开始，例如 `levels.0.difficulty`。
+
 ## DDA 行为窗口
 
 ```lua
@@ -229,6 +252,8 @@ local decision = dda.Decide({
 ## 配置文件
 
 `/v1/config` 返回的配置文件会在配置拉取成功后预加载。
+
+同一会话与配置版本的同名下载会合并，旧会话或旧配置版本的响应不写入当前缓存。请求回调与脚本缓存同样隔离游戏、用户和初始化代次。
 
 ```lua
 GameAlgo.FetchConfigFile("gameplay.json", function(err, file)
@@ -252,7 +277,9 @@ local enabled = GameAlgo.ConfigValue("ads.rewarded.enabled", true, "gameplay.jso
 
 在途请求或失败积压期间，新增变化的定时补存间隔同样为 5 秒；累计 100 个事件变化也会提前保存。发送前、上传确认后、主动 Flush 和生命周期边界仍立即保存对应变化；没有变化不写盘。
 
-旧版本保存的 JSON Lines 队列会自动迁移；所有事件块成功写入前保留旧队列，迁移中断仍可恢复。事件的 ID、session、context 和发生时间保持原值。
+首次离线、尚无 Context 时也按同样周期保存。里程碑先保存原事件，再提交永久去重标记；保存中断后从队列恢复原 eventId 和缺失标记，已确认的里程碑不会因重启或等待配置而重新生成。
+
+旧版本地 JSON Lines 队列会自动迁移；所有事件块成功写入前保留完整本地检查点，迁移中断仍可恢复。事件的 ID、session、context 和发生时间保持原值，同 ID 的不同记录也保留。Legacy local JSONL is retained until all migrated local chunks are safely written.
 
 广告播放封装、`TrackAdPlacement` 和直接 `Track("ad_view", payload)` 均在广告事件入队后立即 Flush。发送前，SDK 会把 inflight batch 和剩余队列中尚未落盘的变化写入独立事件块；下次启动自动恢复，按下述批次完成策略确认后才删除持久化副本。请求超过 15 秒没有终态回调时，watchdog 会释放请求，保留原事件，并按退避间隔重试。迟到或重复回调由 request token 忽略；成功后 SDK 会连续发送，直到所有已有 context 的事件全部排空。事件入队时即固定 `sessionId` 和已有的 `contextId`；同一 session 刷新 context 不会重绑旧事件。
 
@@ -266,7 +293,7 @@ SDK 自动监听 Maker 的 `AppWillEnterBackground`、`AppDidEnterBackground`、
 
 `GameAlgo.NewSession(sessionId, callback)` 自动为尚未结束的旧会话入队 `reason=new_session` 的 `session_end`，保留旧用户、session 和 context，时长截止切换；主动保存队列变化并立即触发 Flush，再取新会话配置，无需游戏先调用 `TrackSessionEnd()`。上传失败留队重试，不阻止本地切换；旧会话已手动结束时不再补报或延长时长，相同 ID 为无操作。初始化存储尚未就绪或队列全在途、无法接纳结束事件时，返回 `nil, error` 并回调错误，保留旧会话。
 
-未绑定的旧事件不再随切换丢弃。重叠的配置请求按各自原会话排队，响应只绑定其原会话事件；旧响应不会发布为新会话的配置。已绑定事件可先发送，不被未绑定旧事件阻塞。
+未绑定的旧事件不再随切换丢弃。重叠的配置请求按各自原会话排队，响应只绑定对应身份与调试环境的事件；当前会话可接管同一用户、同一 `isDebug` 环境的跨启动孤儿事件，旧响应不会发布为新会话的配置。已绑定事件可先发送，不被未绑定旧事件阻塞；旧会话失败重试会让出在途槽位给新会话。
 
 队列默认最多保留 500 个事件，包含所有在途请求仍持有的事件，优先通道不另加队列容量。默认剩余 8 个位置时停止接纳普通事件，交给 `ad_view`、`session_end` 使用；最后 1 个位置专留 `session_end`。因此普通事件在总积压达到 492 条时返回 `false, "event queue is full ..."`，广告在 499 条时返回 false，结束事件仍可进入第 500 个位置。初始化完成前的暂存事件采用相同规则。只拒绝新事件，不腾挪或丢弃旧事件；关键事件也受总上限约束。
 
@@ -278,7 +305,7 @@ SDK 自动监听 Maker 的 `AppWillEnterBackground`、`AppDidEnterBackground`、
 
 SDK 初始化从 `/v1/config` 获取当前普通事件额度，并把它作为单 Context 的本地安全上限；达到上限后新的普通事件会返回 `false` 且不入队，`purchase`、`ad_view` 不受该上限影响。该保护用于阻止错误埋点循环持续请求，服务端的每用户每日额度仍是最终判定。
 
-测试或特殊运行环境可在 `Init` 中覆盖 `flushIntervalMs`、`flushTimeoutMs`、`maxBatchSize` 和 `maxQueueSize`。业务代码通常保持默认值即可。
+测试或特殊运行环境可在 `Init` 中覆盖 `flushIntervalMs`、`flushTimeoutMs`、`maxBatchSize` 和 `maxQueueSize`；HTTP 每批最多 100 条。自动重试遵守失败退避，主动 `Flush()` 可立即重试。业务代码通常保持默认值即可。
 
 `userId` 始终是 GameAlgo 生成并持久化的匿名设备标识，用于现有实验分流和报表。Maker 可用的 `getUserId()` 会自动写入独立的 `accountUserId`，不会替换匿名 `userId`；已知账号注册时间时也可以在 `GameAlgo.Init` 传 `accountUserCreatedAt`。context 保存完整账号身份，后续事件自动携带 `accountUserId`。
 
@@ -340,6 +367,10 @@ end
 ```
 
 该封装只适用于 Maker 当前激励视频与 trackId 回补链路，广告位注册为 `reward`、`CNY`。已有游戏将播放入口接到该封装，保留原来的奖励、UI 和音频收尾回调，不再为同一次曝光额外上报事件。
+
+广告结果保留发起时的用户、账号、会话与已有 Context。发起时尚无 Context 的迟到结果，可使用同一游戏、用户及调试环境后续取得的 Context；切换游戏或用户后收到的结果保存到原用户队列，待其再次初始化时补报。
+
+Delayed ad callbacks retain their original identity and session. Context-free results wait for a matching game, user and debug environment before replay.
 
 使用 `ShowRewardVideoAd` 时，原来的 `ad_view.payload` 自动增加 `adElapsedMs`（非负整数毫秒）和 `adElapsedSource="request_to_result"`，记录调用原生广告请求到首次原生结果回调的流程耗时。它可能包含等待、加载、播放和后台停留，不等同于精确曝光时长；SDK 不使用会在广告期间暂停的前台计时器。时间在回调入口固定，不包含后续业务回调、排队或重试耗时。只在开始和结果处读时钟，不新增事件、定时器或写盘周期。默认时钟精度取决于宿主，回退到 `os.time` 时只有秒级精度，字段单位仍为毫秒。
 

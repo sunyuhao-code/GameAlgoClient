@@ -79,9 +79,12 @@ jobs:
       - run: brew install lua luarocks
       - run: luarocks install lua-cjson
       - run: lua lua/tests/GameAlgoContractTest.lua
+      - run: lua lua/tests/GameAlgoReviewFixesTest.lua
       - run: lua lua/tests/GameAlgoAdPlacementTest.lua
       - run: lua lua/tests/GameAlgoRuntimeIdentityTest.lua
       - run: lua lua/tests/GameAlgoTapDBContextLinkTest.lua
       - run: lua lua/tests/GameAlgoTelemetryRoutingTest.lua
       - run: lua lua/tests/GameAlgoFlushRecoveryTest.lua
       - run: lua lua/tests/MakerAutoStorageFirstRunTest.lua
+      - run: lua lua/tests/GameAlgoConfigTest.lua
+      - run: lua lua/tests/GameAlgoScriptRuntimeTest.lua

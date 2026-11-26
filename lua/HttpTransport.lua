@@ -38,12 +38,26 @@ function HttpTransport.Request(request, callback)
     local function complete(error, response)
         if settled then return false end
         settled = true
+        -- The native client keeps these Lua callbacks alive after completion,
+        -- so complete must not capture the client or the business callback:
+        -- that would pin every finished request forever. Everything transient
+        -- lives in the active-request record, which is dropped here.
+        local record = requestId and activeRequests[requestId] or nil
         if requestId then activeRequests[requestId] = nil end
-        if client then requestIdsByClient[client] = nil end
-        local callbackOk, callbackError = pcall(rawCallback, error, response)
+        if record then
+            if record.client then requestIdsByClient[record.client] = nil end
+            record.client = nil
+        end
+        local callback = record and record.callback or nil
+        if record then record.callback = nil end
+        local callbackOk, callbackError = pcall(callback, error, response)
         if not callbackOk then safePrint("[GameAlgoHttp] callback failed: ", callbackError) end
         return callbackOk
     end
+
+    nextRequestId = nextRequestId + 1
+    requestId = nextRequestId
+    activeRequests[requestId] = { complete = complete, callback = rawCallback }
 
     if type(request) ~= "table" then
         complete("invalid HTTP request", nil)
@@ -79,9 +93,7 @@ function HttpTransport.Request(request, callback)
         return nil
     end
 
-    nextRequestId = nextRequestId + 1
-    requestId = nextRequestId
-    activeRequests[requestId] = { client = client, complete = complete }
+    activeRequests[requestId].client = client
     requestIdsByClient[client] = requestId
 
     local setupOk, setupError = pcall(function()

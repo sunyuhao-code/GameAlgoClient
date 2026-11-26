@@ -1,21 +1,37 @@
 ---@meta
 --- ============================================================
---- GameAlgo.lua — TapTap 小游戏 Lua SDK 业务层
+--- GameAlgo.lua — TapTap mini-game Lua SDK business layer
 --- ============================================================
---- 职责：实验/配置读取、事件排队和上报。网络请求由客户端直接
----       调用 GameAlgo HTTP API。
+--- Responsibilities: read experiments/configuration and queue/report events.
+--- Network requests go directly to the GameAlgo HTTP API.
 ---
---- 设计约束：
---- - Client Game Key 通过 X-GameAlgo-Key 随请求发送。
---- - 初始化不阻塞游戏主流程；远端失败时本地默认值继续生效。
---- - Lua 实验脚本按不可变 versionId 下载、校验后在受限环境执行。
+--- Design constraints:
+--- - Sends the Client Game Key in the X-GameAlgo-Key header.
+--- - Initialization does not block gameplay; local defaults remain on remote failure.
+--- - Downloads Lua experiments by immutable versionId, verifies them, and runs them in a restricted environment.
 --- ============================================================
 
 local cjson = require("cjson")
 
+local moduleName = ...
+
+local function localSdkModuleName(name)
+    if type(moduleName) == "string" then
+        local prefix, separator = moduleName:match("^(.*)([./])[^./]+$")
+        if prefix and prefix ~= "" then return prefix .. separator .. name end
+    end
+    return "sdk." .. name
+end
+
 local function requireSdkModule(name)
-    local ok, value = pcall(require, "sdk." .. name)
+    local localName = localSdkModuleName(name)
+    local ok, value = pcall(require, localName)
     if ok then return value end
+    local makerName = "sdk." .. name
+    if localName ~= makerName then
+        ok, value = pcall(require, makerName)
+        if ok then return value end
+    end
     return require(name)
 end
 
@@ -32,6 +48,7 @@ local SDK_VERSION = "2.1.6-lua"
 local DEFAULT_BASE_URL = "https://game-algo-sdk.dictapis.cn"
 local DEFAULT_FLUSH_INTERVAL_MS = 5000
 local DEFAULT_FLUSH_TIMEOUT_MS = 15000
+local MAX_HTTP_BATCH_SIZE = 100
 local DEFAULT_MAX_QUEUE_SIZE = 500
 local MAX_CRITICAL_QUEUE_RESERVE = 8
 local MAX_AD_PRIORITY_BATCH_SIZE = 20
@@ -48,6 +65,7 @@ local TAPDB_CONTEXT_LINK_DISCOVERY_WINDOW_MS = 10000
 local STANDARD_EVENT_TYPES = {
     session_end = true, level_start = true, level_end = true,
     ad_view = true, purchase = true, milestone = true,
+    experiment_exposure = true, experiment_execution = true,
 }
 
 local state_ = {
@@ -76,7 +94,9 @@ local state_ = {
     contextId = nil,
     config = nil,
     configFiles = {},
+    configFileRequests = {},
     scripts = {},
+    scriptRequests = {},
     ddaControllers = {},
     queue = {},
     flushableEvents = 0,
@@ -95,7 +115,7 @@ local state_ = {
     pendingFlushCallbacks = {},
     pendingFlushAccepted = 0,
     pendingFlushRejected = 0,
-    maxBatchSize = 100,
+    maxBatchSize = MAX_HTTP_BATCH_SIZE,
     maxQueueSize = DEFAULT_MAX_QUEUE_SIZE,
     maxPendingFlushCallbacks = DEFAULT_MAX_PENDING_FLUSH_CALLBACKS,
     flushIntervalMs = DEFAULT_FLUSH_INTERVAL_MS,
@@ -148,9 +168,10 @@ local state_ = {
     pendingMilestoneKeys = {},
     pendingTracks = {},
     consecutiveFlushFailures = 0,
-    queuePersistenceActive = false,
     queuePersistenceDirty = false,
-    queuePersistenceSaved = false,
+    persistentStorageAvailable = false,
+    milestoneMarkersDirty = false,
+    deferredMilestoneAcks = {},
     queueEventsSincePersist = 0,
     lastQueuePersistAtMs = 0,
     logger = nil,
@@ -158,10 +179,10 @@ local state_ = {
     scheduler = nil,
 }
 
-local function log(message)
+local function logTo(logger, message)
     local line = "[GameAlgoSDK] " .. tostring(message)
-    if type(state_.logger) == "function" then
-        local ok, loggerError = pcall(state_.logger, line)
+    if type(logger) == "function" then
+        local ok, loggerError = pcall(logger, line)
         if not ok then
             print(line)
             print("[GameAlgoSDK] logger failed: " .. tostring(loggerError))
@@ -169,6 +190,10 @@ local function log(message)
     else
         print(line)
     end
+end
+
+local function log(message)
+    logTo(state_.logger, message)
 end
 
 local function safeCallback(callback, ...)
@@ -193,51 +218,68 @@ local function isoNow()
     return os.date("!%Y-%m-%dT%H:%M:%SZ")
 end
 
+-- Count Gregorian calendar days directly. os.time interprets its table in the
+-- host timezone and cannot unambiguously represent both sides of a DST change.
+local monthStarts = { 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334, 365 }
+local function calendarSeconds(year, month, day, hour, minute, second)
+    if month < 1 or month > 12 or hour > 23 or minute > 59 or second > 59 then return nil end
+    local leap = year % 4 == 0 and (year % 100 ~= 0 or year % 400 == 0)
+    local daysInMonth = monthStarts[month + 1] - monthStarts[month] + (leap and month == 2 and 1 or 0)
+    if day < 1 or day > daysInMonth then return nil end
+    local y = year - 1
+    local days = 365 * y + math.floor(y / 4) - math.floor(y / 100) + math.floor(y / 400)
+        - 719162 + monthStarts[month] + (leap and month > 2 and 1 or 0) + day - 1
+    return ((days * 24 + hour) * 60 + minute) * 60 + second
+end
+
+local function epochMsFromIso(value)
+    if type(value) ~= "string" then return nil end
+    local year, month, day, hour, minute, second, suffix = value:match(
+        "^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)(.*)$")
+    if not year then return nil end
+    local timestamp = calendarSeconds(tonumber(year), tonumber(month), tonumber(day),
+        tonumber(hour), tonumber(minute), tonumber(second))
+    if not timestamp then return nil end
+    local fraction, zone = suffix:match("^%.(%d+)(.*)$")
+    zone = zone or suffix
+    if zone ~= "Z" then
+        local sign, h, m = zone:match("^([+-])(%d%d):?(%d%d)$")
+        if not sign or tonumber(h) > 23 or tonumber(m) > 59 then return nil end
+        local offset = (tonumber(h) * 60 + tonumber(m)) * 60
+        timestamp = timestamp - (sign == "+" and offset or -offset)
+    end
+    return timestamp * 1000 + tonumber(((fraction or "") .. "000"):sub(1, 3))
+end
+
 local function localIsoNow(timestamp)
     timestamp = timestamp or os.time()
-    local offset = os.date("%z", timestamp)
-    if type(offset) == "string" and offset:match("^[+-]%d%d%d%d$") then
-        offset = offset:sub(1, 3) .. ":" .. offset:sub(4, 5)
-    else
-        local localTime = os.date("*t", timestamp)
-        local utcTime = os.date("!*t", timestamp)
-        utcTime.isdst = localTime.isdst
-        local offsetSeconds = os.difftime(os.time(localTime), os.time(utcTime))
-        local sign = offsetSeconds >= 0 and "+" or "-"
-        local absoluteMinutes = math.floor(math.abs(offsetSeconds) / 60)
-        offset = string.format("%s%02d:%02d", sign, math.floor(absoluteMinutes / 60), absoluteMinutes % 60)
-    end
-    return os.date("%Y-%m-%dT%H:%M:%S", timestamp) .. offset
+    local t = os.date("*t", timestamp)
+    local localSeconds = calendarSeconds(t.year, t.month, t.day, t.hour, t.min, t.sec)
+    local minutes = math.floor(math.abs(localSeconds - timestamp) / 60)
+    return string.format("%04d-%02d-%02dT%02d:%02d:%02d%s%02d:%02d", t.year, t.month,
+        t.day, t.hour, t.min, t.sec, localSeconds >= timestamp and "+" or "-", math.floor(minutes / 60), minutes % 60)
 end
 
 local function localIsoFromUtc(value)
-    if type(value) ~= "string" then return nil end
-    local year, month, day, hour, minute, second = value:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)")
-    if not year then return nil end
-    local interpretedAsLocal = os.time({
-        year = tonumber(year),
-        month = tonumber(month),
-        day = tonumber(day),
-        hour = tonumber(hour),
-        min = tonumber(minute),
-        sec = tonumber(second),
-        isdst = false,
-    })
-    if not interpretedAsLocal then return nil end
-    local utcParts = os.date("!*t", interpretedAsLocal)
-    local localParts = os.date("*t", interpretedAsLocal)
-    utcParts.isdst = localParts.isdst
-    local utcAsLocal = os.time(utcParts)
-    if not utcAsLocal then return nil end
-    local utcTimestamp = interpretedAsLocal + os.difftime(interpretedAsLocal, utcAsLocal)
-    return localIsoNow(utcTimestamp)
+    local milliseconds = epochMsFromIso(value)
+    if milliseconds then return localIsoNow(math.floor(milliseconds / 1000)) end
 end
 
 local function nowMs()
-    local ok, systemTime = pcall(function()
-        return Time and tonumber(Time.systemTime)
+    local ok, value = pcall(function()
+        if Time and type(Time.GetTimeSinceEpochMs) == "function" then
+            return Time:GetTimeSinceEpochMs()
+        end
+        if Time then
+            local systemTime = tonumber(Time.systemTime)
+            if systemTime then return systemTime * 1000 end
+        end
+        return nil
     end)
-    if ok and systemTime then return math.floor(systemTime * 1000) end
+    local milliseconds = tonumber(value)
+    if ok and milliseconds and milliseconds == milliseconds and milliseconds < math.huge then
+        return math.floor(milliseconds)
+    end
     return math.floor(os.time() * 1000)
 end
 
@@ -245,49 +287,28 @@ local function clockMs()
     local clock = state_.clock
     if type(clock) == "function" then
         local ok, value = pcall(clock)
-        if ok and tonumber(value) then return math.floor(tonumber(value)) end
+        value = ok and tonumber(value)
+        if value and value == value and math.abs(value) < math.huge then return math.floor(value) end
     end
     return nowMs()
 end
 
-local function epochMsFromIso(value)
-    if type(value) ~= "string" then return nil end
-    local year, month, day, hour, minute, second, suffix = value:match(
-        "^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)(.*)$"
-    )
-    if not year then return nil end
-    local interpretedAsLocal = os.time({
-        year = tonumber(year),
-        month = tonumber(month),
-        day = tonumber(day),
-        hour = tonumber(hour),
-        min = tonumber(minute),
-        sec = tonumber(second),
-        isdst = false,
-    })
-    if not interpretedAsLocal then return nil end
-    local utcParts = os.date("!*t", interpretedAsLocal)
-    local localParts = os.date("*t", interpretedAsLocal)
-    utcParts.isdst = localParts.isdst
-    local utcAsLocal = os.time(utcParts)
-    if not utcAsLocal then return nil end
-    local timestamp = interpretedAsLocal + os.difftime(interpretedAsLocal, utcAsLocal)
-
-    local zone = suffix:match("(Z)$") or suffix:match("([+-]%d%d:?%d%d)$")
-    if not zone then return nil end
-    if zone ~= "Z" then
-        local sign, zoneHour, zoneMinute = zone:match("^([+-])(%d%d):?(%d%d)$")
-        if not sign then return nil end
-        local offsetSeconds = (tonumber(zoneHour) * 60 + tonumber(zoneMinute)) * 60
-        timestamp = timestamp - (sign == "+" and offsetSeconds or -offsetSeconds)
-    end
-    local fraction = suffix:match("^%.(%d+)") or ""
-    local milliseconds = tonumber((fraction .. "000"):sub(1, 3)) or 0
-    return math.floor(timestamp * 1000 + milliseconds)
-end
+local randomIdCounter = 0
+local randomIdEntropy = tostring({})
 
 local function randomId(prefix)
-    return (prefix or "id") .. "_" .. tostring(os.time()) .. "_" .. tostring(math.random(100000, 999999))
+    randomIdCounter = randomIdCounter + 1
+    -- Do not reseed or touch the game's shared math.random state. Combine
+    -- per-call and per-VM entropy instead.
+    local address = tostring({}):match("0x(%x+)") or "0"
+    randomIdEntropy = Sha256.hex(table.concat({
+        randomIdEntropy,
+        tostring(os.time()),
+        tostring(os.clock()),
+        tostring(randomIdCounter),
+        address,
+    }, ":"))
+    return (prefix or "id") .. "_" .. randomIdEntropy:sub(1, 24)
 end
 
 local function trimSlash(value)
@@ -367,41 +388,33 @@ local function resolveMakerUserId()
 end
 
 local function ensureIdentity(explicitUserId, explicitUserCreatedAt, explicitUserCreatedLocalAt)
-    if explicitUserId and explicitUserId ~= "" then
-        state_.userId = tostring(explicitUserId)
-        if explicitUserCreatedAt and explicitUserCreatedAt ~= "" then
-            state_.userCreatedAt = tostring(explicitUserCreatedAt)
-        elseif not state_.userCreatedAt then
-            state_.userCreatedAt = storageGet(identityStorageKey("user_created_at"))
-                or storageGet("gamealgo_user_created_at")
-                or isoNow()
-        end
-        if explicitUserCreatedLocalAt and explicitUserCreatedLocalAt ~= "" then
-            state_.userCreatedLocalAt = tostring(explicitUserCreatedLocalAt)
-        elseif not state_.userCreatedLocalAt then
-            state_.userCreatedLocalAt = storageGet(identityStorageKey("user_created_local_at"))
-                or storageGet("gamealgo_user_created_local_at")
-                or localIsoFromUtc(state_.userCreatedAt)
-                or localIsoNow()
-        end
+    if state_.userId then return end
+    local legacyUser = storageGet(identityStorageKey("user_id"))
+    local globalUser = storageGet("gamealgo_user_id")
+    state_.userId = explicitUserId and explicitUserId ~= "" and tostring(explicitUserId)
+        or storageGet(identityStorageKey("last_user_id")) or legacyUser or globalUser or randomId("ga_user")
+    local key = userStorageNamespace() .. ":registration"
+    local saved = storageGet(key)
+    if type(saved) ~= "table" then saved = {} end
+    local utc, localTime = saved.utc, saved.localTime
+    if state_.userId == legacyUser then
+        utc = utc or storageGet(identityStorageKey("user_created_at"))
+        localTime = localTime or storageGet(identityStorageKey("user_created_local_at"))
     end
-
-    if not state_.userId or state_.userId == "" then
-        state_.userId = storageGet(identityStorageKey("user_id"))
-            or storageGet("gamealgo_user_id")
-            or randomId("ga_user")
+    if state_.userId == globalUser then
+        utc = utc or storageGet("gamealgo_user_created_at")
+        localTime = localTime or storageGet("gamealgo_user_created_local_at")
     end
-    if not state_.userCreatedAt or state_.userCreatedAt == "" then
-        state_.userCreatedAt = storageGet(identityStorageKey("user_created_at"))
-            or storageGet("gamealgo_user_created_at")
-            or isoNow()
+    if explicitUserCreatedAt and explicitUserCreatedAt ~= "" then
+        utc, localTime = tostring(explicitUserCreatedAt), nil
     end
-    if not state_.userCreatedLocalAt or state_.userCreatedLocalAt == "" then
-        state_.userCreatedLocalAt = storageGet(identityStorageKey("user_created_local_at"))
-            or storageGet("gamealgo_user_created_local_at")
-            or localIsoFromUtc(state_.userCreatedAt)
-            or localIsoNow()
+    state_.userCreatedAt = utc or isoNow()
+    state_.userCreatedLocalAt = explicitUserCreatedLocalAt and explicitUserCreatedLocalAt ~= "" and tostring(explicitUserCreatedLocalAt)
+        or localTime or localIsoFromUtc(state_.userCreatedAt) or localIsoNow()
+    if saved.utc ~= state_.userCreatedAt or saved.localTime ~= state_.userCreatedLocalAt then
+        storageSet(key, { utc = state_.userCreatedAt, localTime = state_.userCreatedLocalAt })
     end
+    storageSet(identityStorageKey("last_user_id"), state_.userId)
     if state_.oldUserStateUserId ~= state_.userId then
         local oldUserKey = identityStorageKey("is_old_user:" .. state_.userId)
         local stored = storageGet(oldUserKey)
@@ -414,9 +427,6 @@ local function ensureIdentity(explicitUserId, explicitUserCreatedAt, explicitUse
         end
         state_.oldUserStateUserId = state_.userId
     end
-    storageSet(identityStorageKey("user_id"), state_.userId)
-    storageSet(identityStorageKey("user_created_at"), state_.userCreatedAt)
-    storageSet(identityStorageKey("user_created_local_at"), state_.userCreatedLocalAt)
 end
 
 local function ensureAccountIdentity(explicitAccountUserId, explicitCreatedAt)
@@ -477,7 +487,6 @@ end
 
 local function telemetryEnabled(channel, event)
     local standard = not event or STANDARD_EVENT_TYPES[event.eventType]
-        or event.eventType == "experiment_exposure" or event.eventType == "experiment_execution"
     if channel == "gamealgo" then
         return (standard and state_.gamealgoStandardReportingEnabled
             or not standard and state_.gamealgoCustomReportingEnabled)
@@ -617,6 +626,12 @@ local function httpRequest(method, path, bodyTable, callback)
                 result.tapdbAttempted = attempted
                 response.localOnly = true
                 safeCallback(originalCallback, nil, result, response)
+            end
+        elseif directEvents then
+            local originalCallback = callback
+            callback = function(error, result, response)
+                if type(result) == "table" then result.tapdbAttempted = attempted end
+                safeCallback(originalCallback, error, result, response)
             end
         end
     end
@@ -813,8 +828,9 @@ end
 
 local function normalizeEventQuota(config)
     local quota = type(config) == "table" and config.eventQuota or nil
-    local limit = quota and tonumber(quota.ordinaryEventLimit) or nil
-    if type(quota) ~= "table" or quota.mode ~= "enforce" or limit == nil or limit < 0 or limit % 1 ~= 0 then
+    if type(quota) ~= "table" or quota.mode ~= "enforce" then return nil end
+    local limit = tonumber(quota.ordinaryEventLimit)
+    if limit == nil or limit < 0 or limit % 1 ~= 0 then
         return nil
     end
     local exempt = { purchase = true, ad_view = true }
@@ -857,10 +873,26 @@ local function consumeCustomEventQuota(eventType)
     return true, nil
 end
 
+-- Only conventional HTTPS authorities can receive the API credential. The
+-- transport still enforces its normal resource URL policy for every request.
+local function httpsAuthority(url)
+    if type(url) ~= "string" or url:find("[%s%c\\]") then return nil end
+    local authority = url:lower():match("^https://([^/?#]+)")
+    if not authority then return nil end
+    local host, port = authority:match("^([%w%.%-]+):(%d+)$")
+    if not host then host, port = authority:match("^(%[[%x:%.]+%]):(%d+)$") end
+    host = host or authority:match("^([%w%.%-]+)$") or authority:match("^(%[[%x:%.]+%])$")
+    if not host then return nil end
+    return host .. ":" .. (port or "443")
+end
+
 local function rawHttpRequest(method, url, callback)
     callback = callback or function() end
     local headers = {}
-    if state_.gameKey and state_.gameKey ~= "" then headers["X-GameAlgo-Key"] = state_.gameKey end
+    local trusted = httpsAuthority(state_.baseUrl)
+    if trusted and trusted == httpsAuthority(url) and state_.gameKey and state_.gameKey ~= "" then
+        headers["X-GameAlgo-Key"] = state_.gameKey
+    end
     local settled = false
     local function complete(error, response)
         if settled then return end
@@ -885,6 +917,7 @@ end
 local function snapshotJsonValue(value, seen, path)
     local valueType = type(value)
     if value == nil or valueType == "string" or valueType == "boolean" then return value, nil end
+    if valueType == "userdata" and value == cjson.null then return value, nil end
     if valueType == "number" then
         if value ~= value or value == math.huge or value == -math.huge then
             return nil, tostring(path) .. " contains a non-finite number"
@@ -950,12 +983,11 @@ local function milestoneKey(isDebug, milestoneType, milestonePoint)
 end
 
 local function persistReachedMilestones()
-    if not state_.storageReady or not state_.userId then return end
     local keys = {}
     for key in pairs(state_.reachedMilestoneKeys) do table.insert(keys, key) end
     table.sort(keys)
     local ok, encoded = pcall(cjson.encode, keys)
-    if ok then storageSet(milestoneStorageKey(), encoded) end
+    return ok and storageSet(milestoneStorageKey(), encoded)
 end
 
 local function restoreReachedMilestones()
@@ -972,37 +1004,32 @@ local function restoreReachedMilestones()
     end
 end
 
-local function prepareMilestone(eventType, payload, occurredAtMs)
-    if eventType ~= "milestone" then return payload, nil, false, false end
-    payload.elapsedSinceRegistrationMs = nil
-    local registeredAtMs = epochMsFromIso(state_.userCreatedAt)
-    if registeredAtMs and tonumber(occurredAtMs) then
-        payload.elapsedSinceRegistrationMs = math.max(0, math.floor(tonumber(occurredAtMs) - registeredAtMs))
+local function eventMilestoneKey(eventType, payload, isDebug)
+    if eventType == "milestone" and type(payload) == "table"
+        and type(payload.milestoneType) == "string" and payload.milestoneType ~= ""
+        and type(payload.milestonePoint) == "string" and payload.milestonePoint ~= "" then
+        return milestoneKey(isDebug, payload.milestoneType, payload.milestonePoint)
     end
-    if type(payload.milestoneType) ~= "string" or payload.milestoneType == ""
-        or type(payload.milestonePoint) ~= "string" or payload.milestonePoint == "" then
-        return payload, nil, false, false
-    end
-    local durable = state_.contextId ~= nil and state_.contextId ~= ""
-    local key = milestoneKey(state_.isDebug, payload.milestoneType, payload.milestonePoint)
-    local duplicate
-    if durable then
-        duplicate = state_.reachedMilestoneKeys[key] == true
-    else
-        duplicate = state_.pendingMilestoneKeys[key] == true
-    end
-    return payload, key, durable, duplicate
 end
 
-local function rememberMilestone(key, durable)
-    if not key then return end
-    if not durable then
+local function prepareMilestone(eventType, payload, occurredAtMs)
+    if eventType ~= "milestone" then return payload end
+    local registeredAtMs = epochMsFromIso(state_.userCreatedAt)
+    payload.elapsedSinceRegistrationMs = registeredAtMs and math.max(0, math.floor(occurredAtMs - registeredAtMs)) or nil
+    local key = eventMilestoneKey(eventType, payload, state_.isDebug)
+    local bound = state_.contextId ~= nil and state_.contextId ~= ""
+    return payload, key, bound, state_.reachedMilestoneKeys[key] or state_.pendingMilestoneKeys[key]
+end
+
+local function rememberMilestone(key, bound)
+    if not key or state_.reachedMilestoneKeys[key] then return end
+    if bound then
+        state_.reachedMilestoneKeys[key] = true
+        state_.pendingMilestoneKeys[key] = nil
+        state_.milestoneMarkersDirty = true
+    else
         state_.pendingMilestoneKeys[key] = true
-        return
     end
-    if state_.reachedMilestoneKeys[key] then return end
-    state_.reachedMilestoneKeys[key] = true
-    persistReachedMilestones()
 end
 
 local function decodeJsonObject(value)
@@ -1029,7 +1056,7 @@ local function currentAssignment(key)
 end
 
 local function scriptCacheKey(script)
-    if not script then return nil end
+    if type(script) ~= "table" then return nil end
     if script.versionId and script.versionId ~= "" then return "version:" .. tostring(script.versionId) end
     return nil
 end
@@ -1045,26 +1072,34 @@ local function legacyScriptStorageKey(script)
 end
 
 local function isLuaScript(script)
-    if not script then return false end
+    if type(script) ~= "table" then return false end
     local name = tostring(script.name or ""):lower()
     local contentType = tostring(script.contentType or ""):lower()
     return name:sub(-4) == ".lua" or contentType:find("lua", 1, true) ~= nil
 end
 
-local function verifyScript(script, content)
-    if not script or not script.hash or script.hash == "" then return false, "script hash is required" end
-    local actual = Sha256.hash(content)
-    if tostring(script.hash):lower() ~= actual then
-        return false, "script hash mismatch: expected " .. tostring(script.hash) .. ", got " .. actual
+local function cachedScript(script)
+    local key = scriptCacheKey(script)
+    local file = key and state_.scripts[key]
+    if file and type(script.hash) == "string" and file.hash:lower() == script.hash:lower() then return file end
+end
+
+local function copyScript(file)
+    if file then
+        return { name = file.name, versionId = file.versionId, content = file.content,
+            contentType = file.contentType, hash = file.hash }
     end
-    return true, nil
 end
 
 local function tablePath(root, path)
     local value = root
     for part in tostring(path or ""):gmatch("[^%.]+") do
         if type(value) ~= "table" then return nil end
-        value = value[part]
+        if value[part] == nil and part:match("^%d+$") then
+            value = value[tonumber(part) + 1]
+        else
+            value = value[part]
+        end
         if value == nil then return nil end
     end
     return value
@@ -1115,26 +1150,40 @@ local function armAutoFlush()
 end
 
 local function persistEventQueue()
-    if not state_.storageReady or not state_.userId then return end
-    if state_.queuePersistenceSaved and not state_.queuePersistenceDirty then return end
-    local ok, result = pcall(function() return state_.eventQueueStorage:Persist() end)
-    local persisted = ok and result == true
-    if not ok then log("event queue persistence failed: " .. tostring(result)) end
-    state_.queuePersistenceSaved = persisted
-    state_.queuePersistenceDirty = not persisted
+    if not state_.eventQueueStorage then return true end
+    if not state_.queuePersistenceDirty and not state_.milestoneMarkersDirty then return true end
+    local queue = state_.eventQueueStorage
+    local memoryOnly = not state_.persistentStorageAvailable
+    local ok, persisted = pcall(function()
+        -- The event ID must be recoverable before its permanent dedup key.
+        if not memoryOnly and not queue:Persist() then return false end
+        if state_.milestoneMarkersDirty then
+            if not persistReachedMilestones() and not memoryOnly then return false end
+            state_.milestoneMarkersDirty = false
+        end
+        if #state_.deferredMilestoneAcks > 0 then
+            queue:Remove(state_.deferredMilestoneAcks)
+            state_.deferredMilestoneAcks = {}
+            if not memoryOnly then return queue:Persist() end
+        end
+        return true
+    end)
+    if not ok then log("event queue persistence failed: " .. tostring(persisted)) end
+    state_.queuePersistenceDirty = not (ok and persisted)
     state_.queueEventsSincePersist = 0
     state_.lastQueuePersistAtMs = clockMs()
+    return not state_.queuePersistenceDirty
 end
 
 local function scheduleEventQueuePersistence()
-    -- Invalidate the snapshot before periodic persistence is enabled, while
-    -- preserving the normal save interval until the first flush.
-    state_.queuePersistenceSaved = false
-    if not state_.queuePersistenceActive then return end
+    local now = clockMs()
+    if not state_.queuePersistenceDirty and now - state_.lastQueuePersistAtMs >= QUEUE_PERSIST_INTERVAL_MS then
+        state_.lastQueuePersistAtMs = now
+    end
     state_.queuePersistenceDirty = true
     state_.queueEventsSincePersist = state_.queueEventsSincePersist + 1
     if state_.queueEventsSincePersist >= QUEUE_PERSIST_EVENT_COUNT
-        or clockMs() - state_.lastQueuePersistAtMs >= QUEUE_PERSIST_INTERVAL_MS then
+        or now - state_.lastQueuePersistAtMs >= QUEUE_PERSIST_INTERVAL_MS then
         persistEventQueue()
     end
 end
@@ -1145,25 +1194,30 @@ local function restoreEventQueue()
     for _, event in ipairs(state_.eventQueueStorage:Events()) do
         table.insert(state_.queue, event)
         if event.eventType == "ad_view" then state_.pendingAdFlush = true end
-        if event.contextId and event.contextId ~= "" then state_.flushableEvents = state_.flushableEvents + 1 end
+        local bound = event.contextId ~= nil and event.contextId ~= ""
+        if bound then state_.flushableEvents = state_.flushableEvents + 1 end
+        rememberMilestone(eventMilestoneKey(event.eventType, event.payload, event.isDebug), bound)
         restored = restored + 1
     end
     if restored > 0 then
-        state_.queuePersistenceActive = true
+        persistEventQueue()
         if state_.flushableEvents > 0 then armAutoFlush() end
         if #state_.queue >= state_.maxBatchSize and state_.flushableEvents > 0 then state_.flushRequested = true end
         log("restored persisted events: " .. tostring(restored))
     end
 end
 
-local function bindQueuedEvents(contextId, sessionId)
+local function bindQueuedEvents(contextId, identity, adoptOrphans)
     if not contextId or contextId == "" then return end
     local changed = false
     for _, event in ipairs(state_.queue) do
-        if (not event.contextId or event.contextId == "") and event.sessionId == sessionId then
+        if (not event.contextId or event.contextId == "")
+            and event.userId == identity.userId and (event.isDebug == true) == identity.isDebug
+            and (event.sessionId == identity.sessionId or adoptOrphans) then
             event.contextId = contextId
             state_.flushableEvents = state_.flushableEvents + 1
             state_.eventQueueStorage:Upsert(event)
+            rememberMilestone(eventMilestoneKey(event.eventType, event.payload, event.isDebug), true)
             if event.eventType == "ad_view" then state_.pendingAdFlush = true end
             changed = true
         end
@@ -1171,49 +1225,29 @@ local function bindQueuedEvents(contextId, sessionId)
     if changed then armAutoFlush(); scheduleEventQueuePersistence() end
 end
 
-local function rememberBoundMilestones(contextId)
-    if not contextId or contextId == "" then return end
-    local changed = false
-    for _, event in ipairs(state_.queue) do
-        local payload = event.payload
-        if event.contextId == contextId and event.eventType == "milestone" and type(payload) == "table"
-            and type(payload.milestoneType) == "string" and payload.milestoneType ~= ""
-            and type(payload.milestonePoint) == "string" and payload.milestonePoint ~= "" then
-            local key = milestoneKey(
-                event.isDebug == true,
-                payload.milestoneType,
-                payload.milestonePoint
-            )
-            if not state_.reachedMilestoneKeys[key] then
-                state_.reachedMilestoneKeys[key] = true
-                changed = true
-            end
-        end
-    end
-    if changed then persistReachedMilestones() end
+local function sessionAttribution()
+    return { queueKey = queueStorageKey(), userId = state_.userId, accountUserId = state_.accountUserId,
+        sessionId = state_.sessionId, contextId = state_.contextId, isDebug = state_.isDebug }
 end
 
-local function enqueueTrack(eventType, payload, timestamp, createdLocalAt, sessionEndSnapshot)
+local function makeEvent(owner, eventType, payload, timestamp, createdLocalAt)
+    return {
+        eventId = randomId("ga_event"), contextId = owner.contextId or "", userId = owner.userId,
+        accountUserId = owner.accountUserId, sessionId = owner.sessionId, isDebug = owner.isDebug,
+        eventType = eventType, timestamp = timestamp or isoNow(), createdLocalAt = createdLocalAt or localIsoNow(),
+        payload = payload,
+    }
+end
+
+local function enqueueTrack(eventType, payload, timestamp, createdLocalAt, sessionEndSnapshot, owner)
     local admissionError = queueAdmissionError(eventType, outstandingEventCount())
     if admissionError then
-        state_.queuePersistenceActive = true
         persistEventQueue()
         return false, admissionError
     end
     local payloadCopy, payloadError = preparePayload(payload)
     if payloadError then return false, payloadError end
-    local event = {
-        eventId = randomId("ga_event"),
-        contextId = state_.contextId or "",
-        userId = state_.userId,
-        accountUserId = state_.accountUserId,
-        sessionId = state_.sessionId,
-        eventType = eventType,
-        isDebug = state_.isDebug,
-        timestamp = timestamp or isoNow(),
-        createdLocalAt = createdLocalAt or localIsoNow(),
-        payload = payloadCopy,
-    }
+    local event = makeEvent(owner or state_.sessionAttribution, eventType, payloadCopy, timestamp, createdLocalAt)
     table.insert(state_.queue, event)
     if event.contextId and event.contextId ~= "" then
         state_.flushableEvents = state_.flushableEvents + 1
@@ -1229,17 +1263,22 @@ local function enqueueTrack(eventType, payload, timestamp, createdLocalAt, sessi
 end
 
 local function flushAutomaticStorage()
-    if not state_.storage or type(state_.storage.Flush) ~= "function" then return end
-    local ok, flushError = pcall(function()
-        state_.storage:Flush(function(error)
-            if error then log("automatic storage flush failed: " .. tostring(error)) end
-        end)
+    if not state_.storage or not state_.persistentStorageAvailable then return true end
+    local failure
+    local ok, reason = pcall(function()
+        state_.storage:Flush(function(error) failure = error end)
     end)
-    if not ok then log("automatic storage flush failed: " .. tostring(flushError)) end
+    if not ok then failure = reason end
+    if failure then
+        state_.queuePersistenceDirty = true
+        log("automatic storage flush failed: " .. tostring(failure))
+    end
+    return ok and failure == nil
 end
 
 local sendEndSnapshot
 local sendAdBatch
+local startFlush
 
 local function handleLifecycleSessionEnd(eventName, reason)
     if not state_.sessionId or not state_.sessionStartMs then return end
@@ -1280,7 +1319,6 @@ local function handleLifecycleSessionEnd(eventName, reason)
     local tracked, error = enqueueTrack("session_end", payload, nil, nil, true)
     if not tracked then log("lifecycle session_end not queued: " .. tostring(error)) end
     if tracked then state_.backgroundWillSnapshotPending = eventName == "AppWillEnterBackground" end
-    state_.queuePersistenceActive = true
     persistEventQueue()
     flushAutomaticStorage()
     GameAlgo.Flush(nil)
@@ -1351,6 +1389,7 @@ local function completeInitialization(options)
 
     ensureIdentity(options.userId, options.userCreatedAt, options.userCreatedLocalAt)
     ensureAccountIdentity(options.accountUserId or state_.prefetchedMakerUserId, options.accountUserCreatedAt)
+    state_.sessionAttribution = sessionAttribution()
     restoreReachedMilestones()
     restoreEventQueue()
 
@@ -1367,7 +1406,10 @@ local function completeInitialization(options)
         if not duplicate then
             tracked, trackError = enqueueTrack(pending.eventType, prepared, pending.timestamp,
                 pending.createdLocalAt, pending.sessionEndSnapshot)
-            if tracked then rememberMilestone(key, durable) end
+            if tracked and key then
+                rememberMilestone(key, durable)
+                persistEventQueue()
+            end
         end
         if not tracked then log("pending event dropped: " .. tostring(trackError)) end
     end
@@ -1383,7 +1425,6 @@ local function completeInitialization(options)
 
     if state_.lifecycleFlushPending then
         state_.lifecycleFlushPending = false
-        state_.queuePersistenceActive = true
         persistEventQueue()
         flushAutomaticStorage()
         GameAlgo.Flush(nil)
@@ -1398,15 +1439,58 @@ local function completeInitialization(options)
     end
 end
 
----@param options table
+local function numericOption(options, name, default)
+    if options[name] == nil then return default end
+    local value = tonumber(options[name])
+    if not value or value ~= value or math.abs(value) == math.huge then
+        error(name .. " must be a finite number")
+    end
+    return value
+end
+
+--- Initializes a game/user session after checkpointing the previous one. A failed
+--- local checkpoint raises an error and leaves the previous instance available for retry.
+---@param options table SDK identity, transport, timing and queue options.
+---@return table sdk
 function GameAlgo.Init(options)
-    options = options or {}
+    if options == nil then options = {} end
+    if type(options) ~= "table" then error("Init options must be a table") end
     if options.isOldUser ~= nil and type(options.isOldUser) ~= "boolean" then
         error("isOldUser must be a boolean")
     end
     if options.storage ~= nil then
         error("options.storage is not supported; TapTap Maker storage is managed automatically by the Lua SDK")
     end
+    local integrationVersion = numericOption(options, "experimentIntegrationVersion", 0)
+    if integrationVersion < 0 or integrationVersion % 1 ~= 0 then
+        error("experimentIntegrationVersion must be a non-negative integer")
+    end
+    local maxBatch = math.min(MAX_HTTP_BATCH_SIZE, math.max(1, math.floor(numericOption(options, "maxBatchSize", MAX_HTTP_BATCH_SIZE))))
+    local maxQueue = math.max(maxBatch, math.floor(numericOption(options, "maxQueueSize", DEFAULT_MAX_QUEUE_SIZE)))
+    local maxCallbacks = math.max(1, math.floor(numericOption(options, "maxPendingFlushCallbacks", DEFAULT_MAX_PENDING_FLUSH_CALLBACKS)))
+    local interval = math.max(0, numericOption(options, "flushIntervalMs", DEFAULT_FLUSH_INTERVAL_MS))
+    local timeout = math.max(1000, numericOption(options, "flushTimeoutMs", DEFAULT_FLUSH_TIMEOUT_MS))
+    local transport = options.transport or HttpTransport
+    if type(transport) ~= "table" or type(transport.Request) ~= "function" then error("transport.Request must be a function") end
+    if options.device ~= nil and type(options.device) ~= "table" then error("device must be a table") end
+    if options._scheduler ~= nil and type(options._scheduler) ~= "table" then error("invalid scheduler") end
+    for _, name in ipairs({ "sessionId", "baseUrl", "gameKey", "appVersion", "timezone" }) do
+        if options[name] ~= nil and type(options[name]) ~= "string" then error(name .. " must be a string") end
+    end
+
+    -- Chunks own both queued and in-flight events. Commit their complete index
+    -- before retiring any HTTP handles or opening the next storage snapshot.
+    if not persistEventQueue() or not flushAutomaticStorage() then
+        error("cannot reinitialize GameAlgo: previous local checkpoint failed")
+    end
+    local storage = state_.storage
+    if not storage or state_.persistentStorageAvailable then
+        local storageError
+        storage, storageError = MakerAutoStorage.New({ logger = function(message) logTo(options.logger, message) end })
+        if not storage then error(storageError) end
+    end
+    if type(transport.Start) == "function" then transport.Start(options.transportOptions) end
+    local previousScripts = state_.scriptRequests
     local previousActive = state_.activeFlush
     local previousEnd = state_.activeEndFlush
     local previousAd = state_.activeAdFlush
@@ -1421,17 +1505,20 @@ function GameAlgo.Init(options)
     if previousEnd then cancelTransportRequest(previousTransport, previousEnd.handle) end
     if previousAd then cancelTransportRequest(previousTransport, previousAd.handle) end
     if previousConfigRequestHandle then cancelTransportRequest(previousTransport, previousConfigRequestHandle) end
-    if state_.scheduler and type(state_.scheduler.Shutdown) == "function" then
+    if state_.scheduler and state_.scheduler ~= options._scheduler and type(state_.scheduler.Shutdown) == "function" then
         state_.scheduler:Shutdown()
+    elseif state_.scheduler and type(state_.scheduler.Cancel) == "function" then
+        for _, handle in pairs({ state_.configFetchTimeoutHandle, state_.configFetchRetryHandle, state_.initWatchdogHandle }) do
+            state_.scheduler:Cancel(handle)
+        end
     end
-    math.randomseed(os.time())
+    if state_.storage and state_.storage ~= storage then
+        state_.storage:Shutdown()
+    end
     state_.baseUrl = options.baseUrl or DEFAULT_BASE_URL
     state_.gameKey = options.gameKey
     state_.appVersion = options.appVersion
-    state_.experimentIntegrationVersion = tonumber(options.experimentIntegrationVersion) or 0
-    if state_.experimentIntegrationVersion < 0 or state_.experimentIntegrationVersion % 1 ~= 0 then
-        error("experimentIntegrationVersion must be a non-negative integer")
-    end
+    state_.experimentIntegrationVersion = integrationVersion
     -- Maker is a runtime property of this SDK, not an application option.
     -- Ignore legacy `platform` input so older integrations keep working while
     -- current clients always emit the canonical storage value.
@@ -1440,17 +1527,12 @@ function GameAlgo.Init(options)
     state_.device = options.device or {}
     state_.isDebug = options.isDebug == true
     state_.logger = options.logger
-    state_.transport = options.transport or HttpTransport
-    state_.maxBatchSize = math.max(1, math.floor(tonumber(options.maxBatchSize) or 100))
-    state_.maxQueueSize = math.max(state_.maxBatchSize,
-        math.floor(tonumber(options.maxQueueSize) or DEFAULT_MAX_QUEUE_SIZE))
-    state_.maxPendingFlushCallbacks = math.max(1,
-        math.floor(tonumber(options.maxPendingFlushCallbacks)
-            or DEFAULT_MAX_PENDING_FLUSH_CALLBACKS))
-    state_.flushIntervalMs = options.flushIntervalMs == nil
-        and DEFAULT_FLUSH_INTERVAL_MS or math.max(0, tonumber(options.flushIntervalMs) or 0)
-    state_.flushTimeoutMs = options.flushTimeoutMs == nil
-        and DEFAULT_FLUSH_TIMEOUT_MS or math.max(1000, tonumber(options.flushTimeoutMs) or 0)
+    state_.transport = transport
+    state_.maxBatchSize = maxBatch
+    state_.maxQueueSize = maxQueue
+    state_.maxPendingFlushCallbacks = maxCallbacks
+    state_.flushIntervalMs = interval
+    state_.flushTimeoutMs = timeout
     state_.clock = type(options.nowMs) == "function" and options.nowMs or nowMs
     state_.preloadConfigFiles = options.preloadConfigFiles ~= false
     state_.sessionId = options.sessionId or randomId("ga_session")
@@ -1470,7 +1552,9 @@ function GameAlgo.Init(options)
     state_.contextId = nil
     state_.config = nil
     state_.configFiles = {}
+    state_.configFileRequests = {}
     state_.scripts = {}
+    state_.scriptRequests = {}
     state_.ddaControllers = {}
     state_.queue = {}
     state_.flushableEvents = 0
@@ -1489,9 +1573,9 @@ function GameAlgo.Init(options)
     state_.reachedMilestoneKeys = {}
     state_.pendingMilestoneKeys = {}
     state_.consecutiveFlushFailures = 0
-    state_.queuePersistenceActive = false
     state_.queuePersistenceDirty = false
-    state_.queuePersistenceSaved = false
+    state_.milestoneMarkersDirty = false
+    state_.deferredMilestoneAcks = {}
     state_.queueEventsSincePersist = 0
     state_.lastQueuePersistAtMs = clockMs()
     state_.flushing = false
@@ -1533,46 +1617,52 @@ function GameAlgo.Init(options)
     state_.tapdbAttemptedNext = 1
     state_.pendingFlushSkipped = 0
     state_.pendingFlushTapdbAttempted = 0
-    -- Read the stable Maker account id before any asynchronous clientCloud:Get.
-    -- It remains available for diagnostics even when cloud-backed storage stalls.
+    -- Keep the Maker account separate from the locally persisted SDK identity.
+    -- Config diagnostics can use it even when local storage is unavailable.
     state_.prefetchedMakerUserId = options.accountUserId or resolveMakerUserId()
-    if type(state_.transport.Start) == "function" then state_.transport.Start(options.transportOptions) end
     ensureAutomaticUpdateDriver()
     state_.scheduler = options._scheduler or MakerAutoStorage.NewScheduler({
         logger = log,
         nowMs = state_.clock,
         externallyDriven = state_.internalUpdateSubscribed,
     })
-    local storage, storageError = MakerAutoStorage.New({
-        logger = log,
-        scheduler = state_.scheduler,
-        cloudReadTimeoutMs = options._cloudReadTimeoutMs,
-    })
-    if not storage then error(storageError) end
     state_.storage = storage
+    state_.persistentStorageAvailable = storage:Diagnostics().persistentStorageAvailable == true
+    local initGeneration = state_.lifecycleGeneration
     if state_.fetchConfigRequested and state_.scheduler and type(state_.scheduler.Schedule) == "function" then
-        state_.initWatchdogHandle = state_.scheduler:Schedule(INIT_WATCHDOG_MS, reportInitTimeout)
+        state_.initWatchdogHandle = state_.scheduler:Schedule(INIT_WATCHDOG_MS, function()
+            if initGeneration == state_.lifecycleGeneration then reportInitTimeout() end
+        end)
     end
-    storage:OnReady(function() completeInitialization(options) end)
+    storage:OnReady(function()
+        if initGeneration ~= state_.lifecycleGeneration or state_.storage ~= storage then
+            log("stale storage ready callback ignored (SDK reinitialized)")
+            return
+        end
+        completeInitialization(options)
+    end)
+    for _, request in pairs(previousScripts) do request.cancel() end
     return GameAlgo
 end
 
 local beginNextConfigFetch
-local function finishConfigFetch(error, config)
-    local sessionId = state_.configFetchBody and state_.configFetchBody.sessionId
+local function finishConfigFetch(request, error, config)
+    if state_.configFetchBody ~= request then return end
+    local owner = request.owner
+    local generation = state_.lifecycleGeneration
     state_.configFetchInFlight = false
     state_.configFetchBody = nil
     state_.configFetchAttempt = 0
     state_.configFetchRetryHandle = nil
     state_.configFetchRequestHandle = nil
     state_.configFetchTimeoutHandle = nil
-    local callbacks = state_.configFetchCallbacks
-    state_.configFetchCallbacks = {}
-    for _, entry in ipairs(callbacks) do
-        if entry.sessionId == sessionId then safeCallback(entry.callback, error, config)
-        else table.insert(state_.configFetchCallbacks, entry) end
+    local completed, waiting = {}, {}
+    for _, entry in ipairs(state_.configFetchCallbacks) do
+        table.insert(entry.owner == owner and completed or waiting, entry)
     end
-    beginNextConfigFetch()
+    state_.configFetchCallbacks = waiting
+    for _, entry in ipairs(completed) do safeCallback(entry.callback, error, config) end
+    if generation == state_.lifecycleGeneration then beginNextConfigFetch() end
 end
 
 local function isRetryableConfigFailure(response)
@@ -1646,6 +1736,18 @@ local function configRequestBody()
     }
 end
 
+-- Optional collections may be missing or malformed on older backends. Only
+-- publish references that their public lookup/preload paths can consume.
+local function configReferences(items, field)
+    local valid = {}
+    if type(items) == "table" then
+        for _, item in ipairs(items) do
+            if type(item) == "table" and type(item[field]) == "string" then table.insert(valid, item) end
+        end
+    end
+    return valid
+end
+
 local performConfigFetchAttempt
 performConfigFetchAttempt = function()
     if not state_.configFetchInFlight then return end
@@ -1653,16 +1755,23 @@ performConfigFetchAttempt = function()
     state_.configFetchAttempt = state_.configFetchAttempt + 1
     local attempt = state_.configFetchAttempt
     local generation = state_.lifecycleGeneration
-    local requestBody = state_.configFetchBody
+    local request = state_.configFetchBody
+    local requestBody, owner = request.body, request.owner
+    local scheduler = state_.scheduler
     local settled = false
 
     local function scheduleRetry(error)
         local delayMs = math.min(CONFIG_FETCH_RETRY_MAX_MS,
             CONFIG_FETCH_RETRY_BASE_MS * (2 ^ math.min(attempt - 1, 5)))
-        local scheduler = state_.scheduler
         local handle = scheduler ~= nil and type(scheduler.Schedule) == "function"
             and scheduler:Schedule(delayMs, function()
                 if generation ~= state_.lifecycleGeneration or not state_.configFetchInFlight then return end
+                if owner ~= state_.sessionAttribution then
+                    -- The session changed while this retry was pending. Hand the
+                    -- in-flight slot back to the queue instead of retrying.
+                    finishConfigFetch(request, error, nil)
+                    return
+                end
                 performConfigFetchAttempt()
             end) or nil
         if handle then
@@ -1688,14 +1797,32 @@ performConfigFetchAttempt = function()
         end
 
         if error then
+            if owner ~= state_.sessionAttribution then
+                -- A newer session is waiting behind this request. Stop
+                -- retrying the old session and release the in-flight slot so
+                -- the queue advances; the current session's response adopts
+                -- any orphaned events from the previous one.
+                log("config fetch aborted for stale session: " .. tostring(error))
+                finishConfigFetch(request, error, nil)
+                return
+            end
             if isRetryableConfigFailure(response) and scheduleRetry(error) then return end
             log("config fetch failed: " .. tostring(error))
-            finishConfigFetch(error, nil)
+            finishConfigFetch(request, error, nil)
             return
         end
         local contextId = config.contextId
-        local current = requestBody.sessionId == state_.sessionId
+        config.experiments = configReferences(config.experiments, "key")
+        config.configFiles = configReferences(config.configFiles, "name")
+        owner.contextId = contextId
+        local current = owner == state_.sessionAttribution
         if current then
+            local previous = state_.config
+            if not previous or config.configVersion == nil or previous.configVersion ~= config.configVersion
+                or previous.contextId ~= contextId then
+                state_.configFileRequests = {}
+                state_.configFiles = {}
+            end
             state_.config = config
             state_.eventQuota = normalizeEventQuota(config)
             state_.contextId = contextId
@@ -1706,21 +1833,27 @@ performConfigFetchAttempt = function()
         end
         mergeCustomEventCountBucket("pending:" .. tostring(requestBody.sessionId), "context:" .. contextId)
         mergeOrdinaryEventCountBucket("pending:" .. tostring(requestBody.sessionId), "context:" .. contextId)
-        bindQueuedEvents(contextId, requestBody.sessionId)
-        rememberBoundMilestones(contextId)
+        bindQueuedEvents(contextId, requestBody, current)
+        if state_.milestoneMarkersDirty then persistEventQueue() end
         if state_.initWatchdogHandle and state_.scheduler and type(state_.scheduler.Cancel) == "function" then
             state_.scheduler:Cancel(state_.initWatchdogHandle)
             state_.initWatchdogHandle = nil
         end
         reportTapDbContextLink(config, requestBody)
-        log("config fetched: version=" .. tostring(config and config.configVersion or "unknown"))
-        finishConfigFetch(nil, config)
-        if current and requestBody.sessionId == state_.sessionId and state_.preloadConfigFiles and config then
+        if generation ~= state_.lifecycleGeneration then return end
+        log("config fetched: version=" .. tostring(config.configVersion or "unknown"))
+        if generation ~= state_.lifecycleGeneration then return end
+        finishConfigFetch(request, nil, config)
+        if generation ~= state_.lifecycleGeneration then return end
+        if current and state_.config == config and state_.preloadConfigFiles then
             for _, file in ipairs(config.configFiles or {}) do
-                if file.name then GameAlgo.FetchConfigFile(file.name, nil) end
+                if state_.config ~= config then return end
+                if not state_.configFiles[file.name] then GameAlgo.FetchConfigFile(file.name, nil) end
             end
-            for _, experiment in ipairs(config.experiments or {}) do
-                if experiment.script then
+            local canExecute = #config.experiments > 0 and LuaScriptRuntime.CanEnforceLimit()
+            for _, experiment in ipairs(config.experiments) do
+                if state_.config ~= config then return end
+                if canExecute and type(experiment.script) == "table" then
                     GameAlgo.FetchScript(experiment.script, function(scriptError)
                         if scriptError then
                             log("script preload failed: name=" .. tostring(experiment.script.name)
@@ -1731,15 +1864,19 @@ performConfigFetchAttempt = function()
                 end
             end
         end
-        GameAlgo.Flush(nil)
+        if generation == state_.lifecycleGeneration then
+            startFlush(false)
+            sendEndSnapshot()
+            sendAdBatch()
+        end
     end
 
     local requestTimeoutHandle = nil
     local requestHandle = httpRequest("POST", "/v1/config", requestBody, function(error, config, response)
-        if settled then return end
+        if settled or generation ~= state_.lifecycleGeneration then return end
         settled = true
-        if requestTimeoutHandle and state_.scheduler and type(state_.scheduler.Cancel) == "function" then
-            state_.scheduler:Cancel(requestTimeoutHandle)
+        if requestTimeoutHandle and scheduler and type(scheduler.Cancel) == "function" then
+            scheduler:Cancel(requestTimeoutHandle)
         end
         completeAttempt(error, config, response)
     end)
@@ -1748,7 +1885,6 @@ performConfigFetchAttempt = function()
     -- also recovers when the engine never invokes either request callback.
     if not settled and generation == state_.lifecycleGeneration and state_.configFetchInFlight then
         state_.configFetchRequestHandle = requestHandle
-        local scheduler = state_.scheduler
         if scheduler and type(scheduler.Schedule) == "function" then
             requestTimeoutHandle = scheduler:Schedule(CONFIG_FETCH_TIMEOUT_MS, function()
                 if settled or generation ~= state_.lifecycleGeneration or not state_.configFetchInFlight then return end
@@ -1773,6 +1909,8 @@ beginNextConfigFetch = function()
     performConfigFetchAttempt()
 end
 
+--- Fetches the current session configuration and joins a request already in progress.
+---@param callback function|nil Receives (error, config) for the requesting session.
 function GameAlgo.FetchConfig(callback)
     if not state_.storageReady then
         state_.fetchConfigRequested = true
@@ -1781,86 +1919,132 @@ function GameAlgo.FetchConfig(callback)
     end
     ensureIdentity()
     if type(callback) == "function" then
-        table.insert(state_.configFetchCallbacks, { sessionId = state_.sessionId, callback = callback })
+        table.insert(state_.configFetchCallbacks, { owner = state_.sessionAttribution, callback = callback })
     end
-    if state_.configFetchBody and state_.configFetchBody.sessionId == state_.sessionId then return end
-    for _, body in ipairs(state_.configFetchBodies) do
-        if body.sessionId == state_.sessionId then return end
+    local owner = state_.sessionAttribution
+    if state_.configFetchBody and state_.configFetchBody.owner == owner then return end
+    for _, request in ipairs(state_.configFetchBodies) do
+        if request.owner == owner then return end
     end
-    table.insert(state_.configFetchBodies, configRequestBody())
+    table.insert(state_.configFetchBodies, { owner = owner, body = configRequestBody() })
     beginNextConfigFetch()
 end
 
 
+--- Fetches and verifies an immutable script. Callers waiting for the same
+--- version and digest share one download and one verification.
+---@param script table Script reference with name, versionId, hash and URL.
+---@param callback function|nil Receives (error, file) on completion or supersession.
 function GameAlgo.FetchScript(script, callback)
-    callback = callback or function() end
-    if type(script) ~= "table" then callback("invalid script reference", nil) return end
-    if not isLuaScript(script) then callback("unsupported Lua SDK script type: " .. tostring(script.name), nil) return end
-    local cacheKey = scriptCacheKey(script)
-    if not cacheKey then callback("script versionId is required", nil) return end
-
-    local cached = state_.scripts[cacheKey]
-    if cached then callback(nil, cached) return end
-
-    local persisted = storageGet(scriptStorageKey(script))
-        or storageGet(legacyScriptStorageKey(script))
-    if persisted and persisted ~= "" then
-        local valid = verifyScript(script, persisted)
-        if valid then
-            local file = { name = script.name, versionId = script.versionId, content = persisted, contentType = script.contentType, hash = script.hash }
-            state_.scripts[cacheKey] = file
-            storageSet(scriptStorageKey(script), persisted)
-            log("script cache ready: " .. tostring(script.name) .. "@" .. tostring(script.versionId or "name"))
-            callback(nil, file)
-            return
-        end
-    end
-
-    local url = script.url
-    if not url or url == "" then callback("script url is required", nil) return end
-    if tostring(url):sub(1, 1) == "/" then url = trimSlash(state_.baseUrl) .. tostring(url) end
-    rawHttpRequest("GET", url, function(error, response)
-        if error then
-            log("script fetch failed: " .. tostring(script.name) .. " " .. tostring(error))
-            callback(error, nil)
-            return
-        end
-        local content = response and response.body or ""
-        local valid, verifyError = verifyScript(script, content)
-        if not valid then
-            log("script verify failed: " .. tostring(script.name) .. " " .. tostring(verifyError))
-            callback(verifyError, nil)
-            return
-        end
-        local file = { name = script.name, versionId = script.versionId, content = content, contentType = script.contentType, hash = script.hash }
-        state_.scripts[cacheKey] = file
-        storageSet(scriptStorageKey(script), content)
-        log("script ready: " .. tostring(script.name) .. "@" .. tostring(script.versionId or "name"))
-        callback(nil, file)
-    end)
-end
-
-function GameAlgo.FetchConfigFile(name, callback)
-    if not name or name == "" or tostring(name):find("..", 1, true) then
-        if callback then callback("invalid config file name", nil) end
+    if type(script) ~= "table" then safeCallback(callback, "invalid script reference", nil); return end
+    if not isLuaScript(script) then
+        safeCallback(callback, "unsupported Lua SDK script type: " .. tostring(script.name), nil)
         return
     end
-    httpRequest("GET", "/v1/config-files/" .. urlEncode(name), nil, function(error, decoded, response)
-        if error then
-            log("config file fetch failed: " .. tostring(name) .. " " .. tostring(error))
-            if callback then callback(error, nil) end
-            return
+    local key = scriptCacheKey(script)
+    if not key then safeCallback(callback, "script versionId is required", nil); return end
+    if type(script.hash) ~= "string" or script.hash == "" then safeCallback(callback, "script hash is required", nil); return end
+    local cached = cachedScript(script)
+    if cached then safeCallback(callback, nil, copyScript(cached)); return end
+    local expected = script.hash:lower()
+    local previous = state_.scriptRequests[key]
+    if previous and previous.hash == expected then
+        if callback then table.insert(previous.callbacks, callback) end
+        return
+    end
+
+    local generation = state_.lifecycleGeneration
+    local requests, transport = state_.scriptRequests, state_.transport
+    local diskKey, legacyKey = scriptStorageKey(script), legacyScriptStorageKey(script)
+    local url = script.url
+    if type(url) == "string" and url:sub(1, 2) == "//" then
+        url = (state_.baseUrl:match("^([%a]+):") or "https") .. ":" .. url
+    elseif type(url) == "string" and url:sub(1, 1) == "/" then
+        url = trimSlash(state_.baseUrl) .. url
+    end
+    local file = { name = script.name, versionId = script.versionId, contentType = script.contentType, hash = script.hash }
+    local request = { hash = expected, callbacks = { callback } }
+    requests[key] = request
+    local function current() return state_.lifecycleGeneration == generation and requests[key] == request end
+    local function finish(error, content)
+        if not request.callbacks then return end
+        if not current() then error = "stale script response" end
+        if requests[key] == request then requests[key] = nil end
+        local callbacks = request.callbacks
+        request.callbacks = nil
+        if not error then
+            file.content = content
+            state_.scripts[key] = file
+            storageSet(diskKey, content)
         end
-        local file = {
-            name = name,
-            content = response and response.body or "",
-        }
-        state_.configFiles[name] = file
-        log("config file loaded: " .. tostring(name))
-        if callback then callback(nil, file) end
+        for _, waiter in ipairs(callbacks) do safeCallback(waiter, error, not error and copyScript(file) or nil) end
+    end
+    function request.cancel()
+        if request.hashTask then request.hashTask:Cancel() end
+        cancelTransportRequest(transport, request.handle)
+        finish("stale script response")
+    end
+    if previous then previous.cancel() end
+    if not current() then return end
+
+    local function verify(content, nextStep)
+        if type(content) ~= "string" then finish("invalid script content"); return end
+        local task = Sha256.hashAsync(content, state_.scheduler, function(error, digest)
+            if not current() then finish("stale script response"); return end
+            if error then finish(error); return end
+            if digest == expected then finish(nil, content); return end
+            if nextStep then nextStep() else finish("script hash mismatch: expected " .. expected .. ", got " .. digest) end
+        end)
+        if task then request.hashTask = task end
+    end
+    local function download()
+        if type(url) ~= "string" or url == "" then finish("script url is required"); return end
+        request.handle = rawHttpRequest("GET", url, function(error, response)
+            if not current() then finish("stale script response"); return end
+            if error then finish(error); return end
+            verify(response and response.body or "")
+        end)
+    end
+    local persisted = storageGet(diskKey) or storageGet(legacyKey)
+    if type(persisted) == "string" and persisted ~= "" then verify(persisted, download) else download() end
+end
+
+--- Downloads a named file from the active config revision. Concurrent callers
+--- share its result. A superseded revision or session completes with an error.
+---@param name string Config file name.
+---@param callback function|nil Receives (error, file).
+function GameAlgo.FetchConfigFile(name, callback)
+    if type(name) ~= "string" or name == "" or name:find("..", 1, true) then
+        safeCallback(callback, "invalid config file name", nil)
+        return
+    end
+    local requests = state_.configFileRequests
+    local waiters = requests[name]
+    if waiters then
+        if callback then table.insert(waiters, callback) end
+        return
+    end
+    waiters = { callback }
+    requests[name] = waiters
+    httpRequest("GET", "/v1/config-files/" .. urlEncode(name), nil, function(error, _, response)
+        requests[name] = nil
+        local file
+        if state_.configFileRequests ~= requests then
+            error = "stale config file response"
+        elseif not error then
+            file = { name = name, content = response and response.body or "" }
+            state_.configFiles[name] = file
+        end
+        if error then log("config file fetch failed: " .. name .. " " .. tostring(error)) end
+        for _, waiter in ipairs(waiters) do safeCallback(waiter, error, file) end
     end)
 end
 
+--- Enqueues an event for the current identity and schedules its local checkpoint.
+---@param eventType string Wire event type.
+---@param payload table|nil JSON-serializable event properties.
+---@return boolean accepted
+---@return string|nil error
 function GameAlgo.Track(eventType, payload)
     if not eventType or eventType == "" then return false end
     local payloadCopy, payloadError = preparePayload(payload)
@@ -1935,14 +2119,17 @@ function GameAlgo.Track(eventType, payload)
         log("event rejected: " .. tostring(eventType) .. " " .. tostring(trackError))
         return false, trackError
     end
-    rememberMilestone(key, durable)
+    if key then
+        rememberMilestone(key, durable)
+        persistEventQueue()
+    end
     if eventType == "ad_view" then
         GameAlgo.Flush(nil)
     elseif state_.contextId and state_.contextId ~= ""
         and not state_.activeFlush
         and (#state_.queue >= state_.maxBatchSize
             or (state_.nextAutoFlushAtMs and clockMs() >= state_.nextAutoFlushAtMs)) then
-        GameAlgo.Flush(nil)
+        startFlush(false)
     end
     return true, nil
 end
@@ -1995,6 +2182,12 @@ local function validAdPlacementId(adPlacementId)
         and adPlacementId:match("^gap_[a-f0-9]+$") ~= nil
 end
 
+local function setAdFields(payload, adPlacementId, revenue, network)
+    payload.placement, payload.adType, payload.currency = nil, nil, nil
+    payload.adPlacementId, payload.revenue = adPlacementId, revenue
+    if network and network ~= "" then payload.network = network end
+end
+
 function GameAlgo.TrackAdPlacement(adPlacementId, revenue, network, payload)
     if not validAdPlacementId(adPlacementId) then
         return false, "adPlacementId must be gap_ followed by 32 lowercase hex characters"
@@ -2008,19 +2201,46 @@ function GameAlgo.TrackAdPlacement(adPlacementId, revenue, network, payload)
     end
     local merged, payloadError = preparePayload(payload)
     if payloadError then return false, payloadError end
-    merged.placement = nil
-    merged.adType = nil
-    merged.currency = nil
-    merged.adPlacementId = adPlacementId
-    merged.revenue = revenue
-    if network and network ~= "" then merged.network = network end
+    setAdFields(merged, adPlacementId, revenue, network)
     local tracked = GameAlgo.Track("ad_view", merged)
     return tracked
 end
 
--- Maker's single result callback can also be a synchronous request rejection.
--- Buffer it until ShowRewardVideoAd returns, and keep business handling separate
--- from reporting. No synthetic result or additional lifecycle is introduced.
+-- A result can arrive after the player or session changes. A different user's
+-- queue is replayed on their next Init, using their own transport credentials.
+local function queueRewardResult(owner, contextAtRequest, queueLimit, placement, payload)
+    local current = state_.sessionAttribution
+    if not owner or not current then return false end
+    if current == owner and (not contextAtRequest or contextAtRequest == current.contextId) then
+        return GameAlgo.TrackAdPlacement(placement, 0, "taptap", payload)
+    end
+    local attribution = { userId = owner.userId, accountUserId = owner.accountUserId, sessionId = owner.sessionId,
+        isDebug = owner.isDebug, contextId = contextAtRequest or owner.contextId }
+    setAdFields(payload, placement, 0, "taptap")
+    if current.queueKey == owner.queueKey then
+        if not attribution.contextId and current.isDebug == owner.isDebug then
+            attribution.contextId = current.contextId
+        end
+        local queued = enqueueTrack("ad_view", payload, nil, nil, nil, attribution)
+        if queued then GameAlgo.Flush(nil) end
+        return queued
+    end
+    local queue = state_.storage:EventQueue(owner.queueKey)
+    local limit = queueLimit - (queueLimit >= 10 and 1 or 0)
+    if #queue:Events() >= limit then return false end
+    queue:Upsert(makeEvent(attribution, "ad_view", payload))
+    flushAutomaticStorage()
+    return true
+end
+
+--- Asks Maker to show a rewarded ad and attributes its result to the initiating session.
+--- A result without an original context can use a later one for the same game, user and debug mode.
+--- Delivers the first native result to the business callback, including synchronous rejection.
+---@param adPlacementId string Registered placement ID.
+---@param callback function|nil Receives the original Maker result once.
+---@param payload table|nil Additional event properties, captured at request time.
+---@return boolean accepted
+---@return string|nil error
 function GameAlgo.ShowRewardVideoAd(adPlacementId, callback, payload)
     if not validAdPlacementId(adPlacementId) then
         return false, "adPlacementId must be gap_ followed by 32 lowercase hex characters"
@@ -2032,6 +2252,9 @@ function GameAlgo.ShowRewardVideoAd(adPlacementId, callback, payload)
     if payloadError then return false, payloadError end
     snapshot.adElapsedMs, snapshot.adElapsedSource = nil, nil
 
+    local owner = state_.sessionAttribution
+    local contextAtRequest = owner and owner.contextId
+    local queueLimit = state_.maxQueueSize
     local adClock = state_.clock or nowMs
     local function elapsedTime()
         local ok, value = pcall(adClock)
@@ -2061,7 +2284,7 @@ function GameAlgo.ShowRewardVideoAd(adPlacementId, callback, payload)
                         snapshot.adElapsedSource = "request_to_result"
                     end
                 end
-                return GameAlgo.TrackAdPlacement(adPlacementId, 0, "taptap", snapshot)
+                return queueRewardResult(owner, contextAtRequest, queueLimit, adPlacementId, snapshot)
             end)
             log("reward ad result: requestId=" .. requestId
                 .. " queued=" .. tostring(ok and queued == true)
@@ -2162,8 +2385,6 @@ local function cancelRequest(handle)
     cancelTransportRequest(state_.transport, handle)
 end
 
-local startFlush
-
 local function failActiveFlush(active, error, cancel)
     if state_.activeFlush ~= active then return end
     state_.activeFlush = nil
@@ -2175,7 +2396,6 @@ local function failActiveFlush(active, error, cancel)
     state_.retryFlushAtMs = clockMs() + retryDelayMs(state_.consecutiveFlushFailures)
     state_.pendingFlushAccepted = 0
     state_.pendingFlushRejected = 0
-    state_.queuePersistenceActive = true
     state_.pendingFlushSkipped = 0
     state_.pendingFlushTapdbAttempted = 0
     persistEventQueue()
@@ -2388,7 +2608,17 @@ local function finishActiveFlush(lifecycleGeneration, sequence, error, result, l
             end
         end
     end
-    state_.eventQueueStorage:Remove(active.batch)
+    if state_.milestoneMarkersDirty then
+        -- Keep ACKed milestones recoverable while their marker write is retried.
+        local removable = {}
+        for _, event in ipairs(active.batch) do
+            local target = event.eventType == "milestone" and state_.deferredMilestoneAcks or removable
+            table.insert(target, event)
+        end
+        state_.eventQueueStorage:Remove(removable)
+    else
+        state_.eventQueueStorage:Remove(active.batch)
+    end
     state_.queuePersistenceDirty = true
     persistEventQueue()
     flushAutomaticStorage()
@@ -2417,7 +2647,6 @@ local function finishActiveFlush(lifecycleGeneration, sequence, error, result, l
     state_.pendingFlushSkipped = 0
     state_.pendingFlushTapdbAttempted = 0
     state_.nextAutoFlushAtMs = nil
-    if outstandingEventCount() == 0 then state_.queuePersistenceActive = false end
     completeFlushCallbacks(nil, {
         ok = true,
         accepted = totalAccepted,
@@ -2447,7 +2676,6 @@ startFlush = function(force)
     state_.activeFlush = active
     state_.flushing = true
     state_.flushRequested = false
-    state_.queuePersistenceActive = true
     state_.nextAutoFlushAtMs = nil
     if state_.flushableEvents > 0 then armAutoFlush() end
     persistEventQueue()
@@ -2515,6 +2743,8 @@ function GameAlgo.Update()
     sendAdBatch()
 end
 
+--- Checkpoints pending events and requests immediate delivery, including during backoff.
+---@param callback function|nil Receives (error, receipt) with HTTP and TapDB delivery counts.
 function GameAlgo.Flush(callback)
     if not state_.storageReady then
         safeCallback(callback, "storage not ready", nil)
@@ -2529,7 +2759,6 @@ function GameAlgo.Flush(callback)
     -- must not leave newly queued exit events waiting for Update/the HTTP ACK.
     -- The normal send path checkpoints in startFlush before starting HTTP.
     if state_.activeFlush or (not hasFlushableEvents() and #state_.queue > 0) then
-        state_.queuePersistenceActive = true
         persistEventQueue()
         flushAutomaticStorage()
     end
@@ -2587,10 +2816,11 @@ function GameAlgo.NewSession(sessionId, callback)
     state_.sessionStartMs = endedAt
     state_.sessionForegroundStartMs = GameAlgo.GetForegroundTimeMs()
     state_.contextId = nil
+    state_.sessionAttribution = sessionAttribution()
     state_.config = nil
+    state_.configFiles = {}
+    state_.configFileRequests = {}
     state_.eventQuota = nil
-    state_.pendingMilestoneKeys = {}
-    state_.queuePersistenceActive = true
     persistEventQueue()
     flushAutomaticStorage()
     GameAlgo.Flush(nil)
@@ -2598,6 +2828,9 @@ function GameAlgo.NewSession(sessionId, callback)
     return nextSessionId
 end
 
+--- Looks up the current assignment for an experiment strategy.
+---@param key string Strategy key.
+---@return table executor
 function GameAlgo.Executor(key)
     local executor = {}
 
@@ -2605,8 +2838,10 @@ function GameAlgo.Executor(key)
         local item = currentAssignment(key)
         if not item then return false end
         if not item.script then return true end
-        local cacheKey = scriptCacheKey(item.script)
-        return cacheKey ~= nil and state_.scripts[cacheKey] ~= nil
+        -- Scripts also need a host that can enforce the instruction budget;
+        -- otherwise Execute() refuses and IsReady() would lie to the game.
+        return cachedScript(item.script) ~= nil
+            and LuaScriptRuntime.CanEnforceLimit()
     end
 
     function executor.Variant(defaultValue)
@@ -2614,13 +2849,16 @@ function GameAlgo.Executor(key)
         return item and item.variant or defaultValue
     end
 
+    --- Reads a dotted JSON path. Array positions start at zero and object keys are literal strings.
     function executor.Value(path, defaultValue)
         local item = currentAssignment(key)
         local value = item and tablePath(item.config, path)
         if value == nil then return defaultValue end
-        return value
+        return (snapshotJsonValue(value, {}, "config"))
     end
 
+    --- Returns the variant, payload, diagnostics and a copy of the assignment when ready.
+    --- Config-only assignments preserve JSON scalar values and return independent table payloads.
     function executor.Execute(input)
         local item = currentAssignment(key)
         if not item then return nil end
@@ -2629,17 +2867,17 @@ function GameAlgo.Executor(key)
                 log("execute skipped: unsupported script type: " .. tostring(item.script.name))
                 return nil
             end
-            local cacheKey = scriptCacheKey(item.script)
-            local file = cacheKey and state_.scripts[cacheKey] or nil
+            local file = cachedScript(item.script)
             if not file then
                 log("execute skipped: script not loaded: " .. tostring(item.key) .. " -> " .. tostring(item.script.name))
                 return nil
             end
             local inputCopy = normalizePayload(input)
-            local configCopy = normalizePayload(item.config)
+            local configCopy = snapshotJsonValue(item.config, {}, "config")
+            if configCopy == nil then configCopy = {} end
             local scriptInput = {
                 state = inputCopy or {},
-                config = configCopy or {},
+                config = configCopy,
                 meta = {
                     gameId = state_.config and state_.config.gameId or "",
                     userId = state_.userId or "",
@@ -2665,12 +2903,15 @@ function GameAlgo.Executor(key)
                 variant = item.variant,
                 payload = result.payload,
                 diagnostics = result.diagnostics or {},
-                assignment = item,
+                assignment = snapshotJsonValue(item, {}, "assignment"),
             }
         end
+        local payload = snapshotJsonValue(item.config, {}, "config")
+        if payload == nil then payload = {} end
         return {
             variant = item.variant,
-            payload = item.config or {},
+            payload = payload,
+            assignment = snapshotJsonValue(item, {}, "assignment"),
             diagnostics = {
                 luaSdk = "config_only",
             },
@@ -2681,24 +2922,31 @@ function GameAlgo.Executor(key)
     return executor
 end
 
+--- Returns the strategy controller for this Init. After reinitialization an old
+--- controller rejects mutations and Decide returns a neutral fallback.
+---@param key string DDA strategy key.
+---@param options table|nil Optional storage key and history window.
 function GameAlgo.DDA(key, options)
     key = tostring(key or "")
     if key == "" then error("DDA strategy key is required") end
     if state_.ddaControllers[key] then return state_.ddaControllers[key] end
     options = options or {}
-    local storageKey = options.storageKey or (userStorageNamespace() .. ":dda:" .. key)
-    local legacyStorageKey = "gamealgo:v1:dda:" .. tostring(state_.gameKey or "anonymous"):sub(1, 16) .. ":" .. key
+    local generation = state_.lifecycleGeneration
+    local storageKey = options.storageKey
     local actual = nil
     local pending = {}
     local controller = {}
 
     local function queueOrRun(method, ...)
+        if generation ~= state_.lifecycleGeneration then return nil, "stale DDA controller" end
         if actual then return actual[method](...) end
         table.insert(pending, { method = method, args = { ... } })
     end
 
     function controller._Hydrate()
-        if actual or not state_.storageReady then return end
+        if generation ~= state_.lifecycleGeneration or actual or not state_.storageReady then return end
+        storageKey = storageKey or (userStorageNamespace() .. ":dda:" .. key)
+        local legacyStorageKey = "gamealgo:v1:dda:" .. tostring(state_.gameKey or "anonymous"):sub(1, 16) .. ":" .. key
         if storageGet(storageKey) == nil then
             local legacyValue = storageGet(legacyStorageKey)
             if legacyValue ~= nil then storageSet(storageKey, legacyValue) end
@@ -2733,7 +2981,8 @@ function GameAlgo.DDA(key, options)
     end
 
     function controller.Snapshot(context)
-        if actual then return actual.Snapshot(context) end
+        local stale = generation ~= state_.lifecycleGeneration
+        if not stale and actual then return actual.Snapshot(context) end
         return {
             context = type(context) == "table" and context or {},
             behavior = {
@@ -2744,16 +2993,17 @@ function GameAlgo.DDA(key, options)
                 completedSteps = 0,
                 windowSize = tonumber(options.recentWindowSize) or 10,
             },
-            diagnostics = { storageReady = false },
+            diagnostics = { storageReady = false, reason = stale and "stale_controller" or nil },
         }
     end
 
     function controller.Decide(context)
-        if actual then return actual.Decide(context) end
+        local stale = generation ~= state_.lifecycleGeneration
+        if not stale and actual then return actual.Decide(context) end
         return {
             adjustment = "keep",
             payload = { adjustment = "keep" },
-            diagnostics = { fallback = true, reason = "storage_not_ready" },
+            diagnostics = { fallback = true, reason = stale and "stale_controller" or "storage_not_ready" },
             isFallback = true,
         }
     end
@@ -2763,6 +3013,10 @@ function GameAlgo.DDA(key, options)
     return controller
 end
 
+--- Reads a dotted JSON path from a downloaded config file, using zero-based array indices.
+---@param path string Dotted path, or an empty string for the full document.
+---@param defaultValue any Fallback for missing files, invalid JSON or absent keys.
+---@param fileName string Downloaded config file name.
 function GameAlgo.ConfigValue(path, defaultValue, fileName)
     if not fileName then return defaultValue end
     local file = state_.configFiles[fileName]
@@ -2786,7 +3040,7 @@ function GameAlgo.Snapshot()
         contextId = state_.contextId,
         config = state_.config,
         configFiles = state_.configFiles,
-        scripts = state_.scripts,
+        scripts = snapshotJsonValue(state_.scripts, {}, "scripts"),
         queuedEvents = outstandingEventCount(),
         inflightEvents = active and #active.batch or 0,
         flushing = active ~= nil,
