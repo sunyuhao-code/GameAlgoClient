@@ -315,7 +315,7 @@ helper 校验 ID 格式和有限数值收入，静态字段 `placement/adType/cu
 
 名称、广告类型和币种在登记时提交；携带有效 ID 时，服务端在写入前按定义补齐 `placement/adType/currency`。每次曝光仅传 ID、真实收入和其他动态事实，不重复维护静态字段。原始 HTTP 传输不自动执行登记。
 
-查库失败返回 HTTP 503 `ad_placement_unavailable`；ID 未登记或属于其他游戏时返回 HTTP 503 `ad_placement_unresolved`。此时该批未被确认接收，核对绑定和登记后沿用原 eventId 重试。
+查库失败返回 HTTP 503 `ad_placement_unavailable`，此时该批未被确认接收，沿用原 eventId 重试。ID 未登记或属于其他游戏（且 legacy 字段不完整）时，服务端按单条事件过滤（返回 HTTP 200，并在 `filtered` 中汇总 `code: "ad_placement_unresolved"`），不会阻断同批内其他合法事件。
 
 `ad_view` 只表示有效曝光；用户看了一部分后跳过但广告 SDK 已确认曝光有效，也应该上报。广告加载失败、未填充或展示前失败不报。币种在注册定义中指定，必须与回调金额一致；Maker / TapTap 的 trackId 回补链路注册 CNY。
 
@@ -357,7 +357,7 @@ SDK 初始化从 `/v1/config` 获取当前普通事件额度，并把它作为�
 | 404 | `not_found` |
 | 429 | `rate_limited` |
 | 500 | `server_error` |
-| 503 | `ad_placement_unavailable` / `ad_placement_unresolved` |
+| 503 | `ad_placement_unavailable` |
 
 ## 8. 接入检查清单
 

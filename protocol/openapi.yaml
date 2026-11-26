@@ -418,10 +418,10 @@ components:
             $ref: "#/components/schemas/ErrorResponse"
     AdPlacementUnavailable:
       description: >
-        ad_placement_unavailable means placement lookup failed.
-        ad_placement_unresolved means the ID could not be resolved for this game.
-        The batch was not acknowledged or stored. Verify
-        registration/binding for an unresolved ID; retry using the same event IDs.
+        ad_placement_unavailable means placement lookup failed (storage error).
+        The batch was not acknowledged or stored; retry using the same event IDs.
+        Unresolved placement IDs on individual ad_view events are filtered per
+        event as ad_placement_unresolved in EventBatchResponse.filtered.
       content:
         application/json:
           schema:
@@ -698,7 +698,7 @@ components:
         filtered:
           type: array
           minItems: 1
-          maxItems: 5
+          maxItems: 6
           description: Terminally filtered events grouped by code only, without per-event index, eventId or reason. Omitted when nothing was filtered. Every filtered row is already acknowledged in accepted and must not be retried.
           items:
             type: object
@@ -707,7 +707,7 @@ components:
             properties:
               code:
                 type: string
-                enum: [invalid_event, unregistered_event, blocked_event, deprecated_event, daily_event_limit_exceeded]
+                enum: [invalid_event, unregistered_event, blocked_event, deprecated_event, daily_event_limit_exceeded, ad_placement_unresolved]
               count:
                 type: integer
                 minimum: 1
@@ -725,7 +725,7 @@ components:
           type: string
         code:
           type: string
-          enum: [invalid_event, unregistered_event, blocked_event, deprecated_event, daily_event_limit_exceeded]
+          enum: [invalid_event, unregistered_event, blocked_event, deprecated_event, daily_event_limit_exceeded, ad_placement_unresolved]
         reason:
           type: string
 
