@@ -144,7 +144,7 @@ test("a late config response binds only its old session and cannot replace the n
   const held = new Promise<void>(resolve => { release = resolve; });
   const events: GameEvent[] = [];
   const client = new GameAlgoRestClient({
-    gameKey: "ga_live_session_rotation_test", baseUrl: "https://gamealgo.test", userId: "user",
+    gameKey: "ga_live_session_rotation_test", baseUrl: "https://gamealgo.test", userId: "user", experimentIntegrationVersion: 1,
     autoStart: false, eventFlushIntervalMs: 0, logger: false,
     fetchImpl: async (input, init) => {
       const request = new Request(input, init);

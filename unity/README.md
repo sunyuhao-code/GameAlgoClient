@@ -1,7 +1,7 @@
 # GamePropel Unity SDK
 
 Unity 2022.3 or later; Android API 24+ and iOS 15+. Install the prepared
-`com.gamepropel.sdk-1.0.1.tgz` with **Package Manager → Add package from tarball**.
+`com.gamepropel.sdk-1.1.0.tgz` with **Package Manager → Add package from tarball**.
 A source checkout can also be added as a local package after building its native
 artifacts. JSON uses the SDK's small, dependency-free data parser; no Newtonsoft
 or System.Text.Json assembly is required. The SDK initializes only in Android/iOS players;
@@ -33,7 +33,7 @@ var sdk = GamePropel.GamePropelSDK.Initialize(new GamePropel.GamePropelOptions {
     GameKey = clientKey,       // ga_live_* only
     AppVersion = "1.0.0",
     IsDebug = true,            // set false for production
-    ExperimentIntegrationVersion = 0
+    ExperimentIntegrationVersion = 1 // required positive integer (>= 1)
 });
 
 // This yields to Unity; gameplay can keep reading local defaults while it runs.

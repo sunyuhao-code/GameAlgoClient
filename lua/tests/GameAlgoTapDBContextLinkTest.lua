@@ -61,6 +61,7 @@ local function harness()
     function h.init(options)
         options = options or {}
         options.gameKey = "ga_live_tapdb_context_link_fixture"
+        if options.experimentIntegrationVersion == nil then options.experimentIntegrationVersion = 1 end
         options.transport = h.transport
         options._scheduler = h.scheduler
         options.preloadConfigFiles = false

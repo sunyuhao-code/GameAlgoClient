@@ -350,9 +350,9 @@ export class GameAlgoRestClient {
     const platform = options.platform ?? this.platform;
     const sdkVersion = options.sdkVersion ?? this.sdkVersion;
     const appVersion = options.appVersion ?? this.appVersion;
-    const experimentIntegrationVersion = normalizeExperimentIntegrationVersion(
-      options.experimentIntegrationVersion ?? this.experimentIntegrationVersion,
-    );
+    const experimentIntegrationVersion = options.experimentIntegrationVersion !== undefined
+      ? normalizeExperimentIntegrationVersion(options.experimentIntegrationVersion)
+      : this.experimentIntegrationVersion;
     const sessionId = clean(options.sessionId) ?? this.tracker.currentSessionId();
     const isDebug = options.isDebug ?? this.isDebug;
     const device = {
@@ -2403,11 +2403,10 @@ function normalizeContextIdentifier(type: ContextIdentifierType, value: string |
 }
 
 function normalizeExperimentIntegrationVersion(value: number | undefined): number {
-  const version = value ?? 0;
-  if (!Number.isSafeInteger(version) || version < 0) {
-    throw new Error("experimentIntegrationVersion must be a non-negative integer");
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+    throw new Error("experimentIntegrationVersion must be a positive integer");
   }
-  return version;
+  return value;
 }
 
 function resolveLogger(logger: GameAlgoLogger | undefined): ((message: string) => void) | undefined {

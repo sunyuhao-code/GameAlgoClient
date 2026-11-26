@@ -33,7 +33,7 @@ public sealed class GamePropelUnityPlayerProbe : MonoBehaviour
                 throw new Exception("The test must use a local HTTP stub");
 #if UNITY_EDITOR
             bool rejected = false;
-            try { GamePropelSDK.Initialize(new GamePropelOptions { GameKey = "ga_live_unity_offline_probe" }); }
+            try { GamePropelSDK.Initialize(new GamePropelOptions { GameKey = "ga_live_unity_offline_probe", ExperimentIntegrationVersion = 1 }); }
             catch (PlatformNotSupportedException) { rejected = true; }
             Check(rejected && !GamePropelSDK.IsInitialized, "Editor does not fake native initialization");
             Log("EDITOR_PASS");
@@ -42,7 +42,7 @@ public sealed class GamePropelUnityPlayerProbe : MonoBehaviour
 #endif
             sdk = GamePropelSDK.Initialize(new GamePropelOptions {
                 GameKey = "ga_live_unity_offline_probe", BaseUrl = endpoint,
-                AppVersion = "unity-player-validation", IsDebug = true, EnableLogging = true,
+                AppVersion = "unity-player-validation", ExperimentIntegrationVersion = 1, IsDebug = true, EnableLogging = true,
                 Device = new JsonObject { ["probeRunId"] = runId }
             });
             Check(await sdk.WaitForReadyAsync(15000), "native readiness");

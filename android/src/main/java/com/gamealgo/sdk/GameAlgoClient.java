@@ -21,7 +21,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
 
 public final class GameAlgoClient {
-    public static final String DEFAULT_SDK_VERSION = "2.1.5";
+    public static final String DEFAULT_SDK_VERSION = "2.2.0";
     private static final String USER_ID_KEY = "gamealgo_user_id";
     private static final String USER_CREATED_AT_KEY = "gamealgo_user_created_at";
     private static final String USER_CREATED_LOCAL_AT_KEY = "gamealgo_user_created_local_at";
@@ -51,8 +51,8 @@ public final class GameAlgoClient {
     private final Map<String, Boolean> oldUserStates = new LinkedHashMap<>();
     private boolean didLogUserId;
 
-    public GameAlgoClient(String gameKey, String baseUrl) {
-        this(gameKey, baseUrl, DEFAULT_SDK_VERSION, null, "android", new UrlConnectionGameAlgoHttpClient());
+    public GameAlgoClient(String gameKey, String baseUrl, int experimentIntegrationVersion) {
+        this(gameKey, baseUrl, DEFAULT_SDK_VERSION, null, experimentIntegrationVersion, "android", new UrlConnectionGameAlgoHttpClient());
     }
 
     public GameAlgoClient(
@@ -60,9 +60,10 @@ public final class GameAlgoClient {
             String baseUrl,
             String sdkVersion,
             String appVersion,
+            int experimentIntegrationVersion,
             String platform,
             GameAlgoHttpClient httpClient) {
-        this(gameKey, baseUrl, sdkVersion, appVersion, platform, httpClient, new RustGameAlgoScriptRuntime(), null, null);
+        this(gameKey, baseUrl, sdkVersion, appVersion, experimentIntegrationVersion, platform, httpClient, new RustGameAlgoScriptRuntime(), null, null);
     }
 
     public GameAlgoClient(
@@ -70,12 +71,13 @@ public final class GameAlgoClient {
             String baseUrl,
             String sdkVersion,
             String appVersion,
+            int experimentIntegrationVersion,
             String platform,
             GameAlgoHttpClient httpClient,
             GameAlgoScriptRuntime scriptRuntime,
             GameAlgoCacheStorage cacheStorage,
             String cacheKey) {
-        this(gameKey, baseUrl, sdkVersion, appVersion, platform, httpClient, scriptRuntime, cacheStorage, cacheKey, GameAlgoLogger.console());
+        this(gameKey, baseUrl, sdkVersion, appVersion, experimentIntegrationVersion, platform, httpClient, scriptRuntime, cacheStorage, cacheKey, GameAlgoLogger.console());
     }
 
     public GameAlgoClient(
@@ -83,13 +85,15 @@ public final class GameAlgoClient {
             String baseUrl,
             String sdkVersion,
             String appVersion,
+            int experimentIntegrationVersion,
             String platform,
             GameAlgoHttpClient httpClient,
             GameAlgoScriptRuntime scriptRuntime,
             GameAlgoCacheStorage cacheStorage,
             String cacheKey,
             GameAlgoLogger logger) {
-        this(gameKey, baseUrl, sdkVersion, appVersion, platform, httpClient, scriptRuntime, cacheStorage, cacheKey, logger, new GameAlgoFetchConfigRequest(null), true);
+        this(gameKey, baseUrl, sdkVersion, appVersion, platform, httpClient, scriptRuntime, cacheStorage, cacheKey, logger,
+                new GameAlgoFetchConfigRequest(null).experimentIntegrationVersion(experimentIntegrationVersion), true);
     }
 
     GameAlgoClient(
@@ -97,6 +101,7 @@ public final class GameAlgoClient {
             String baseUrl,
             String sdkVersion,
             String appVersion,
+            int experimentIntegrationVersion,
             String platform,
             GameAlgoHttpClient httpClient,
             GameAlgoScriptRuntime scriptRuntime,
@@ -104,7 +109,8 @@ public final class GameAlgoClient {
             String cacheKey,
             GameAlgoLogger logger,
             boolean autoStart) {
-        this(gameKey, baseUrl, sdkVersion, appVersion, platform, httpClient, scriptRuntime, cacheStorage, cacheKey, logger, new GameAlgoFetchConfigRequest(null), autoStart);
+        this(gameKey, baseUrl, sdkVersion, appVersion, platform, httpClient, scriptRuntime, cacheStorage, cacheKey, logger,
+                new GameAlgoFetchConfigRequest(null).experimentIntegrationVersion(experimentIntegrationVersion), autoStart);
     }
 
     public GameAlgoClient(
@@ -141,15 +147,18 @@ public final class GameAlgoClient {
         if (isBlank(baseUrl)) {
             throw new IllegalArgumentException("baseUrl is required");
         }
+        if (initialRequest == null
+                || initialRequest.getExperimentIntegrationVersion() == null
+                || initialRequest.getExperimentIntegrationVersion() <= 0) {
+            throw new IllegalArgumentException("experimentIntegrationVersion must be a positive integer");
+        }
         this.gameKey = gameKey;
         this.baseUrl = trimTrailingSlash(baseUrl);
         this.defaultSDKVersion = isBlank(sdkVersion) ? DEFAULT_SDK_VERSION : sdkVersion;
         this.defaultAppVersion = appVersion;
-        this.initialIsOldUser = initialRequest == null ? null : initialRequest.getIsOldUser();
+        this.initialIsOldUser = initialRequest.getIsOldUser();
         this.defaultPlatform = isBlank(platform) ? "android" : platform;
-        this.defaultExperimentIntegrationVersion = initialRequest == null || initialRequest.getExperimentIntegrationVersion() == null
-                ? 0
-                : initialRequest.getExperimentIntegrationVersion();
+        this.defaultExperimentIntegrationVersion = initialRequest.getExperimentIntegrationVersion();
         this.httpClient = httpClient == null ? new UrlConnectionGameAlgoHttpClient() : httpClient;
         this.scriptRuntime = scriptRuntime == null ? new RustGameAlgoScriptRuntime() : scriptRuntime;
         cacheStorage = cacheStorage == null ? GameAlgoPlatformServices.defaultStorage() : cacheStorage;

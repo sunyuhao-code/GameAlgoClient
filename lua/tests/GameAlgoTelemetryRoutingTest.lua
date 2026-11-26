@@ -50,6 +50,7 @@ local function fixture(flags, options)
         end
     end, Cancel = function() end }
     h.client.Init({ gameKey = options.gameKey or ("ga_live_maker_routing_fixture_" .. tostring(sequence)),
+        experimentIntegrationVersion = 1,
         transport = h.transport, preloadConfigFiles = false, autoFetch = options.autoFetch,
         maxBatchSize = options.maxBatchSize or 100,
         nowMs = function() return h.now end, logger = function() end })

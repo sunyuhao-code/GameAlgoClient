@@ -60,8 +60,8 @@ public final class GameAlgoFetchConfigRequest {
     }
 
     public GameAlgoFetchConfigRequest experimentIntegrationVersion(int experimentIntegrationVersion) {
-        if (experimentIntegrationVersion < 0) {
-            throw new IllegalArgumentException("experimentIntegrationVersion must be a non-negative integer");
+        if (experimentIntegrationVersion <= 0) {
+            throw new IllegalArgumentException("experimentIntegrationVersion must be a positive integer");
         }
         this.experimentIntegrationVersion = experimentIntegrationVersion;
         return this;

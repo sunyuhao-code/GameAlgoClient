@@ -40,7 +40,7 @@ assert.equal(GAMEPROPEL_CRAZYGAMES_SDK_VERSION, '${pkg.version}');
 assert.equal(typeof createRequire(import.meta.url)('${pkg.name}').GamePropelCrazyGamesClient.init, 'function');
 const values = new Map();
 const host = {init: async () => {}, environment:'crazygames', ad:{requestAd(type,c){c.adStarted();c.adFinished();}}};
-const sdk = await GamePropelCrazyGamesClient.init({crazyGames:host, baseUrl: process.argv[2], gameKey:'ga_live_pack_test', eventFlushIntervalMs:0,
+const sdk = await GamePropelCrazyGamesClient.init({crazyGames:host, baseUrl: process.argv[2], gameKey:'ga_live_pack_test', experimentIntegrationVersion: 1, eventFlushIntervalMs:0,
   storage:{getItem:k=>values.get(k),setItem:(k,v)=>{values.set(k,v)},removeItem:k=>{values.delete(k)}}});
 try {
   assert.equal(await sdk.waitForReady(), true);

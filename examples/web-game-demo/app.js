@@ -124,6 +124,7 @@ async function connectSdk() {
         platform: "web",
         sdkVersion: SDK_VERSION,
         appVersion: APP_VERSION,
+        experimentIntegrationVersion: 1,
         isDebug: true,
         timezone: state.timezone,
         device: {

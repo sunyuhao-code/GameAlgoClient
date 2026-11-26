@@ -87,7 +87,7 @@ function harness(t: TestContext, options: Partial<GameAlgoWebClientOptions> = {}
     throw new Error(`unexpected request: ${url}`);
   };
   const client = new GameAlgoWebClient({
-    baseUrl: "https://gamealgo.example", gameKey: "ga_live_web_lifecycle_test",
+    baseUrl: "https://gamealgo.example", gameKey: "ga_live_web_lifecycle_test", experimentIntegrationVersion: 1,
     storage, fetchImpl, preloadConfigFiles: false, eventFlushIntervalMs: 0,
     ...options,
   });

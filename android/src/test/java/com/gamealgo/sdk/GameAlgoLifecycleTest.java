@@ -176,7 +176,7 @@ final class GameAlgoLifecycleTest {
                 return new GameAlgoHttpResponse(200, Collections.emptyMap(), ("{\"ok\":true,\"accepted\":" + rows.size() + "}").getBytes(java.nio.charset.StandardCharsets.UTF_8));
             } catch (GameAlgoException error) { throw new IOException(error); }
         };
-        GameAlgoClient client = new GameAlgoClient("ga_live_local_lifecycle", "https://local.test", "test", null, "android",
+        GameAlgoClient client = new GameAlgoClient("ga_live_local_lifecycle", "https://local.test", "test", null, 1, "android",
                 http, (script, input) -> null, null, null, null, false);
         GameAlgoEventTracker tracker = new GameAlgoEventTracker(client, 100, 1000, 0, storage, "queue");
         try {
@@ -231,7 +231,7 @@ final class GameAlgoLifecycleTest {
             } catch (GameAlgoException error) { throw new IOException(error); }
         };
         GameAlgoClient client = new GameAlgoClient(gameKey, "https://native.test", "test", null, "android", http,
-                (script,input)->null, storage, null, null, new GameAlgoFetchConfigRequest("user"), false);
+                (script,input)->null, storage, null, null, new GameAlgoFetchConfigRequest("user").experimentIntegrationVersion(1), false);
         GameAlgoEventTracker tracker = client.tracker();
         try {
             tracker.identify("user", "new"); tracker.setContextId("new-context"); tracker.enableLifecycle(true); tracker.flush();

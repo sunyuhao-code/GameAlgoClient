@@ -13,6 +13,7 @@ local function init(options)
     options.gameKey = options.gameKey or "game-A"
     options.sessionId = options.sessionId or "session-A"
     options.userId = options.userId or "user-A"
+    if options.experimentIntegrationVersion == nil then options.experimentIntegrationVersion = 1 end
     options.baseUrl = "https://api.example/game"
     options.logger = function() end
     options.autoFetch = false

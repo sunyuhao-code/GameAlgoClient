@@ -51,7 +51,7 @@ let sdk = GameAlgoSDK(
 
 `ga_live_xxx` 只是示例占位。实际接入必须使用真实 `ga_live_*`；如果当前没有真实 key，AI Agent 应使用 `ga_admin_*` 通过 GameAlgo CLI 创建或读取，不要提交占位 key 后声称接入完成。
 
-`experimentIntegrationVersion` 来自 `gamealgo experiment integration-version create`。它表示这个 App 构建已经实现的实验参数能力，必须固定在构建中；不要在运行时查询 latest。没有接入实验时可保持默认值 `0`。
+`experimentIntegrationVersion` 为**必填正整数（`>= 1`）**，来自 `gamealgo experiment integration-version create`。它表示这个 App 构建已经实现的实验与优化集成能力，必须固定在构建中，不要在运行时查询 latest；传入 `<= 0` 会触发 `precondition` 失败。
 
 关于何时创建新版本、Strategy 最低版本和托管实验覆盖率门槛，运行 `gamealgo docs experiments --host <admin-host>` 查看当前平台规则。
 

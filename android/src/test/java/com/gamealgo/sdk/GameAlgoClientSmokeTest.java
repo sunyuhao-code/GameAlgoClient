@@ -19,6 +19,7 @@ public final class GameAlgoClientSmokeTest {
     private static void runAll() throws Exception {
         GameAlgoLifecycleTest.runAll();
         testSharedProtocolFixtureDecodesAndUsesImmutableScriptVersion();
+        testExperimentIntegrationVersionValidation();
         testFetchConfigSendsHeadersAndCaches();
         testOldUserClassificationSurvivesRestarts();
         testFetchConfigFile();
@@ -67,7 +68,7 @@ public final class GameAlgoClientSmokeTest {
                 null,
                 null,
                 GameAlgoLogger.console(),
-                new GameAlgoFetchConfigRequest("fixture-user")
+                new GameAlgoFetchConfigRequest("fixture-user").experimentIntegrationVersion(1)
         );
 
         client.ready().get();
@@ -76,6 +77,61 @@ public final class GameAlgoClientSmokeTest {
         check(((Number) GameAlgoJson.readPath(result.getPayload(), "level")).intValue() == 2, "shared fixture config should decode");
         check("https://gamealgo.test/v1/scripts/sv_fixture_001".equals(httpClient.requests.get(2).getUrl().toString()),
                 "shared fixture must load the immutable script version URL");
+    }
+
+    private static void testExperimentIntegrationVersionValidation() {
+        for (int invalid : new int[] { 0, -1, -42 }) {
+            boolean requestRejected = false;
+            try {
+                new GameAlgoFetchConfigRequest("u1").experimentIntegrationVersion(invalid);
+            } catch (IllegalArgumentException error) {
+                requestRejected = error.getMessage() != null
+                        && error.getMessage().contains("experimentIntegrationVersion must be a positive integer");
+            }
+            check(requestRejected, "request should reject experimentIntegrationVersion=" + invalid);
+
+            boolean clientRejected = false;
+            try {
+                new GameAlgoClient("ga_live_test_key_0123456789abcdef", "https://gamealgo.test", invalid);
+            } catch (IllegalArgumentException error) {
+                clientRejected = error.getMessage() != null
+                        && error.getMessage().contains("experimentIntegrationVersion must be a positive integer");
+            }
+            check(clientRejected, "client should reject experimentIntegrationVersion=" + invalid);
+
+            boolean facadeRejected = false;
+            try {
+                GameAlgo.init("ga_live_test_key_0123456789abcdef", "https://gamealgo.test", invalid);
+            } catch (IllegalArgumentException error) {
+                facadeRejected = error.getMessage() != null
+                        && error.getMessage().contains("experimentIntegrationVersion must be a positive integer");
+            }
+            check(facadeRejected, "GameAlgo.init should reject experimentIntegrationVersion=" + invalid);
+        }
+
+        for (GameAlgoFetchConfigRequest invalidRequest : new GameAlgoFetchConfigRequest[] { null, new GameAlgoFetchConfigRequest("u1") }) {
+            boolean missingRejected = false;
+            try {
+                new GameAlgoClient(
+                        "ga_live_test_key_0123456789abcdef",
+                        "https://gamealgo.test",
+                        "1.0.0",
+                        null,
+                        "android",
+                        new FakeHttpClient(),
+                        new FakeScriptRuntime(),
+                        null,
+                        null,
+                        null,
+                        invalidRequest,
+                        false
+                );
+            } catch (IllegalArgumentException error) {
+                missingRejected = error.getMessage() != null
+                        && error.getMessage().contains("experimentIntegrationVersion must be a positive integer");
+            }
+            check(missingRejected, "client should reject missing experimentIntegrationVersion in initialRequest");
+        }
     }
 
     private static void testFetchConfigSendsHeadersAndCaches() throws Exception {
@@ -138,7 +194,7 @@ public final class GameAlgoClientSmokeTest {
                 GameAlgoClient client = new GameAlgoClient(
                         "ga_live_old_user_contract", "https://gamealgo.test", "test", null, "android",
                         http, new FakeScriptRuntime(), storage, null, null,
-                        new GameAlgoFetchConfigRequest("old-user").isOldUser(inputs[index]), false);
+                        new GameAlgoFetchConfigRequest("old-user").experimentIntegrationVersion(1).isOldUser(inputs[index]), false);
                 client.fetchConfig("old-user");
                 Map<String, Object> body = requestBody(http.requests.get(0));
                 if (index == 0) check(!body.containsKey("isOldUser"), "omitted old-user flag stays absent");
@@ -163,6 +219,7 @@ public final class GameAlgoClientSmokeTest {
                 "https://gamealgo.test",
                 "1.0.0",
                 null,
+                1,
                 "android",
                 httpClient,
                 new FakeScriptRuntime(),
@@ -193,6 +250,7 @@ public final class GameAlgoClientSmokeTest {
                 "https://gamealgo.test",
                 "1.0.0",
                 null,
+                1,
                 "android",
                 httpClient,
                 new FakeScriptRuntime(),
@@ -255,7 +313,7 @@ public final class GameAlgoClientSmokeTest {
                 null,
                 null,
                 GameAlgoLogger.console(),
-                new GameAlgoFetchConfigRequest("u1")
+                new GameAlgoFetchConfigRequest("u1").experimentIntegrationVersion(1)
         );
         GameAlgoExperimentExecutor executor = client.executor("level_generator");
 
@@ -305,7 +363,7 @@ public final class GameAlgoClientSmokeTest {
                 null,
                 null,
                 GameAlgoLogger.console(),
-                new GameAlgoFetchConfigRequest("u1")
+                new GameAlgoFetchConfigRequest("u1").experimentIntegrationVersion(1)
         );
 
         client.ready().get();
@@ -346,7 +404,7 @@ public final class GameAlgoClientSmokeTest {
                 cache,
                 "test-cache",
                 GameAlgoLogger.console(),
-                new GameAlgoFetchConfigRequest("u1")
+                new GameAlgoFetchConfigRequest("u1").experimentIntegrationVersion(1)
         );
         first.ready().get();
 
@@ -363,7 +421,7 @@ public final class GameAlgoClientSmokeTest {
                 cache,
                 "test-cache",
                 GameAlgoLogger.console(),
-                new GameAlgoFetchConfigRequest("u1")
+                new GameAlgoFetchConfigRequest("u1").experimentIntegrationVersion(1)
         );
         second.ready().get();
 
@@ -381,6 +439,7 @@ public final class GameAlgoClientSmokeTest {
                 "https://gamealgo.test",
                 "1.0.0",
                 null,
+                1,
                 "android",
                 firstHttpClient,
                 new FakeScriptRuntime(),
@@ -398,6 +457,7 @@ public final class GameAlgoClientSmokeTest {
                 "https://gamealgo.test",
                 "1.0.0",
                 null,
+                1,
                 "android",
                 secondHttpClient,
                 new FakeScriptRuntime(),
@@ -421,6 +481,7 @@ public final class GameAlgoClientSmokeTest {
                 "https://gamealgo.test",
                 "1.0.0",
                 null,
+                1,
                 "android",
                 new FakeHttpClient(),
                 new FakeScriptRuntime(),
@@ -445,6 +506,7 @@ public final class GameAlgoClientSmokeTest {
                 "https://gamealgo.test",
                 "1.2.3",
                 "4.5.6",
+                1,
                 "android",
                 httpClient,
                 new FakeScriptRuntime(),
@@ -482,6 +544,7 @@ public final class GameAlgoClientSmokeTest {
                 "https://gamealgo.test",
                 "1.0.0",
                 null,
+                1,
                 "android",
                 httpClient,
                 new FakeScriptRuntime(),
@@ -528,6 +591,7 @@ public final class GameAlgoClientSmokeTest {
                 "https://gamealgo.test",
                 "1.0.0",
                 null,
+                1,
                 "android",
                 httpClient,
                 new FakeScriptRuntime(),
@@ -571,6 +635,7 @@ public final class GameAlgoClientSmokeTest {
                 "https://gamealgo.test/algo_sdk",
                 "1.0.0",
                 null,
+                1,
                 "android",
                 httpClient,
                 new FakeScriptRuntime(),
@@ -625,6 +690,7 @@ public final class GameAlgoClientSmokeTest {
                 "https://gamealgo.test",
                 "1.2.3",
                 "4.5.6",
+                1,
                 "android",
                 httpClient,
                 new FakeScriptRuntime(),
@@ -662,6 +728,7 @@ public final class GameAlgoClientSmokeTest {
                 "https://gamealgo.test",
                 "1.2.3",
                 "4.5.6",
+                1,
                 "android",
                 httpClient,
                 new FakeScriptRuntime(),
@@ -715,7 +782,8 @@ public final class GameAlgoClientSmokeTest {
         SessionEventHttpClient http = new SessionEventHttpClient();
         http.offline = true;
         GameAlgoClient client = new GameAlgoClient(
-                "ga_live_test_key_0123456789abcdef", "https://gamealgo.test", "1.2.3", "4.5.6", "android",
+                "ga_live_test_key_0123456789abcdef", "https://gamealgo.test", "1.2.3", "4.5.6", 1,
+ "android",
                 http, new FakeScriptRuntime(), null, null, GameAlgoLogger.console(), false);
         MemoryCacheStorage storage = new MemoryCacheStorage();
         GameAlgoEventTracker tracker = new GameAlgoEventTracker(client, 100, 1000, 0, storage, "rotation-events");
@@ -761,6 +829,7 @@ public final class GameAlgoClientSmokeTest {
                 "https://gamealgo.test",
                 "1.0.0",
                 null,
+                1,
                 "android",
                 failingHttpClient,
                 new FakeScriptRuntime(),
@@ -800,6 +869,7 @@ public final class GameAlgoClientSmokeTest {
                 "https://gamealgo.test",
                 "1.0.0",
                 null,
+                1,
                 "android",
                 recoveredHttpClient,
                 new FakeScriptRuntime(),
@@ -828,6 +898,7 @@ public final class GameAlgoClientSmokeTest {
                 "https://gamealgo.test",
                 "1.0.0",
                 null,
+                1,
                 "android",
                 httpClient,
                 new FakeScriptRuntime(),
@@ -887,6 +958,7 @@ public final class GameAlgoClientSmokeTest {
                 "https://gamealgo.test",
                 "1.0.0",
                 null,
+                1,
                 "android",
                 httpClient,
                 new FakeScriptRuntime(),
@@ -919,7 +991,7 @@ public final class GameAlgoClientSmokeTest {
                 null,
                 null,
                 GameAlgoLogger.console(),
-                new GameAlgoFetchConfigRequest("u1")
+                new GameAlgoFetchConfigRequest("u1").experimentIntegrationVersion(1)
         );
 
         client.ready().get();
@@ -973,7 +1045,7 @@ public final class GameAlgoClientSmokeTest {
                 null,
                 null,
                 GameAlgoLogger.console(),
-                new GameAlgoFetchConfigRequest("u1")
+                new GameAlgoFetchConfigRequest("u1").experimentIntegrationVersion(1)
         );
 
         client.ready().get();
@@ -1003,7 +1075,7 @@ public final class GameAlgoClientSmokeTest {
         FakeHttpClient httpClient = new FakeHttpClient();
         httpClient.enqueue(jsonResponse(configJson("v1")));
         httpClient.enqueue(jsonResponse("{\"ok\":true,\"accepted\":3}"));
-        GameAlgoClient client = new GameAlgoClient("ga_live_test_key_0123456789abcdef", "https://gamealgo.test", "1.0.0", null, "android", httpClient, new FakeScriptRuntime(), null, null, GameAlgoLogger.console(), new GameAlgoFetchConfigRequest("u1"));
+        GameAlgoClient client = new GameAlgoClient("ga_live_test_key_0123456789abcdef", "https://gamealgo.test", "1.0.0", null, "android", httpClient, new FakeScriptRuntime(), null, null, GameAlgoLogger.console(), new GameAlgoFetchConfigRequest("u1").experimentIntegrationVersion(1));
         client.ready().get();
         for (Object invalid : GameAlgoJson.asArray(fixture.get("invalidIds"), "invalidIds")) check(!client.tracker().trackAdPlacement((String) invalid, 0), "invalid ID must not enqueue");
         check(!client.tracker().trackAdPlacement(null, 0), "null ID must not enqueue");
@@ -1032,6 +1104,7 @@ public final class GameAlgoClientSmokeTest {
                 "https://gamealgo.test",
                 "1.0.0",
                 null,
+                1,
                 "android",
                 httpClient,
                 new FakeScriptRuntime(),
@@ -1066,6 +1139,7 @@ public final class GameAlgoClientSmokeTest {
                 "https://gamealgo.test",
                 "1.0.0",
                 null,
+                1,
                 "android",
                 httpClient,
                 new FakeScriptRuntime(),

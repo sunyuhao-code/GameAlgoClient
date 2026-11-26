@@ -14,7 +14,7 @@ public sealed class GamePropelExample : MonoBehaviour
         try
         {
             sdk = GamePropel.GamePropelSDK.IsInitialized ? GamePropel.GamePropelSDK.Client : GamePropel.GamePropelSDK.Initialize(new GamePropel.GamePropelOptions {
-                GameKey = GameKey, IsDebug = true
+                GameKey = GameKey, ExperimentIntegrationVersion = 1, IsDebug = true
             });
             // Awaiting this task yields to Unity; it never blocks rendering.
             var ready = await sdk.WaitForReadyAsync();

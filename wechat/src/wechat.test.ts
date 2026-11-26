@@ -41,7 +41,7 @@ function fixture(values = new Map<string, string>()) {
     onShow: callback => { show.add(callback); }, offShow: callback => { show.delete(callback); },
     onNetworkStatusChange: callback => { network.add(callback); }, offNetworkStatusChange: callback => { network.delete(callback); },
   };
-  const options = { wx, baseUrl: "https://gamealgo.test/algo_sdk", gameKey: "ga_live_wechat_test", eventFlushIntervalMs: 0 };
+  const options = { wx, baseUrl: "https://gamealgo.test/algo_sdk", gameKey: "ga_live_wechat_test", experimentIntegrationVersion: 1, eventFlushIntervalMs: 0 };
   return { wx, options, values, requests, hide, show, network,
     setOffline(value: boolean) { offline = value; }, setBlockEvents(value: boolean) { blockEvents = value; },
     setConfig(value: any) { config = value; },
@@ -49,6 +49,16 @@ function fixture(values = new Map<string, string>()) {
     events() { return requests.flatMap(request => request.body.events ?? []); },
   };
 }
+
+test("WeChat requires a positive integer experimentIntegrationVersion", () => {
+  const f = fixture();
+  for (const invalid of [undefined, 0, -1, 1.5, Number.NaN]) {
+    assert.throws(
+      () => GameAlgoWechatClient.init({ ...f.options, experimentIntegrationVersion: invalid as never }),
+      /experimentIntegrationVersion must be a positive integer/,
+    );
+  }
+});
 
 test("WeChat uses native requests, keeps the URL prefix, reports its own host and loads parameter/JSON config only", async t => {
   const f = fixture();

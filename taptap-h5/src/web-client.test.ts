@@ -42,6 +42,7 @@ test("H5 client always reports the web platform and flushes events", async () =>
   const client = new GameAlgoWebClient({
     baseUrl: "https://gamealgo.example.com",
     gameKey: "ga_live_test",
+    experimentIntegrationVersion: 1,
     fetchImpl,
     autoLifecycle: false,
     preloadConfigFiles: false,
@@ -88,7 +89,7 @@ test("H5 config uses current TapTap system information and preserves explicit de
   Object.defineProperty(globalThis, "tap", { configurable: true, value: tap });
   const requests: Record<string, unknown>[] = [];
   const client = new GameAlgoWebClient({
-    baseUrl: "https://gamealgo.example.com", gameKey: "ga_live_test", userId: "platform-user",
+    baseUrl: "https://gamealgo.example.com", gameKey: "ga_live_test", userId: "platform-user", experimentIntegrationVersion: 1,
     autoLifecycle: false, preloadConfigFiles: false, device: { custom: "preserved" },
     fetchImpl: async (_input, init) => {
       requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
@@ -145,7 +146,7 @@ test("H5 browser fallback distinguishes mobile systems and desktop iPad mode wit
   ];
   let device: Record<string, unknown> = {};
   const client = new GameAlgoWebClient({
-    baseUrl: "https://gamealgo.example.com", gameKey: "ga_live_test", userId: "browser-system-user",
+    baseUrl: "https://gamealgo.example.com", gameKey: "ga_live_test", userId: "browser-system-user", experimentIntegrationVersion: 1,
     autoLifecycle: false, preloadConfigFiles: false,
     fetchImpl: async (_input, init) => {
       device = JSON.parse(String(init?.body)).device;
@@ -204,6 +205,7 @@ test("H5 event batches stay within the keepalive byte budget", async () => {
     baseUrl: "https://gamealgo.example.com",
     gameKey: "ga_live_test",
     userId: "web-budget-user",
+    experimentIntegrationVersion: 1,
     fetchImpl,
     autoLifecycle: false,
     preloadConfigFiles: false,
@@ -346,6 +348,7 @@ test("H5 URL attribution uploads only allow-listed campaign fields", async () =>
     baseUrl: "https://gamealgo.example.com",
     gameKey: "ga_live_test",
     userId: "web-attribution-user",
+    experimentIntegrationVersion: 1,
     fetchImpl,
     autoLifecycle: false,
     preloadConfigFiles: false,
@@ -364,4 +367,20 @@ test("H5 URL attribution uploads only allow-listed campaign fields", async () =>
     referrerHost: "www.taptap.cn",
   });
   client.close();
+});
+
+test("H5 client requires a positive integer experimentIntegrationVersion", () => {
+  const fetchImpl: typeof fetch = async () => Response.json({});
+  for (const invalid of [undefined, 0, -1, 1.5, Number.NaN]) {
+    assert.throws(
+      () => new GameAlgoWebClient({
+        baseUrl: "https://gamealgo.example.com",
+        gameKey: "ga_live_test",
+        experimentIntegrationVersion: invalid as never,
+        fetchImpl,
+        autoLifecycle: false,
+      }),
+      /experimentIntegrationVersion must be a positive integer/,
+    );
+  }
 });

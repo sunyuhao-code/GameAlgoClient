@@ -1,6 +1,6 @@
 {
   "name": "com.gamepropel.sdk",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "displayName": "GamePropel",
   "description": "GamePropel for Unity Android and iOS, backed by the native SDKs.",
   "unity": "2022.3",

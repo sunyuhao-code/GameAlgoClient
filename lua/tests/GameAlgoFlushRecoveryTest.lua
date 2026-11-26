@@ -99,6 +99,7 @@ local function makeSdk(eventHandler, options)
         userCreatedAt = options.userCreatedAt,
         userCreatedLocalAt = options.userCreatedLocalAt,
         sessionId = "flush-recovery-session-" .. tostring(testSequence),
+        experimentIntegrationVersion = options.experimentIntegrationVersion or 1,
         transport = transport,
         autoFetch = false,
         preloadConfigFiles = false,
@@ -272,7 +273,7 @@ do
         { "ga_live_storage_cache_a", "cache-user-a" },
     }
     for index, identity in ipairs(identities) do
-        sdk.Init({ gameKey = identity[1], userId = identity[2], autoFetch = false,
+        sdk.Init({ gameKey = identity[1], userId = identity[2], experimentIntegrationVersion = 1, autoFetch = false,
             sessionId = "storage-cache-" .. index, logger = function() end,
             preloadConfigFiles = false, nowMs = function() return 0 end })
         equal(sdk.Snapshot().queuedEvents, index == 4 and 1 or 0, "each game/user restores only its own queue")
@@ -595,7 +596,7 @@ do
     local oldSubscriptions = subscriptions
     local reinitTime = 20000
     harness.sdk.Init({
-        gameKey = "ga_live_lifecycle_reinit", sessionId = "lifecycle-reinit",
+        gameKey = "ga_live_lifecycle_reinit", sessionId = "lifecycle-reinit", experimentIntegrationVersion = 1,
         nowMs = function() return reinitTime end, preloadConfigFiles = false,
         logger = function() end,
         transport = { Request = function(request, callback)
@@ -737,7 +738,7 @@ do
     receivers[#receivers].AppWillEnterBackground()
     equal(#staleCallbacks, 2)
     reinitialized.sdk.Init({ gameKey = "ga_live_end_reinitialized", userId = "new-end-user",
-        sessionId = "new-end-session", autoFetch = false, preloadConfigFiles = false,
+        sessionId = "new-end-session", experimentIntegrationVersion = 1, autoFetch = false, preloadConfigFiles = false,
         transport = { Request = function() error("unexpected new-session request") end },
         nowMs = function() return 0 end, logger = function() end })
     equal(reinitialized.cancels(), 2, "Init cancels both old transport handles")
@@ -1337,7 +1338,7 @@ do
     assert(h.sdk.Track("ad_view", {}))
     assert(h.sdk.TrackSessionEnd()); h.sdk.Flush()
     equal(#held, 3)
-    h.sdk.Init({ gameKey = "ga_live_ad_reinitialized", userId = "fresh-user", sessionId = "fresh-session",
+    h.sdk.Init({ gameKey = "ga_live_ad_reinitialized", userId = "fresh-user", sessionId = "fresh-session", experimentIntegrationVersion = 1,
         autoFetch = false, transport = { Request = function() error("unexpected request") end }, logger = function() end })
     equal(h.cancels(), 3)
     assert(h.sdk.TrackLevelStart())

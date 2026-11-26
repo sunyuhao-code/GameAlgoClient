@@ -15,6 +15,7 @@ final class GameAlgoSDKTests: XCTestCase {
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
+            experimentIntegrationVersion: 1,
             httpClient: httpClient,
             cacheStorage: nil,
             userId: "fixture-user"
@@ -59,6 +60,7 @@ final class GameAlgoSDKTests: XCTestCase {
         let first = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
+            experimentIntegrationVersion: 1,
             httpClient: firstHTTPClient,
             userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
             now: { Date(timeIntervalSince1970: 1_779_962_400) }
@@ -74,6 +76,7 @@ final class GameAlgoSDKTests: XCTestCase {
         let second = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
+            experimentIntegrationVersion: 1,
             httpClient: secondHTTPClient,
             userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults)
         )
@@ -99,6 +102,7 @@ final class GameAlgoSDKTests: XCTestCase {
                 try await http.enqueueJSON(configResponse(version: "v1"))
                 let sdk = GameAlgoSDK(
                     gameKey: gameKey, baseURL: URL(string: "https://gamealgo.test")!,
+                    experimentIntegrationVersion: 1,
                     httpClient: http, cacheStorage: nil,
                     userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
                     userId: "old-user", _autoStart: false, isOldUser: input,
@@ -125,6 +129,7 @@ final class GameAlgoSDKTests: XCTestCase {
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
+            experimentIntegrationVersion: 1,
             httpClient: httpClient,
             userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
             eventFlushInterval: 0,
@@ -156,6 +161,7 @@ final class GameAlgoSDKTests: XCTestCase {
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
+            experimentIntegrationVersion: 1,
             httpClient: MockHTTPClient(),
             userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
             _autoStart: false
@@ -182,6 +188,7 @@ final class GameAlgoSDKTests: XCTestCase {
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
+            experimentIntegrationVersion: 1,
             httpClient: httpClient,
             userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
             _autoStart: false,
@@ -400,6 +407,7 @@ final class GameAlgoSDKTests: XCTestCase {
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
+            experimentIntegrationVersion: 1,
             httpClient: httpClient,
             _autoStart: false,
             now: { Date(timeIntervalSince1970: 1_000) }
@@ -420,6 +428,7 @@ final class GameAlgoSDKTests: XCTestCase {
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
+            experimentIntegrationVersion: 1,
             httpClient: httpClient,
             _autoStart: false,
             now: { Date(timeIntervalSince1970: 1_000) }
@@ -448,6 +457,7 @@ final class GameAlgoSDKTests: XCTestCase {
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
+            experimentIntegrationVersion: 1,
             httpClient: httpClient,
             _autoStart: false
         )
@@ -498,6 +508,7 @@ final class GameAlgoSDKTests: XCTestCase {
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
             sdkVersion: "1.0.0",
+            experimentIntegrationVersion: 1,
             httpClient: httpClient,
             userId: "u1"
         )
@@ -560,6 +571,7 @@ final class GameAlgoSDKTests: XCTestCase {
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
+            experimentIntegrationVersion: 1,
             httpClient: httpClient,
             cacheStorage: nil,
             userId: "u1"
@@ -605,6 +617,7 @@ final class GameAlgoSDKTests: XCTestCase {
         let first = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
+            experimentIntegrationVersion: 1,
             httpClient: firstHTTPClient,
             cacheStorage: cache,
             cacheKey: "test-cache",
@@ -618,6 +631,7 @@ final class GameAlgoSDKTests: XCTestCase {
         let second = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
+            experimentIntegrationVersion: 1,
             httpClient: secondHTTPClient,
             cacheStorage: cache,
             cacheKey: "test-cache",
@@ -640,6 +654,7 @@ final class GameAlgoSDKTests: XCTestCase {
             baseURL: URL(string: "https://gamealgo.test/algo_sdk/")!,
             sdkVersion: "1.2.3",
             appVersion: "4.5.6",
+            experimentIntegrationVersion: 1,
             httpClient: httpClient,
             _autoStart: false,
             now: { Date(timeIntervalSince1970: 1_779_962_400) }
@@ -681,6 +696,7 @@ final class GameAlgoSDKTests: XCTestCase {
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test/algo_sdk")!,
+            experimentIntegrationVersion: 1,
             httpClient: httpClient,
             userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
             userId: "u1",
@@ -733,6 +749,7 @@ final class GameAlgoSDKTests: XCTestCase {
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
+            experimentIntegrationVersion: 1,
             httpClient: httpClient,
             userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
             userId: "u1",
@@ -776,6 +793,7 @@ final class GameAlgoSDKTests: XCTestCase {
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test/algo_sdk")!,
+            experimentIntegrationVersion: 1,
             httpClient: httpClient,
             userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
             userId: "u1",
@@ -818,6 +836,7 @@ final class GameAlgoSDKTests: XCTestCase {
         }
         let sdk = GameAlgoSDK(
             gameKey: gameKey, baseURL: URL(string: "https://gamealgo.test")!,
+            experimentIntegrationVersion: 1,
             httpClient: httpClient, cacheStorage: nil, userId: "u1",
             _autoStart: false, eventFlushInterval: 0
         )
@@ -879,6 +898,7 @@ final class GameAlgoSDKTests: XCTestCase {
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
+            experimentIntegrationVersion: 1,
             httpClient: httpClient,
             cacheStorage: nil,
             userId: "u1",
@@ -922,6 +942,7 @@ final class GameAlgoSDKTests: XCTestCase {
             baseURL: URL(string: "https://gamealgo.test")!,
             sdkVersion: "1.2.3",
             appVersion: "4.5.6",
+            experimentIntegrationVersion: 1,
             httpClient: httpClient,
             userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
             userId: "u1",
@@ -1158,6 +1179,7 @@ final class GameAlgoSDKTests: XCTestCase {
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
+            experimentIntegrationVersion: 1,
             httpClient: httpClient,
             userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
             userId: "u1",
@@ -1193,7 +1215,7 @@ final class GameAlgoSDKTests: XCTestCase {
         let suiteName = "GameAlgoSDKTests.registeredAd.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
-        let sdk = GameAlgoSDK(gameKey: gameKey, baseURL: URL(string: "https://gamealgo.test")!, httpClient: httpClient, userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults), userId: "u1", eventFlushInterval: 0)
+        let sdk = GameAlgoSDK(gameKey: gameKey, baseURL: URL(string: "https://gamealgo.test")!,experimentIntegrationVersion: 1,  httpClient: httpClient, userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults), userId: "u1", eventFlushInterval: 0)
         let ready = await sdk.waitForReady()
         XCTAssertTrue(ready)
         for invalid in fixture["invalidIds"] as! [String] {
@@ -1232,6 +1254,7 @@ final class GameAlgoSDKTests: XCTestCase {
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
+            experimentIntegrationVersion: 1,
             httpClient: httpClient,
             userIdentityStore: GameAlgoUserIdentityStore(userDefaults: defaults),
             userId: "u1",
@@ -1271,6 +1294,7 @@ final class GameAlgoSDKTests: XCTestCase {
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
+            experimentIntegrationVersion: 1,
             httpClient: httpClient,
             _autoStart: false
         )
@@ -1295,6 +1319,7 @@ final class GameAlgoSDKTests: XCTestCase {
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
+            experimentIntegrationVersion: 1,
             httpClient: httpClient,
             ddaStorage: storage
         )
@@ -1317,6 +1342,7 @@ final class GameAlgoSDKTests: XCTestCase {
         let restoredSDK = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
+            experimentIntegrationVersion: 1,
             httpClient: MockHTTPClient(),
             ddaStorage: storage,
             _autoStart: false
@@ -1329,6 +1355,7 @@ final class GameAlgoSDKTests: XCTestCase {
         let sdk = GameAlgoSDK(
             gameKey: gameKey,
             baseURL: URL(string: "https://gamealgo.test")!,
+            experimentIntegrationVersion: 1,
             httpClient: MockHTTPClient(),
             _autoStart: false
         )

@@ -136,6 +136,7 @@ local function createEnvironment()
             gameKey = "ga_live_issue70",
             userId = "user-a",
             sessionId = "session-a",
+            experimentIntegrationVersion = 1,
             autoFetch = false,
             preloadConfigFiles = false,
             logger = function() end,

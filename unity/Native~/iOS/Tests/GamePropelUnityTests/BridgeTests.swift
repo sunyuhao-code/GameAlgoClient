@@ -11,7 +11,7 @@ final class BridgeTests: XCTestCase {
         let http = MockHTTP()
         let bridge = UnityBridge()
         let options = try JSONDecoder().decode(UnityOptions.self, from: Data("""
-        {"gameKey":"ga_live_unity_offline_test","baseUrl":"https://offline-test.invalid/prefix","appVersion":"test","isDebug":true,"device":{"runtime":"incorrect","unityVersion":"test"}}
+        {"gameKey":"ga_live_unity_offline_test","baseUrl":"https://offline-test.invalid/prefix","appVersion":"test","experimentIntegrationVersion":1,"isDebug":true,"device":{"runtime":"incorrect","unityVersion":"test"}}
         """.utf8))
         _ = try bridge.initialize(options, httpClient: http, cacheStorage: nil, ddaStorage: nil,
                                   identityStore: GameAlgoUserIdentityStore(userDefaults: defaults))
@@ -55,6 +55,26 @@ final class BridgeTests: XCTestCase {
         defer { GPUnity_Free(pointer) }
         let body = try JSONSerialization.jsonObject(with: Data(String(cString: pointer).utf8)) as! [String: Any]
         XCTAssertEqual(body["ok"] as? Bool, false)
+    }
+
+    func testInitializeRejectsMissingOrNonPositiveExperimentIntegrationVersion() throws {
+        let cases = [
+            """
+            {"gameKey":"ga_live_unity_offline_test","baseUrl":"https://offline-test.invalid/prefix"}
+            """,
+            """
+            {"gameKey":"ga_live_unity_offline_test","baseUrl":"https://offline-test.invalid/prefix","experimentIntegrationVersion":0}
+            """,
+            """
+            {"gameKey":"ga_live_unity_offline_test","baseUrl":"https://offline-test.invalid/prefix","experimentIntegrationVersion":-2}
+            """,
+        ]
+        for json in cases {
+            let options = try JSONDecoder().decode(UnityOptions.self, from: Data(json.utf8))
+            XCTAssertThrowsError(try UnityBridge().initialize(options, httpClient: MockHTTP(), cacheStorage: nil, ddaStorage: nil)) { error in
+                XCTAssertTrue(error.localizedDescription.contains("experimentIntegrationVersion must be a positive integer"))
+            }
+        }
     }
 
     func testSynchronousReadsRejectUseBeforeInitialization() {

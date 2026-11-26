@@ -75,10 +75,38 @@ end
 
 local GameAlgo = require("GameAlgo")
 
+do
+    local invalidVersions = { false, 0, -1, 1.5, 0 / 0, math.huge, "1", {} }
+    local okMissing, errMissing = pcall(GameAlgo.Init, {
+        gameKey = "ga_live_fixture_key",
+        userId = "invalid-version-user",
+        sessionId = "session-invalid-missing",
+        transport = transport,
+        autoFetch = false,
+        preloadConfigFiles = false,
+    })
+    assert(not okMissing and tostring(errMissing):find("experimentIntegrationVersion must be a positive integer", 1, true),
+        "missing experimentIntegrationVersion must fail: " .. tostring(errMissing))
+    for _, invalid in ipairs(invalidVersions) do
+        local okInvalid, errInvalid = pcall(GameAlgo.Init, {
+            gameKey = "ga_live_fixture_key",
+            userId = "invalid-version-user",
+            sessionId = "session-invalid",
+            experimentIntegrationVersion = invalid,
+            transport = transport,
+            autoFetch = false,
+            preloadConfigFiles = false,
+        })
+        assert(not okInvalid and tostring(errInvalid):find("experimentIntegrationVersion must be a positive integer", 1, true),
+            "invalid experimentIntegrationVersion (" .. tostring(invalid) .. ") must fail: " .. tostring(errInvalid))
+    end
+end
+
 GameAlgo.Init({
     gameKey = "ga_live_fixture_key",
     userId = "milestone-user",
     sessionId = "session-fixture-001",
+    experimentIntegrationVersion = 1,
     transport = transport,
     autoFetch = false,
     preloadConfigFiles = false,
@@ -218,6 +246,7 @@ GameAlgo.Init({
     gameKey = "ga_live_fixture_key",
     userId = "quota-user",
     sessionId = "session-quota",
+    experimentIntegrationVersion = 1,
     transport = quotaTransport,
     autoFetch = false,
     preloadConfigFiles = false,
@@ -257,6 +286,7 @@ GameAlgo.Init({
     gameKey = "ga_live_fixture_key",
     userId = "milestone-user",
     sessionId = "session-preload",
+    experimentIntegrationVersion = 1,
     transport = preloadTransport,
     autoFetch = false,
     logger = function(message) table.insert(logs, message) end,
@@ -325,6 +355,7 @@ end
 GameAlgo.Init({
     gameKey = "ga_live_fixture_key",
     sessionId = "session-config-retry",
+    experimentIntegrationVersion = 1,
     transport = retryTransport,
     autoFetch = false,
     preloadConfigFiles = false,
@@ -367,7 +398,7 @@ for _, first in ipairs({true, false}) do
         callback(nil, { status = 200, body = configFixture, headers = {} })
     end }
     local function initialize(value)
-        GameAlgo.Init({ gameKey = "ga_live_fixture_key", userId = user,
+        GameAlgo.Init({ gameKey = "ga_live_fixture_key", userId = user, experimentIntegrationVersion = 1,
             transport = oldUserTransport, autoFetch = false, preloadConfigFiles = false,
             isOldUser = value })
         GameAlgo.FetchConfig(function(error) assert(error == nil, tostring(error)) end)
@@ -445,6 +476,7 @@ end
 GameAlgo.Init({
     gameKey = "ga_live_fixture_key",
     sessionId = "session-init-diagnostics",
+    experimentIntegrationVersion = 1,
     transport = initTransport,
     preloadConfigFiles = false,
     _scheduler = initScheduler,
@@ -533,6 +565,7 @@ clientCloud = nil
 GameAlgo.Init({
     gameKey = "ga_live_fixture_key",
     sessionId = "session-config-timeout-guard",
+    experimentIntegrationVersion = 1,
     transport = guardedTransport,
     autoFetch = false,
     preloadConfigFiles = false,
@@ -602,7 +635,7 @@ for index, case in ipairs(deviceCases) do
     end }
     GameAlgo.Init({
         gameKey = "ga_live_fixture_key", userId = "device-user-" .. index,
-        sessionId = "device-session-" .. index, device = deviceOptions,
+        sessionId = "device-session-" .. index, experimentIntegrationVersion = 1, device = deviceOptions,
         transport = deviceTransport, autoFetch = false, preloadConfigFiles = false,
     })
     GameAlgo.FetchConfig(function(error) assert(error == nil, tostring(error)) end)

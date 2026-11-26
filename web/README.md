@@ -10,6 +10,7 @@ import { GamePropelTapTapH5Client } from "@gamepropel/sdk-taptap-h5";
 const gamePropel = GamePropelTapTapH5Client.init({
   baseUrl: "https://game-algo-sdk.dictapis.cn",
   gameKey: "ga_live_xxx",
+  experimentIntegrationVersion: 1,
 });
 ```
 

@@ -60,7 +60,7 @@ const directory = await mkdtemp(join(tmpdir(), "gamealgo-douyin-pack-"));
 try {
   assert.equal(exports.GAMEPROPEL_DOUYIN_SDK_VERSION, pkg.version);
   assert.equal(typeof exports.initGamePropelDouyin, "function");
-  client = exports.GamePropelDouyinClient.init({ baseUrl: `http://127.0.0.1:${server.address().port}/algo_sdk`, gameKey: "ga_live_pack_test", eventFlushIntervalMs: 0 });
+  client = exports.GamePropelDouyinClient.init({ baseUrl: `http://127.0.0.1:${server.address().port}/algo_sdk`, gameKey: "ga_live_pack_test", experimentIntegrationVersion: 1, eventFlushIntervalMs: 0 });
   assert.equal(await client.waitForReady(), true);
   assert.equal(client.executor("difficulty").number("difficulty"), 3);
   client.tracker.trackLevelStart({ level_id: "关卡🙂" });

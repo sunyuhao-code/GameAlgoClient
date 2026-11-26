@@ -4,6 +4,8 @@ GamePropel (formerly GameAlgo) SDK for **TapTap H5 minigames**, published as `@g
 Other minigame hosts, including WeChat, require their own host SDK; browser
 fallbacks are retained for local previews and compatible WebViews.
 
+Version 2.2.0 requires `experimentIntegrationVersion` to be an explicit positive integer (`>= 1`) at initialization (and when overridden in `fetchConfig`).
+
 Version 2.1.12 adds optional `isOldUser` at initialization and persists its first explicit value for the `new_user` standard milestone funnel.
 
 Version 2.1.11 resumes periodic uploads after restoring a persisted queue, even
@@ -67,7 +69,7 @@ const gamePropel = GamePropelTapTapH5Client.init({
   gameKey: "ga_live_xxx",
   appVersion: "1.0.0",
   isDebug: false, // Production telemetry; use true only in intentional test builds.
-  experimentIntegrationVersion: 0,
+  experimentIntegrationVersion: 1, // Required positive integer (>= 1).
 });
 
 // Do not block first paint on this. Local defaults remain available.

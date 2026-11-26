@@ -5,6 +5,8 @@
 native local storage, `wx.onHide/onShow` and rewarded-video APIs. It fixes
 `platform=wechat`; iOS/Android/desktop are separate `device.os` values.
 
+Version 1.2.0 requires `experimentIntegrationVersion` to be an explicit positive integer (`>= 1`) at initialization.
+
 Version 1.1.1 adds optional `isOldUser` at initialization, preserves its first explicit value across restarts, and carries it over when the first config resolves an OpenID identity.
 
 Version 1.1.0 supports events, durable offline queues, foreground time,
@@ -39,7 +41,7 @@ const gamePropel = GamePropelWechatClient.init({
   baseUrl: 'https://game-algo-sdk.dictapis.cn',
   gameKey: 'ga_live_your_game_key',
   appVersion: '1.0.0',
-  experimentIntegrationVersion: 0,
+  experimentIntegrationVersion: 1, // Required positive integer (>= 1).
   // accountUserId: existingOpenId, // Optional; reuse the game's login identity.
 });
 

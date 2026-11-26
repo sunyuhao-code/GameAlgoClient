@@ -40,7 +40,7 @@ function harness(t: TestContext, options: Partial<GameAlgoWebClientOptions> & { 
   const logs: string[] = [];
   const control = { config: (_body: Record<string, unknown>): Response | Promise<Response> => configResponse("ctx-first") };
   const client = new GameAlgoWebClient({
-    baseUrl: "https://gamealgo.example", gameKey: "ga_live_tapdb_web_test", storage,
+    baseUrl: "https://gamealgo.example", gameKey: "ga_live_tapdb_web_test", experimentIntegrationVersion: 1, storage,
     autoLifecycle: false, preloadConfigFiles: false, eventFlushIntervalMs: 0,
     logger: (message) => { logs.push(message); },
     fetchImpl: async (input, init) => {
@@ -374,7 +374,7 @@ test("the shared REST client does not report TapDB events", async (t) => {
   let calls = 0;
   tapHost(t, { logEvent: () => { calls++; } });
   const client = new GameAlgoRestClient({
-    baseUrl: "https://gamealgo.example", gameKey: "ga_live_rest_test", userId: "rest-user",
+    baseUrl: "https://gamealgo.example", gameKey: "ga_live_rest_test", userId: "rest-user", experimentIntegrationVersion: 1,
     eventFlushIntervalMs: 0, preloadConfigFiles: false, logger: false,
     fetchImpl: async () => configResponse("ctx-rest"),
   });

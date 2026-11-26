@@ -39,12 +39,14 @@ final class UnityBridge: @unchecked Sendable {
                     cacheStorage: (any GameAlgoCacheStorage)? = GameAlgoFileCacheStorage(),
                     ddaStorage: (any GameAlgoDDAStorage)? = GameAlgoUserDefaultsDDAStorage(),
                     identityStore: GameAlgoUserIdentityStore = GameAlgoUserIdentityStore()) throws -> JSONValue {
+        guard let integrationVersion = options.experimentIntegrationVersion, integrationVersion >= 1 else {
+            throw UnityBridgeError.invalid("experimentIntegrationVersion must be a positive integer")
+        }
         guard options.gameKey.hasPrefix("ga_live_"),
               let url = URL(string: options.baseUrl), let scheme = url.scheme,
               ["https", "http"].contains(scheme), url.host != nil,
-              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
-              (options.experimentIntegrationVersion ?? 0) >= 0 else {
-            throw UnityBridgeError.invalid("Valid client key, HTTP(S) URL and integration version are required")
+              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil else {
+            throw UnityBridgeError.invalid("Valid client key and HTTP(S) URL are required")
         }
         lock.lock(); defer { lock.unlock() }
         guard sdk == nil else { throw UnityBridgeError.invalid("GamePropel is already initialized") }
@@ -54,7 +56,7 @@ final class UnityBridge: @unchecked Sendable {
         debug = options.isDebug ?? false
         sdk = GameAlgoSDK(gameKey: options.gameKey, baseURL: url, appVersion: options.appVersion,
                           accountUserId: options.accountUserId, accountUserCreatedAt: options.accountUserCreatedAt,
-                          experimentIntegrationVersion: options.experimentIntegrationVersion ?? 0,
+                          experimentIntegrationVersion: integrationVersion,
                           platform: .ios, httpClient: httpClient, cacheStorage: cacheStorage, ddaStorage: ddaStorage,
                           userIdentityStore: identityStore, sessionId: session, device: device,
                           isDebug: debug, isOldUser: options.isOldUser,

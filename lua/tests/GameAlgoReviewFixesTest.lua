@@ -191,7 +191,7 @@ do
     } })
     clientCloud = { Get = function() error("unexpected cloud read") end,
         Set = function() error("unexpected cloud write") end }
-    GameAlgo.Init({ gameKey = gameKey, userId = "real-user", sessionId = "dda-session",
+    GameAlgo.Init({ gameKey = gameKey, userId = "real-user", sessionId = "dda-session", experimentIntegrationVersion = 1,
         autoFetch = false, nowMs = function() return 1000 end, _scheduler = scheduler() })
     local dda = GameAlgo.DDA("early")
     dda.RecordBehavior("new")
@@ -222,7 +222,7 @@ do
     end
     local sessionScheduler = scheduler()
     GameAlgo.Init({ gameKey = "ga_live_review_sessions", userId = "session-user",
-        sessionId = "old-session", autoFetch = false, preloadConfigFiles = false,
+        sessionId = "old-session", experimentIntegrationVersion = 1, autoFetch = false, preloadConfigFiles = false,
         transport = transport, _scheduler = sessionScheduler, nowMs = function() return 2000 end })
     assert(GameAlgo.TrackEvent("old-event", {}))
     GameAlgo.FetchConfig()
@@ -265,7 +265,7 @@ do
         end
     end
     GameAlgo.Init({ gameKey = "ga_live_review_files", userId = "file-user",
-        sessionId = "file-session-old", autoFetch = false, preloadConfigFiles = false,
+        sessionId = "file-session-old", experimentIntegrationVersion = 1, autoFetch = false, preloadConfigFiles = false,
         transport = transport, _scheduler = scheduler(), nowMs = function() return 3000 end })
     GameAlgo.FetchConfig(function(error) assert(error == nil, tostring(error)) end)
     local oldError
@@ -300,7 +300,7 @@ do
     local seen = {}
     local ok, reason = pcall(function()
         for index = 1, 3 do
-            GameAlgo.Init({ gameKey = "ga_live_review_ids", autoFetch = false,
+            GameAlgo.Init({ gameKey = "ga_live_review_ids", experimentIntegrationVersion = 1, autoFetch = false,
                 _scheduler = scheduler(), nowMs = function() return 8000 end })
             local snapshot = GameAlgo.Snapshot()
             assert(snapshot.userId ~= nil and snapshot.sessionId ~= nil)
@@ -323,9 +323,9 @@ end
 do
     local calls = 0
     clientCloud = { Get = function() calls = calls + 1 end, Set = function() calls = calls + 1 end }
-    GameAlgo.Init({ gameKey = "ga_live_review_reinit", userId = "user-a", sessionId = "session-a",
+    GameAlgo.Init({ gameKey = "ga_live_review_reinit", userId = "user-a", sessionId = "session-a", experimentIntegrationVersion = 1,
         autoFetch = false, _scheduler = scheduler(), nowMs = function() return 9000 end })
-    GameAlgo.Init({ gameKey = "ga_live_review_reinit", userId = "user-b", sessionId = "session-b",
+    GameAlgo.Init({ gameKey = "ga_live_review_reinit", userId = "user-b", sessionId = "session-b", experimentIntegrationVersion = 1,
         autoFetch = false, _scheduler = scheduler(), nowMs = function() return 9000 end })
     local snapshot = GameAlgo.Snapshot()
     assert(snapshot.userId == "user-b" and snapshot.storage.ready == true)
@@ -370,7 +370,7 @@ do
     -- A stale failure arrives after the session switch: it must yield the slot
     -- immediately instead of retrying the old session.
     GameAlgo.Init({ gameKey = "ga_live_review_retry", userId = "retry-user",
-        sessionId = "retry-a", autoFetch = false, preloadConfigFiles = false,
+        sessionId = "retry-a", experimentIntegrationVersion = 1, autoFetch = false, preloadConfigFiles = false,
         transport = transport, _scheduler = taskScheduler(), nowMs = function() return 10000 end })
     GameAlgo.FetchConfig()
     assert(#configRequests == 1)
@@ -384,7 +384,7 @@ do
     -- A retry scheduled while the old session was still current must stop once
     -- the session changes, handing the slot to the queue.
     GameAlgo.Init({ gameKey = "ga_live_review_retry", userId = "retry-user",
-        sessionId = "retry-c", autoFetch = false, preloadConfigFiles = false,
+        sessionId = "retry-c", experimentIntegrationVersion = 1, autoFetch = false, preloadConfigFiles = false,
         transport = transport, _scheduler = taskScheduler(), nowMs = function() return 11000 end })
     GameAlgo.FetchConfig()
     assert(#configRequests == 3)
@@ -438,7 +438,7 @@ do
     clientCloud = nil
     local originalDebug = debug
     GameAlgo.Init({ gameKey = "ga_live_review_ready", userId = "ready-user",
-        sessionId = "ready-session", autoFetch = false, transport = transport,
+        sessionId = "ready-session", experimentIntegrationVersion = 1, autoFetch = false, transport = transport,
         _scheduler = scheduler(), nowMs = function() return 12000 end })
     GameAlgo.FetchConfig(function(error) assert(error == nil, tostring(error)) end)
 

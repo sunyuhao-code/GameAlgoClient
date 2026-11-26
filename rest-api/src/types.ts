@@ -161,7 +161,8 @@ export type GameAlgoRestClientOptions = {
   sessionId?: string;
   sdkVersion?: string;
   appVersion?: string;
-  experimentIntegrationVersion?: number;
+  /** Required positive integer (>= 1) matching the published client integration version. */
+  experimentIntegrationVersion: number;
   platform?: Platform;
   deviceId?: string;
   device?: Record<string, JsonValue>;

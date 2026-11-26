@@ -27,7 +27,7 @@ function fixture(values = new Map<string, string>()) {
     return Response.json({ ok: true, accepted: partialAcceptance ? 1 : body.events?.length ?? 1, rejected: [] });
   };
   return { host, ads, requests, values, storage, fetchImpl,
-    options: { crazyGames: host, fetchImpl, storage, baseUrl: "https://gamealgo.test/algo_sdk", gameKey: "ga_live_local_test", eventFlushIntervalMs: 0 },
+    options: { crazyGames: host, fetchImpl, storage, baseUrl: "https://gamealgo.test/algo_sdk", gameKey: "ga_live_local_test", experimentIntegrationVersion: 1, eventFlushIntervalMs: 0 },
     events: () => requests.flatMap(request => request.body.events ?? []),
     offline(value: boolean) { offline = value; }, partialAcceptance() { partialAcceptance = true; }, blockNext() { blockNext = true; } };
 }
@@ -41,6 +41,16 @@ function browser(t: TestContext) {
   return { win, doc, hide() { doc.visibilityState = "hidden"; doc.dispatchEvent(new Event("visibilitychange")); },
     show() { doc.visibilityState = "visible"; doc.dispatchEvent(new Event("visibilitychange")); } };
 }
+
+test("CrazyGames requires a positive integer experimentIntegrationVersion", async () => {
+  const f = fixture();
+  for (const invalid of [undefined, 0, -1, 1.5, Number.NaN]) {
+    await assert.rejects(
+      GamePropelCrazyGamesClient.init({ ...f.options, experimentIntegrationVersion: invalid as never }),
+      /experimentIntegrationVersion must be a positive integer/,
+    );
+  }
+});
 
 test("waits for the real host initialization, fixes its wire platform, uses system info and preloads JSON only", async t => {
   const f = fixture(); let ready!: () => void;

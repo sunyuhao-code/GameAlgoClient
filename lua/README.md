@@ -1,6 +1,6 @@
 # GamePropel TapTap Maker / 小游戏 Lua SDK
 
-当前版本：`2.1.8-lua`。加固活跃会话本地 checkpoint、冷启动 `crash_recovery` 与前景心跳状态机（确保替代事件先落盘再清旧检查点、按最大已覆盖时长判重、避免晚到配置重开已确认快照、心跳不抢占退出保留槽位、检查点写失败指数退避、以及持久化宿主上 `isOldUser` 首次写盘确认后再上报）。公开调用接口不变。
+当前版本：`2.2.0-lua`。初始化参数 `experimentIntegrationVersion` 调整为必填正整数（`>= 1`），不再默认回退 `0`，与全平台 Optimization Commit 追踪闭环对齐；同时包含 `2.1.8-lua` 的活跃会话 checkpoint / `crash_recovery` / 前景心跳 / `isOldUser` 持久化加固。
 
 GamePropel 原名 GameAlgo，现有 `GameAlgo*` API、模块名和安装路径继续兼容。
 
@@ -84,13 +84,13 @@ Maker / Lua SDK 不提供匹配、Lobby、房间连接或实时状态同步；�
 
 `ga_live_xxx` 只是示例占位。实际接入必须通过 CLI 取得真实 `ga_live_*`。首次 Maker 接入可用真实小游戏 ID 领取临时接入凭据；已有游戏优先复用有效绑定，需要正式管理时再走 TapTap 授权或使用管理 Key。具体流程以 [Server SDK 接入文档](https://game-algo-admin.dictapis.cn/dashboard/docs/index.html?topic=sdk-integration)为准；`ga_org_*`、`ga_admin_*`、`ga_setup_*` 只给 CLI 使用，不放入客户端。
 
-`experimentIntegrationVersion` 来自 `gamealgo experiment integration-version create`，表示当前小游戏版本支持的实验参数能力。它需要固定在发布代码中，不能在运行时查询 latest；没有接入实验时可省略，默认是 `0`。
+`experimentIntegrationVersion` 为**必填正整数（`>= 1`）**，来自 `gamealgo experiment integration-version create`，表示当前小游戏版本支持的实验与优化集成能力。它必须固定在发布代码中，不能在运行时查询 latest，未传或 `<= 0` / 非整数时 `GameAlgo.Init` 会抛出错误。
 
 关于何时创建新版本、Strategy 最低版本和托管实验覆盖率门槛，运行 `gamealgo docs experiments --host <admin-host>` 查看当前平台规则。
 
 ### 已有进度玩家
 
-可选初始化参数 `isOldUser` 用于区分 SDK 接入前已有游戏进度的玩家：true 为已有进度，false 为确认的新玩家，未知则省略。由游戏在初始化前读取必要存档并判断，不能只看文件是否存在。SDK 持久化该用户首次明确值，后续启动或重新开档不覆盖。仅 `new_user` 标准漏斗的分母与节点人数排除老玩家；其他类型里程碑、SDK 注册时间、留存与 LTV 沿用原规则。Lua 示例：`GameAlgo.Init({ gameKey = clientKey, isOldUser = hasExistingProgress })`。
+可选初始化参数 `isOldUser` 用于区分 SDK 接入前已有游戏进度的玩家：true 为已有进度，false 为确认的新玩家，未知则省略。由游戏在初始化前读取必要存档并判断，不能只看文件是否存在。SDK 持久化该用户首次明确值，后续启动或重新开档不覆盖。仅 `new_user` 标准漏斗的分母与节点人数排除老玩家；其他类型里程碑、SDK 注册时间、留存与 LTV 沿用原规则。Lua 示例：`GameAlgo.Init({ gameKey = clientKey, experimentIntegrationVersion = 1, isOldUser = hasExistingProgress })`。
 
 ### 持久化存储
 

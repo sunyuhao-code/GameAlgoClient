@@ -4,7 +4,7 @@ import UIKit
 #endif
 
 public actor GameAlgoSDK {
-    public static let defaultSDKVersion = "2.1.5"
+    public static let defaultSDKVersion = "2.2.0"
 
     private let gameKey: String
     private let baseURL: URL
@@ -52,7 +52,7 @@ public actor GameAlgoSDK {
         appVersion: String? = nil,
         accountUserId: String? = nil,
         accountUserCreatedAt: String? = nil,
-        experimentIntegrationVersion: Int = 0,
+        experimentIntegrationVersion: Int,
         platform: GameAlgoPlatform = .ios,
         httpClient: any GameAlgoHTTPClient = URLSessionGameAlgoHTTPClient(),
         scriptRuntime: any GameAlgoScriptRuntime = RustGameAlgoScriptRuntime(),
@@ -114,7 +114,7 @@ public actor GameAlgoSDK {
         appVersion: String? = nil,
         accountUserId: String? = nil,
         accountUserCreatedAt: String? = nil,
-        experimentIntegrationVersion: Int = 0,
+        experimentIntegrationVersion: Int,
         platform: GameAlgoPlatform = .ios,
         httpClient: any GameAlgoHTTPClient = URLSessionGameAlgoHTTPClient(),
         scriptRuntime: any GameAlgoScriptRuntime = RustGameAlgoScriptRuntime(),
@@ -158,7 +158,7 @@ public actor GameAlgoSDK {
         self.defaultAppVersion = appVersion
         self.defaultAccountUserId = Self.clean(accountUserId)
         self.defaultAccountUserCreatedAt = Self.clean(accountUserCreatedAt)
-        precondition(experimentIntegrationVersion >= 0, "experimentIntegrationVersion must be a non-negative integer")
+        precondition(experimentIntegrationVersion >= 1, "experimentIntegrationVersion must be a positive integer")
         self.experimentIntegrationVersion = experimentIntegrationVersion
         self.defaultPlatform = platform
         self.defaultIsDebug = isDebug

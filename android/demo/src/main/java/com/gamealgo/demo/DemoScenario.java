@@ -25,6 +25,7 @@ public final class DemoScenario {
                 "https://gamealgo.demo",
                 "integration-demo",
                 "1.0",
+                1,
                 "android",
                 http
         );

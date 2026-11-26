@@ -8,13 +8,57 @@ import type { GameAlgoRestClientOptions } from "./types.ts";
 
 const gameKey = "ga_live_test_key_0123456789abcdef";
 
-type TestClientOptions = GameAlgoRestClientOptions & {
+type TestClientOptions = Omit<GameAlgoRestClientOptions, "experimentIntegrationVersion"> & {
+  experimentIntegrationVersion?: number;
   autoStart?: boolean;
 };
 
 function createClient(options: TestClientOptions): GameAlgoRestClient {
-  return new GameAlgoRestClient(options);
+  return new GameAlgoRestClient({
+    experimentIntegrationVersion: 1,
+    ...options,
+  });
 }
+
+test("experimentIntegrationVersion must be a positive integer on init and fetchConfig override", async () => {
+  const fetchImpl: typeof fetch = async () => jsonResponse({
+    contextId: "ctx-ver",
+    gameId: "Mahjong",
+    environment: "live",
+    configVersion: "v1",
+    ttlSeconds: 60,
+    serverTime: "2026-01-01T00:00:00Z",
+    experiments: [],
+    configFiles: [],
+  });
+  for (const invalid of [undefined, null, 0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, "1"]) {
+    assert.throws(
+      () => new GameAlgoRestClient({
+        baseUrl: "https://gamealgo.test",
+        gameKey,
+        experimentIntegrationVersion: invalid as never,
+        fetchImpl,
+      }),
+      /experimentIntegrationVersion must be a positive integer/,
+    );
+  }
+  const client = new GameAlgoRestClient({
+    baseUrl: "https://gamealgo.test",
+    gameKey,
+    experimentIntegrationVersion: 2,
+    autoStart: false,
+    fetchImpl,
+  } as GameAlgoRestClientOptions);
+  for (const invalid of [null, 0, -1, 1.5, Number.NaN, "2"]) {
+    await assert.rejects(
+      client.fetchConfig({ experimentIntegrationVersion: invalid as never, forceRefresh: true }),
+      /experimentIntegrationVersion must be a positive integer/,
+    );
+  }
+  const ok = await client.fetchConfig({ experimentIntegrationVersion: 3, forceRefresh: true });
+  assert.equal(ok.contextId, "ctx-ver");
+  client.tracker.close();
+});
 
 function scriptHash(content: string): string {
   return `sha256:${createHash("sha256").update(content, "utf8").digest("hex")}`;

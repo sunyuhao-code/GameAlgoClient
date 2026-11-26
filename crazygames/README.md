@@ -26,6 +26,7 @@ const gamePropel = await GamePropelCrazyGamesClient.init({
   baseUrl: yourGamePropelBaseUrl,
   gameKey: yourExistingClientGameKey,
   appVersion: "1.0.0",
+  experimentIntegrationVersion: 1, // Required positive integer (>= 1).
 });
 await gamePropel.waitForReady(5000);
 gamePropel.tracker.trackLevelStart({ levelId: "1" });

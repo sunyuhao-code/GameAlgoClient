@@ -18,7 +18,7 @@ function fixture(t: test.TestContext, device: Record<string, string> = {}) {
   const events: Array<{ payload: Record<string, unknown> }> = [];
   const values = new Map<string, string>();
   const client = new GameAlgoWebClient({
-    baseUrl: "https://fixture.example", gameKey: "ga_live_fixture", userId: "fixture-user",
+    baseUrl: "https://fixture.example", gameKey: "ga_live_fixture", userId: "fixture-user", experimentIntegrationVersion: 1,
     autoLifecycle: false, preloadConfigFiles: false, device,
     storage: { getItem: key => values.get(key), setItem: (key, value) => { values.set(key, value); }, removeItem: key => { values.delete(key); } },
     fetchImpl: async (input, init) => {

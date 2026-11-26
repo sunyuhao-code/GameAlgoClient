@@ -23,7 +23,7 @@ function fixture(t: TestContext, flags: Record<string, unknown> = {}, isDebug = 
   } };
   Object.defineProperty(globalThis, "tap", { configurable: true, value: host });
   const response = (extra: Record<string, unknown> = {}) => Response.json({ contextId: "ctx-routing", gameId: "routing-fixture", environment: "test", configVersion: "1", ttlSeconds: 60, serverTime: new Date().toISOString(), configFiles: [], experiments: [], ...extra });
-  const client = new GameAlgoWebClient({ baseUrl: "https://routing.test/algo_sdk", gameKey: "ga_live_routing_fixture",
+  const client = new GameAlgoWebClient({ baseUrl: "https://routing.test/algo_sdk", gameKey: "ga_live_routing_fixture", experimentIntegrationVersion: 1,
     storage, isDebug, autoLifecycle: false, preloadConfigFiles: false, eventFlushIntervalMs: 0,
     fetchImpl: async (input, init) => {
       const path = new URL(String(input)).pathname.replace("/algo_sdk", ""), body = JSON.parse(String(init?.body ?? "{}"));
@@ -121,7 +121,7 @@ test("a recovered direct batch uses the new TapDB-only policy while retaining th
   await assert.rejects(f.client.flush(), /offline/); await turn();
   const original = f.requests.find(r => r.path === "/v1/events/batch")!.body.events[0];
   f.client.close();
-  const next = new GameAlgoWebClient({ baseUrl: "https://routing.test/algo_sdk", gameKey: "ga_live_routing_fixture", storage: f.storage,
+  const next = new GameAlgoWebClient({ baseUrl: "https://routing.test/algo_sdk", gameKey: "ga_live_routing_fixture", experimentIntegrationVersion: 1, storage: f.storage,
     autoLifecycle: false, preloadConfigFiles: false, eventFlushIntervalMs: 0,
     fetchImpl: async input => {
       assert.ok(String(input).endsWith("/v1/config"), "disabled direct channel must not replay restored events");
@@ -135,7 +135,7 @@ test("a recovered direct batch uses the new TapDB-only policy while retaining th
 
 test("cached snapshots cannot authorize TapDB after reopening without a fresh server response", async t => {
   const f = fixture(t, { gamealgoStandardReportingEnabled: true, gamealgoCustomReportingEnabled: true, tapdbStandardReportingEnabled: true, tapdbCustomReportingEnabled: true }); await f.client.waitForReady(); f.client.close();
-  const next = new GameAlgoWebClient({ baseUrl: "https://routing.test/algo_sdk", gameKey: "ga_live_routing_fixture", storage: f.storage,
+  const next = new GameAlgoWebClient({ baseUrl: "https://routing.test/algo_sdk", gameKey: "ga_live_routing_fixture", experimentIntegrationVersion: 1, storage: f.storage,
     autoLifecycle: false, preloadConfigFiles: false, eventFlushIntervalMs: 0,
     fetchImpl: async input => {
       if (String(input).endsWith("/v1/config")) throw new Error("offline config");
@@ -203,7 +203,7 @@ test("envelope chunks preserve arbitrary Unicode and nulls; shared non-TapTap cl
   const original = { schemaVersion: 1, event: { payload: { text: "🙂中a".repeat(2000), value: null, nested: '{"a":true}' } } };
   assert.deepEqual(decode({ name: "fixture", properties: tapDbEnvelope(original, {}) }), original);
   const f = fixture(t);
-  const base = new GameAlgoRestClient({ baseUrl: "https://other.test", gameKey: "fixture", platform: "wechat", autoStart: false,
+  const base = new GameAlgoRestClient({ baseUrl: "https://other.test", gameKey: "fixture", experimentIntegrationVersion: 1, platform: "wechat", autoStart: false,
     fetchImpl: async () => Response.json({ ok: true, accepted: 1 }) } as never);
   t.after(() => base.tracker.close());
   await base.uploadEvents([{ contextId: "ctx", userId: "user", sessionId: "session", eventType: "level_start" }]);

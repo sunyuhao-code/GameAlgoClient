@@ -41,6 +41,7 @@ let offline = true;
 const options = {
   baseUrl: "https://gamealgo.test",
   gameKey: "ga_live_package_test",
+  experimentIntegrationVersion: 1,
   autoLifecycle: false,
   eventFlushIntervalMs: 0,
   storage: {

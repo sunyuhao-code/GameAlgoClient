@@ -44,7 +44,7 @@ local MakerAutoStorage = requireSdkModule("MakerAutoStorage")
 local GameAlgo = {}
 local unpackArgs = table.unpack or unpack
 
-local SDK_VERSION = "2.1.8-lua"
+local SDK_VERSION = "2.2.0-lua"
 local DEFAULT_BASE_URL = "https://game-algo-sdk.dictapis.cn"
 local DEFAULT_FLUSH_INTERVAL_MS = 5000
 local DEFAULT_FLUSH_TIMEOUT_MS = 15000
@@ -1914,9 +1914,13 @@ function GameAlgo.Init(options)
     if options.storage ~= nil then
         error("options.storage is not supported; TapTap Maker storage is managed automatically by the Lua SDK")
     end
-    local integrationVersion = numericOption(options, "experimentIntegrationVersion", 0)
-    if integrationVersion < 0 or integrationVersion % 1 ~= 0 then
-        error("experimentIntegrationVersion must be a non-negative integer")
+    local integrationVersion = options.experimentIntegrationVersion
+    if type(integrationVersion) ~= "number"
+        or integrationVersion ~= integrationVersion
+        or math.abs(integrationVersion) == math.huge
+        or integrationVersion < 1
+        or integrationVersion % 1 ~= 0 then
+        error("experimentIntegrationVersion must be a positive integer")
     end
     local maxBatch = math.min(MAX_HTTP_BATCH_SIZE, math.max(1, math.floor(numericOption(options, "maxBatchSize", MAX_HTTP_BATCH_SIZE))))
     local maxQueue = math.max(maxBatch, math.floor(numericOption(options, "maxQueueSize", DEFAULT_MAX_QUEUE_SIZE)))

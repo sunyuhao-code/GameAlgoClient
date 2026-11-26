@@ -59,7 +59,7 @@ async function harness(t: TestContext) {
   const requests: Array<{ events: GameEvent[]; keepalive?: boolean }> = [];
   const logs: string[] = [];
   const makeClient = (overrides: Partial<GameAlgoWebClientOptions> = {}) => new GameAlgoWebClient({
-    baseUrl: "https://gamealgo.example", gameKey: "ga_live_ad_test",
+    baseUrl: "https://gamealgo.example", gameKey: "ga_live_ad_test", experimentIntegrationVersion: 1,
     autoLifecycle: false, eventFlushIntervalMs: 0, preloadConfigFiles: false,
     storage, logger: (message) => { logs.push(message); },
     fetchImpl: async (input, init = {}) => {

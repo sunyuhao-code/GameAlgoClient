@@ -8,7 +8,7 @@ test("initial old-user classification preserves explicit false, survives restart
     const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } };
     const bodies: Record<string, unknown>[] = [];
     const create = (isOldUser?: boolean, gameKey = "ga_live_old_user_test") => new GameAlgoRestClient({
-      baseUrl: "https://test.invalid", gameKey, storage, userId: "user", isOldUser,
+      baseUrl: "https://test.invalid", gameKey, experimentIntegrationVersion: 1, storage, userId: "user", isOldUser,
       logger: false, preloadConfigFiles: false, eventFlushIntervalMs: 0,
       fetchImpl: async (input, init) => {
         const request = new Request(input, init);
@@ -42,6 +42,6 @@ test("initial old-user classification preserves explicit false, survives restart
 
 test("old-user initialization rejects values that would coerce false into true", () => {
   for (const isOldUser of ["false", "true", null, 0, 1]) {
-    assert.throws(() => new GameAlgoRestClient({ baseUrl: "https://test.invalid", gameKey: "ga_live_old_user_test", isOldUser: isOldUser as never }), /isOldUser must be a boolean/);
+    assert.throws(() => new GameAlgoRestClient({ baseUrl: "https://test.invalid", gameKey: "ga_live_old_user_test", experimentIntegrationVersion: 1, isOldUser: isOldUser as never }), /isOldUser must be a boolean/);
   }
 });

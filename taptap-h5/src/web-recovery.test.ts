@@ -25,7 +25,7 @@ function fixture(t: TestContext, options: Partial<GameAlgoWebClientOptions> = {}
   const storage: GameAlgoStorage = { getItem: key => values.get(key),
     setItem: (key, value) => { values.set(key, value); }, removeItem: key => { values.delete(key); } };
   const client = new GameAlgoWebClient({
-    baseUrl: "https://recovery.test", gameKey: "ga_live_recovery_test", storage,
+    baseUrl: "https://recovery.test", gameKey: "ga_live_recovery_test", experimentIntegrationVersion: 1, storage,
     autoLifecycle: false, eventFlushIntervalMs: 0, preloadConfigFiles: false,
     fetchImpl: async (input, init = {}) => {
       const url = String(input), body = JSON.parse(String(init.body ?? "{}"));

@@ -23,7 +23,8 @@ namespace GamePropel
                 (url.Scheme != "https" && url.Scheme != "http") ||
                 !string.IsNullOrEmpty(url.UserInfo) || !string.IsNullOrEmpty(url.Query) || !string.IsNullOrEmpty(url.Fragment))
                 throw new ArgumentException("BaseUrl must be an absolute HTTP(S) URL without credentials, query or fragment.");
-            if (ExperimentIntegrationVersion < 0) throw new ArgumentOutOfRangeException(nameof(ExperimentIntegrationVersion));
+            if (ExperimentIntegrationVersion <= 0)
+                throw new ArgumentOutOfRangeException(nameof(ExperimentIntegrationVersion), "ExperimentIntegrationVersion must be a positive integer (>= 1).");
             var device = Device == null ? new JsonObject() : (JsonObject)Device.DeepClone();
             device["runtime"] = "unity";
             device["unityVersion"] = Application.unityVersion;

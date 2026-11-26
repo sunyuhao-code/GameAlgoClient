@@ -20,7 +20,7 @@ val sdk = GameAlgo.init(
 
 `ga_live_xxx` 只是示例占位。实际接入必须使用真实 `ga_live_*`；如果当前没有真实 key，AI Agent 应使用 `ga_admin_*` 通过 GameAlgo CLI 创建或读取，不要提交占位 key 后声称接入完成。
 
-最后一个整数来自 `gamealgo experiment integration-version create`，表示这个 App 构建已经实现的实验参数能力。不要在运行时查询 latest；没有接入实验时可以继续使用两参数 `GameAlgo.init`，其版本为 `0`。
+最后一个整数 `experimentIntegrationVersion` 为**必填正整数（`>= 1`）**，来自 `gamealgo experiment integration-version create`，表示这个 App 构建已经实现的实验与优化集成能力。不要在运行时查询 latest；最小初始化可调用三参数 `GameAlgo.init(gameKey, baseUrl, experimentIntegrationVersion)`，未传或 `<= 0` 会抛出 `IllegalArgumentException`。
 
 关于何时创建新版本、Strategy 最低版本和托管实验覆盖率门槛，运行 `gamealgo docs experiments --host <admin-host>` 查看当前平台规则。
 

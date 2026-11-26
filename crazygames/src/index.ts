@@ -5,7 +5,7 @@ import { getCrazyGamesHost, type CrazyGamesHost, type CrazyGamesAdType } from ".
 import { GamePropelCrazyGamesStorage, type GamePropelCrazyGamesStorageOptions } from "./storage.ts";
 import { CrazyGamesTransport } from "./transport.ts";
 
-export const GAMEPROPEL_CRAZYGAMES_SDK_VERSION = "1.0.3";
+export const GAMEPROPEL_CRAZYGAMES_SDK_VERSION = "1.1.0";
 export const GAMEPROPEL_CRAZYGAMES_CAPABILITIES = Object.freeze({
   config: true, parameterExperiments: true, remoteScripts: false, multiplayer: false,
   rewardedAds: true, midgameAds: true, impressionRevenue: false,
@@ -46,6 +46,9 @@ export class GamePropelCrazyGamesClient extends GameAlgoRestClient {
   private readonly onOnline = () => this.flushInBackground();
 
   static async init(options: GamePropelCrazyGamesClientOptions): Promise<GamePropelCrazyGamesClient> {
+    if (typeof options.experimentIntegrationVersion !== "number" || !Number.isSafeInteger(options.experimentIntegrationVersion) || options.experimentIntegrationVersion < 1) {
+      throw new Error("experimentIntegrationVersion must be a positive integer");
+    }
     const host = getCrazyGamesHost(options.crazyGames);
     if (options.adTimeoutMs !== undefined && (!Number.isFinite(options.adTimeoutMs) || options.adTimeoutMs <= 0)) throw new Error("adTimeoutMs must be positive");
     const timeoutMs = options.hostInitTimeoutMs ?? 10_000;

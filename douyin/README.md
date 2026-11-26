@@ -22,6 +22,7 @@ const { GamePropelDouyinClient } = require('./gamepropel-sdk.js');
 const gamePropel = GamePropelDouyinClient.init({
   baseUrl: yourGamePropelBaseUrl,
   gameKey: yourExistingClientGameKey,
+  experimentIntegrationVersion: 1, // 必填正整数（>= 1）。
   isDebug: true, // 测试项目打开；正式版按游戏需要配置。
 });
 gamePropel.waitForReady(5000).then(ready => {

@@ -28,7 +28,7 @@ local function fetch()
     return requests[#requests].device
 end
 local function init()
-    GameAlgo.Init({ gameKey = "ga_live_fixture", userId = "runtime-identity-test", sessionId = "identity-" .. tostring(#requests),
+    GameAlgo.Init({ gameKey = "ga_live_fixture", userId = "runtime-identity-test", sessionId = "identity-" .. tostring(#requests), experimentIntegrationVersion = 1,
         autoFetch = false, preloadConfigFiles = false, transport = transport, device = copied, logger = false })
     return fetch()
 end

@@ -36,7 +36,7 @@ end
 local GameAlgo = require("GameAlgo")
 assert(GameAlgo.TrackAd == nil, "new SDK exposes only registered placement tracking")
 local adPlacementFixture = cjson.decode(readFile("protocol/fixtures/ad-placement-event.json"))
-GameAlgo.Init({ gameKey = "ga_live_fixture_key", userId = "registered-ad-user", sessionId = "registered-ad-session", transport = transport, autoFetch = false, preloadConfigFiles = false })
+GameAlgo.Init({ gameKey = "ga_live_fixture_key", userId = "registered-ad-user", sessionId = "registered-ad-session", experimentIntegrationVersion = 1, transport = transport, autoFetch = false, preloadConfigFiles = false })
 GameAlgo.FetchConfig(function(error) assert(error == nil, tostring(error)) end)
 local requestsBeforeRegisteredAd = #eventRequests
 for _, id in ipairs(adPlacementFixture.invalidIds) do assert(GameAlgo.TrackAdPlacement(id, 0) == false) end
@@ -165,7 +165,7 @@ GameAlgo.TrackAdPlacement = originalTrack
 do
     local now, mode = 1000, "valid"
     local timed = dofile("lua/GameAlgo.lua")
-    timed.Init({ gameKey = "ga_live_timed_ad_fixture", userId = "timed-ad-user", sessionId = "timed-ad-session",
+    timed.Init({ gameKey = "ga_live_timed_ad_fixture", userId = "timed-ad-user", sessionId = "timed-ad-session", experimentIntegrationVersion = 1,
         transport = transport, autoFetch = false, preloadConfigFiles = false, logger = function() end,
         nowMs = function()
             if mode == "throw" then error("clock unavailable") end

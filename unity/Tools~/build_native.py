@@ -22,7 +22,7 @@ def android():
     output = PACKAGE / "Runtime/Plugins/Android"
     output.mkdir(parents=True, exist_ok=True)
     run([REPO / "android/gradlew", "--init-script", PACKAGE / "Tools~/native-build.init.gradle",
-         "-Dgamepropel.unity.buildRoot=" + str(BUILD), "-PsdkVersion=2.1.5", ":assembleRelease", "--console=plain"], REPO / "android")
+         "-Dgamepropel.unity.buildRoot=" + str(BUILD), "-PsdkVersion=2.2.0", ":assembleRelease", "--console=plain"], REPO / "android")
     native = BUILD / "android/outputs/aar/gamealgo-android-release.aar"
     if not native.exists():
         raise RuntimeError("Native Android AAR was not produced")

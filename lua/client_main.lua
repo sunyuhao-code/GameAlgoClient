@@ -7,6 +7,7 @@ GameAlgo.Init({
     baseUrl = "https://game-algo-sdk.dictapis.cn",
     gameKey = "ga_live_xxx",
     appVersion = "1.0.0",
+    experimentIntegrationVersion = 1,
     device = {
         runtime = "taptap_mini_game",
         game = "your_game_id",

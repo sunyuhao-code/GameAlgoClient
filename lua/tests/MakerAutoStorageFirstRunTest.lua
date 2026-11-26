@@ -381,6 +381,7 @@ function TestGameAlgoStorage:test_http_replays_offline_backlog_and_ack_is_durabl
         end
     end }
     local options = { gameKey = "http-local-storage", sessionId = "offline-session",
+        experimentIntegrationVersion = 1,
         autoFetch = false, preloadConfigFiles = false, transport = transport,
         _scheduler = scheduler, logger = function() end, nowMs = function() return 1000 end }
     GameAlgo.Init(options)
@@ -415,6 +416,7 @@ local function newHost(options)
     local host = { options = options or {}, configs = {}, batches = {}, now = 1000 }
     local opts = host.options
     opts.gameKey, opts.userId, opts.sessionId = "test-game", "user-a", "session-a"
+    if opts.experimentIntegrationVersion == nil then opts.experimentIntegrationVersion = 1 end
     opts.autoFetch, opts.preloadConfigFiles, opts._scheduler = false, false, scheduler
     opts.logger, opts.nowMs = function() end, function() return host.now end
     opts.transport = {
@@ -900,7 +902,7 @@ function TestGameAlgoStorage:test_gamealgo_ids_do_not_consume_host_random()
         return originalRandom(...)
     end
     local ok, reason = pcall(function()
-        GameAlgo.Init({ gameKey = "gamealgo-random-isolation", autoFetch = false,
+        GameAlgo.Init({ gameKey = "gamealgo-random-isolation", experimentIntegrationVersion = 1, autoFetch = false,
             _scheduler = scheduler, nowMs = function() return 1000 end })
         lu.assertTrue(GameAlgo.TrackEvent("random_probe", {}))
         lu.assertNotNil(GameAlgo.NewSession())

@@ -39,7 +39,7 @@ public final class GamePropelUnityBridge {
             device.put("runtime", "unity");
             debug = options.optBoolean("isDebug");
             isOldUser = options.has("isOldUser") && !options.isNull("isOldUser") ? options.getBoolean("isOldUser") : null;
-            integrationVersion = options.optInt("experimentIntegrationVersion");
+            integrationVersion = requirePositiveIntegrationVersion(options);
             accountUserId = optional(options, "accountUserId");
             accountUserCreatedAt = optional(options, "accountUserCreatedAt");
             GameAlgoCacheStorage storage = new GameAlgoFileCacheStorage(new File(activity.getApplicationContext().getNoBackupFilesDir(), "gamealgo-sdk"));
@@ -188,6 +188,20 @@ public final class GamePropelUnityBridge {
         try { return new JSONObject().put("id", id == null ? JSONObject.NULL : id).put("ok", false)
                 .put("error", error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage()).toString(); }
         catch (Exception ignored) { return "{\"ok\":false,\"error\":\"Native bridge error\"}"; }
+    }
+    private static int requirePositiveIntegrationVersion(JSONObject options) throws Exception {
+        if (!options.has("experimentIntegrationVersion") || options.isNull("experimentIntegrationVersion")) {
+            throw new IllegalArgumentException("experimentIntegrationVersion must be a positive integer");
+        }
+        Object raw = options.get("experimentIntegrationVersion");
+        if (!(raw instanceof Integer || raw instanceof Long)) {
+            throw new IllegalArgumentException("experimentIntegrationVersion must be a positive integer");
+        }
+        long parsed = ((Number) raw).longValue();
+        if (parsed < 1 || parsed > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("experimentIntegrationVersion must be a positive integer");
+        }
+        return (int) parsed;
     }
     private static String required(JSONObject object, String name) throws Exception {
         String value = optional(object, name);

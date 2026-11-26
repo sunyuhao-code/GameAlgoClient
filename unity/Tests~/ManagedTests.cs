@@ -21,14 +21,19 @@ internal static class ManagedTests
         var client = new GamePropelClient(bridge);
         var options = new GamePropelOptions {
             GameKey = "ga_live_offline_test", BaseUrl = "https://offline-test.invalid/prefix",
+            ExperimentIntegrationVersion = 1,
             Device = new JsonObject { ["runtime"] = "override", ["custom"] = "你好" }
         };
         var serialized = options.ToJson();
         Check(serialized["device"].Value<string>("runtime") == "unity", "runtime is owned by the binding");
         Check(options.Device.Value<string>("runtime") == "override", "options are copied");
         Check(serialized["device"].Value<string>("custom") == "你好", "Unicode survives option serialization");
-        Throws(() => new GamePropelOptions { GameKey = "ga_admin_not_a_client_key" }.ToJson(), "management keys rejected");
-        Throws(() => new GamePropelOptions { GameKey = "ga_live_test", BaseUrl = "https://example.com/?secret=1" }.ToJson(), "query URLs rejected");
+        Check(serialized.Value<int>("experimentIntegrationVersion") == 1, "integration version survives serialization");
+        Throws(() => new GamePropelOptions { GameKey = "ga_admin_not_a_client_key", ExperimentIntegrationVersion = 1 }.ToJson(), "management keys rejected");
+        Throws(() => new GamePropelOptions { GameKey = "ga_live_test", BaseUrl = "https://example.com/?secret=1", ExperimentIntegrationVersion = 1 }.ToJson(), "query URLs rejected");
+        Throws(() => new GamePropelOptions { GameKey = "ga_live_test" }.ToJson(), "omitted/zero integration version rejected");
+        Throws(() => new GamePropelOptions { GameKey = "ga_live_test", ExperimentIntegrationVersion = 0 }.ToJson(), "zero integration version rejected");
+        Throws(() => new GamePropelOptions { GameKey = "ga_live_test", ExperimentIntegrationVersion = -1 }.ToJson(), "negative integration version rejected");
 
         Check(serialized["isOldUser"] == null, "omitted classification is absent rather than null");
         foreach (var first in new[] { true, false }) {
