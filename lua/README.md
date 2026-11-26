@@ -4,7 +4,22 @@
 
 GamePropel 原名 GameAlgo，现有 `GameAlgo*` API、模块名和安装路径继续兼容。
 
-TapTap Maker 客户端支持直接访问 GameAlgo HTTPS API。接入时把以下文件放入客户端脚本，不需要开启多人模式，也不需要部署服务端代理：
+TapTap Maker 客户端支持直接访问 GameAlgo HTTPS API，不需要开启多人模式，也不需要部署服务端代理。
+
+### 方式一：优先使用 Maker 内置库（`urhox-libs/GameAlgo`）
+
+若项目 `.project/settings.json` 已配置 `sources.urhox-libs`（如 `"tag": "latest"`）且构建 manifest 包含 `urhox-libs` source，直接引入内置模块即可，无需拷贝 SDK 文件到项目 `scripts/`：
+
+```lua
+local GameAlgo = require("urhox-libs.GameAlgo")
+```
+
+- 已有项目从 `scripts/sdk/` 迁移到内置库时，请删除或移除旧 `scripts/sdk/` 副本，避免双实例或旧版模块混用。
+- 内置库版本由 Maker 侧按上游发布节点同步升级；若需要使用内置库尚未同步的新版特性（例如 `isOldUser` 需 `2.1.6-lua`+）或做新版 SDK 灰度/发版前测试，请使用下方方式二引入 `2.1.6-lua`+ 完整六模块。
+
+### 方式二：项目内引入 / 覆盖新版（`scripts/sdk/`）
+
+若旧项目不含 `sources.urhox-libs`、锁定了不含 `GameAlgo` 的旧 tag，或需要显式使用更新版本（如 `2.1.6-lua`+），把以下六个运行时文件放入客户端脚本：
 
 - `GameAlgo.lua`
 - `HttpTransport.lua`
@@ -15,7 +30,7 @@ TapTap Maker 客户端支持直接访问 GameAlgo HTTPS API。接入时把以下
 
 `client_main.lua` 是可直接参考的初始化示例。
 
-新接入推荐将六个模块一起放在 `scripts/sdk/`，入口写 `require("sdk.GameAlgo")`。Maker 的 `scripts/` 是脚本资源根，模块路径不带 `scripts.` 前缀。SDK 内部先按入口命名空间加载同目录模块，再尝试 `sdk.<模块名>` 和根模块名；已有把文件直接放在 `scripts/`、使用 `require("GameAlgo")` 的项目可以保留原约定。
+自行引入推荐将六个模块一起放在 `scripts/sdk/`，入口写 `require("sdk.GameAlgo")`。Maker 的 `scripts/` 是脚本资源根，模块路径不带 `scripts.` 前缀。`2.1.6-lua` 起，SDK 内部先按入口命名空间加载同目录模块，再尝试 `sdk.<模块名>` 和根模块名，因此放置 `2.1.6-lua`+ 完整六模块时可与 `urhox-libs/GameAlgo` 隔离；不要把低于 `2.1.6-lua` 的旧副本与内置库混放。已有把文件直接放在 `scripts/`、使用 `require("GameAlgo")` 的项目可以保留原约定。
 
 SDK 内部模块会优先按照入口模块的命名空间加载同目录依赖。例如通过
 `require("sdk.GameAlgo")` 加载时使用 `sdk.HttpTransport`；宿主将 SDK 放在其他独立命名空间时，内部模块会跟随该命名空间，避免把项目旧副本混入当前 SDK。根模块加载仍保留作兼容兜底。
@@ -47,7 +62,7 @@ SDK 同步读取 Maker `lobby:GetMyUserId()` 作为独立的 `accountUserId`，�
 ## 客户端配置
 
 ```lua
-local GameAlgo = require("sdk.GameAlgo")
+local GameAlgo = require("urhox-libs.GameAlgo") -- 若走方式二放到 scripts/sdk/，改为 require("sdk.GameAlgo")
 
 GameAlgo.Init({
     baseUrl = "https://game-algo-sdk.dictapis.cn",
