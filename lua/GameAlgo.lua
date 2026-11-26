@@ -44,7 +44,7 @@ local MakerAutoStorage = requireSdkModule("MakerAutoStorage")
 local GameAlgo = {}
 local unpackArgs = table.unpack or unpack
 
-local SDK_VERSION = "2.1.6-lua"
+local SDK_VERSION = "2.1.7-lua"
 local DEFAULT_BASE_URL = "https://game-algo-sdk.dictapis.cn"
 local DEFAULT_FLUSH_INTERVAL_MS = 5000
 local DEFAULT_FLUSH_TIMEOUT_MS = 15000
@@ -59,6 +59,10 @@ local CONFIG_FETCH_RETRY_BASE_MS = 1000
 local CONFIG_FETCH_RETRY_MAX_MS = 30000
 local CONFIG_FETCH_TIMEOUT_MS = 12000
 local INIT_WATCHDOG_MS = 10000
+local SESSION_CHECKPOINT_MIN_FOREGROUND_MS = 5000
+local SESSION_CHECKPOINT_INTERVAL_MS = 15000
+local SESSION_HEARTBEAT_INITIAL_MS = 30000
+local SESSION_HEARTBEAT_INTERVAL_MS = 120000
 local TAPDB_CONTEXT_LINK_EVENT = "gamealgo_context_link"
 local TAPDB_CONTEXT_LINK_DISCOVERY_INTERVAL_MS = 500
 local TAPDB_CONTEXT_LINK_DISCOVERY_WINDOW_MS = 10000
@@ -91,6 +95,12 @@ local state_ = {
     foregroundTimeMs = 0,
     sessionForegroundStartMs = 0,
     sessionHasEnd = false,
+    sessionCheckpointForegroundMs = 0,
+    sessionCheckpointWritten = false,
+    sessionCheckpointEnded = false,
+    sessionHeartbeatEnabled = true,
+    sessionHeartbeatEmitted = false,
+    sessionHeartbeatLastForegroundMs = 0,
     contextId = nil,
     config = nil,
     configFiles = {},
@@ -368,6 +378,10 @@ end
 
 local function milestoneStorageKey()
     return userStorageNamespace() .. ":milestones"
+end
+
+local function sessionCheckpointStorageKey()
+    return userStorageNamespace() .. ":session_checkpoint"
 end
 
 local function resolveMakerUserId()
@@ -1239,7 +1253,7 @@ local function makeEvent(owner, eventType, payload, timestamp, createdLocalAt)
     }
 end
 
-local function enqueueTrack(eventType, payload, timestamp, createdLocalAt, sessionEndSnapshot, owner)
+local function enqueueTrack(eventType, payload, timestamp, createdLocalAt, sessionEndSnapshot, owner, suppressEndPriority)
     local admissionError = queueAdmissionError(eventType, outstandingEventCount())
     if admissionError then
         persistEventQueue()
@@ -1256,10 +1270,123 @@ local function enqueueTrack(eventType, payload, timestamp, createdLocalAt, sessi
     if #state_.queue >= state_.maxBatchSize and state_.flushableEvents > 0 then state_.flushRequested = true end
     state_.eventQueueStorage:Upsert(event)
     if eventType == "session_end" and not sessionEndSnapshot then state_.sessionHasEnd = true end
-    if eventType == "session_end" then state_.pendingEndSnapshot = event end
+    if eventType == "session_end" and not suppressEndPriority then state_.pendingEndSnapshot = event end
     if eventType == "ad_view" then state_.pendingAdFlush = true end
     scheduleEventQueuePersistence()
     return true, nil
+end
+
+local function hasQueuedSessionEnd(sessionId)
+    if not sessionId or sessionId == "" then return false end
+    for _, event in ipairs(state_.queue) do
+        if event.eventType == "session_end" and event.sessionId == sessionId then return true end
+    end
+    if state_.activeFlush and state_.activeFlush.batch then
+        for _, event in ipairs(state_.activeFlush.batch) do
+            if event.eventType == "session_end" and event.sessionId == sessionId then return true end
+        end
+    end
+    return false
+end
+
+local function currentSessionForegroundMs()
+    return math.max(0, GameAlgo.GetForegroundTimeMs() - state_.sessionForegroundStartMs)
+end
+
+local function persistSessionCheckpoint(ended)
+    if not state_.storageReady or not state_.persistentStorageAvailable then return false end
+    if not state_.sessionId or state_.sessionId == "" or not state_.userId or state_.userId == "" then return false end
+    if not state_.contextId or state_.contextId == "" then return false end
+    local durationMs = currentSessionForegroundMs()
+    if ended and not state_.sessionCheckpointWritten then
+        state_.sessionCheckpointEnded = true
+        return true
+    end
+    if not ended and durationMs < SESSION_CHECKPOINT_MIN_FOREGROUND_MS then return false end
+    local persisted = storageSet(sessionCheckpointStorageKey(), {
+        sessionId = state_.sessionId,
+        contextId = state_.contextId,
+        userId = state_.userId,
+        accountUserId = state_.accountUserId,
+        isDebug = state_.isDebug == true,
+        sessionDurationMs = durationMs,
+        timestamp = isoNow(),
+        createdLocalAt = localIsoNow(),
+        ended = ended == true,
+    })
+    if persisted then
+        state_.sessionCheckpointForegroundMs = durationMs
+        state_.sessionCheckpointWritten = true
+        state_.sessionCheckpointEnded = ended == true
+    end
+    return persisted
+end
+
+local function recoverUnendedSessionCheckpoint()
+    if not state_.storageReady or not state_.persistentStorageAvailable then return end
+    local key = sessionCheckpointStorageKey()
+    local checkpoint = storageGet(key)
+    if type(checkpoint) ~= "table" then return end
+    local previousSessionId = type(checkpoint.sessionId) == "string" and checkpoint.sessionId or ""
+    if previousSessionId == "" or previousSessionId == state_.sessionId then return end
+    storageSet(key, nil)
+    if checkpoint.ended == true then return end
+    local previousContextId = type(checkpoint.contextId) == "string" and checkpoint.contextId or ""
+    local previousUserId = type(checkpoint.userId) == "string" and checkpoint.userId or ""
+    if previousContextId == "" or previousUserId == "" then return end
+    if hasQueuedSessionEnd(previousSessionId) then return end
+    local durationMs = tonumber(checkpoint.sessionDurationMs)
+    if not durationMs or durationMs ~= durationMs or durationMs < 0 or durationMs == math.huge then
+        durationMs = 0
+    end
+    local owner = {
+        queueKey = queueStorageKey(),
+        userId = previousUserId,
+        accountUserId = type(checkpoint.accountUserId) == "string" and checkpoint.accountUserId ~= "" and checkpoint.accountUserId or nil,
+        sessionId = previousSessionId,
+        contextId = previousContextId,
+        isDebug = checkpoint.isDebug == true,
+    }
+    local timestamp = type(checkpoint.timestamp) == "string" and checkpoint.timestamp ~= "" and checkpoint.timestamp or isoNow()
+    local createdLocalAt = type(checkpoint.createdLocalAt) == "string" and checkpoint.createdLocalAt ~= "" and checkpoint.createdLocalAt or localIsoNow()
+    local ok = enqueueTrack("session_end", {
+        reason = "crash_recovery",
+        sessionDurationMs = math.floor(durationMs),
+    }, timestamp, createdLocalAt, true, owner, true)
+    if ok then
+        persistEventQueue()
+        log("recovered unended session_end for previous session: " .. previousSessionId)
+    end
+end
+
+local function updateSessionCheckpointAndHeartbeat()
+    if not state_.storageReady or state_.sessionHasEnd then return end
+    if not state_.contextId or state_.contextId == "" then return end
+    local durationMs = currentSessionForegroundMs()
+    if durationMs < SESSION_CHECKPOINT_MIN_FOREGROUND_MS then return end
+
+    if state_.sessionHeartbeatEnabled then
+        local heartbeatDue = (not state_.sessionHeartbeatEmitted and durationMs >= SESSION_HEARTBEAT_INITIAL_MS)
+            or (state_.sessionHeartbeatEmitted and durationMs - state_.sessionHeartbeatLastForegroundMs >= SESSION_HEARTBEAT_INTERVAL_MS)
+        if heartbeatDue then
+            local tracked = enqueueTrack("session_end", {
+                reason = "heartbeat",
+                sessionDurationMs = durationMs,
+            }, nil, nil, true, nil, true)
+            if tracked then
+                state_.sessionHeartbeatEmitted = true
+                state_.sessionHeartbeatLastForegroundMs = durationMs
+                persistSessionCheckpoint(true)
+                return
+            end
+        end
+    end
+
+    if state_.persistentStorageAvailable
+        and (state_.sessionCheckpointForegroundMs == 0
+            or durationMs - state_.sessionCheckpointForegroundMs >= SESSION_CHECKPOINT_INTERVAL_MS) then
+        persistSessionCheckpoint(false)
+    end
 end
 
 local function flushAutomaticStorage()
@@ -1318,7 +1445,12 @@ local function handleLifecycleSessionEnd(eventName, reason)
     -- NewSession must still be able to report a newer duration for this session.
     local tracked, error = enqueueTrack("session_end", payload, nil, nil, true)
     if not tracked then log("lifecycle session_end not queued: " .. tostring(error)) end
-    if tracked then state_.backgroundWillSnapshotPending = eventName == "AppWillEnterBackground" end
+    if tracked then
+        state_.backgroundWillSnapshotPending = eventName == "AppWillEnterBackground"
+        state_.sessionHeartbeatEmitted = true
+        state_.sessionHeartbeatLastForegroundMs = payload.sessionDurationMs
+        persistSessionCheckpoint(true)
+    end
     persistEventQueue()
     flushAutomaticStorage()
     GameAlgo.Flush(nil)
@@ -1392,6 +1524,7 @@ local function completeInitialization(options)
     state_.sessionAttribution = sessionAttribution()
     restoreReachedMilestones()
     restoreEventQueue()
+    recoverUnendedSessionCheckpoint()
 
     for _, controller in pairs(state_.ddaControllers) do
         if type(controller._Hydrate) == "function" then controller._Hydrate() end
@@ -1540,6 +1673,12 @@ function GameAlgo.Init(options)
     state_.foregroundTimeMs = 0
     state_.sessionForegroundStartMs = 0
     state_.sessionHasEnd = false
+    state_.sessionCheckpointForegroundMs = 0
+    state_.sessionCheckpointWritten = false
+    state_.sessionCheckpointEnded = false
+    state_.sessionHeartbeatEnabled = options.autoSessionHeartbeat ~= false
+    state_.sessionHeartbeatEmitted = false
+    state_.sessionHeartbeatLastForegroundMs = 0
     state_.userId = nil
     state_.isOldUser = nil
     state_.initialIsOldUser = options.isOldUser
@@ -1834,6 +1973,13 @@ performConfigFetchAttempt = function()
         mergeCustomEventCountBucket("pending:" .. tostring(requestBody.sessionId), "context:" .. contextId)
         mergeOrdinaryEventCountBucket("pending:" .. tostring(requestBody.sessionId), "context:" .. contextId)
         bindQueuedEvents(contextId, requestBody, current)
+        if current then
+            if state_.sessionHasEnd or hasQueuedSessionEnd(state_.sessionId) then
+                persistSessionCheckpoint(true)
+            else
+                persistSessionCheckpoint(false)
+            end
+        end
         if state_.milestoneMarkersDirty then persistEventQueue() end
         if state_.initWatchdogHandle and state_.scheduler and type(state_.scheduler.Cancel) == "function" then
             state_.scheduler:Cancel(state_.initWatchdogHandle)
@@ -2344,7 +2490,13 @@ function GameAlgo.TrackSessionEnd(payload)
     if merged.sessionDurationMs == nil and state_.sessionStartMs then
         merged.sessionDurationMs = GameAlgo.GetForegroundTimeMs() - state_.sessionForegroundStartMs
     end
-    return GameAlgo.Track("session_end", merged)
+    local ok, err = GameAlgo.Track("session_end", merged)
+    if ok then
+        state_.sessionHeartbeatEmitted = true
+        state_.sessionHeartbeatLastForegroundMs = currentSessionForegroundMs()
+        persistSessionCheckpoint(true)
+    end
+    return ok, err
 end
 
 local function hasFlushableEvents()
@@ -2717,6 +2869,7 @@ function GameAlgo.Update()
         and currentTime <= state_.tapDbContextLinkDiscoveryUntilMs then
         tryTapDbContextLink()
     end
+    updateSessionCheckpointAndHeartbeat()
     if state_.queuePersistenceDirty
         and currentTime - state_.lastQueuePersistAtMs >= QUEUE_PERSIST_INTERVAL_MS then
         persistEventQueue()
@@ -2807,10 +2960,16 @@ function GameAlgo.NewSession(sessionId, callback)
             return nil, error
         end
     end
+    persistSessionCheckpoint(true)
     state_.ordinaryEventCounts["pending:" .. tostring(previousSessionId)] = nil
     state_.sessionId = nextSessionId
     state_.backgroundWillSnapshotPending = false
     state_.sessionHasEnd = false
+    state_.sessionCheckpointForegroundMs = 0
+    state_.sessionCheckpointWritten = false
+    state_.sessionCheckpointEnded = false
+    state_.sessionHeartbeatEmitted = false
+    state_.sessionHeartbeatLastForegroundMs = 0
     state_.eventGuardDiagnosticKeys = {}
     state_.eventGuardDiagnosticCount = 0
     state_.sessionStartMs = endedAt

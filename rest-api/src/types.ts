@@ -175,6 +175,8 @@ export type GameAlgoRestClientOptions = {
   eventQueueLimit?: number;
   /** Persist every queued event immediately. Recommended for browser runtimes. */
   eventPersistOnEnqueue?: boolean;
+  /** Emit periodic foreground session_end heartbeat snapshots on browser runtimes (default true). */
+  autoSessionHeartbeat?: boolean;
   fetchImpl?: GameAlgoFetch;
   now?: () => number;
   storage?: GameAlgoStorage;

@@ -41,7 +41,32 @@ type RefreshOptions = FetchConfigOptions & {
 
 type InternalClientOptions = GameAlgoRestClientOptions & {
   autoStart?: boolean;
+  autoSessionHeartbeat?: boolean;
 };
+
+type SyncBackupStorage = GameAlgoStorage & {
+  getSyncItem?(key: string): string | undefined;
+  setSyncItem?(key: string, value: string): boolean;
+  removeSyncItem?(key: string): void;
+};
+
+type ActiveSessionCheckpoint = {
+  sessionId: string;
+  contextId: string;
+  userId: string;
+  accountUserId?: string;
+  isDebug: boolean;
+  sessionDurationMs: number;
+  timestamp: string;
+  createdLocalAt: string;
+  ended: boolean;
+};
+
+const WEB_SESSION_CHECKPOINT_MIN_MS = 15_000;
+const WEB_SESSION_CHECKPOINT_INTERVAL_MS = 15_000;
+const WEB_SESSION_HEARTBEAT_INITIAL_MS = 30_000;
+const WEB_SESSION_HEARTBEAT_INTERVAL_MS = 120_000;
+const MAX_SYNC_SESSION_END_MIRROR = 5;
 
 const STANDARD_EVENT_TYPES = new Set([
   "session_end", "level_start", "level_end", "ad_view", "purchase", "milestone",
@@ -131,6 +156,7 @@ export class GameAlgoRestClient {
     this.userCreatedAtKey = `gamealgo:v1:identity:${baseCacheNamespace}:${gameKeyHash}:created-at`;
     this.userCreatedLocalAtKey = `gamealgo:v1:identity:${baseCacheNamespace}:${gameKeyHash}:created-local-at`;
     this.config = new GameAlgoConfigReader(() => this.snapshot);
+    const internalOptions = options as InternalClientOptions;
     this.tracker = new GameAlgoEventTracker({
       uploadEvents: (events) => this.uploadEvents(events),
       reportDiagnostic: (diagnostic) => this.reportSdkDiagnostic(diagnostic),
@@ -144,6 +170,7 @@ export class GameAlgoRestClient {
       maxBatchBytes: options.eventMaxBatchBytes,
       queueLimit: options.eventQueueLimit ?? 1000,
       persistOnEnqueue: options.eventPersistOnEnqueue ?? false,
+      autoSessionHeartbeat: internalOptions.autoSessionHeartbeat,
       now: this.now,
       storage: this.storage,
       persistenceKey: `gamealgo:v1:event-queue:${baseCacheNamespace}:${gameKeyHash}:${userScope}`,
@@ -151,7 +178,6 @@ export class GameAlgoRestClient {
         try { this.log(`ad_view identity ${state}: count=${count}`); } catch { /* Diagnostics cannot block telemetry. */ }
       },
     });
-    const internalOptions = options as InternalClientOptions;
     if (internalOptions.autoStart !== false) {
       this.readyPromise = this.initialize(options);
       // Games may read local defaults without awaiting startup; keep an offline
@@ -884,13 +910,21 @@ export class GameAlgoEventTracker {
   private readonly maxBatchBytes?: number;
   private readonly queueLimit: number;
   private readonly persistOnEnqueue: boolean;
+  private readonly sessionHeartbeatEnabled: boolean;
   private readonly flushIntervalMs: number;
   private readonly now: () => number;
   private readonly storage?: GameAlgoStorage;
   private readonly persistenceKey?: string;
+  private readonly syncSessionEndKey?: string;
+  private readonly sessionCheckpointKey?: string;
   private readonly milestonePersistenceKey?: string;
   private readonly milestoneRestorePromise: Promise<void>;
   private readonly restorePromise: Promise<void>;
+  private sessionCheckpointForegroundMs = 0;
+  private sessionCheckpointWritten = false;
+  private sessionCheckpointEnded = false;
+  private sessionHeartbeatEmitted = false;
+  private sessionHeartbeatLastForegroundMs = 0;
 
   private userId?: string;
   private sessionId = randomId();
@@ -953,6 +987,7 @@ export class GameAlgoEventTracker {
     maxBatchBytes?: number;
     queueLimit: number;
     persistOnEnqueue?: boolean;
+    autoSessionHeartbeat?: boolean;
     now: () => number;
     storage?: GameAlgoStorage;
     persistenceKey?: string;
@@ -972,6 +1007,7 @@ export class GameAlgoEventTracker {
       : undefined;
     this.queueLimit = Math.max(options.queueLimit, this.maxBatchSize);
     this.persistOnEnqueue = options.persistOnEnqueue ?? false;
+    this.sessionHeartbeatEnabled = isBrowserHost(this.platform) && options.autoSessionHeartbeat !== false;
     this.now = options.now;
     this.onAdIdentityState = options.onAdIdentityState;
     this.sessionStartMs = this.now();
@@ -982,13 +1018,17 @@ export class GameAlgoEventTracker {
     }
     this.storage = options.storage;
     this.persistenceKey = clean(options.persistenceKey);
+    this.syncSessionEndKey = this.persistenceKey && isBrowserHost(this.platform)
+      ? `${this.persistenceKey}:sync-session-ends` : undefined;
+    this.sessionCheckpointKey = this.persistenceKey && isBrowserHost(this.platform)
+      ? `${this.persistenceKey}:session-checkpoint` : undefined;
     if (this.persistOnEnqueue && this.storage && this.persistenceKey) {
       this.incrementalQueue = new IncrementalEventQueue(this.storage, this.persistenceKey);
     }
     this.milestonePersistenceKey = this.persistenceKey ? `${this.persistenceKey}:milestones` : undefined;
     this.milestoneRestorePromise = this.restorePersistedMilestones();
     this.restorePromise = Promise.all([
-      this.restorePersistedQueue(),
+      this.restorePersistedQueue().then(() => this.restoreSyncSessionEndsAndCheckpoint()),
       this.milestoneRestorePromise,
     ]).then(() => { this.restored = true; });
   }
@@ -999,6 +1039,11 @@ export class GameAlgoEventTracker {
       this.sessionId = sessionId!;
       this.sessionHasEnd = false;
       this.sessionHasSnapshot = false;
+      this.sessionCheckpointForegroundMs = 0;
+      this.sessionCheckpointWritten = false;
+      this.sessionCheckpointEnded = false;
+      this.sessionHeartbeatEmitted = false;
+      this.sessionHeartbeatLastForegroundMs = 0;
       this.sessionStartMs = this.now();
       this.resetSessionDuration(this.sessionStartMs);
     }
@@ -1047,17 +1092,25 @@ export class GameAlgoEventTracker {
     if (userId && !this.sessionHasEnd) {
       // SDK-owned boundaries bypass gameplay quotas, just like Godot's native
       // session marker. The envelope is captured before switching ownership.
-      this.enqueue({
+      const endEvent: GameEvent = {
         eventId: randomId(), contextId: this.contextId ?? "", userId,
         sessionId: previousSessionId, eventType: "session_end", isDebug: this.isDebug,
         timestamp: new Date(endedAt).toISOString(), createdLocalAt: localTimestamp(endedAt),
         accountUserId: this.accountUserId,
         payload: { reason: "new_session", sessionDurationMs: this.sessionDuration(endedAt) },
-      });
+      };
+      this.enqueue(endEvent);
+      this.mirrorSyncSessionEnd(endEvent);
     }
+    this.persistSessionCheckpoint(true);
     this.sessionId = sessionId;
     this.sessionHasEnd = false;
     this.sessionHasSnapshot = false;
+    this.sessionCheckpointForegroundMs = 0;
+    this.sessionCheckpointWritten = false;
+    this.sessionCheckpointEnded = false;
+    this.sessionHeartbeatEmitted = false;
+    this.sessionHeartbeatLastForegroundMs = 0;
     this.ordinaryCounts.delete(`pending:${previousSessionId}`);
     this.diagnosticKeys.clear();
     this.diagnosticCount = 0;
@@ -1097,6 +1150,11 @@ export class GameAlgoEventTracker {
     );
     this.retryBatch = this.retryBatch.map(bind);
     this.queue = this.queue.map(bind);
+    this.bindSyncSessionEnds(sessionId, resolved);
+    if (sessionId === this.sessionId) {
+      if (this.sessionHasEnd || this.hasQueuedSessionEnd(sessionId)) this.persistSessionCheckpoint(true);
+      else this.persistSessionCheckpoint(false);
+    }
     this.rememberBoundMilestones(resolved);
     if (this.hasPersistedQueue) void this.persistPendingQueue().catch(() => undefined);
     if (isBrowserHost(this.platform)) void this.flushUrgent().catch(() => undefined);
@@ -1171,6 +1229,46 @@ export class GameAlgoEventTracker {
     }
     this.sessionDurationWasVisible = visible;
     this.sessionDurationSampleAt = now;
+    if (visible && isBrowserHost(this.platform)) this.updateSessionCheckpointAndHeartbeat(now);
+  }
+
+  private updateSessionCheckpointAndHeartbeat(now: number): void {
+    if (this.timersStopped || this.sessionHasEnd) return;
+    const userId = clean(this.userId);
+    const contextId = clean(this.contextId);
+    if (!userId || !contextId) return;
+    const durationMs = Math.max(0, this.getForegroundTimeMs() - this.sessionForegroundStartMs);
+    if (durationMs < WEB_SESSION_CHECKPOINT_MIN_MS) return;
+
+    if (this.sessionHeartbeatEnabled) {
+      const due = (!this.sessionHeartbeatEmitted && durationMs >= WEB_SESSION_HEARTBEAT_INITIAL_MS)
+        || (this.sessionHeartbeatEmitted && durationMs - this.sessionHeartbeatLastForegroundMs >= WEB_SESSION_HEARTBEAT_INTERVAL_MS);
+      if (due) {
+        const heartbeat: GameEvent = {
+          eventId: randomId(),
+          contextId,
+          userId,
+          sessionId: this.sessionId,
+          eventType: "session_end",
+          isDebug: this.isDebug,
+          timestamp: new Date(now).toISOString(),
+          createdLocalAt: localTimestamp(now),
+          accountUserId: this.accountUserId,
+          payload: { reason: "heartbeat", sessionDurationMs: durationMs },
+        };
+        this.enqueue(heartbeat, true);
+        this.mirrorSyncSessionEnd(heartbeat);
+        this.sessionHeartbeatEmitted = true;
+        this.sessionHeartbeatLastForegroundMs = durationMs;
+        this.persistSessionCheckpoint(true, now);
+        return;
+      }
+    }
+
+    if (!this.sessionCheckpointWritten
+      || durationMs - this.sessionCheckpointForegroundMs >= WEB_SESSION_CHECKPOINT_INTERVAL_MS) {
+      this.persistSessionCheckpoint(false, now);
+    }
   }
 
   private sessionDuration(now: number): number {
@@ -1212,7 +1310,7 @@ export class GameAlgoEventTracker {
     if (!this.consumeCustomEventQuota(eventType, contextId, resolvedSessionId)) return false;
     this.consumeOrdinaryEventQuota(eventType, contextId, resolvedSessionId, true);
 
-    this.enqueue({
+    const trackedEvent: GameEvent = {
       eventId: randomId(),
       contextId: contextId ?? "",
       userId,
@@ -1223,7 +1321,14 @@ export class GameAlgoEventTracker {
       createdLocalAt: options.createdLocalAt ?? localTimestamp(options.timestamp ? Date.parse(options.timestamp) : this.now()),
       accountUserId: this.accountUserId,
       payload: normalizedPayload,
-    });
+    };
+    this.enqueue(trackedEvent);
+    if (eventType === "session_end" && resolvedSessionId === this.sessionId) {
+      this.mirrorSyncSessionEnd(trackedEvent);
+      this.sessionHeartbeatEmitted = true;
+      this.sessionHeartbeatLastForegroundMs = Math.max(0, this.getForegroundTimeMs() - this.sessionForegroundStartMs);
+      this.persistSessionCheckpoint(true);
+    }
     if (milestone?.key) this.rememberMilestone(milestone.key, milestone.durable);
     if (isBrowserHost(this.platform) && eventType === "ad_view") {
       void this.flushUrgent().then(() => this.flush()).catch(() => undefined);
@@ -1460,6 +1565,12 @@ export class GameAlgoEventTracker {
   private enqueueSessionEndSnapshot(event: GameEvent): void {
     this.hasPersistedQueue = true;
     this.enqueue(event, true);
+    this.mirrorSyncSessionEnd(event);
+    if (event.sessionId === this.sessionId) {
+      this.sessionHeartbeatEmitted = true;
+      this.sessionHeartbeatLastForegroundMs = Math.max(0, this.getForegroundTimeMs() - this.sessionForegroundStartMs);
+      this.persistSessionCheckpoint(true);
+    }
     if (!this.persistOnEnqueue) void this.persistPendingQueue().catch(() => undefined);
     if (isBrowserHost(this.platform)) void this.flushUrgent().catch(() => undefined);
   }
@@ -1541,6 +1652,7 @@ export class GameAlgoEventTracker {
         this.inflightBatch = [];
         this.consecutiveFailures = 0;
         this.nextAutoFlushAt = 0;
+        this.removeSyncSessionEnds(new Set(uploadBatch.map((event) => event.eventId!)));
         // A storage failure after a successful HTTP ACK must not turn that
         // response into a transport failure or requeue the acknowledged batch.
         if (this.hasPersistedQueue) await this.persistPendingQueue().catch(() => undefined);
@@ -1549,6 +1661,7 @@ export class GameAlgoEventTracker {
         if (isPermanentBatchError(error)) {
           // Terminal 4xx payload rejection: drop the poison-pill batch so later
           // valid events are not permanently head-of-line blocked across restarts.
+          this.removeSyncSessionEnds(new Set(uploadBatch.map((event) => event.eventId!)));
           if (this.hasPersistedQueue) await this.persistPendingQueue().catch(() => undefined);
           throw error;
         }
@@ -1612,6 +1725,7 @@ export class GameAlgoEventTracker {
           responses.push(await this.uploadEvents(uploadBatch));
           this.retryBatch = this.retryBatch.filter((event) => !ids.has(event.eventId!));
           this.queue = this.queue.filter((event) => !ids.has(event.eventId!));
+          this.removeSyncSessionEnds(ids);
           // Serialize cleanup behind enqueue writes, but do not delay the next
           // critical request on an IndexedDB transaction or a paused callback.
           if (this.hasPersistedQueue) void this.persistPendingQueue().catch(() => undefined);
@@ -1619,6 +1733,7 @@ export class GameAlgoEventTracker {
           if (isPermanentBatchError(error)) {
             this.retryBatch = this.retryBatch.filter((event) => !ids.has(event.eventId!));
             this.queue = this.queue.filter((event) => !ids.has(event.eventId!));
+            this.removeSyncSessionEnds(ids);
             if (this.hasPersistedQueue) void this.persistPendingQueue().catch(() => undefined);
             throw error;
           }
@@ -1737,6 +1852,180 @@ export class GameAlgoEventTracker {
       if (restored.length > 0) this.startTimer();
     } catch {
       await this.storage.removeItem?.(this.persistenceKey);
+    }
+  }
+
+  private syncStorage(): SyncBackupStorage | undefined {
+    return this.storage as SyncBackupStorage | undefined;
+  }
+
+  private hasQueuedSessionEnd(sessionId: string): boolean {
+    return [...this.retryBatch, ...this.inflightBatch, ...this.queue].some(
+      (event) => event.eventType === "session_end" && event.sessionId === sessionId,
+    );
+  }
+
+  private readSyncSessionEnds(): GameEvent[] {
+    const sync = this.syncStorage();
+    if (!this.syncSessionEndKey || !sync?.getSyncItem) return [];
+    const raw = sync.getSyncItem(this.syncSessionEndKey);
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter(
+        (event): event is GameEvent => Boolean(
+          event && typeof event === "object"
+          && clean(event.eventId) && clean(event.userId) && clean(event.sessionId)
+          && event.eventType === "session_end",
+        ),
+      );
+    } catch {
+      sync.removeSyncItem?.(this.syncSessionEndKey);
+      return [];
+    }
+  }
+
+  private writeSyncSessionEnds(events: GameEvent[]): void {
+    const sync = this.syncStorage();
+    if (!this.syncSessionEndKey || !sync?.setSyncItem) return;
+    if (events.length === 0) {
+      sync.removeSyncItem?.(this.syncSessionEndKey);
+      return;
+    }
+    const bounded = events.slice(-MAX_SYNC_SESSION_END_MIRROR);
+    sync.setSyncItem(this.syncSessionEndKey, JSON.stringify(bounded));
+  }
+
+  private mirrorSyncSessionEnd(event: GameEvent): void {
+    if (!this.syncSessionEndKey || !this.syncStorage()?.setSyncItem) return;
+    if (!clean(event.eventId) || !clean(event.userId) || !clean(event.sessionId)) return;
+    const existing = this.readSyncSessionEnds().filter((item) => item.eventId !== event.eventId);
+    existing.push(event);
+    this.writeSyncSessionEnds(existing);
+  }
+
+  private bindSyncSessionEnds(sessionId: string, contextId: string): void {
+    if (!this.syncSessionEndKey || !this.syncStorage()?.setSyncItem) return;
+    const existing = this.readSyncSessionEnds();
+    if (existing.length === 0) return;
+    let changed = false;
+    const updated = existing.map((event) => {
+      if (!clean(event.contextId) && event.sessionId === sessionId) {
+        changed = true;
+        return { ...event, contextId };
+      }
+      return event;
+    });
+    if (changed) this.writeSyncSessionEnds(updated);
+  }
+
+  private removeSyncSessionEnds(ids: Set<string>): void {
+    if (!this.syncSessionEndKey || ids.size === 0 || !this.syncStorage()?.getSyncItem) return;
+    const existing = this.readSyncSessionEnds();
+    if (existing.length === 0) return;
+    const remaining = existing.filter((event) => !ids.has(event.eventId!));
+    if (remaining.length !== existing.length) this.writeSyncSessionEnds(remaining);
+  }
+
+  private persistSessionCheckpoint(ended: boolean, now = this.now()): void {
+    if (!this.sessionCheckpointKey || !this.storage) return;
+    const userId = clean(this.userId);
+    const contextId = clean(this.contextId);
+    if (!userId || !contextId) return;
+    const durationMs = Math.max(0, this.getForegroundTimeMs() - this.sessionForegroundStartMs);
+    if (ended && !this.sessionCheckpointWritten) {
+      this.sessionCheckpointEnded = true;
+      return;
+    }
+    if (!ended && durationMs < WEB_SESSION_CHECKPOINT_MIN_MS) return;
+    const checkpoint: ActiveSessionCheckpoint = {
+      sessionId: this.sessionId,
+      contextId,
+      userId,
+      accountUserId: this.accountUserId,
+      isDebug: this.isDebug,
+      sessionDurationMs: durationMs,
+      timestamp: new Date(now).toISOString(),
+      createdLocalAt: localTimestamp(now),
+      ended,
+    };
+    const encoded = JSON.stringify(checkpoint);
+    const sync = this.syncStorage();
+    if (sync?.setSyncItem) {
+      if (sync.setSyncItem(this.sessionCheckpointKey, encoded)) {
+        this.sessionCheckpointForegroundMs = durationMs;
+        this.sessionCheckpointWritten = true;
+        this.sessionCheckpointEnded = ended;
+      }
+      return;
+    }
+    this.sessionCheckpointForegroundMs = durationMs;
+    this.sessionCheckpointWritten = true;
+    this.sessionCheckpointEnded = ended;
+    void Promise.resolve(this.storage.setItem(this.sessionCheckpointKey, encoded)).catch(() => undefined);
+  }
+
+  private async restoreSyncSessionEndsAndCheckpoint(): Promise<void> {
+    if (!isBrowserHost(this.platform)) return;
+    const sync = this.syncStorage();
+    const syncEnds = this.readSyncSessionEnds();
+    let added = false;
+    if (syncEnds.length > 0) {
+      const existingIds = new Set([...this.retryBatch, ...this.inflightBatch, ...this.queue].map((event) => event.eventId));
+      const missing = syncEnds.filter((event) => !existingIds.has(event.eventId));
+      if (missing.length > 0) {
+        this.retryBatch = [...missing, ...this.retryBatch];
+        added = true;
+      }
+    }
+
+    if (this.sessionCheckpointKey && this.storage) {
+      let raw: string | undefined | null = sync?.getSyncItem?.(this.sessionCheckpointKey);
+      if (raw === undefined) {
+        try { raw = await this.storage.getItem(this.sessionCheckpointKey); } catch { raw = undefined; }
+      }
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw) as Partial<ActiveSessionCheckpoint>;
+          const previousSessionId = clean(parsed.sessionId);
+          if (previousSessionId && previousSessionId !== this.sessionId) {
+            sync?.removeSyncItem?.(this.sessionCheckpointKey);
+            await Promise.resolve(this.storage.removeItem?.(this.sessionCheckpointKey)).catch(() => undefined);
+            const previousContextId = clean(parsed.contextId);
+            const previousUserId = clean(parsed.userId);
+            if (!parsed.ended && previousContextId && previousUserId && !this.hasQueuedSessionEnd(previousSessionId)) {
+              const durationMs = Number.isFinite(parsed.sessionDurationMs)
+                ? Math.max(0, Math.round(Number(parsed.sessionDurationMs)))
+                : 0;
+              const now = this.now();
+              const recovered: GameEvent = {
+                eventId: randomId(),
+                contextId: previousContextId,
+                userId: previousUserId,
+                accountUserId: clean(parsed.accountUserId),
+                sessionId: previousSessionId,
+                eventType: "session_end",
+                isDebug: Boolean(parsed.isDebug),
+                timestamp: clean(parsed.timestamp) ?? new Date(now).toISOString(),
+                createdLocalAt: clean(parsed.createdLocalAt) ?? localTimestamp(now),
+                payload: { reason: "crash_recovery", sessionDurationMs: durationMs },
+              };
+              this.retryBatch = [recovered, ...this.retryBatch];
+              this.mirrorSyncSessionEnd(recovered);
+              added = true;
+            }
+          }
+        } catch {
+          sync?.removeSyncItem?.(this.sessionCheckpointKey);
+          await Promise.resolve(this.storage.removeItem?.(this.sessionCheckpointKey)).catch(() => undefined);
+        }
+      }
+    }
+
+    if (added) {
+      this.hasPersistedQueue = true;
+      this.startTimer();
     }
   }
 

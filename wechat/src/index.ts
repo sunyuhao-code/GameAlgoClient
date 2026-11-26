@@ -6,7 +6,7 @@ import { GameAlgoWechatStorage } from "./storage.ts";
 import { GameAlgoWechatTransport } from "./transport.ts";
 import { isNewWechatIdentity } from "./identity.ts";
 
-export const GAMEALGO_WECHAT_SDK_VERSION = "1.1.2";
+export const GAMEALGO_WECHAT_SDK_VERSION = "1.1.3";
 export const GAMEALGO_WECHAT_CAPABILITIES = Object.freeze({ config: true, parameterExperiments: true, remoteScripts: false, multiplayer: false });
 
 export type GameAlgoWechatClientOptions = Omit<GameAlgoRestClientOptions,

@@ -123,6 +123,27 @@ export class GameAlgoBrowserStorage implements GameAlgoStorage {
     return this.observe(`delete-durable ${storageCategory(key)}`, () => this.deleteItem(key, true));
   }
 
+  /** @internal Synchronous localStorage read for page-unload recovery; no-op when disabled. */
+  getSyncItem(key: string): string | undefined {
+    try { return this.localStorage?.getItem(key) ?? undefined; } catch { return undefined; }
+  }
+
+  /** @internal Synchronous localStorage write for page-unload recovery; no-op when disabled. */
+  setSyncItem(key: string, value: string): boolean {
+    if (!this.localStorage) return false;
+    try {
+      this.localStorage.setItem(key, value);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** @internal Synchronous localStorage delete; no-op when disabled. */
+  removeSyncItem(key: string): void {
+    try { this.localStorage?.removeItem(key); } catch { /* Optional sync store. */ }
+  }
+
   private async deleteItem(key: string, durable: boolean): Promise<void> {
     this.memory.delete(key);
     let primaryRemoved = false;

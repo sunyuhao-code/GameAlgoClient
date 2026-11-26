@@ -106,6 +106,7 @@ local function makeSdk(eventHandler, options)
         maxQueueSize = options.maxQueueSize,
         flushIntervalMs = options.flushIntervalMs == nil and 5000 or options.flushIntervalMs,
         flushTimeoutMs = options.flushTimeoutMs or 15000,
+        autoSessionHeartbeat = options.autoSessionHeartbeat,
         nowMs = function() return currentTime end,
         logger = function(message) table.insert(logs, message) end,
     })
@@ -1366,6 +1367,153 @@ do
     h.sdk.Flush()
     equal(#savedEventsFromFiles(files, h.sdk.Snapshot().sessionId), 500)
     equal(h.sdk.TrackSessionEnd(), false, "the hard cap still applies to critical events")
+    fileSystem, Node = previousFileSystem, previousNode
+end
+
+-- Active-session local checkpoint recovers a session_end on cold start after an
+-- abrupt kill (no AppWillEnterBackground), without duplicating clean exits.
+do
+    local previousFileSystem, previousNode = fileSystem, Node
+    local handlers = {}
+    fileSystem = { FileExists = function(_, name) return files[name] ~= nil end }
+    Node = function()
+        return {
+            CreateScriptObject = function()
+                return {
+                    SubscribeToEvent = function(_, eventName, handler)
+                        handlers[eventName] = handler
+                    end,
+                }
+            end,
+        }
+    end
+    local function stepForeground(sdk, seconds)
+        for _ = 1, seconds do
+            handlers.Update(nil, nil, { GetFloat = function(_, field)
+                equal(field, "TimeStep")
+                return 1.0
+            end })
+        end
+    end
+
+    -- 1. Abrupt kill after 20s foreground play (initial 5s checkpoint refreshed at 20s, before 30s heartbeat)
+    local crashGameKey = "ga_live_checkpoint_crash_recovery"
+    local crashUser = "crash-user-1"
+    local first = makeSdk(function(_, callback, batch) success(callback, #batch) end, {
+        gameKey = crashGameKey,
+        userId = crashUser,
+        sessionId = "crash-session-1",
+    })
+    local originalSession = first.sdk.Snapshot().sessionId
+    local originalContext = first.sdk.Snapshot().contextId
+    assert(originalSession and originalSession ~= "")
+    assert(originalContext and originalContext ~= "")
+    stepForeground(first.sdk, 20)
+    equal(first.sdk.GetForegroundTimeMs(), 20000)
+
+    -- Cold-start replacement SDK with same files, new sessionId, no prior exit hook.
+    local recoveredEvents = {}
+    local second = makeSdk(function(_, callback, batch)
+        for _, event in ipairs(batch) do table.insert(recoveredEvents, event) end
+        success(callback, #batch)
+    end, {
+        gameKey = crashGameKey,
+        userId = crashUser,
+        skipConfig = true,
+    })
+    equal(second.sdk.Snapshot().queuedEvents, 1, "cold start synthesizes crash_recovery session_end")
+    second.sdk.Flush(nil)
+    equal(#recoveredEvents, 1)
+    equal(recoveredEvents[1].eventType, "session_end")
+    equal(recoveredEvents[1].sessionId, originalSession)
+    equal(recoveredEvents[1].contextId, originalContext)
+    equal(recoveredEvents[1].payload.reason, "crash_recovery")
+    equal(recoveredEvents[1].payload.sessionDurationMs, 20000)
+
+    -- A third cold start must not emit another crash_recovery for crash-session-1.
+    local third = makeSdk(function(_, callback, batch) success(callback, #batch) end, {
+        gameKey = crashGameKey,
+        userId = crashUser,
+        sessionId = "crash-session-3",
+        skipConfig = true,
+    })
+    equal(third.sdk.Snapshot().queuedEvents, 0, "cleared checkpoint does not re-emit crash_recovery")
+
+    -- 2. Clean AppWillEnterBackground marks checkpoint ended so cold start does not duplicate.
+    local cleanGameKey = "ga_live_checkpoint_clean_exit"
+    local cleanSent = {}
+    local cleanFirst = makeSdk(function(_, callback, batch)
+        for _, event in ipairs(batch) do table.insert(cleanSent, event) end
+        success(callback, #batch)
+    end, {
+        gameKey = cleanGameKey,
+        userId = "clean-user-1",
+        sessionId = "clean-session-1",
+    })
+    stepForeground(cleanFirst.sdk, 10)
+    handlers.AppWillEnterBackground()
+    equal(#cleanSent, 1)
+    equal(cleanSent[1].payload.reason, "app_background")
+
+    local cleanSecond = makeSdk(function(_, callback, batch) success(callback, #batch) end, {
+        gameKey = cleanGameKey,
+        userId = "clean-user-1",
+        sessionId = "clean-session-2",
+        skipConfig = true,
+    })
+    equal(cleanSecond.sdk.Snapshot().queuedEvents, 0, "clean exit suppresses crash_recovery")
+
+    -- 3. Foreground heartbeat emits at 30s and repeats at 150s without locking sessionHasEnd.
+    local hbEvents = {}
+    local hb = makeSdk(function(_, callback, batch)
+        for _, event in ipairs(batch) do table.insert(hbEvents, event) end
+        success(callback, #batch)
+    end, {
+        gameKey = "ga_live_heartbeat_probe",
+        userId = "hb-user-1",
+        sessionId = "hb-session-1",
+    })
+    stepForeground(hb.sdk, 29)
+    hb.sdk.Flush(nil)
+    equal(#hbEvents, 0, "no heartbeat before 30s foreground time")
+    stepForeground(hb.sdk, 1)
+    hb.sdk.Flush(nil)
+    equal(#hbEvents, 1, "first heartbeat fires at 30s foreground time")
+    equal(hbEvents[1].eventType, "session_end")
+    equal(hbEvents[1].payload.reason, "heartbeat")
+    equal(hbEvents[1].payload.sessionDurationMs, 30000)
+
+    stepForeground(hb.sdk, 119)
+    hb.sdk.Flush(nil)
+    equal(#hbEvents, 1, "second heartbeat waits 120s after the first")
+    stepForeground(hb.sdk, 1)
+    hb.sdk.Flush(nil)
+    equal(#hbEvents, 2, "second heartbeat fires at 150s foreground time")
+    equal(hbEvents[2].payload.reason, "heartbeat")
+    equal(hbEvents[2].payload.sessionDurationMs, 150000)
+
+    -- Subsequent lifecycle background still emits final duration snapshot.
+    stepForeground(hb.sdk, 5)
+    handlers.AppWillEnterBackground()
+    equal(#hbEvents, 3)
+    equal(hbEvents[3].payload.reason, "app_background")
+    equal(hbEvents[3].payload.sessionDurationMs, 155000)
+
+    -- Opt-out suppresses automatic foreground heartbeat.
+    local noHbEvents = {}
+    local noHb = makeSdk(function(_, callback, batch)
+        for _, event in ipairs(batch) do table.insert(noHbEvents, event) end
+        success(callback, #batch)
+    end, {
+        gameKey = "ga_live_heartbeat_disabled",
+        userId = "hb-user-2",
+        sessionId = "hb-session-2",
+        autoSessionHeartbeat = false,
+    })
+    stepForeground(noHb.sdk, 40)
+    noHb.sdk.Flush(nil)
+    equal(#noHbEvents, 0, "autoSessionHeartbeat=false disables periodic heartbeat")
+
     fileSystem, Node = previousFileSystem, previousNode
 end
 

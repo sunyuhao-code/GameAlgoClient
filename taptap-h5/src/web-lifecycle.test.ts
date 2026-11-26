@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import { GameAlgoWebClient, type GameAlgoWebClientOptions, type GameAlgoStorage } from "./index.ts";
+import { GameAlgoBrowserStorage, GameAlgoWebClient, type GameAlgoWebClientOptions, type GameAlgoStorage } from "./index.ts";
 import type { GameEvent } from "../../rest-api/src/types.ts";
 
 function deferred<T>() {
@@ -665,4 +665,162 @@ test("H5 restart retries a generated but unacknowledged session_end with its ori
   assert.deepEqual(second.events()[0], original);
   assert.notEqual(second.client.tracker.currentSessionId(), original.sessionId);
   assert.equal(first.pending().length, 0);
+});
+
+test("H5 synchronous localStorage mirror recovers session_end when IndexedDB and keepalive abort on pagehide", async (t) => {
+  const page = browser(t);
+  const localMap = new Map<string, string>();
+  const fakeLocalStorage: Storage = {
+    get length() { return localMap.size; },
+    clear() { localMap.clear(); },
+    key(index: number) { return [...localMap.keys()][index] ?? null; },
+    getItem(key: string) { return localMap.get(key) ?? null; },
+    setItem(key: string, value: string) { localMap.set(key, value); },
+    removeItem(key: string) { localMap.delete(key); },
+  };
+  // Simulate an IndexedDB host where async writes fail/abort during pagehide while localStorage stays synchronous.
+  const failingStorage = new GameAlgoBrowserStorage({ indexedDB: null, localStorage: fakeLocalStorage });
+  let blockAsyncQueueWrite = false;
+  const origSetDurably = failingStorage.setItemDurably.bind(failingStorage);
+  failingStorage.setItemDurably = async (key: string, value: string) => {
+    if (blockAsyncQueueWrite && key.includes("event-queue")) {
+      throw new Error("IndexedDB transaction aborted on pagehide");
+    }
+    return origSetDurably(key, value);
+  };
+
+  const first = harness(t, { storage: failingStorage });
+  assert.equal(await first.client.waitForReady(), true);
+  first.control.onEvents = () => Response.json({ error: "unload_aborted" }, { status: 503 });
+  blockAsyncQueueWrite = true;
+  page.pagehide();
+  // Even before any async microtask resolves, localStorage synchronously holds the session_end mirror.
+  const mirrorKey = [...localMap.keys()].find((key) => key.endsWith(":sync-session-ends"));
+  assert.ok(mirrorKey, "pagehide synchronously mirrors session_end into localStorage");
+  await tick();
+  const original = first.events()[0];
+  assert.equal(original?.eventType, "session_end");
+  first.client.close();
+
+  // Cold start on a fresh GameAlgoBrowserStorage with the same localStorage recovers and clears the mirror after ACK.
+  const secondStorage = new GameAlgoBrowserStorage({ indexedDB: null, localStorage: fakeLocalStorage });
+  const second = harness(t, { storage: secondStorage });
+  assert.equal(await second.client.waitForReady(), true);
+  await second.client.flush();
+  assert.equal(second.events().length, 1);
+  assert.equal(second.events()[0].eventId, original.eventId);
+  assert.equal(second.events()[0].sessionId, original.sessionId);
+  assert.equal(second.events()[0].contextId, original.contextId);
+  assert.equal(localMap.has(mirrorKey!), false, "HTTP ACK removes the synchronous localStorage mirror");
+  second.client.close();
+
+  // Respects browserStorage.localStorage = null (cloud-save portals).
+  const disabledLocalStorage = new GameAlgoBrowserStorage({ indexedDB: null, localStorage: null });
+  assert.equal(disabledLocalStorage.setSyncItem("k", "v"), false);
+  assert.equal(disabledLocalStorage.getSyncItem("k"), undefined);
+});
+
+test("H5 active-session checkpoint recovers crash_recovery session_end on cold start without duplicating clean exits", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const page = browser(t);
+  let now = 1_000_000;
+  const first = harness(t, { now: () => now });
+  assert.equal(await first.client.waitForReady(), true);
+  const originalSession = first.client.tracker.currentSessionId();
+  const advanceSeconds = (seconds: number) => {
+    for (let i = 0; i < seconds; i++) {
+      now += 1000;
+      t.mock.timers.tick(1000);
+    }
+  };
+
+  // Play 15s (triggers checkpoint, before 30s heartbeat), then crash with no hide/pagehide.
+  advanceSeconds(15);
+  first.client.close();
+
+  const second = harness(t, { storage: first.storage, now: () => now });
+  assert.equal(await second.client.waitForReady(), true);
+  await second.client.flush();
+  assert.equal(second.events().length, 1);
+  assert.equal(second.events()[0].eventType, "session_end");
+  assert.equal(second.events()[0].sessionId, originalSession);
+  assert.equal(second.events()[0].contextId, "ctx-1");
+  assert.equal(second.events()[0].payload?.reason, "crash_recovery");
+  assert.equal(second.events()[0].payload?.sessionDurationMs, 15_000);
+  second.client.close();
+
+  // Third cold start does not re-emit crash_recovery.
+  const third = harness(t, { storage: first.storage, now: () => now });
+  assert.equal(await third.client.waitForReady(), true);
+  await third.client.flush();
+  assert.equal(third.events().length, 0);
+
+  // Clean pagehide after checkpoint marks ended=true so next restart does not duplicate.
+  advanceSeconds(15);
+  page.pagehide();
+  await third.client.flush();
+  assert.equal(third.events().length, 1);
+  assert.equal(third.events()[0].payload?.reason, "pagehide");
+  third.client.close();
+
+  const fourth = harness(t, { storage: first.storage, now: () => now });
+  assert.equal(await fourth.client.waitForReady(), true);
+  await fourth.client.flush();
+  assert.equal(fourth.events().length, 0, "clean pagehide suppresses crash_recovery");
+  fourth.client.close();
+});
+
+test("H5 foreground heartbeat emits at 30s and 150s while visible and respects opt-out", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const page = browser(t);
+  let now = 2_000_000;
+  const h = harness(t, { now: () => now });
+  assert.equal(await h.client.waitForReady(), true);
+  const advanceSeconds = (seconds: number) => {
+    for (let i = 0; i < seconds; i++) {
+      now += 1000;
+      t.mock.timers.tick(1000);
+    }
+  };
+
+  advanceSeconds(29);
+  await h.client.flush();
+  assert.equal(h.events().length, 0, "no heartbeat before 30s visible play");
+
+  advanceSeconds(1);
+  await h.client.flush();
+  assert.equal(h.events().length, 1);
+  assert.equal(h.events()[0].eventType, "session_end");
+  assert.equal(h.events()[0].payload?.reason, "heartbeat");
+  assert.equal(h.events()[0].payload?.sessionDurationMs, 30_000);
+
+  // Hidden time must not advance heartbeat.
+  page.visibility("hidden");
+  advanceSeconds(120);
+  await h.client.flush();
+  assert.equal(h.events().length, 1, "hidden time never triggers foreground heartbeat");
+
+  page.visibility("visible");
+  advanceSeconds(120);
+  await h.client.flush();
+  assert.equal(h.events().length, 2);
+  assert.equal(h.events()[1].payload?.reason, "heartbeat");
+  assert.equal(h.events()[1].payload?.sessionDurationMs, 150_000);
+
+  // Final pagehide still fires with cumulative foreground duration.
+  advanceSeconds(5);
+  page.pagehide();
+  await h.client.flush();
+  assert.equal(h.events().length, 3);
+  assert.equal(h.events()[2].payload?.reason, "pagehide");
+  assert.equal(h.events()[2].payload?.sessionDurationMs, 155_000);
+  h.client.close();
+
+  // Opt-out via autoSessionHeartbeat=false disables heartbeat.
+  const optedOut = harness(t, { now: () => now, autoSessionHeartbeat: false });
+  assert.equal(await optedOut.client.waitForReady(), true);
+  advanceSeconds(40);
+  await optedOut.client.flush();
+  assert.equal(optedOut.events().length, 0);
+  optedOut.client.close();
 });
