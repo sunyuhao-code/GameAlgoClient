@@ -123,56 +123,43 @@ local function appendLength(message, bitLength)
     return message .. table.concat(bytes)
 end
 
-function Sha256.hex(content)
-    local message = tostring(content or "")
-    local bitLength = #message * 8
-    message = message .. string.char(0x80)
-    local padding = (56 - (#message % 64)) % 64
-    message = message .. string.rep(string.char(0), padding)
-    message = appendLength(message, bitLength)
-
-    local hash = {
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
-    }
-
-    for offset = 1, #message, 64 do
-        local words = {}
-        for index = 0, 15 do
-            local position = offset + index * 4
-            local b1, b2, b3, b4 = message:byte(position, position + 3)
-            words[index] = normalize(b1 * 16777216 + b2 * 65536 + b3 * 256 + b4)
-        end
-        for index = 16, 63 do
-            local value15 = words[index - 15]
-            local value2 = words[index - 2]
-            local s0 = bxor(rotateRight(value15, 7), rotateRight(value15, 18), rshift(value15, 3))
-            local s1 = bxor(rotateRight(value2, 17), rotateRight(value2, 19), rshift(value2, 10))
-            words[index] = normalize(words[index - 16] + s0 + words[index - 7] + s1)
-        end
-
-        local a, b, c, d = hash[1], hash[2], hash[3], hash[4]
-        local e, f, g, h = hash[5], hash[6], hash[7], hash[8]
-        for index = 0, 63 do
-            local sum1 = bxor(rotateRight(e, 6), rotateRight(e, 11), rotateRight(e, 25))
-            local choice = bxor(band(e, f), band(bnot(e), g))
-            local temp1 = normalize(h + sum1 + choice + K[index + 1] + words[index])
-            local sum0 = bxor(rotateRight(a, 2), rotateRight(a, 13), rotateRight(a, 22))
-            local majority = bxor(band(a, b), band(a, c), band(b, c))
-            local temp2 = normalize(sum0 + majority)
-            h, g, f, e, d, c, b, a = g, f, e, normalize(d + temp1), c, b, a, normalize(temp1 + temp2)
-        end
-
-        hash[1] = normalize(hash[1] + a)
-        hash[2] = normalize(hash[2] + b)
-        hash[3] = normalize(hash[3] + c)
-        hash[4] = normalize(hash[4] + d)
-        hash[5] = normalize(hash[5] + e)
-        hash[6] = normalize(hash[6] + f)
-        hash[7] = normalize(hash[7] + g)
-        hash[8] = normalize(hash[8] + h)
+local function compress(hash, words, message, offset)
+    for index = 0, 15 do
+        local position = offset + index * 4
+        local b1, b2, b3, b4 = message:byte(position, position + 3)
+        words[index] = normalize(b1 * 16777216 + b2 * 65536 + b3 * 256 + b4)
+    end
+    for index = 16, 63 do
+        local value15 = words[index - 15]
+        local value2 = words[index - 2]
+        local s0 = bxor(rotateRight(value15, 7), rotateRight(value15, 18), rshift(value15, 3))
+        local s1 = bxor(rotateRight(value2, 17), rotateRight(value2, 19), rshift(value2, 10))
+        words[index] = normalize(words[index - 16] + s0 + words[index - 7] + s1)
     end
 
+    local a, b, c, d = hash[1], hash[2], hash[3], hash[4]
+    local e, f, g, h = hash[5], hash[6], hash[7], hash[8]
+    for index = 0, 63 do
+        local sum1 = bxor(rotateRight(e, 6), rotateRight(e, 11), rotateRight(e, 25))
+        local choice = bxor(band(e, f), band(bnot(e), g))
+        local temp1 = normalize(h + sum1 + choice + K[index + 1] + words[index])
+        local sum0 = bxor(rotateRight(a, 2), rotateRight(a, 13), rotateRight(a, 22))
+        local majority = bxor(band(a, b), band(a, c), band(b, c))
+        local temp2 = normalize(sum0 + majority)
+        h, g, f, e, d, c, b, a = g, f, e, normalize(d + temp1), c, b, a, normalize(temp1 + temp2)
+    end
+
+    hash[1] = normalize(hash[1] + a)
+    hash[2] = normalize(hash[2] + b)
+    hash[3] = normalize(hash[3] + c)
+    hash[4] = normalize(hash[4] + d)
+    hash[5] = normalize(hash[5] + e)
+    hash[6] = normalize(hash[6] + f)
+    hash[7] = normalize(hash[7] + g)
+    hash[8] = normalize(hash[8] + h)
+end
+
+local function hexDigest(hash)
     local parts = {}
     for index = 1, 8 do
         for shift = 24, 0, -8 do
@@ -182,8 +169,123 @@ function Sha256.hex(content)
     return table.concat(parts)
 end
 
+-- Only the final one or two blocks need padding. Full blocks are read directly
+-- from the caller's string and the message schedule is reused across slices.
+local function newDigest(message)
+    local remainder = #message % 64
+    local fullBytes = #message - remainder
+    local tail = message:sub(fullBytes + 1) .. "\128" .. string.rep("\0", (55 - remainder) % 64)
+    tail = appendLength(tail, #message * 8)
+    local totalBytes = fullBytes + #tail
+    local offset = 1
+    local words = {}
+    local hash = {
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+    }
+    return function(blocks)
+        local last = math.min(totalBytes, offset - 1 + blocks * 64)
+        while offset <= last do
+            if offset <= fullBytes then
+                compress(hash, words, message, offset)
+            else
+                compress(hash, words, tail, offset - fullBytes)
+            end
+            offset = offset + 64
+        end
+        if offset > totalBytes then return hexDigest(hash) end
+    end
+end
+
+--- Computes the lowercase hexadecimal SHA-256 synchronously.
+---@param content string
+---@return string
+function Sha256.hex(content)
+    local advance = newDigest(tostring(content or ""))
+    return advance(math.huge)
+end
+
+--- Computes the prefixed script digest synchronously.
+---@param content string
+---@return string
 function Sha256.hash(content)
     return "sha256:" .. Sha256.hex(content)
+end
+
+local BLOCKS_PER_SLICE = 4
+
+local function cancelTimer(scheduler, timer)
+    if timer and type(scheduler.Cancel) == "function" then pcall(scheduler.Cancel, scheduler, timer) end
+end
+
+--- Computes the digest inline when its padded input fits in one slice.
+--- For larger inputs, scheduler:Schedule(0, fn) must return a timer handle
+--- and invoke fn on a later update. The callback receives
+--- (nil, "sha256:<hex>") or (error, nil), and may run before hashAsync returns.
+--- Returns a pending task or nil for inline completion. task:Cancel() releases
+--- the input and suppresses completion, including a timer already due to run.
+---@param content string
+---@param scheduler table|nil
+---@param callback fun(err: string|nil, digest: string|nil)
+---@return table|nil task
+function Sha256.hashAsync(content, scheduler, callback)
+    assert(type(callback) == "function", "hashAsync requires a callback")
+    local message = tostring(content or "")
+    if #message <= BLOCKS_PER_SLICE * 64 - 9 then
+        callback(nil, Sha256.hash(message))
+        return nil
+    end
+    if not scheduler or type(scheduler.Schedule) ~= "function" then
+        callback("SHA-256 requires a scheduler for this input", nil)
+        return nil
+    end
+
+    local advance = newDigest(message)
+    local timer
+    local task = {}
+    local function release()
+        local complete = callback
+        advance, callback, scheduler, timer = nil, nil, nil, nil
+        return complete
+    end
+
+    function task:Cancel()
+        local owner, pending = scheduler, timer
+        release()
+        cancelTimer(owner, pending)
+    end
+
+    local function scheduleNext()
+        local owner = scheduler
+        local armed, invoked = false, false
+        local function step()
+            if invoked then return end
+            invoked = true
+            if not armed or not advance then return end
+            timer = nil
+            local hex = advance(BLOCKS_PER_SLICE)
+            if hex then
+                local complete = release()
+                complete(nil, "sha256:" .. hex)
+            else
+                scheduleNext()
+            end
+        end
+
+        local ok, handle = pcall(owner.Schedule, owner, 0, step)
+        if ok and handle and not invoked and advance then
+            timer, armed = handle, true
+            return
+        end
+        if ok then cancelTimer(owner, handle) end
+        if advance then
+            local complete = release()
+            complete(invoked and "SHA-256 scheduler ran inline" or "SHA-256 scheduling failed", nil)
+        end
+    end
+
+    scheduleNext()
+    return advance and task
 end
 
 return Sha256

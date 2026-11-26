@@ -777,37 +777,32 @@ do
     equal(restored[2].timestamp, beforeDestruction[2][1].timestamp)
     fileSystem = previousFileSystem
 
-    local cloudRead = nil
-    clientCloud = {
-        Get = function(_, _, callbacks) cloudRead = callbacks end,
-        Set = function(_, _, _, callbacks) callbacks.ok() end,
-    }
+    -- A background before config is available already has a local identity,
+    -- so persist the end snapshot immediately and bind its context later.
     local delayedSent = {}
     local delayed = makeSdk(function(_, callback, batch)
         for _, event in ipairs(batch) do table.insert(delayedSent, event) end
         success(callback, #batch)
     end, { skipConfig = true })
-    assert(cloudRead, "first storage read must still be pending")
+    assert(delayed.sdk.Snapshot().storage.ready)
     local delayedSession = delayed.sdk.Snapshot().sessionId
     delayed.setTime(2500)
     frames(receivers[#receivers], 2.5)
     receivers[#receivers].AppWillEnterBackground()
-    equal(delayed.sdk.Snapshot().pendingEvents, 1, "early background waits for storage identity")
-    delayed.setTime(9000)
-    cloudRead.ok({})
-    equal(delayed.sdk.Snapshot().pendingEvents, 0)
+    equal(delayed.sdk.Snapshot().pendingEvents, 0, "local identity is ready synchronously")
+    equal(delayed.sdk.Snapshot().queuedEvents, 1)
     local delayedSaved = persistedEvents(delayedSession)
-    equal(#delayedSaved, 1, "storage readiness persists pending end even without a config context")
-    equal(delayedSaved[1].payload.sessionDurationMs, 2500, "initialization delay cannot inflate duration")
+    equal(#delayedSaved, 1, "background persists locally even without a config context")
+    equal(delayedSaved[1].payload.sessionDurationMs, 2500)
+    delayed.setTime(9000)
     delayed.sdk.FetchConfig(function(error) assert(error == nil, tostring(error)) end)
     equal(#delayedSent, 1, "config binding triggers the pending background flush")
     equal(delayedSent[1].eventId, delayedSaved[1].eventId)
     delayed.setTime(11000)
     delayed.sdk.NewSession("delayed-lifecycle-next")
-    equal(#delayedSent, 2, "pending background snapshot must also preserve rotation's final end")
+    equal(#delayedSent, 2, "rotation still records the final session end")
     equal(delayedSent[2].payload.reason, "new_session")
-    equal(delayedSent[2].payload.sessionDurationMs, 2500, "storage and background delays do not inflate rotation")
-    clientCloud = nil
+    equal(delayedSent[2].payload.sessionDurationMs, 2500, "background time cannot inflate rotation")
     Node = nil
 end
 
@@ -1351,30 +1346,27 @@ do
     fileSystem = previousFileSystem
 end
 
--- Admission reserves apply before storage restoration too. Once restoration
--- finishes, all accepted pending rows still fit and an exit owns the final slot.
+-- Admission limits and the critical reserve also apply on a fresh local
+-- launch before a config context exists; Flush checkpoints accepted rows.
 do
-    local previousFileSystem, previousCloud, previousNode = fileSystem, clientCloud, Node
-    fileSystem = nil
+    local previousFileSystem, previousNode = fileSystem, Node
+    fileSystem = { FileExists = function(_, name) return files[name] ~= nil end }
     Node = function() return { CreateScriptObject = function()
         return { SubscribeToEvent = function() end }
     end } end
-    local read
-    clientCloud = { Get = function(_, _, callbacks) read = callbacks end,
-        Set = function(_, _, _, callbacks) callbacks.ok() end }
     local h = makeSdk(function() error("unbound events cannot reach native HTTP") end, { skipConfig = true })
-    assert(read)
+    assert(h.sdk.Snapshot().storage.ready)
     for n = 1, 492 do assert(h.sdk.TrackLevelEnd({ n = n })) end
     equal(h.sdk.TrackLevelEnd(), false)
     for n = 1, 7 do assert(h.sdk.Track("ad_view", { n = n })) end
     equal(h.sdk.Track("ad_view", {}), false)
     assert(h.sdk.TrackSessionEnd())
-    equal(h.sdk.Snapshot().pendingEvents, 500)
-    read.ok({}); h.sdk.Flush()
     equal(h.sdk.Snapshot().pendingEvents, 0)
     equal(h.sdk.Snapshot().queuedEvents, 500)
+    h.sdk.Flush()
+    equal(#savedEventsFromFiles(files, h.sdk.Snapshot().sessionId), 500)
     equal(h.sdk.TrackSessionEnd(), false, "the hard cap still applies to critical events")
-    fileSystem, clientCloud, Node = previousFileSystem, previousCloud, previousNode
+    fileSystem, Node = previousFileSystem, previousNode
 end
 
 print("Lua SDK flush recovery tests passed")

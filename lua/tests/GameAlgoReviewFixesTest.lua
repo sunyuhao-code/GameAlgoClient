@@ -179,44 +179,32 @@ local Sha256 = require("Sha256")
 Node = nil
 lobby = nil
 
--- Calling DDA before cloud identity hydration must not read the anonymous
--- namespace. The pending operation is replayed in the real user's namespace.
+-- DDA reads the locally restored identity immediately after Init, while
+-- keeping anonymous state from a different namespace isolated.
 do
-    File, FILE_READ, FILE_WRITE = nil, nil, nil
-    local cloudRead
-    clientCloud = {
-        Get = function(_, _, callbacks) cloudRead = callbacks end,
-        Set = function(_, _, _, callbacks) if callbacks and callbacks.ok then callbacks.ok() end end,
-    }
-    local clock = 1000
-    local storageScheduler = scheduler()
     local gameKey = "ga_live_review_dda"
     local anonymousKey = "gamealgo:v2:game:" .. Sha256.hex(gameKey)
         .. ":user:" .. Sha256.hex("anonymous") .. ":dda:early"
-    local anonymousState = cjson.encode({
-        schemaVersion = 1, current = {}, lifetime = { old = 99 }, recentSteps = {}, completedSteps = 0,
-    })
+    files["gamealgo_sdk_storage_v1.json"] = cjson.encode({ schemaVersion = 1, revision = 1, data = {
+        [anonymousKey] = cjson.encode({ schemaVersion = 1, current = {}, lifetime = { old = 99 },
+            recentSteps = {}, completedSteps = 0 }),
+    } })
+    clientCloud = { Get = function() error("unexpected cloud read") end,
+        Set = function() error("unexpected cloud write") end }
     GameAlgo.Init({ gameKey = gameKey, userId = "real-user", sessionId = "dda-session",
-        autoFetch = false, nowMs = function() return clock end, _scheduler = storageScheduler })
+        autoFetch = false, nowMs = function() return 1000 end, _scheduler = scheduler() })
     local dda = GameAlgo.DDA("early")
     dda.RecordBehavior("new")
-    assert(dda.Snapshot().diagnostics.storageReady == false)
-    cloudRead.ok({ gamealgo_sdk_storage_v1 = {
-        schemaVersion = 1, revision = 1, data = { [anonymousKey] = anonymousState },
-    } })
+    assert(GameAlgo.Snapshot().storage.ready == true)
     local state = dda.Snapshot().behavior
-    assert(state.lifetime.old == nil, "DDA loaded the pre-identity anonymous state")
-    assert(state.lifetime.new == 1, "DDA did not replay the pre-ready operation")
+    assert(state.lifetime.old == nil, "DDA loaded another user's state")
+    assert(state.lifetime.new == 1)
 end
 
 -- A late config response from an older session may bind only that session's
 -- events. The current response may adopt restored orphan events for itself.
 do
-    local previousCloud = clientCloud
-    clientCloud = {
-        Get = function(_, _, callbacks) callbacks.ok({}) end,
-        Set = function(_, _, _, callbacks) if callbacks and callbacks.ok then callbacks.ok() end end,
-    }
+    clientCloud = nil
     local configRequests, eventBatches = {}, {}
     local transport = {}
     function transport.Request(options, callback)
@@ -254,17 +242,12 @@ do
         assert(event.sessionId == "new-session")
         assert(event.contextId == "new-context")
     end
-    clientCloud = previousCloud
 end
 
 -- A same-name config file response from before NewSession must not populate
 -- the new lifecycle's cache; the new request remains usable.
 do
-    local previousCloud = clientCloud
-    clientCloud = {
-        Get = function(_, _, callbacks) callbacks.ok({}) end,
-        Set = function(_, _, _, callbacks) if callbacks and callbacks.ok then callbacks.ok() end end,
-    }
+    clientCloud = nil
     local fileRequests, configCount = {}, 0
     local transport = {}
     function transport.Request(options, callback)
@@ -298,7 +281,6 @@ do
     fileRequests[2](nil, { status = 200, body = '{"value":"new"}' })
     assert(newError == nil)
     assert(GameAlgo.ConfigValue("value", "default", "balance") == "new")
-    clientCloud = previousCloud
 end
 
 -- SDK-generated identifiers must not reseed or consume the game's RNG. Check
@@ -314,10 +296,7 @@ do
         randomCalls = randomCalls + 1
         return previousRandom(...)
     end
-    clientCloud = {
-        Get = function(_, _, callbacks) callbacks.ok({}) end,
-        Set = function(_, _, _, callbacks) if callbacks and callbacks.ok then callbacks.ok() end end,
-    }
+    clientCloud = nil
     local seen = {}
     local ok, reason = pcall(function()
         for index = 1, 3 do
@@ -339,46 +318,21 @@ do
     for index = 1, #expected do assert(previousRandom() == expected[index], "game RNG sequence advanced") end
 end
 
--- Re-initializing while the previous storage's cloud read is pending must not
--- let the stale callback install the old identity or publish the old snapshot.
+-- Re-initialization restores local state synchronously; no platform cloud
+-- callback is registered and the new identity is the one checkpointed.
 do
-    local reads, writes = {}, {}
-    clientCloud = {
-        Get = function(_, _, callbacks) table.insert(reads, callbacks) end,
-        Set = function(_, key, data, callbacks)
-            table.insert(writes, { key = key, data = data })
-            if callbacks and callbacks.ok then callbacks.ok() end
-        end,
-    }
+    local calls = 0
+    clientCloud = { Get = function() calls = calls + 1 end, Set = function() calls = calls + 1 end }
     GameAlgo.Init({ gameKey = "ga_live_review_reinit", userId = "user-a", sessionId = "session-a",
         autoFetch = false, _scheduler = scheduler(), nowMs = function() return 9000 end })
     GameAlgo.Init({ gameKey = "ga_live_review_reinit", userId = "user-b", sessionId = "session-b",
         autoFetch = false, _scheduler = scheduler(), nowMs = function() return 9000 end })
-    assert(#reads == 2)
-    reads[1].ok({})
     local snapshot = GameAlgo.Snapshot()
-    assert(snapshot.userId ~= "user-a", "stale cloud callback installed the old identity")
-    assert(snapshot.storage and snapshot.storage.ready == false)
-    assert(#writes == 0, "stale storage must not publish before the current one is ready")
-    reads[2].ok({})
-    snapshot = GameAlgo.Snapshot()
-    assert(snapshot.userId == "user-b")
-    assert(snapshot.storage and snapshot.storage.ready == true)
-    GameAlgo.TrackEvent("reinit_probe", {})
-    GameAlgo.Flush()
-    local published = false
-    for _, write in ipairs(writes) do
-        if write.key == "gamealgo_sdk_storage_v1" then
-            published = true
-            local foundUserB = false
-            for _, value in pairs(write.data and write.data.data or {}) do
-                assert(value ~= "user-a", "stale identity published to cloud")
-                if value == "user-b" then foundUserB = true end
-            end
-            assert(foundUserB, "current identity must be published")
-        end
-    end
-    assert(published, "a resolved read must unlock the directory write")
+    assert(snapshot.userId == "user-b" and snapshot.storage.ready == true)
+    local checkpoint = require("tests.support.PersistedSnapshot")(files)
+    local identityKey = "gamealgo:v2:game:" .. Sha256.hex("ga_live_review_reinit") .. ":identity:last_user_id"
+    assert(checkpoint.data[identityKey] == "user-b")
+    assert(calls == 0)
 end
 
 -- A retrying config fetch from a previous session must hand the in-flight slot
@@ -411,10 +365,7 @@ do
     local function okConfig(contextId)
         return cjson.encode({ contextId = contextId, experiments = {}, configFiles = {} })
     end
-    clientCloud = {
-        Get = function(_, _, callbacks) callbacks.ok({}) end,
-        Set = function(_, _, _, callbacks) if callbacks and callbacks.ok then callbacks.ok() end end,
-    }
+    clientCloud = nil
 
     -- A stale failure arrives after the session switch: it must yield the slot
     -- immediately instead of retrying the old session.
@@ -484,10 +435,7 @@ do
             error("unexpected request: " .. tostring(options.url))
         end
     end
-    clientCloud = {
-        Get = function(_, _, callbacks) callbacks.ok({}) end,
-        Set = function(_, _, _, callbacks) if callbacks and callbacks.ok then callbacks.ok() end end,
-    }
+    clientCloud = nil
     local originalDebug = debug
     GameAlgo.Init({ gameKey = "ga_live_review_ready", userId = "ready-user",
         sessionId = "ready-session", autoFetch = false, transport = transport,

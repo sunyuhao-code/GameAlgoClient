@@ -1,11 +1,9 @@
 ---@meta
---- Internal persistent storage for TapTap Maker.
+--- Local persistent storage used by the GameAlgo Lua SDK.
 ---
---- The SDK exposes synchronous reads to its identity, script cache, and DDA
---- layers while hiding Maker's asynchronous clientCloud API. A local File
---- snapshot is used as the fast path after the cloud directory is confirmed.
---- Otherwise a bounded cloud read precedes SDK startup; missing cloud access
---- keeps local operation available without allowing destructive cloud writes.
+--- The SDK keeps its identity, configuration, and event backlog in Maker's
+--- local File API. HTTP is responsible for delivery and acknowledgement;
+--- this module never depends on a platform cloud-variable service.
 
 local cjson = require("cjson")
 
@@ -32,14 +30,13 @@ local function requireSdkModule(name)
 end
 
 local Sha256 = requireSdkModule("Sha256")
-
 local MakerAutoStorage = {}
 
 local FILE_NAME = "gamealgo_sdk_storage_v1.json"
 local BACKUP_FILE_NAME = "gamealgo_sdk_storage_v1.backup.json"
-local CLOUD_KEY = "gamealgo_sdk_storage_v1"
 local SCHEMA_VERSION = 1
-local DEFAULT_CLOUD_READ_TIMEOUT_MS = 5000
+local QUEUE_FORMAT = "event_chunks_v1"
+local CHUNK_SIZE = 100
 
 local function makerGlobal(read)
     local ok, value = pcall(read)
@@ -53,36 +50,16 @@ local function makerFileApi()
     local writeMode = makerGlobal(function() return FILE_WRITE end)
     local makerFileSystem = makerGlobal(function() return fileSystem end)
     if factory == nil or readMode == nil or writeMode == nil then return nil end
-    return {
-        factory = factory,
-        readMode = readMode,
-        writeMode = writeMode,
-        fileSystem = makerFileSystem,
-    }
-end
-
-local function makerCloud()
-    local cloud = makerGlobal(function() return clientCloud end)
-    if cloud == nil then return nil end
-    local get = makerGlobal(function() return cloud.Get end)
-    local set = makerGlobal(function() return cloud.Set end)
-    if type(get) ~= "function" or type(set) ~= "function" then return nil end
-    return cloud
+    return { factory = factory, readMode = readMode, writeMode = writeMode, fileSystem = makerFileSystem }
 end
 
 local function isMakerRuntime()
-    if makerFileApi() or makerCloud() then return true end
+    if makerFileApi() then return true end
     return makerGlobal(function() return lobby end) ~= nil
 end
 
 local function emptySnapshot()
-    return {
-        schemaVersion = SCHEMA_VERSION,
-        revision = 0,
-        data = {},
-        cloudDirectoryBlocked = true,
-        cloudDirectoryConfirmed = false,
-    }
+    return { schemaVersion = SCHEMA_VERSION, revision = 0, data = {} }
 end
 
 local function normalizeSnapshot(value)
@@ -91,20 +68,12 @@ local function normalizeSnapshot(value)
         if not ok then return nil end
         value = decoded
     end
-    if type(value) ~= "table" or type(value.data) ~= "table" then return nil end
-    if tonumber(value.schemaVersion) ~= SCHEMA_VERSION then return nil end
+    if type(value) ~= "table" or type(value.data) ~= "table"
+        or tonumber(value.schemaVersion) ~= SCHEMA_VERSION then return nil end
     return {
         schemaVersion = SCHEMA_VERSION,
         revision = math.max(0, math.floor(tonumber(value.revision) or 0)),
         data = value.data,
-        cloudDirectoryBlocked = value.cloudDirectoryBlocked == true,
-        -- Older snapshots did not record whether the remote directory had
-        -- ever been observed. Treat them as unknown and hydrate once before
-        -- publishing again.
-        cloudDirectoryConfirmed = value.cloudDirectoryConfirmed == true,
-        -- Keep the pre-upgrade directory immutable while reads are retried.
-        legacyCloudBaseline = type(value.legacyCloudBaseline) == "string"
-            and value.legacyCloudBaseline or nil,
     }
 end
 
@@ -115,31 +84,39 @@ local function encodeSnapshot(snapshot)
 end
 
 local function closeFile(file)
-    if file == nil then return end
-    pcall(function() file:Close() end)
+    if file == nil then return false end
+    local ok, result = pcall(function() return file:Close() end)
+    return ok and result ~= false
 end
 
-local function readLocalFile(fileApi, name)
+local function readLocalFile(fileApi, name, expectedSize)
     if not fileApi then return nil end
-    -- Maker logs an engine-level ERROR when FILE_READ targets a missing file.
-    -- That log is emitted before Lua's pcall can contain the failed open, so a
-    -- missing first-run snapshot must be detected before constructing File.
+    -- Native File logs missing reads. File-only hosts can still probe IsOpen.
     local existsOk, exists = pcall(function()
-        return fileApi.fileSystem ~= nil
-            and fileApi.fileSystem:FileExists(name) == true
+        local fs = fileApi.fileSystem
+        if fs and type(fs.FileExists) == "function" then return fs:FileExists(name) end
     end)
-    if not existsOk or not exists then return nil end
-    local ok, file = pcall(function()
-        return fileApi.factory(name, fileApi.readMode)
-    end)
+    if existsOk and exists == false then return nil end
+    local ok, file = pcall(function() return fileApi.factory(name, fileApi.readMode) end)
     if not ok or file == nil then return nil end
     local opened = false
     pcall(function() opened = file:IsOpen() == true end)
-    if not opened then
-        closeFile(file)
-        return nil
-    end
-    local readOk, encoded = pcall(function() return file:ReadString() end)
+    if not opened then closeFile(file); return nil end
+    local readOk, encoded = pcall(function()
+        local size = type(file.GetSize) == "function" and file:GetSize() or nil
+        local reader = file
+        if expectedSize and size then
+            if size ~= expectedSize then return nil end
+            -- Read a known-size checkpoint in one native I/O operation.
+            if type(file.Read) == "function" and type(file.GetPosition) == "function" then
+                reader = file:Read(size)
+                if file:GetPosition() ~= size then return nil end
+            end
+        end
+        local value = reader:ReadString()
+        -- WriteString includes a NUL. ReadString also accepts EOF without it.
+        if size == nil or size == #value + 1 then return value end
+    end)
     closeFile(file)
     if not readOk then return nil end
     return encoded
@@ -147,22 +124,17 @@ end
 
 local function writeLocalFile(fileApi, name, encoded)
     if not fileApi or not encoded then return false end
-    local ok, file = pcall(function()
-        return fileApi.factory(name, fileApi.writeMode)
-    end)
+    local ok, file = pcall(function() return fileApi.factory(name, fileApi.writeMode) end)
     if not ok or file == nil then return false end
     local opened = false
     pcall(function() opened = file:IsOpen() == true end)
-    if not opened then
-        closeFile(file)
-        return false
-    end
-    local writeOk = pcall(function()
-        if file:WriteString(encoded) == false then error("local write failed") end
-        if file:Flush() == false then error("local flush failed") end
+    if not opened then closeFile(file); return false end
+    local writeOk, written = pcall(function()
+        return file:WriteString(encoded) ~= false and file:Flush() ~= false
     end)
-    closeFile(file)
-    return writeOk
+    local closed = closeFile(file)
+    -- Deployed Flush and Close bindings return void even on a buffered commit failure.
+    return writeOk and written and closed and readLocalFile(fileApi, name, #encoded + 1) == encoded
 end
 
 local function readLocalSnapshot(fileApi)
@@ -174,76 +146,9 @@ end
 
 local function writeLocalSnapshot(fileApi, snapshot, previousBank)
     if not fileApi then return false end
-    -- Maker's FILE_WRITE can truncate in place. Always write the other bank;
-    -- reopening selects the highest valid revision without an extra pointer.
     local bank = previousBank == 1 and 2 or 1
     local name = bank == 1 and FILE_NAME or BACKUP_FILE_NAME
     return writeLocalFile(fileApi, name, encodeSnapshot(snapshot)), bank
-end
-
-local function cloudValue(values)
-    if type(values) ~= "table" then return nil, false end
-    if values[CLOUD_KEY] == nil then return nil, true end
-    local remote = normalizeSnapshot(values[CLOUD_KEY])
-    return remote, remote ~= nil
-end
-
-local QUEUE_FORMAT = "event_chunks_v1"
-local CHUNK_SIZE = 100
-
-local function sameJsonValue(left, right)
-    if type(left) ~= type(right) then return false end
-    if type(left) ~= "table" then return left == right end
-    for key, value in pairs(left) do
-        if not sameJsonValue(value, right[key]) then return false end
-    end
-    for key in pairs(right) do
-        if left[key] == nil then return false end
-    end
-    return true
-end
-
-local function sameChunkContent(left, right)
-    if type(left) ~= "table" or type(right) ~= "table"
-        or left.format ~= QUEUE_FORMAT or right.format ~= QUEUE_FORMAT
-        or #left.entries ~= #right.entries then return false end
-    for index, entry in ipairs(left.entries) do
-        local other = right.entries[index]
-        if entry.sequence ~= other.sequence then return false end
-        local leftOk, leftEvent = pcall(cjson.decode, entry.event)
-        local rightOk, rightEvent = pcall(cjson.decode, other.event)
-        if not leftOk or not rightOk or not sameJsonValue(leftEvent, rightEvent) then return false end
-    end
-    return true
-end
-
--- Keep remote order, append local-only events, and match identical records by
--- occurrence. Repeating an interrupted merge must not duplicate the backlog;
--- distinct events with colliding legacy IDs must still survive.
-local function mergeLegacyEvents(remote, localEvents)
-    local lines, unmatched = {}, {}
-    for line in remote:gmatch("[^\r\n]+") do
-        local ok, event = pcall(cjson.decode, line)
-        if ok and type(event) == "table" and type(event.eventId) == "string"
-            and type(event.sessionId) == "string" then
-            table.insert(lines, line)
-            local matches = unmatched[event.eventId] or {}
-            unmatched[event.eventId] = matches
-            table.insert(matches, event)
-        end
-    end
-    for _, event in ipairs(localEvents) do
-        local matched = false
-        for index, remoteEvent in ipairs(unmatched[event.eventId] or {}) do
-            if sameJsonValue(event, remoteEvent) then
-                table.remove(unmatched[event.eventId], index)
-                matched = true
-                break
-            end
-        end
-        if not matched then table.insert(lines, cjson.encode(event)) end
-    end
-    return table.concat(lines, "\n")
 end
 
 local function decodeChunk(value)
@@ -269,28 +174,34 @@ local function decodeChunk(value)
     return value, records
 end
 
--- Queue chunks have stable names and reusable slots. ACKs and appends touch
--- only affected chunks; the main snapshot contains just a small directory.
-local function newEventQueue(key, value, fileApi, publishManifest, remoteManifest, recoverLegacyAcks)
+-- Event chunks use stable names and two local banks. HTTP acknowledgement
+-- removes records through Remove; no cloud copy is kept by this queue.
+local function newEventQueue(key, value, fileApi, publishManifest, isActive)
     local prefix = "gaq_" .. Sha256.hex(key):sub(1, 24)
-    -- Object identity also preserves legacy events whose short IDs collide.
     local chunks, records, dirtyLocal = {}, {}, {}
     local nextSequence = 0
-    local migrating = type(value) == "string" and (value ~= "" or remoteManifest ~= nil)
-    local unmatchedLocal = nil
+    local migrating = type(value) == "string" and value ~= ""
     local queue = {}
 
-    local function newChunk(index, unknown)
-        local chunk = { index = index, entries = {}, count = 0, revision = 0,
-            cloudRevision = 0, bank = 0, unknown = unknown }
-        if remoteManifest or migrating then
-            -- Relocated chunks can reuse filenames from an older local queue.
-            -- Their next checkpoint must outrank both of those local banks.
-            for bank = 1, 2 do
-                local previous = decodeChunk(readLocalFile(fileApi, prefix .. "_" .. index .. "_" .. bank .. ".json"))
-                if previous and previous.revision > chunk.revision then
-                    chunk.revision, chunk.bank = previous.revision, bank
-                end
+    local function newChunk(index, restore)
+        local chunk = { index = index, entries = {}, count = 0, revision = 0, bank = 0 }
+        -- An interrupted directory write may leave newer files outside the
+        -- committed directory. Reusing a slot must outrank both retained banks
+        -- without importing events that never belonged to this checkpoint.
+        local bestRecords
+        for bank = 1, 2 do
+            local previous, imported = decodeChunk(readLocalFile(
+                fileApi, prefix .. "_" .. index .. "_" .. bank .. ".json"))
+            if previous and previous.revision > chunk.revision then
+                chunk.revision, chunk.bank, bestRecords = previous.revision, bank, imported
+            end
+        end
+        if restore then
+            for _, record in ipairs(bestRecords or {}) do
+                record.contextId, record.chunk = record.event.contextId, chunk
+                records[record.event], chunk.entries[record.event] = record, record
+                chunk.count = chunk.count + 1
+                nextSequence = math.max(nextSequence, record.sequence)
             end
         end
         chunks[index] = chunk
@@ -310,10 +221,12 @@ local function newEventQueue(key, value, fileApi, publishManifest, remoteManifes
             table.insert(entries, { sequence = record.sequence, event = record.encoded })
         end
         table.sort(entries, function(a, b) return a.sequence < b.sequence end)
-        chunk.data = { format = QUEUE_FORMAT, revision = chunk.revision, entries = entries }
+        chunk.data = { format = QUEUE_FORMAT, revision = math.max(1, chunk.revision), entries = entries }
         return chunk.data
     end
 
+    --- Adds an event or checkpoints a changed context on the same event object.
+    ---@param event table Event owned by the SDK until HTTP acknowledgement.
     function queue:Upsert(event)
         local record = records[event]
         if record and record.contextId == event.contextId then return end
@@ -325,9 +238,9 @@ local function newEventQueue(key, value, fileApi, publishManifest, remoteManifes
         end
         local chunk
         for _, candidate in ipairs(chunks) do
-            if not candidate.unknown and candidate.count < CHUNK_SIZE then chunk = candidate; break end
+            if candidate.count < CHUNK_SIZE then chunk = candidate; break end
         end
-        chunk = chunk or newChunk(#chunks + 1, false)
+        chunk = chunk or newChunk(#chunks + 1)
         nextSequence = nextSequence + 1
         record = { event = event, encoded = encoded, contextId = event.contextId,
             sequence = nextSequence, chunk = chunk }
@@ -336,6 +249,8 @@ local function newEventQueue(key, value, fileApi, publishManifest, remoteManifes
         changed(chunk)
     end
 
+    --- Removes acknowledged event objects; Persist commits the removal locally.
+    ---@param events table[] Events acknowledged by the HTTP reporting layer.
     function queue:Remove(events)
         for _, event in ipairs(events) do
             local record = records[event]
@@ -347,6 +262,8 @@ local function newEventQueue(key, value, fileApi, publishManifest, remoteManifes
         end
     end
 
+    --- Returns unacknowledged events in their original queue order.
+    ---@return table[] events
     function queue:Events()
         local ordered, events = {}, {}
         for _, record in pairs(records) do table.insert(ordered, record) end
@@ -355,168 +272,38 @@ local function newEventQueue(key, value, fileApi, publishManifest, remoteManifes
         return events
     end
 
-    --- Restores an unread chunk. Recovery matches cloud/local copies once by
-    --- eventId and JSON content, preserving colliding IDs and multiplicity.
-    ---@param index integer Reserved chunk slot to hydrate.
-    ---@param data table|string Encoded or decoded chunk.
-    ---@param source string "local" or "cloud".
-    ---@return boolean imported Whether a valid unread chunk was accepted.
-    function queue:Import(index, data, source)
-        local decoded, imported = decodeChunk(data)
-        if not decoded then return false end
-        local chunk = chunks[index]
-        if not chunk or not chunk.unknown then return false end
-        local recoveredAcks = false
-        if recoverLegacyAcks and source == "cloud" then
-            -- A shared directory only contains chunk counts. Verify that the
-            -- remote chunk is one of this device's retained versions before
-            -- treating local removals as ACKs rather than missing data. The
-            -- inactive local bank is the proof that the remote snapshot was
-            -- once published by this device.
-            local matchedHistory, latest = false, nil
-            for bank = 1, 2 do
-                local previous = decodeChunk(readLocalFile(fileApi, prefix .. "_" .. index .. "_" .. bank .. ".json"))
-                if previous then
-                    if sameChunkContent(previous, decoded) then matchedHistory = true end
-                    if not latest or previous.revision > latest.revision then latest = previous end
-                end
-            end
-            if matchedHistory and latest and latest.revision > decoded.revision then
-                decoded, imported = decodeChunk(latest)
-                recoveredAcks = true
-            end
-        end
-        chunk.unknown = false
-        chunk.revision = remoteManifest and math.max(decoded.revision, chunk.revision + 1) or decoded.revision
-        chunk.data = chunk.revision == decoded.revision and decoded or nil
-        if source == "cloud" then
-            chunk.cloudRevision = chunk.revision
-            dirtyLocal[index] = chunk
-        end
-        if remoteManifest and source == "cloud" and not unmatchedLocal then
-            unmatchedLocal = {}
-            for _, existing in pairs(records) do
-                local event = existing.event
-                local matches = unmatchedLocal[event.eventId] or {}
-                unmatchedLocal[event.eventId] = matches
-                table.insert(matches, event)
-            end
-        end
-        for _, record in ipairs(imported) do
-            local event = record.event
-            if source == "cloud" and remoteManifest ~= nil then
-                for matchIndex, localEvent in ipairs(unmatchedLocal[event.eventId] or {}) do
-                    if sameJsonValue(localEvent, event) then
-                        table.remove(unmatchedLocal[event.eventId], matchIndex)
-                        -- Keep the cloud copy in its existing slot. Removing
-                        -- the local copy avoids deleting remote data before
-                        -- a relocated local chunk has reached the cloud.
-                        self:Remove({ localEvent })
-                        break
-                    end
-                end
-            end
-            if not records[event] then
-                record.contextId, record.chunk = event.contextId, chunk
-                record.fromRemote = remoteManifest ~= nil and source == "cloud"
-                records[event], chunk.entries[event] = record, record
-                chunk.count = chunk.count + 1
-                nextSequence = math.max(nextSequence, record.sequence)
-            end
-        end
-        if recoveredAcks then changed(chunk) end
-        return true
-    end
-
-    function queue:MissingBlocks()
-        local missing = {}
-        for index, chunk in ipairs(chunks) do
-            if chunk.unknown then table.insert(missing, { queue = self, index = index, key = prefix .. "_" .. index }) end
-        end
-        return missing
-    end
-
-    function queue:ConfirmEmpty(index)
-        local chunk = chunks[index]
-        if chunk and chunk.unknown then
-            chunk.unknown = false
-            if remoteManifest then
-                changed(chunk)
-                chunk.cloudRevision = chunk.revision
-            end
-        end
-    end
-
+    --- Writes changed local chunks and their directory, retaining dirty state
+    --- on failure. Without File, the queue remains available only in memory.
+    ---@return boolean persisted Whether the local checkpoint succeeded.
     function queue:Persist()
-        if remoteManifest then
-            for _, chunk in ipairs(chunks) do
-                if chunk.unknown then
-                    local lines = {}
-                    for _, event in ipairs(self:Events()) do
-                        if not records[event].fromRemote then table.insert(lines, cjson.encode(event)) end
-                    end
-                    return publishManifest(nil, table.concat(lines, "\n"))
-                end
-            end
-            unmatchedLocal = nil
-        end
-        if migrating and fileApi and not remoteManifest then
-            -- A legacy merge may reuse existing local chunk slots. Commit its
-            -- complete JSONL recovery source before changing either chunk bank.
+        if not isActive() then return false end
+        -- Keep legacy JSONL as the recovery source while replacing old chunk
+        -- slots. Publish a new directory only after all its chunks are safe.
+        if migrating then
+            -- Retain a complete recovery source until every new chunk is safe,
+            -- including ACKs or appends made while a migration is retried.
             local lines = {}
             for _, event in ipairs(self:Events()) do table.insert(lines, cjson.encode(event)) end
             if not publishManifest(nil, table.concat(lines, "\n")) then return false end
         end
-        -- Publish new slots first so a completed chunk write is discoverable.
-        -- Legacy migration instead keeps the old JSONL until every chunk is safe.
-        if (not migrating or not fileApi) and not publishManifest(#chunks) then return false end
         for index, chunk in pairs(dirtyLocal) do
             local bank = chunk.bank == 1 and 2 or 1
-            if not writeLocalFile(fileApi, prefix .. "_" .. index .. "_" .. bank .. ".json",
+            if not writeLocalFile(fileApi,
+                prefix .. "_" .. index .. "_" .. bank .. ".json",
                 encodeSnapshot(dataFor(chunk))) then return false end
             chunk.bank = bank
             dirtyLocal[index] = nil
         end
-        if migrating then
-            if not publishManifest(#chunks) then return false end
-            migrating = false
-        end
+        if not publishManifest(#chunks) then return false end
+        migrating = false
         return true
     end
 
-    function queue:CloudJobs()
-        local jobs = {}
-        for index, chunk in ipairs(chunks) do
-            if not chunk.unknown and chunk.cloudRevision < chunk.revision then
-                local revision = chunk.revision
-                table.insert(jobs, { key = prefix .. "_" .. index, data = dataFor(chunk),
-                    ack = function() chunk.cloudRevision = math.max(chunk.cloudRevision, revision) end })
-            end
-        end
-        return jobs
-    end
-
-    if remoteManifest then
-        -- Reserve remote slots before appending locally recovered events.
-        -- Their local files may belong to the timed-out run, so read these
-        -- slots from cloud rather than mistaking local chunks for remote ones.
-        for index = 1, math.max(0, math.floor(tonumber(remoteManifest.blocks) or 0)) do
-            newChunk(index, true)
-        end
-    elseif type(value) == "table" and value.format == QUEUE_FORMAT then
-        for index = 1, math.max(0, math.floor(tonumber(value.blocks) or 0)) do
-            local chunk = newChunk(index, true)
-            local best, bestBank
-            for bank = 1, 2 do
-                local candidate = decodeChunk(readLocalFile(fileApi, prefix .. "_" .. index .. "_" .. bank .. ".json"))
-                if candidate and (not best or candidate.revision > best.revision) then best, bestBank = candidate, bank end
-            end
-            if best and queue:Import(index, best, "local") then
-                chunk.bank = bestBank
-            end
-        end
-    end
-    if migrating then
+    local manifest = type(value) == "table" and value.format == QUEUE_FORMAT and value or nil
+    if manifest then
+        local blocks = math.max(0, math.floor(tonumber(manifest.blocks) or 0))
+        for index = 1, blocks do newChunk(index, true) end
+    elseif migrating then
         for line in value:gmatch("[^\r\n]+") do
             local ok, event = pcall(cjson.decode, line)
             if ok and type(event) == "table" and type(event.eventId) == "string"
@@ -609,12 +396,10 @@ function MakerAutoStorage.NewScheduler(options)
     return scheduler
 end
 
---- Creates Maker storage with bounded cloud hydration and synchronous local
---- checkpoints. Unconfirmed cloud access remains write-blocked across restarts,
---- including launches without clientCloud or an automatic timeout scheduler.
---- Legacy ACK recovery retains its pre-upgrade directory until chunk recovery
---- is durably complete, including restarts after failed or interrupted reads.
----@param options table|nil Scheduler, logger, and optional cloudReadTimeoutMs.
+--- Creates synchronous File storage in the Maker sandbox, using memory only
+--- when File is unavailable. Old snapshots and local JSONL remain readable;
+--- obsolete cloud metadata is ignored. No remote reads delay initialization.
+---@param options table|nil Optional logger callback.
 ---@return table|nil storage
 ---@return string|nil error
 function MakerAutoStorage.New(options)
@@ -622,463 +407,103 @@ function MakerAutoStorage.New(options)
     if not isMakerRuntime() then
         return nil, "GameAlgo Lua SDK automatic storage requires a TapTap Maker runtime"
     end
-
     local logger = type(options.logger) == "function" and options.logger or function() end
-    local scheduler = options.scheduler
-    local cloudReadTimeoutMs = math.max(0,
-        tonumber(options.cloudReadTimeoutMs) or DEFAULT_CLOUD_READ_TIMEOUT_MS)
     local fileApi = makerFileApi()
     local localSnapshot, localBank = readLocalSnapshot(fileApi)
     local snapshot = localSnapshot or emptySnapshot()
+    local localDirty, stopped = localSnapshot == nil, false
     local localAvailable = localSnapshot ~= nil
-    local localDirty = localSnapshot == nil
-    local legacyCloudBaseline = localSnapshot and localSnapshot.legacyCloudBaseline or nil
-    if not legacyCloudBaseline and localSnapshot ~= nil
-        and not localSnapshot.cloudDirectoryBlocked
-        and not localSnapshot.cloudDirectoryConfirmed then
-        legacyCloudBaseline = encodeSnapshot(localSnapshot)
-    end
-    local legacyDirectory = normalizeSnapshot(legacyCloudBaseline)
-    local ready = false
-    local readyCallbacks = {}
-    local stopped = false
-    local cloudWriteInFlight = false
-    local cloudWritePending = false
-    local cloudWriteCallbacks = {}
-    local cloudDirty = false
-    local cloudDirectoryConfirmed = snapshot.cloudDirectoryConfirmed == true
-    local cloudDirectoryBlocked = not cloudDirectoryConfirmed or snapshot.cloudDirectoryBlocked == true
-    local cloudDirectoryKnown = false
-    local cloudRecoveryPending = false
-    local recoverLegacyAcks = false
-
-    local storage = {}
-    local eventQueues = {}
-    local recoveryManifests = {}
+    local eventQueues, storage = {}, {}
 
     local function persistLocal()
-        if snapshot.cloudDirectoryBlocked ~= cloudDirectoryBlocked
-            or snapshot.cloudDirectoryConfirmed ~= cloudDirectoryConfirmed
-            or snapshot.legacyCloudBaseline ~= legacyCloudBaseline then
-            snapshot.revision = snapshot.revision + 1
-            localDirty = true
-        end
-        snapshot.cloudDirectoryBlocked = cloudDirectoryBlocked
-        snapshot.cloudDirectoryConfirmed = cloudDirectoryConfirmed
-        snapshot.legacyCloudBaseline = legacyCloudBaseline
+        if not localDirty then return true end
         local saved, bank = writeLocalSnapshot(fileApi, snapshot, localBank)
-        if saved then
-            localBank = bank
-            localAvailable = true
-            localDirty = false
-            return true
-        end
-        return false
+        if not saved then return false end
+        localBank, localDirty = bank, false
+        localAvailable = true
+        return true
     end
-
-    local function markReady(source)
-        if stopped or ready then return end
-        ready = true
-        logger("automatic storage ready: " .. tostring(source))
-        local callbacks = readyCallbacks
-        readyCallbacks = {}
-        for _, callback in ipairs(callbacks) do
-            pcall(callback)
-        end
+    local function markChanged()
+        snapshot.revision = snapshot.revision + 1
+        localDirty = true
     end
-
+    --- Reports whether this instance accepts operations; local write failures
+    --- do not block in-memory operation or HTTP delivery.
+    ---@return boolean ready
+    function storage:IsReady() return not stopped end
+    --- Invokes the callback immediately after synchronous local initialization.
+    ---@param callback function Called only while this instance is active.
+    function storage:OnReady(callback)
+        if not stopped and type(callback) == "function" then callback() end
+    end
+    --- Stops future local writes and ignores callbacks retained by old Init.
+    function storage:Shutdown() stopped = true end
+    --- Reads a value from the current local snapshot, including unsaved changes.
+    ---@param key string SDK-namespaced storage key.
+    ---@return any value
+    function storage:GetItem(key) return snapshot.data[tostring(key)] end
+    --- Updates a local value and attempts a checkpoint to the alternate bank.
+    ---@param key string SDK-namespaced storage key.
+    ---@param value any Nil removes the key.
+    ---@return boolean persisted False leaves the in-memory change retryable.
+    function storage:SetItem(key, value)
+        if stopped then return false end
+        key = tostring(key)
+        if snapshot.data[key] ~= value or type(value) == "table" then
+            snapshot.data[key] = value
+            markChanged()
+        end
+        return persistLocal()
+    end
+    --- Opens a local chunk queue, migrating legacy JSONL when persisted.
+    ---@param key string SDK queue key.
+    ---@return table queue Upsert, Remove, Events, and Persist operations.
     function storage:EventQueue(key)
+        key = tostring(key)
         if not eventQueues[key] then
-            eventQueues[key] = newEventQueue(key, snapshot.data[key], fileApi, function(count, pendingEvents)
+            eventQueues[key] = newEventQueue(key, snapshot.data[key], fileApi, function(blocks, pendingEvents)
                 if stopped then return false end
                 local manifest = snapshot.data[key]
                 if pendingEvents ~= nil and manifest ~= pendingEvents then
                     snapshot.data[key] = pendingEvents
-                    snapshot.revision = snapshot.revision + 1
-                    localDirty, cloudDirty = true, true
+                    markChanged()
                 elseif pendingEvents == nil and (type(manifest) ~= "table"
-                    or manifest.format ~= QUEUE_FORMAT or manifest.blocks ~= count) then
-                    snapshot.data[key] = { format = QUEUE_FORMAT, blocks = count }
-                    snapshot.revision = snapshot.revision + 1
-                    localDirty, cloudDirty = true, true
+                    or manifest.format ~= QUEUE_FORMAT or manifest.blocks ~= blocks) then
+                    snapshot.data[key] = { format = QUEUE_FORMAT, blocks = blocks }
+                    markChanged()
                 end
-                return not localDirty or persistLocal()
-            end, recoveryManifests[key], recoverLegacyAcks)
+                return persistLocal()
+            end, function() return not stopped end)
         end
         return eventQueues[key]
     end
-
-    local function completeCloudRecovery()
-        if not cloudRecoveryPending then return end
-        for _, queue in pairs(eventQueues) do
-            if #queue:MissingBlocks() > 0 then return end
-            if not queue:Persist() and fileApi then return end
-        end
-        local savedLegacyBaseline = legacyCloudBaseline
-        cloudDirectoryBlocked, legacyCloudBaseline = false, nil
-        if persistLocal() or not fileApi then
-            cloudRecoveryPending = false
-        else
-            cloudDirectoryBlocked, legacyCloudBaseline = true, savedLegacyBaseline
-        end
-    end
-
-    local function loadQueuesThenReady(source)
-        local missing = {}
-        for key, value in pairs(snapshot.data) do
-            if recoveryManifests[key] or (type(value) == "table" and value.format == QUEUE_FORMAT)
-                or (type(key) == "string" and key:match(":events:jsonl$") and type(value) == "string") then
-                for _, block in ipairs(storage:EventQueue(key):MissingBlocks()) do table.insert(missing, block) end
-            end
-        end
-        local remaining, settled, timeout = #missing, false, nil
-        local function finish()
-            if stopped or settled then return end
-            settled = true
-            if timeout and type(scheduler.Cancel) == "function" then scheduler:Cancel(timeout) end
-            for _, queue in pairs(eventQueues) do queue:Persist() end
-            completeCloudRecovery()
-            markReady(source)
-        end
-        local cloud = makerCloud()
-        if remaining == 0 or not cloud or scheduler == nil or type(scheduler.Schedule) ~= "function"
-            or (type(scheduler.IsAutomatic) == "function" and not scheduler:IsAutomatic()) then finish(); return end
-        timeout = scheduler:Schedule(cloudReadTimeoutMs, function()
-            logger("automatic storage queue read timed out")
-            finish()
-        end)
-        if timeout == nil then finish(); return end
-        for _, block in ipairs(missing) do
-            local completed = false
-            local function complete(values)
-                if stopped or settled or completed then return end
-                completed = true
-                if type(values) == "table" then
-                    if values[block.key] == nil then block.queue:ConfirmEmpty(block.index)
-                    else block.queue:Import(block.index, values[block.key], "cloud") end
-                end
-                remaining = remaining - 1
-                if remaining == 0 then finish() end
-            end
-            local started = pcall(function()
-                cloud:Get(block.key, { ok = complete, error = function() complete(nil) end })
-            end)
-            if not started then complete(nil) end
-        end
-    end
-
-    local function loadCloudThenReady()
-        local cloud = makerCloud()
-        if not cloud then
-            -- Keep this marker in the local snapshot. A later run may regain
-            -- clientCloud; it must read the remote directory before publishing.
-            persistLocal()
-            loadQueuesThenReady(localAvailable and "local" or "memory")
-            return
-        end
-
-        local canSchedule = scheduler ~= nil
-            and type(scheduler.Schedule) == "function"
-            and (type(scheduler.IsAutomatic) ~= "function" or scheduler:IsAutomatic())
-        if not canSchedule then
-            logger("automatic storage cloud read skipped: timeout scheduler unavailable")
-            persistLocal()
-            loadQueuesThenReady(localAvailable and "local" or "memory")
-            return
-        end
-
-        local settled = false
-        local timeoutHandle = nil
-        local function finish(source, remote, readResolved)
-            if stopped or settled then return end
-            settled = true
-            if timeoutHandle and type(scheduler.Cancel) == "function" then
-                scheduler:Cancel(timeoutHandle)
-            end
-            -- Only a resolved read (merged snapshot or confirmed-empty) makes
-            -- the cloud directory safe to publish. After a timeout or error
-            -- the remote state is unknown, so publishing could overwrite an
-            -- existing snapshot with the fresh empty one.
-            if readResolved and next(snapshot.data) ~= nil then cloudDirty = true end
-            cloudDirectoryKnown = readResolved == true
-            cloudDirectoryConfirmed = readResolved == true
-            cloudDirectoryBlocked = not cloudDirectoryKnown
-            if remote then
-                for key, value in pairs(remote.data) do
-                    if type(key) == "string" and key:match(":events:jsonl$") and type(value) == "string" then
-                        cloudDirectoryBlocked, cloudRecoveryPending = true, true
-                        break
-                    end
-                end
-            end
-            recoverLegacyAcks = legacyDirectory ~= nil
-                and remote ~= nil
-                and remote.revision <= legacyDirectory.revision
-                and sameJsonValue(legacyDirectory.data, remote.data)
-            if remote and next(snapshot.data) ~= nil then
-                -- Keep local values created while offline and retain remote
-                -- keys. Conflicting queues append local events after reserved
-                -- remote slots; never upload them into unread remote slots.
-                cloudDirectoryBlocked, cloudRecoveryPending = true, true
-                -- A timeout-created identity is provisional. Recover the
-                -- original identity and retain both users' pending events.
-                for identityKey, remoteUserId in pairs(remote.data) do
-                    local namespace = type(identityKey) == "string"
-                        and identityKey:match("^(gamealgo:v2:game:[^:]+):identity:user_id$")
-                    local localUserId = snapshot.data[identityKey]
-                    if namespace and type(localUserId) == "string" and localUserId ~= ""
-                        and type(remoteUserId) == "string" and remoteUserId ~= ""
-                        and localUserId ~= remoteUserId then
-                        local localQueueKey = namespace .. ":user:" .. Sha256.hex(localUserId) .. ":events:jsonl"
-                        local remoteQueueKey = namespace .. ":user:" .. Sha256.hex(remoteUserId) .. ":events:jsonl"
-                        if snapshot.data[localQueueKey] ~= nil then
-                            local lines = {}
-                            for _, queueKey in ipairs({ remoteQueueKey, localQueueKey }) do
-                                if snapshot.data[queueKey] ~= nil then
-                                    for _, event in ipairs(storage:EventQueue(queueKey):Events()) do
-                                        table.insert(lines, cjson.encode(event))
-                                    end
-                                end
-                            end
-                            snapshot.data[remoteQueueKey] = table.concat(lines, "\n")
-                            snapshot.data[localQueueKey] = nil
-                            eventQueues[localQueueKey], eventQueues[remoteQueueKey] = nil, nil
-                        end
-                    end
-                end
-                for key, value in pairs(remote.data) do
-                    local localValue = snapshot.data[key]
-                    if type(value) == "table" and value.format == QUEUE_FORMAT then
-                        if localValue ~= nil then
-                            local lines = {}
-                            for _, event in ipairs(storage:EventQueue(key):Events()) do
-                                table.insert(lines, cjson.encode(event))
-                            end
-                            -- This JSONL checkpoint survives interruption while
-                            -- the merged chunks are being moved to new slots.
-                            snapshot.data[key] = table.concat(lines, "\n")
-                        else
-                            snapshot.data[key] = ""
-                        end
-                        recoveryManifests[key], eventQueues[key] = value, nil
-                    elseif type(value) == "string" and value ~= "" and type(key) == "string"
-                        and (key:match(":identity:user_id$")
-                        or key:match(":identity:user_created_at$")
-                        or key:match(":identity:user_created_local_at$")) then
-                        snapshot.data[key] = value
-                    elseif type(value) == "string" and type(key) == "string"
-                        and key:match(":events:jsonl$") then
-                        local localEvents = localValue ~= nil and storage:EventQueue(key):Events() or {}
-                        -- Checkpoint the complete merged JSONL before touching
-                        -- chunk banks, so an interrupted migration can restart.
-                        snapshot.data[key] = mergeLegacyEvents(value, localEvents)
-                        eventQueues[key] = nil
-                    elseif localValue == nil then
-                        snapshot.data[key] = value
-                    end
-                end
-                snapshot.revision = math.max(snapshot.revision, remote.revision) + 1
-                localDirty, cloudDirty = true, true
-            elseif remote then
-                remote.revision = math.max(snapshot.revision, remote.revision) + 1
-                snapshot = remote
-            end
-            -- A confirmed empty directory has no legacy chunks to reconcile.
-            -- Otherwise retain the baseline until every chunk is durable.
-            if readResolved and not cloudRecoveryPending then legacyCloudBaseline = nil end
-            persistLocal()
-            loadQueuesThenReady(source)
-        end
-
-        timeoutHandle = scheduler:Schedule(cloudReadTimeoutMs, function()
-            logger("automatic storage cloud read timed out after "
-                .. tostring(cloudReadTimeoutMs) .. "ms")
-            finish(localAvailable and "local-timeout" or "memory-timeout", nil)
-        end)
-        if timeoutHandle == nil then
-            logger("automatic storage cloud read skipped: timeout scheduling failed")
-            persistLocal()
-            loadQueuesThenReady(localAvailable and "local" or "memory")
-            return
-        end
-
-        -- Persist before starting the asynchronous read. A restart at any
-        -- point, even before its timeout callback, must retain the gate.
-        cloudDirectoryBlocked = true
-        persistLocal()
-        local started = pcall(function()
-            cloud:Get(CLOUD_KEY, {
-                ok = function(values)
-                    local remote, resolved = cloudValue(values)
-                    finish(remote and "cloud" or (localAvailable and "local" or "memory"), remote, resolved)
-                end,
-                error = function(code, reason)
-                    logger("automatic storage cloud read failed: " .. tostring(code) .. " " .. tostring(reason))
-                    finish(localAvailable and "local" or "memory", nil)
-                end,
-            })
-        end)
-        if not started then
-            finish(localAvailable and "local" or "memory", nil)
-        end
-    end
-
-    function storage:IsReady()
-        return ready
-    end
-
-    function storage:OnReady(callback)
-        if stopped or type(callback) ~= "function" then return end
-        if ready then
-            callback()
-        else
-            table.insert(readyCallbacks, callback)
-        end
-    end
-
-    --- Stops local writes and ignores pending reads and write continuations.
-    --- A cloud write already submitted to the host cannot be recalled.
-    function storage:Shutdown()
-        if stopped then return end
-        stopped = true
-        readyCallbacks = {}
-        cloudWritePending = false
-        cloudWriteCallbacks = {}
-    end
-
-    function storage:GetItem(key)
-        return snapshot.data[tostring(key)]
-    end
-
-    function storage:SetItem(key, value)
-        if stopped then return false end
-        key = tostring(key)
-        -- SDK values are normally serialized strings. Tables may have been
-        -- mutated in place, so only scalar equality can skip a new revision.
-        if snapshot.data[key] ~= value or type(value) == "table" then
-            snapshot.data[key] = value
-            snapshot.revision = snapshot.revision + 1
-            cloudDirty = true
-            localDirty = true
-        end
-        if not localDirty then return true end
-        return persistLocal()
-    end
-
+    --- Checkpoints local queues and SDK state; performs no network requests.
+    ---@param callback function|nil Receives nil on success or a write error.
     function storage:Flush(callback)
         callback = type(callback) == "function" and callback or function() end
-        if stopped then callback(nil); return end
-        if not ready then storage:OnReady(function() storage:Flush(callback) end); return end
-        completeCloudRecovery()
-        if localDirty then persistLocal() end
-        if cloudWriteInFlight then
-            cloudWritePending = true
-            table.insert(cloudWriteCallbacks, callback)
-            return
-        end
-        local cloud = makerCloud()
-        if not cloud then callback(nil); return end
-        -- Chunks use stable cloud keys too, so an unresolved read must block
-        -- every write, not only publication of the root directory.
-        if cloudDirectoryBlocked then callback(nil); return end
-        local jobs = {}
+        if stopped then callback("storage stopped"); return end
+        local errorMessage
         for _, queue in pairs(eventQueues) do
-            for _, job in ipairs(queue:CloudJobs()) do table.insert(jobs, job) end
+            if not queue:Persist() then errorMessage = "local event queue write failed"; break end
         end
-        -- Upload chunks before publishing a directory that references them.
-        -- Publishing is gated on the cloud read: a read that timed out or
-        -- failed leaves the remote state unknown, so overwriting it could
-        -- destroy the previous device's snapshot. A run without cloud access
-        -- or an automatic scheduler keeps its data local until a later launch
-        -- can confirm and reconcile the remote directory.
-        if cloudDirty or (#jobs > 0 and not cloudDirectoryKnown) then
-            local revision = snapshot.revision
-            table.insert(jobs, { key = CLOUD_KEY, data = normalizeSnapshot(encodeSnapshot(snapshot)),
-                ack = function()
-                    cloudDirectoryKnown = true
-                    if snapshot.revision == revision then cloudDirty = false end
-                end })
-        end
-        if #jobs == 0 then callback(nil); return end
-        local callbacks = cloudWriteCallbacks
-        cloudWriteCallbacks = {}
-        table.insert(callbacks, callback)
-        cloudWriteInFlight, cloudWritePending = true, false
-        local finished, pumping, waiting, index = false, false, false, 0
-        local function complete(error)
-            if finished then return end
-            finished, cloudWriteInFlight = true, false
-            for _, pendingCallback in ipairs(callbacks) do pcall(pendingCallback, error) end
-            local changed = not stopped and cloudDirty
-            if not changed and not error and not stopped then
-                for _, queue in pairs(eventQueues) do
-                    if #queue:CloudJobs() > 0 then changed = true; break end
-                end
-            end
-            if not stopped and (cloudWritePending or (not error and changed)) then storage:Flush(nil) end
-        end
-        local pump
-        pump = function()
-            if pumping then return end
-            pumping = true
-            while not waiting and not finished do
-                index = index + 1
-                local job = jobs[index]
-                if stopped then complete("storage stopped"); break end
-                if not job then complete(nil); break end
-                waiting = true
-                local settled = false
-                local function done(error)
-                    if settled or finished then return end
-                    if stopped then
-                        settled, waiting = true, false
-                        complete("storage stopped")
-                        return
-                    end
-                    settled, waiting = true, false
-                    if error then complete(error)
-                    else
-                        job.ack()
-                        if not pumping then pump() end
-                    end
-                end
-                local started = pcall(function()
-                    cloud:Set(job.key, job.data, {
-                        ok = function() done(nil) end,
-                        error = function(code, reason)
-                            logger("automatic storage cloud write failed: " .. tostring(code) .. " " .. tostring(reason))
-                            done(tostring(reason or code or "cloud write failed"))
-                        end,
-                        timeout = function()
-                            logger("automatic storage cloud write timed out")
-                            done("cloud write timed out")
-                        end,
-                    })
-                end)
-                if not started then done("cloud write unavailable") end
-            end
-            pumping = false
-        end
-        pump()
+        if not errorMessage and not persistLocal() then errorMessage = "local snapshot write failed" end
+        callback(errorMessage)
     end
-
+    --- Reports local checkpoint and File capability state for SDK diagnostics.
+    ---@return table diagnostics
     function storage:Diagnostics()
-        return {
-            ready = ready,
-            localAvailable = localAvailable,
-            cloudAvailable = makerCloud() ~= nil,
-            revision = snapshot.revision,
-            cloudDirty = cloudDirty,
-        }
+        return { ready = self:IsReady(), localAvailable = localAvailable,
+            persistentStorageAvailable = fileApi ~= nil, revision = snapshot.revision }
     end
-
-    if localSnapshot and not cloudDirectoryBlocked then
-        loadQueuesThenReady("local")
-    else
-        loadCloudThenReady()
+    persistLocal()
+    for key, value in pairs(snapshot.data) do
+        if (type(value) == "table" and value.format == QUEUE_FORMAT)
+            or (type(key) == "string" and key:match(":events:jsonl$") and type(value) == "string") then
+            storage:EventQueue(key)
+        end
     end
-
-    return storage, nil
+    logger("automatic storage ready: " .. (localAvailable and "local" or "memory"))
+    return storage
 end
 
 return MakerAutoStorage
