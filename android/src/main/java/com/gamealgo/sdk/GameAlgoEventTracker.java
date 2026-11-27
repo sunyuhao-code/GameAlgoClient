@@ -250,10 +250,21 @@ public final class GameAlgoEventTracker implements AutoCloseable {
 
     synchronized void observeLifecycle(boolean foreground, long nowMillis) {
         if (lifecycleClosed || lifecycleJournal == null) return;
-        syncLifecycleSession();
+        if (foreground || !lifecycleJournal.isActivatedFor(sessionId, contextId)) {
+            syncLifecycleSession();
+        }
         lifecycleJournal.observe(foreground, nowMillis);
         importLifecycleEvents();
         if (!foreground) flushAsync();
+    }
+
+    synchronized void checkpointLifecycle(long nowMillis) {
+        if (lifecycleClosed || lifecycleJournal == null) return;
+        if (!lifecycleJournal.isActivatedFor(sessionId, contextId)) {
+            syncLifecycleSession();
+        }
+        lifecycleJournal.checkpoint(nowMillis);
+        importLifecycleEvents();
     }
 
     synchronized void sampleSessionDuration(boolean foreground, long nowMillis) {

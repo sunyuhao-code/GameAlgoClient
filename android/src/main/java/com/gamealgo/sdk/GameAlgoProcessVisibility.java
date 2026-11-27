@@ -37,6 +37,13 @@ final class GameAlgoProcessVisibility {
             scheduler.cancel(confirmBackground); scheduler.later(confirmBackground, 100L);
         }
     }
+    void destroyed(Object activity, boolean changing) {
+        resumed.remove(activity);
+        started.remove(activity);
+        if (foreground && started.isEmpty() && resumed.isEmpty() && !changing) {
+            hide();
+        }
+    }
     void uiHidden() { uiHidden = true; hide(); }
     void screenOff() { interactive = false; hide(); }
     void screenOn(boolean interactive) {

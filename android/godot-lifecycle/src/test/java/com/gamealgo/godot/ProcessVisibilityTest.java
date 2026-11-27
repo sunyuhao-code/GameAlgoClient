@@ -189,4 +189,21 @@ public class ProcessVisibilityTest {
         state.resumed(game, true);
         assertEquals(Arrays.asList(true), changes);
     }
+
+    @Test public void destroyingLastActivityEndsImmediatelyWithoutDelay() {
+        Clock clock = new Clock();
+        List<Boolean> changes = new ArrayList<>();
+        ProcessVisibility state = new ProcessVisibility(clock, changes::add);
+        Object game = new Object();
+        state.started(game);
+        state.resumed(game, true);
+        state.paused(game);
+        state.stopped(game, false);
+        assertNotNull(clock.pending);
+        assertTrue(state.isForeground());
+        state.destroyed(game, false);
+        assertNull(clock.pending);
+        assertFalse(state.isForeground());
+        assertEquals(Arrays.asList(true, false), changes);
+    }
 }

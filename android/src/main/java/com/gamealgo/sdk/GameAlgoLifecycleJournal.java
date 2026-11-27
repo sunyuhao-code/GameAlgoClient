@@ -9,6 +9,9 @@ import java.util.UUID;
 
 /** Incremental durable records share a small unfinished-session marker. */
 final class GameAlgoLifecycleJournal {
+    static final long FIRST_HEARTBEAT_SNAPSHOT_MS = 30_000L;
+    static final long HEARTBEAT_SNAPSHOT_INTERVAL_MS = 60_000L;
+
     private final GameAlgoCacheStorage storage;
     private final String key;
     private final int queueLimit;
@@ -22,6 +25,8 @@ final class GameAlgoLifecycleJournal {
     private boolean sampleForeground;
     private long foregroundTimeMs;
     private long sessionForegroundStartMs;
+    private long lastHeartbeatSnapshotDurationMs = -1L;
+    private String activatedContextId;
     private final java.util.Set<String> dirtyEvents = new java.util.LinkedHashSet<>();
     private final java.util.Set<String> removedEvents = new java.util.LinkedHashSet<>();
     private boolean configsDirty;
@@ -78,6 +83,7 @@ final class GameAlgoLifecycleJournal {
             session.put("startedAtMs", startedAt);
             session.put("durationMs", 0L);
             sessionForegroundStartMs = foregroundTimeMs;
+            lastHeartbeatSnapshotDurationMs = -1L;
             sampleAt = startedAt;
             if (!active) sampleForeground = foreground;
             session.put("lastSeenMs", startedAt);
@@ -90,13 +96,23 @@ final class GameAlgoLifecycleJournal {
         if (number("startedAtMs") != startedAt) {
             session.put("durationMs", 0L);
             sessionForegroundStartMs = foregroundTimeMs;
+            lastHeartbeatSnapshotDurationMs = -1L;
             sampleAt = startedAt;
         }
         session.put("startedAtMs", startedAt);
         Date start = new Date(startedAt);
         session.put("event", template.toJson(GameAlgoClient.isoTimestamp(start), GameAlgoClient.localTimestamp(start)));
+        activatedContextId = template.getContextId();
         active = true;
         persist();
+    }
+
+    synchronized boolean isActivatedFor(String sessionId, String contextId) {
+        if (!active || !durable || session == null) return false;
+        if (sessionId == null || !sessionId.equals(session.get("sessionId"))) return false;
+        String expectedContext = contextId == null ? "" : contextId;
+        String currentContext = activatedContextId == null ? "" : activatedContextId;
+        return expectedContext.equals(currentContext);
     }
 
     synchronized void record(GameAlgoEvent event) {
@@ -126,6 +142,30 @@ final class GameAlgoLifecycleJournal {
             session.put("hasEnd", true);
         }
         persist();
+    }
+
+    /** Foreground-only periodic checkpoint; never reopens a backgrounded session. */
+    synchronized boolean checkpoint(long now) {
+        if (!active || session == null || !foreground) return false;
+        sample(true, now);
+        session.put("lastSeenMs", Math.max(now, number("startedAtMs")));
+        session.put("timestamp", GameAlgoClient.isoTimestamp(new Date(now)));
+        session.put("createdLocalAt", GameAlgoClient.localTimestamp(new Date(now)));
+        long durationMs = Math.max(0L, foregroundTimeMs - sessionForegroundStartMs);
+        boolean emittedSnapshot = false;
+        boolean due = durationMs >= FIRST_HEARTBEAT_SNAPSHOT_MS
+                && (lastHeartbeatSnapshotDurationMs < 0L
+                || durationMs - lastHeartbeatSnapshotDurationMs >= HEARTBEAT_SNAPSHOT_INTERVAL_MS);
+        if (due) {
+            GameAlgoEvent snapshot = snapshotEnd("heartbeat", now);
+            if (snapshot != null) {
+                put(snapshot);
+                lastHeartbeatSnapshotDurationMs = durationMs;
+                emittedSnapshot = true;
+            }
+        }
+        persist();
+        return emittedSnapshot;
     }
 
     /** Memory only; the caller reads current OS visibility on every tick. */
@@ -180,6 +220,21 @@ final class GameAlgoLifecycleJournal {
 
     private void merge(List<GameAlgoEvent> pending) {
         for (GameAlgoEvent event : pending) if (events.get(event.getEventId()) != event) put(event);
+    }
+
+    private GameAlgoEvent snapshotEnd(String reason, long at) {
+        try {
+            GameAlgoEvent template = GameAlgoEvent.fromJson(GameAlgoJson.asObject(session.get("event"), "session event"));
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("reason", reason);
+            payload.put("recovered", false);
+            payload.put("endTimeEstimated", false);
+            payload.put("sessionDurationMs", session.containsKey("durationMs") ? number("durationMs") : Math.max(0L, number("lastSeenMs") - number("startedAtMs")));
+            Date date = new Date(at);
+            return template.eventId(UUID.randomUUID().toString()).payload(payload)
+                    .timestamp(GameAlgoClient.isoTimestamp(date))
+                    .createdLocalAt(GameAlgoClient.localTimestamp(date));
+        } catch (GameAlgoException ignored) { return null; }
     }
 
     private GameAlgoEvent end(String reason, long at, boolean recovered) {

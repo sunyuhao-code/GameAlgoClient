@@ -38,7 +38,8 @@ public final class GameAlgoLifecycle implements Application.ActivityLifecycleCal
         @Override public void run() {
             if (!nativeReady) return;
             long now = System.currentTimeMillis();
-            boolean foreground = currentForeground();
+            boolean visible = visibility.isForeground();
+            boolean foreground = visible && currentForeground();
             try {
                 nativeSample(foreground, now, timestamp(now, true), timestamp(now, false));
             } catch (LinkageError error) {
@@ -48,7 +49,7 @@ public final class GameAlgoLifecycle implements Application.ActivityLifecycleCal
             }
             if (now - lastCheckpoint >= 10_000L) {
                 lastCheckpoint = now;
-                update(foreground);
+                if (visible) update(true);
             }
             main.postDelayed(this, 1000L);
         }
@@ -153,7 +154,9 @@ public final class GameAlgoLifecycle implements Application.ActivityLifecycleCal
     @Override public void onActivityResumed(Activity activity) { visibility.resumed(activity, isInteractive()); }
     @Override public void onActivityPaused(Activity activity) { visibility.paused(activity); }
     @Override public void onActivitySaveInstanceState(Activity activity, Bundle state) {}
-    @Override public void onActivityDestroyed(Activity activity) {}
+    @Override public void onActivityDestroyed(Activity activity) {
+        visibility.destroyed(activity, activity.isChangingConfigurations());
+    }
     @Override public void onTrimMemory(int level) {
         // Other trim levels describe memory pressure, not an explicit UI transition.
         if (level == ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) visibility.uiHidden();

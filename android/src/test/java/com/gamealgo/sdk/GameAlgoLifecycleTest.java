@@ -19,8 +19,12 @@ final class GameAlgoLifecycleTest {
         historicalConfigKeepsItsOriginalSession();
         trackerRecoversHistoricalConfigWithoutSwitchingCurrentSession();
         processVisibilityIncludesAdvertisingActivities();
+        processVisibilityDestroyedImmediatelyBackgrounds();
         sampledDurationDoesNotDependOnResumeCallbacks();
         foregroundClockOutlivesSessions();
+        heartbeatCheckpointNeverReopensBackgroundedSession();
+        foregroundCheckpointEmitsPeriodicHeartbeatSnapshotsWithoutClosingSession();
+        backgroundSkipsRedundantSyncWrite();
     }
     private static void incrementalStorageKeepsOnlyChangedEventsAndRecoversCompaction() throws Exception {
         java.io.File directory = java.nio.file.Files.createTempDirectory("gamealgo-incremental-test").toFile();
@@ -257,6 +261,110 @@ final class GameAlgoLifecycleTest {
         check(!visibility.isForeground(), "screen-on at the launcher does not reopen a session");
         visibility.started(game); visibility.resumed(game, true); visibility.screenOff();
         check(transitions.size() == 4 && !transitions.get(3), "screen-off is an independent background boundary");
+    }
+
+    private static void processVisibilityDestroyedImmediatelyBackgrounds() {
+        List<Runnable> scheduled = new ArrayList<>(); List<Boolean> transitions = new ArrayList<>();
+        GameAlgoProcessVisibility visibility = new GameAlgoProcessVisibility(new GameAlgoProcessVisibility.Scheduler() {
+            public void later(Runnable task, long delay) { scheduled.add(task); }
+            public void cancel(Runnable task) { scheduled.remove(task); }
+        }, transitions::add);
+        Object game = new Object(), ad = new Object();
+        visibility.started(game); visibility.resumed(game, true);
+        visibility.paused(game); visibility.stopped(game, false);
+        check(scheduled.size() == 1 && visibility.isForeground(), "stop waits 100ms before backgrounding");
+        visibility.destroyed(game, false);
+        check(scheduled.isEmpty() && !visibility.isForeground() && transitions.size() == 2 && !transitions.get(1),
+                "destroying last activity cancels delay and backgrounds immediately");
+        // Configuration change must not trigger background on destroy.
+        visibility.started(game); visibility.resumed(game, true);
+        visibility.paused(game); visibility.stopped(game, true); visibility.destroyed(game, true);
+        check(visibility.isForeground(), "config-change destroy keeps session foreground");
+        // Destroying one activity while an ad activity is still started keeps foreground.
+        visibility.started(ad); visibility.resumed(ad, true);
+        visibility.destroyed(game, false);
+        check(visibility.isForeground(), "remaining started activity keeps process foreground");
+    }
+
+    private static void heartbeatCheckpointNeverReopensBackgroundedSession() throws Exception {
+        Memory storage = new Memory();
+        GameAlgoLifecycleJournal journal = new GameAlgoLifecycleJournal(storage, "journal", true, 1000);
+        journal.activate(template("s1", "ctx1", 1000), 1000, false, Collections.emptyList());
+        journal.sample(true, 2000);
+        journal.observe(false, 2000);
+        check(!journal.checkpoint(12_000), "checkpoint while backgrounded is a no-op");
+        List<GameAlgoEvent> bgEnds = journal.pending();
+        check(bgEnds.size() == 1 && "background".equals(bgEnds.get(0).getPayload().get("reason")), "only background end exists");
+        journal.acknowledge(bgEnds);
+        GameAlgoLifecycleJournal restarted = new GameAlgoLifecycleJournal(storage, "journal", true, 1000);
+        restarted.activate(template("s2", "ctx2", 50_000), 50_000, false, Collections.emptyList());
+        check(restarted.pending().isEmpty(), "backgrounded session must stay closed and never emit fake process_restart");
+    }
+
+    private static void foregroundCheckpointEmitsPeriodicHeartbeatSnapshotsWithoutClosingSession() throws Exception {
+        Memory storage = new Memory();
+        GameAlgoLifecycleJournal journal = new GameAlgoLifecycleJournal(storage, "journal", true, 1000);
+        journal.activate(template("s1", "ctx1", 1000), 1000, false, Collections.emptyList());
+        long now = 1000;
+        for (int sec = 1; sec <= 29; sec++) {
+            now += 1000;
+            journal.sample(true, now);
+        }
+        check(!journal.checkpoint(now), "no heartbeat snapshot before 30s foreground duration");
+        check(journal.pending().isEmpty(), "queue remains empty before 30s");
+
+        now += 1000; // 30s
+        journal.sample(true, now);
+        check(journal.checkpoint(now), "first heartbeat snapshot emits at 30s");
+        check(!journal.hasEnd("s1"), "heartbeat snapshot does not mark session ended");
+        List<GameAlgoEvent> after30 = journal.pending();
+        check(after30.size() == 1, "one heartbeat snapshot enqueued");
+        check("heartbeat".equals(after30.get(0).getPayload().get("reason")), "reason is heartbeat");
+        check(Boolean.FALSE.equals(after30.get(0).getPayload().get("recovered")), "heartbeat is not recovered");
+        check(((Number) after30.get(0).getPayload().get("sessionDurationMs")).longValue() == 30_000L, "heartbeat records 30s duration");
+
+        // Another 30s (total 60s, +30s since last heartbeat) should not emit yet
+        for (int sec = 1; sec <= 30; sec++) { now += 1000; journal.sample(true, now); }
+        check(!journal.checkpoint(now), "no second heartbeat before +60s interval");
+
+        // Another 30s (total 90s, +60s since last heartbeat) emits second snapshot
+        for (int sec = 1; sec <= 30; sec++) { now += 1000; journal.sample(true, now); }
+        check(journal.checkpoint(now), "second heartbeat snapshot emits at 90s");
+        List<GameAlgoEvent> after90 = journal.pending();
+        check(after90.size() == 2, "two distinct heartbeat snapshots present");
+        check(!after90.get(0).getEventId().equals(after90.get(1).getEventId()), "heartbeat snapshots use distinct eventIds");
+        check(((Number) after90.get(1).getPayload().get("sessionDurationMs")).longValue() == 90_000L, "second heartbeat records 90s");
+
+        // Backgrounding still emits final background session_end
+        now += 1000;
+        journal.observe(false, now);
+        List<GameAlgoEvent> afterBg = journal.pending();
+        check(afterBg.size() == 3 && "background".equals(afterBg.get(2).getPayload().get("reason")), "background still emits after heartbeat");
+        check(journal.hasEnd("s1"), "background marks session ended");
+    }
+
+    private static void backgroundSkipsRedundantSyncWrite() throws Exception {
+        final int[] writes = { 0 };
+        GameAlgoJournalStorage countingStorage = new GameAlgoJournalStorage() {
+            final Map<String, String> values = new LinkedHashMap<>();
+            final List<String> ops = new ArrayList<>();
+            public String getItem(String key) { return values.get(key); }
+            public void setItem(String key, String value) { writes[0]++; values.put(key, value); }
+            public void removeItem(String key) { values.remove(key); ops.clear(); }
+            public List<String> readJournalRecords(String key) { return new ArrayList<>(ops); }
+            public void appendJournalRecord(String key, long sequence, String value) { writes[0]++; ops.add(value); }
+            public void compactJournal(String key, String value) { writes[0]++; values.put(key, value); ops.clear(); }
+        };
+        GameAlgoClient client = new GameAlgoClient("ga_live_local_writes", "https://local.test", "test", null, 1, "android",
+                req -> new GameAlgoHttpResponse(200, Collections.emptyMap(), "{\"ok\":true,\"accepted\":1}".getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                (script, input) -> null, null, null, null, false);
+        GameAlgoEventTracker tracker = new GameAlgoEventTracker(client, 100, 1000, 0, countingStorage, "queue");
+        try {
+            tracker.identify("user", "s1"); tracker.setContextId("ctx1"); tracker.enableLifecycle(true);
+            int beforeBackground = writes[0];
+            tracker.observeLifecycle(false, System.currentTimeMillis());
+            check(writes[0] - beforeBackground == 1, "background transition performs one journal write, not two");
+        } finally { tracker.close(); client.tracker().close(); }
     }
     private static final class Memory implements GameAlgoCacheStorage {
         final Map<String, String> values = new ConcurrentHashMap<>();

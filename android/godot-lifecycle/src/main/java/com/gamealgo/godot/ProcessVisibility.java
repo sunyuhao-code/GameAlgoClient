@@ -98,6 +98,14 @@ final class ProcessVisibility {
         }
     }
 
+    void destroyed(Object activity, boolean changingConfigurations) {
+        resumed.remove(activity);
+        started.remove(activity);
+        if (foreground && started.isEmpty() && resumed.isEmpty() && !changingConfigurations) {
+            hide();
+        }
+    }
+
     boolean isForeground() {
         return foreground;
     }

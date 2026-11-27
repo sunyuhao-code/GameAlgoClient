@@ -32,7 +32,8 @@ public final class GameAlgoAndroidLifecycle implements Application.ActivityLifec
     private final Runnable heartbeat = new Runnable() {
         @Override public void run() {
             long now = System.currentTimeMillis();
-            boolean foreground = currentForeground();
+            boolean visible = visibility.isForeground();
+            boolean foreground = visible && currentForeground();
             for (WeakReference<GameAlgoEventTracker> reference : trackers) {
                 GameAlgoEventTracker tracker = reference.get();
                 if (tracker == null) trackers.remove(reference);
@@ -40,7 +41,7 @@ public final class GameAlgoAndroidLifecycle implements Application.ActivityLifec
             }
             if (now - lastCheckpoint >= 10_000L) {
                 lastCheckpoint = now;
-                report(foreground);
+                if (visible) checkpoint(now);
             }
             if (!trackers.isEmpty()) main.postDelayed(this, 1000L);
         }
@@ -59,7 +60,7 @@ public final class GameAlgoAndroidLifecycle implements Application.ActivityLifec
         AtomicBoolean detached = new AtomicBoolean();
         Runnable attach = () -> {
             if (detached.get()) return;
-            tracker.enableLifecycle(monitor.currentForeground());
+            tracker.enableLifecycle(monitor.visibility.isForeground() || monitor.currentForeground());
             monitor.trackers.add(reference);
             monitor.main.removeCallbacks(monitor.heartbeat);
             monitor.main.postDelayed(monitor.heartbeat, 1000L);
@@ -105,13 +106,31 @@ public final class GameAlgoAndroidLifecycle implements Application.ActivityLifec
             else tracker.observeLifecycle(foreground, now);
         }
     }
+    private void checkpoint(long now) {
+        for (WeakReference<GameAlgoEventTracker> reference : trackers) {
+            GameAlgoEventTracker tracker = reference.get();
+            if (tracker == null) trackers.remove(reference);
+            else tracker.checkpointLifecycle(now);
+        }
+    }
+    private void sampleNow(boolean foreground) {
+        long now = System.currentTimeMillis();
+        for (WeakReference<GameAlgoEventTracker> reference : trackers) {
+            GameAlgoEventTracker tracker = reference.get();
+            if (tracker == null) trackers.remove(reference);
+            else tracker.sampleSessionDuration(foreground, now);
+        }
+    }
     @Override public void onActivityStarted(Activity activity) { visibility.started(activity); }
     @Override public void onActivityResumed(Activity activity) { visibility.resumed(activity, interactive()); }
-    @Override public void onActivityPaused(Activity activity) { visibility.paused(activity); }
+    @Override public void onActivityPaused(Activity activity) {
+        sampleNow(visibility.isForeground() && interactive());
+        visibility.paused(activity);
+    }
     @Override public void onActivityStopped(Activity activity) { visibility.stopped(activity, activity.isChangingConfigurations()); }
     @Override public void onActivityCreated(Activity activity, Bundle state) {}
     @Override public void onActivitySaveInstanceState(Activity activity, Bundle state) {}
-    @Override public void onActivityDestroyed(Activity activity) {}
+    @Override public void onActivityDestroyed(Activity activity) { visibility.destroyed(activity, activity.isChangingConfigurations()); }
     @Override public void onTrimMemory(int level) { if (level == TRIM_MEMORY_UI_HIDDEN) visibility.uiHidden(); }
     @Override public void onConfigurationChanged(Configuration configuration) {}
     @Override public void onLowMemory() {}
